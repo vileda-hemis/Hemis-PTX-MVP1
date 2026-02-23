@@ -19,7 +19,7 @@ jobs:
             **${{ github.event_name | replace('_', ' ') }}** in `{{ github.repository }}`
             {% if github.event_name == 'push' %}
               Commit by `{{ github.actor }}`: [{{ github.sha | truncate(7) }}]({{ github.server_url }}/{{ github.repository }}/commit/{{ github.sha }})
-              > **Message:** `{{ github.head_commit.message | truncate(50) }}`  
+              > **Message:** `{{ github.head_commit.message }}`  
                 [View Commit]({{ github.server_url }}/{{ github.repository }}/commit/{{ github.sha }})
             {% else %}
               PR by `{{ github.actor }}`: [#{{ github.event.pull_request.number }}]({{ github.server_url }}/{{ github.repository }}/pull/{{ github.event.pull_request.number }})
