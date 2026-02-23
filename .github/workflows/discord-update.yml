@@ -1,0 +1,29 @@
+name: Discord Notification
+
+on:
+  push:
+    branches:
+      - main  # Trigger on commits to main branch
+  pull_request:
+    types: [opened, reopened, synchronize]  # Also trigger on PRs
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Send Discord Notification
+        uses: appleboy/discord-action@master
+        with:
+          webhook_url: ${{ secrets.DISCORD_WEBHOOK_URL }}  # Store secret for safety
+          content: |
+            **{{ github.event_name | replace('_', ' ') }}** in {{ github.repository }}
+            {% if github.event_name == 'push' %}
+              Commit by {{ github.actor }}: {{ github.sha | truncate(7) }}
+              {{ github.head_commit.message | truncate(50) }} [View Commit](https://github.com/{{ github.repository }}/commit/{{ github.sha }})
+            {% else %}
+              {{ github.actor }} opened a PR: {{ github.event.pull_request.title }}
+              [View PR](https://github.com/{{ github.repository }}/pull/{{ github.event.pull_request.number }})
+            {% endif %}
