@@ -1,3 +1,5 @@
+## The below is for the main branch, this Hemis-PTX-MVP1 fork is pure alpha code, not production, no guarantees that it won't cause harm to your cat.. - Vileda
+
 Hemis Core integration/staging repository
 
 ## What is Hemis?
