@@ -2,38 +2,41 @@ name: Discord Notification
 
 on:
   push:
-    branches:
-      - main  # Trigger on commits to main branch
+    branches: [main]
   pull_request:
-    types: [opened, reopened, synchronize]  # Also trigger on PRs
+    types: [opened, reopened, synchronize]
 
 jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
-      - name: Prepare Message
-        id: prepare_message
+      - name: Build Discord message
+        id: message
         run: |
-          MESSAGE="**${{ github.event_name | replace('_', ' ') }}** in `{{ github.repository }}`"
+          echo "MSG=**${{ github.event_name }}** in \`$GITHUB_REPOSITORY\`" >> $GITHUB_OUTPUT
           
-          if [ "${{ github.event_name }}" == "push" ]; then
-            MESSAGE+="\n✅ Commit by \`$GITHUB_ACTOR\`: [$COMMIT_SHA]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$COMMIT_SHA)"
-            MESSAGE+=$'\n> **Message:** `'"${GITHUB_HEAD_COMMIT_MESSAGE}"'`'
-            MESSAGE+=$'\n[View Commit]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$COMMIT_SHA)'
-          else
-            MESSAGE+="\n💥 PR by \`$GITHUB_ACTOR\`: [#${{ github.event.pull_request.number }}]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/pull/${{ github.event.pull_request.number }})"
-            MESSAGE+=$'\n> **Title:** `'"${PR_TITLE}"'`'
-            MESSAGE+=$'\n[View PR]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/pull/${{ github.event.pull_request.number }})'
+          # Handle push events
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "MSG+=\n✅ Commit by \`$GITHUB_ACTOR\`: [${{ github.sha }}]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/${{ github.sha }})"
+            echo "MSG+=\n> **Message:** \`$GITHUB_HEAD_REF\`" # Using GITHUB_HEAD_REF instead of message
+            echo "MSG+=\n> [View Commit]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/${{ github.sha }})"
+          # Handle PR events
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "MSG+=\n💥 PR by \`$GITHUB_ACTOR\`: [#${{ github.event.number }}]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/pull/${{ github.event.number }})"
+            echo "MSG+=\n> **Title:** \`${{ github.event.pull_request.title | truncate(50) }}\`"
+            echo "MSG+=\n> [View PR]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/pull/${{ github.event.number }})"
           fi
-
-          echo "::set-output name=message::$(echo -e "$MESSAGE")"
+          
+          # Output the final message
+          echo "FINAL_MESSAGE=${{ steps.message.outputs.MSG }}" >> $GITHUB_OUTPUT
         env:
-          COMMIT_SHA: "${{ github.sha }}"
-          GITHUB_HEAD_COMMIT_MESSAGE: "${{ github.head_commit.message }}"
-          PR_TITLE: "${{ github.event.pull_request.title }}"
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_HEAD_REF: ${{ github.head_ref }}
 
       - name: Send Discord Notification
-        uses: appleboy/discord-action@v1.20.0
+        uses: appleboy/discord-action@v4.1.1
         with:
           webhook_url: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          args: ${{ steps.prepare_message.outputs.message }}
+          message: ${{ steps.message.outputs.FINAL_MESSAGE }}
