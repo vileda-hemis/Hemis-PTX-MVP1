@@ -3,7 +3,7 @@ name: Discord Notification
 on:
   push:
     branches:
-      - main  # Trigger on commits to main branch
+      - main  # Trigger on commits to main branch1
   pull_request:
     types: [opened, reopened, synchronize]  # Also trigger on PRs
 
