@@ -11,19 +11,18 @@ jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v2
-
       - name: Send Discord Notification
-        uses: appleboy/discord-action@master
+        uses: appleboy/discord-action@v1.20.0
         with:
-          webhook_url: ${{ secrets.DISCORD_WEBHOOK_URL }}  # Store secret for safety
-          content: |
-            **{{ github.event_name | replace('_', ' ') }}** in {{ github.repository }}
+          webhook_url: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          args: >
+            **${{ github.event_name | replace('_', ' ') }}** in `{{ github.repository }}`
             {% if github.event_name == 'push' %}
-              Commit by {{ github.actor }}: {{ github.sha | truncate(7) }}
-              {{ github.head_commit.message | truncate(50) }} [View Commit](https://github.com/{{ github.repository }}/commit/{{ github.sha }})
+              Commit by `{{ github.actor }}`: [{{ github.sha | truncate(7) }}]({{ github.server_url }}/commit/{{ github.sha }})
+              > **Message:** `{{ github.head_commit.message | truncate(50) }}`  
+                [View Commit]({{ github.server_url }}/{{ github.repository }}/commit/{{ github.sha }})
             {% else %}
-              {{ github.actor }} opened a PR: {{ github.event.pull_request.title }}
-              [View PR](https://github.com/{{ github.repository }}/pull/{{ github.event.pull_request.number }})
+              PR by `{{ github.actor }}`: [#{{ github.event.pull_request.number }}]({{ github.server_url }}/{{ github.repository }}/pull/{{ github.event.pull_request.number }})
+              > **Title:** `{{ github.event.pull_request.title | truncate(50) }}`  
+                [View PR]({{ github.server_url }}/{{ github.repository }}/pull/{{ github.event.pull_request.number }})
             {% endif %}
