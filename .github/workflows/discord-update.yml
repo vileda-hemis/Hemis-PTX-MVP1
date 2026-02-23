@@ -15,20 +15,32 @@ jobs:
         id: setup_event
         run: |
           EVENT_NAME=$(echo "${GITHUB_EVENT_NAME}" | sed 's/_/ /g')
-          echo "EVENT_NAME=${EVENT_NAME}" >> $GITHUB_ENV
+          SHA=${{ github.sha }}
+          TRUNCATED_SHA=${SHA:0:7}
+          COMMIT_MESSAGE=${{ github.head_commit.message }}
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          PR_TITLE=${{ github.event.pull_request.title }}
+          SERVER_URL=${{ github.server_url }}
+          REPO=${{ github.repository }}
+          ACTOR=${{ github.actor }}
+
+          if [ "${GITHUB_EVENT_NAME}" == "push" ]; then
+            MESSAGE="**${EVENT_NAME}** in \`${REPO}\`
+Commit by \`${ACTOR}\`: [${TRUNCATED_SHA}](${SERVER_URL}/${REPO}/commit/${SHA})
+> **Message:** \`${COMMIT_MESSAGE}\`
+> [View Commit](${SERVER_URL}/${REPO}/commit/${SHA})"
+          else
+            MESSAGE="**${EVENT_NAME}** in \`${REPO}\`
+PR by \`${ACTOR}\`: [#${PR_NUMBER}](${SERVER_URL}/${REPO}/pull/${PR_NUMBER})
+> **Title:** \`${PR_TITLE:0:50}\`
+> [View PR](${SERVER_URL}/${REPO}/pull/${PR_NUMBER})"
+          fi
+
+          echo "MESSAGE=${MESSAGE}" >> $GITHUB_ENV
 
       - name: Send Discord Notification
         uses: appleboy/discord-action@v1.20.0
         with:
           webhook_url: ${{ secrets.DISCORD_WEBHOOK_URL }}
           args: |
-            **${{ env.EVENT_NAME }}** in `{{ github.repository }}`
-            {% if "${GITHUB_EVENT_NAME}" == "push" %}
-              Commit by `{{ github.actor }}`: [${{ github.sha | truncate(7) }}]({{ github.server_url }}/{{ github.repository }}/commit/${{ github.sha }})
-              > **Message:** `${{ github.head_commit.message }}`
-              > [View Commit](${{ github.server_url }}/{{ github.repository }}/commit/${{ github.sha }})
-            {% else %}
-              PR by `{{ github.actor }}`: [#${{ github.event.pull_request.number }}]({{ github.server_url }}/{{ github.repository }}/pull/${{ github.event.pull_request.number }})
-              > **Title:** `${{ github.event.pull_request.title | truncate(50) }}`
-              > [View PR](${{ github.server_url }}/{{ github.repository }}/pull/${{ github.event.pull_request.number }})
-            {% endif %}
+            ${MESSAGE}
