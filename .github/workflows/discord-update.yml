@@ -42,5 +42,5 @@ PR by \`${ACTOR}\`: [#${PR_NUMBER}](${SERVER_URL}/${REPO}/pull/${PR_NUMBER})
         uses: appleboy/discord-action@v1.20.0
         with:
           webhook_url: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          message: |
+          args: |
             ${MESSAGE}
