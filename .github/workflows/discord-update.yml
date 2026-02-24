@@ -11,7 +11,7 @@ jobs:
     steps:
       - name: Send message to Discord
         env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           # Prepare JSON payload
           PAYLOAD=$(jq -n \
