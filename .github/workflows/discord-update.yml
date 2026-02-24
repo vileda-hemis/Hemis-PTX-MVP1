@@ -1,46 +1,27 @@
-name: Discord Notification
+name: Notify Discord on Push
 
 on:
   push:
     branches:
-      - main  # Trigger on commits to main branch
-  pull_request:
-    types: [opened, reopened, synchronize]  # Also trigger on PRs
+      - main  # Change to your branch name if needed
 
 jobs:
-  notify:
+  discord_notification:
     runs-on: ubuntu-latest
     steps:
-      - name: Set up event details
-        id: setup_event
+      - name: Send message to Discord
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
-          EVENT_NAME=$(echo "${GITHUB_EVENT_NAME}" | sed 's/_/ /g')
-          SHA=${{ github.sha }}
-          TRUNCATED_SHA=${SHA:0:7}
-          COMMIT_MESSAGE=${{ github.head_commit.message }}
-          PR_NUMBER=${{ github.event.pull_request.number }}
-          PR_TITLE=${{ github.event.pull_request.title }}
-          SERVER_URL=${{ github.server_url }}
-          REPO=${{ github.repository }}
-          ACTOR=${{ github.actor }}
+          # Prepare JSON payload
+          PAYLOAD=$(jq -n \
+            --arg content "📢 **GitHub Update**\nRepository: $GITHUB_REPOSITORY\nBranch: $GITHUB_REF_NAME\nCommit: $GITHUB_SHA\nBy: $GITHUB_ACTOR\nMessage: $(git log -1 --pretty=%B)" \
+            '{content: $content}')
 
-          if [ "${GITHUB_EVENT_NAME}" == "push" ]; then
-            MESSAGE="**${EVENT_NAME}** in \`${REPO}\`
-Commit by \`${ACTOR}\`: [${TRUNCATED_SHA}](${SERVER_URL}/${REPO}/commit/${SHA})
-> **Message:** \`${COMMIT_MESSAGE}\`
-> [View Commit](${SERVER_URL}/${REPO}/commit/${SHA})"
-          else
-            MESSAGE="**${EVENT_NAME}** in \`${REPO}\`
-PR by \`${ACTOR}\`: [#${PR_NUMBER}](${SERVER_URL}/${REPO}/pull/${PR_NUMBER})
-> **Title:** \`${PR_TITLE:0:50}\`
-> [View PR](${SERVER_URL}/${REPO}/pull/${PR_NUMBER})"
-          fi
-
-          echo "MESSAGE=${MESSAGE}" >> $GITHUB_ENV
-
-      - name: Send Discord Notification
-        uses: appleboy/discord-action@v1.20.0
-        with:
-          webhook_url: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          args: |
-            ${MESSAGE}
+          # Send to Discord
+          curl -H "Content-Type: application/json" \
+               -X POST \
+               -d "$PAYLOAD" \
+               "$DISCORD_WEBHOOK"
+      - name: Checkout code
+        uses: actions/checkout@v4
