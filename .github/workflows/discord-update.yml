@@ -3,7 +3,7 @@ name: Discord Notification
 on:
   push:
     branches:
-      - main  # Trigger on commits to main branch1
+      - main  # Trigger on commits to main branch
   pull_request:
     types: [opened, reopened, synchronize]  # Also trigger on PRs
 
@@ -42,5 +42,5 @@ PR by \`${ACTOR}\`: [#${PR_NUMBER}](${SERVER_URL}/${REPO}/pull/${PR_NUMBER})
         uses: appleboy/discord-action@v1.20.0
         with:
           webhook_url: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          args: |
+          message: |
             ${MESSAGE}
