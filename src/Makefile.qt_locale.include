@@ -12,4 +12,5 @@ QT_TS = \
   qt/locale/Hemis_pl.ts \
   qt/locale/Hemis_ru.ts \
   qt/locale/Hemis_tr.ts \
+  qt/locale/Hemis_id.ts \
   qt/locale/Hemis_zh_CN.ts
