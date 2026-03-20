@@ -656,6 +656,7 @@ TRANSLATIONS += src/qt/locale/Hemis_bg.ts \
                 src/qt/locale/Hemis_sk.ts \
                 src/qt/locale/Hemis_sv.ts \
                 src/qt/locale/Hemis_vi.ts \
+                src/qt/locale/Hemis_id.ts \
                 src/qt/locale/Hemis_zh_CN.ts \
                 src/qt/locale/Hemis_zh_TW.ts
 
