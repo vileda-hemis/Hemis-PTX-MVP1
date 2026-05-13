@@ -259,6 +259,7 @@ public:
         PROUPREG = 3,
         PROUPREV = 4,
         LLMQCOMM = 5,
+        PTX = 6,
     };
 
     static const int16_t CURRENT_VERSION = TxVersion::LEGACY;
@@ -489,5 +490,35 @@ void SetTxPayload(CMutableTransaction& tx, const T& payload)
     ds << payload;
     tx.extraPayload.emplace(ds.begin(), ds.end());
 }
+
+struct CProbabilisticTxPayload {
+    std::string game_id;
+    uint32_t nSeedHeight{0};
+    uint32_t nExpiryHeight{0};
+    std::vector<uint8_t> caller_pubkey;
+    uint256 nonce;
+    uint256 ptx_params_hash;
+    uint32_t count{0};
+    int64_t low{0};
+    int64_t high{0};
+    bool unique{false};
+    std::vector<int64_t> exclude_integers;
+    std::vector<std::string> exclude_txids;
+    uint256 round_seed;
+    uint256 beacon;
+    std::vector<int64_t> results;
+    uint256 quorum_sig_hash;
+    std::vector<std::string> quorum_members;
+
+    SERIALIZE_METHODS(CProbabilisticTxPayload, obj)
+    {
+        READWRITE(obj.game_id, obj.nSeedHeight, obj.nExpiryHeight,
+                  obj.caller_pubkey, obj.nonce, obj.ptx_params_hash,
+                  obj.count, obj.low, obj.high, obj.unique,
+                  obj.exclude_integers, obj.exclude_txids,
+                  obj.round_seed, obj.beacon, obj.results,
+                  obj.quorum_sig_hash, obj.quorum_members);
+    }
+};
 
 #endif // BITCOIN_PRIMITIVES_TRANSACTION_H

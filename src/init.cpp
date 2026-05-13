@@ -51,6 +51,8 @@
 #include "validation.h"
 #include "validationinterface.h"
 #include "warnings.h"
+#include "ptx/ptx_quorum.h"
+#include "ptx/ptx_validation_interface.h"
 
 #ifdef ENABLE_WALLET
 #include "wallet/init.h"
@@ -1425,6 +1427,11 @@ bool AppInitMain()
 #endif
 
     InitTierTwoInterfaces();
+
+    // PTX: load node registry from config
+    PTX_LoadNodesFromArgs();
+    g_ptx_validation_interface = new PTXValidationInterface();
+    RegisterValidationInterface(g_ptx_validation_interface);
 
     // ********************************************************* Step 7: load block chain
 

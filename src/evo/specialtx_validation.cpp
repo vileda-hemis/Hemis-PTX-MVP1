@@ -593,6 +593,25 @@ bool CheckSpecialTx(const CTransaction& tx, const CBlockIndex* pindexPrev, const
             // quorum commitment
             return CheckLLMQCommitmentTx(tx, pindexPrev, state);
         }
+        case CTransaction::TxType::PTX: {
+            CProbabilisticTxPayload payload;
+            if (!GetTxPayload(tx, payload))
+                return state.Invalid(false, REJECT_INVALID, "ptx-bad-payload");
+            if (payload.low > payload.high)
+                return state.Invalid(false, REJECT_INVALID, "ptx-bad-range");
+            if (payload.count == 0)
+                return state.Invalid(false, REJECT_INVALID, "ptx-zero-count");
+            if (payload.results.size() != payload.count)
+                return state.Invalid(false, REJECT_INVALID, "ptx-result-count-mismatch");
+            for (int64_t v : payload.results)
+                if (v < payload.low || v > payload.high)
+                    return state.Invalid(false, REJECT_INVALID, "ptx-result-out-of-range");
+            if (payload.quorum_sig_hash.IsNull())
+                return state.Invalid(false, REJECT_INVALID, "ptx-missing-sig");
+            if (payload.nSeedHeight == 0)
+                return state.Invalid(false, REJECT_INVALID, "ptx-bad-height");
+            return true;
+        }
     }
 
     return state.DoS(10, error("%s: special tx %s with invalid type %d", __func__, tx.GetHash().ToString(), tx.nType),

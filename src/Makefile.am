@@ -385,6 +385,15 @@ libbitcoin_server_a_SOURCES = \
   llmq/quorums_init.cpp \
   llmq/quorums_utils.cpp \
   llmq/quorums_signing.cpp \
+  ptx/ptx_seed.cpp \
+  ptx/ptx_commit_reveal.cpp \
+  ptx/ptx_output_mapping.cpp \
+  ptx/ptx_pose.cpp \
+  ptx/ptx_quorum.cpp \
+  ptx/ptx_fanout.cpp \
+  ptx/ptx_mempool.cpp \
+  ptx/ptx_exclude.cpp \
+  ptx/ptx_validation_interface.cpp \
   llmq/quorums_signing_shares.cpp \
   tiertwo/gamemaster_meta_manager.cpp \
   tiertwo/net_gamemasters.cpp \
@@ -414,6 +423,7 @@ libbitcoin_server_a_SOURCES = \
   rpc/net.cpp \
   rpc/rawtransaction.cpp \
   rpc/rpcevo.cpp \
+  rpc/ptx.cpp \
   rpc/rpcquorums.cpp \
   rpc/server.cpp \
   script/sigcache.cpp \
