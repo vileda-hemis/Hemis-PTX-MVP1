@@ -33,6 +33,13 @@ struct PTXCommitRevealRound {
     std::vector<std::string> withheld_nodes;
     std::vector<std::string> abstained_nodes;
     std::vector<std::string> invalid_reveal_nodes;
+    // payload parameters — set by coordinator at round creation
+    uint32_t count{0};
+    int64_t low{0};
+    int64_t high{0};
+    bool unique{false};
+    std::vector<int64_t> exclude_integers;
+    std::vector<std::string> exclude_txids;
 };
 
 extern std::map<std::string, PTXCommitRevealRound> g_ptx_rounds;

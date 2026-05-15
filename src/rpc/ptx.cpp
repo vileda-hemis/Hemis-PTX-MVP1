@@ -75,7 +75,7 @@ static std::set<int64_t> PTX_ResolveExclude(const UniValue& arr)
 
 UniValue ptx_roll(const JSONRPCRequest& request)
 {
-    if (request.fHelp || request.params.size() < 7) {
+    if (request.fHelp || request.params.size() < 7 || request.params.size() > 7) {
         throw std::runtime_error(
             "ptx_roll count low high unique exclude game_id caller_salt\n"
             "\nRun a PTX commit-reveal round and return verifiable random results.\n"
@@ -116,6 +116,17 @@ UniValue ptx_roll(const JSONRPCRequest& request)
         throw JSONRPCError(RPC_INVALID_PARAMS, "count must be >= 1");
     if (low > high)
         throw JSONRPCError(RPC_INVALID_PARAMS, "low must be <= high");
+    if (!exc_arr.isArray())
+        throw JSONRPCError(RPC_INVALID_PARAMS, "exclude must be a JSON array");
+    for (size_t i = 0; i < exc_arr.size(); i++) {
+        const UniValue& v = exc_arr[i];
+        if (!v.isNum() && !v.isStr())
+            throw JSONRPCError(RPC_INVALID_PARAMS, "exclude elements must be integers or 64-char hex tx_id strings");
+        if (v.isStr() && v.get_str().size() != 64)
+            throw JSONRPCError(RPC_INVALID_PARAMS, "exclude string elements must be 64-char hex tx_id");
+    }
+    if (!caller_salt_hex.empty() && !IsHex(caller_salt_hex))
+        throw JSONRPCError(RPC_INVALID_PARAMS, "caller_salt must be a hex string");
 
     uint32_t block_height = (uint32_t)chainActive.Height();
     uint256  prev_beacon  = PTX_GetLastBeacon();
@@ -159,10 +170,16 @@ UniValue ptx_roll(const JSONRPCRequest& request)
     {
         LOCK(cs_ptx_rounds);
         PTXCommitRevealRound round;
-        round.round_id       = round_id;
-        round.round_seed     = round_seed;
-        round.threshold      = 3;
-        round.quorum_members = member_ids;
+        round.round_id          = round_id;
+        round.round_seed        = round_seed;
+        round.threshold         = 3;
+        round.quorum_members    = member_ids;
+        round.count             = (uint32_t)count;
+        round.low               = low;
+        round.high              = high;
+        round.unique            = unique;
+        round.exclude_integers  = exc_ints;
+        round.exclude_txids     = exc_txids;
         g_ptx_rounds[round_id] = round;
     }
 
@@ -398,6 +415,21 @@ UniValue ptx_getroundstatus(const JSONRPCRequest& request)
         UniValue ab(UniValue::VARR);
         for (const auto& n : r.abstained_nodes) ab.push_back(n);
         ro.pushKV("abstained",  ab);
+        ro.pushKV("count",      (int64_t)r.count);
+        ro.pushKV("low",        r.low);
+        ro.pushKV("high",       r.high);
+        ro.pushKV("unique",     r.unique);
+        UniValue exc(UniValue::VARR);
+        for (int64_t v : r.exclude_integers) exc.push_back(v);
+        for (const auto& s : r.exclude_txids) exc.push_back(s);
+        ro.pushKV("exclude",    exc);
+        if (r.state == PTXRoundState::RESOLVED) {
+            std::set<int64_t> exc_set(r.exclude_integers.begin(), r.exclude_integers.end());
+            std::vector<int64_t> derived = PTX_MapBeacon(r.beacon, r.count, r.low, r.high, r.unique, exc_set);
+            UniValue res(UniValue::VARR);
+            for (int64_t v : derived) res.push_back(v);
+            ro.pushKV("results", res);
+        }
         return ro;
     };
 
