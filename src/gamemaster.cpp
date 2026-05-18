@@ -194,7 +194,7 @@ bool CGamemaster::IsValidNetAddr() const
 {
     // TODO: regtest is fine with any addresses for now,
     // should probably be a bit smarter if one day we start to implement tests for this
-    return Params().IsRegTestNet() ||
+    return Params().IsRegTestNet() || Params().IsPTXTestNet() ||
            (IsReachable(addr) && addr.IsRoutable());
 }
 
