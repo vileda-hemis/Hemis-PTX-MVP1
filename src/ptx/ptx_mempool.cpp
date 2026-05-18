@@ -5,6 +5,7 @@
 #include "ptx/ptx_mempool.h"
 
 #include "chainparams.h"
+#include "ptx/ptx_lottery.h"
 #include "consensus/validation.h"
 #include "key_io.h"
 #include "logging.h"
@@ -98,6 +99,8 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
         TryATMP(mtx, false);
         RelayTx(txid);
         LogPrintf("PTX: committed and relayed %s\n", txid.GetHex());
+        // Accumulate service fee in lottery pool tracker (KDD-030).
+        PTX_AddToPoolBalance(chainparams.PTXServiceFee());
         return txid.GetHex();
     } catch (const UniValue& objError) {
         LogPrintf("PTX: mempool rejected: %s\n", objError["message"].getValStr());

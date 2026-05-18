@@ -392,6 +392,7 @@ libbitcoin_server_a_SOURCES = \
   ptx/ptx_quorum.cpp \
   ptx/ptx_fanout.cpp \
   ptx/ptx_mempool.cpp \
+  ptx/ptx_lottery.cpp \
   ptx/ptx_exclude.cpp \
   ptx/ptx_bls.cpp \
   ptx/ptx_validation_interface.cpp \

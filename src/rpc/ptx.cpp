@@ -5,6 +5,7 @@
 #include "ptx/ptx_bls.h"
 #include "ptx/ptx_commit_reveal.h"
 #include "ptx/ptx_fanout.h"
+#include "ptx/ptx_lottery.h"
 #include "ptx/ptx_mempool.h"
 #include "ptx/ptx_output_mapping.h"
 #include "ptx/ptx_pose.h"
@@ -602,6 +603,54 @@ UniValue ptx_getroundstatus(const JSONRPCRequest& request)
 }
 
 // ---------------------------------------------------------------------------
+// RPC: ptx_lottery_status
+// ---------------------------------------------------------------------------
+
+UniValue ptx_lottery_status(const JSONRPCRequest& request)
+{
+    if (request.fHelp) {
+        throw std::runtime_error(
+            "ptx_lottery_status\n"
+            "\nReturn current PTX lottery state: pool balance, settlement window, eligible nodes.\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"pool_balance_sat\"    : n\n"
+            "  \"settlement_window\"   : n\n"
+            "  \"current_height\"      : n\n"
+            "  \"next_settlement_at\"  : n\n"
+            "  \"eligible_nodes\"      : [{\"node_id\", \"tickets\", \"pose_score\", \"eligible\"}, ...]\n"
+            "}\n"
+            + HelpExampleCli("ptx_lottery_status", "")
+            + HelpExampleRpc("ptx_lottery_status", "")
+        );
+    }
+
+    const int window  = Params().PTXSettlementWindow();
+    const int height  = chainActive.Height();
+    const int next_at = height + (window - (height % window));
+
+    UniValue ret(UniValue::VOBJ);
+    ret.pushKV("pool_balance_sat",  PTX_GetPoolBalance());
+    ret.pushKV("settlement_window", window);
+    ret.pushKV("current_height",    (int64_t)height);
+    ret.pushKV("next_settlement_at",(int64_t)next_at);
+
+    UniValue nodes_arr(UniValue::VARR);
+    for (const auto& kv : g_ptx_pose_tracker.GetAllRecords()) {
+        const auto& rec = kv.second;
+        UniValue no(UniValue::VOBJ);
+        no.pushKV("node_id",    rec.node_id);
+        no.pushKV("tickets",    rec.lottery_tickets);
+        no.pushKV("pose_score", rec.pose_score);
+        no.pushKV("eligible",   rec.quorum_eligible);
+        nodes_arr.push_back(no);
+    }
+    ret.pushKV("eligible_nodes", nodes_arr);
+
+    return ret;
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -615,6 +664,7 @@ static const CRPCCommand commands[] = {
     { "ptx",  "gm_bls_sign",               &gm_bls_sign,                true,   {"round_seed_hex"} },
     { "ptx",  "ptx_debug_setnodefailmode", &ptx_debug_setnodefailmode,  true,   {"target_node_id","mode"} },
     { "ptx",  "ptx_getroundstatus",        &ptx_getroundstatus,         true,   {"round_id"} },
+    { "ptx",  "ptx_lottery_status",        &ptx_lottery_status,         true,   {} },
 };
 // clang-format on
 

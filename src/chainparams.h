@@ -107,6 +107,9 @@ public:
     /** PTX service fee amount in satoshis (sent to lottery pool per PTXSESS tx) */
     CAmount PTXServiceFee() const { return nPTXServiceFee; }
 
+    /** PTX lottery settlement window in blocks (KDD-030: 5 for testnet, 1440 for mainnet) */
+    int PTXSettlementWindow() const { return nPTXSettlementWindow; }
+
     void UpdateNetworkUpgradeParameters(Consensus::UpgradeIndex idx, int nActivationHeight);
 protected:
     CChainParams() {}
@@ -129,6 +132,7 @@ protected:
     // PTX
     std::string strPTXLotteryPoolAddress;
     CAmount nPTXServiceFee{0};
+    int nPTXSettlementWindow{1440};
 };
 
 /**

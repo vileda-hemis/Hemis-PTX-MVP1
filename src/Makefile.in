@@ -492,6 +492,7 @@ am_libbitcoin_server_a_OBJECTS = libbitcoin_server_a-addrdb.$(OBJEXT) \
 	ptx/libbitcoin_server_a-ptx_quorum.$(OBJEXT) \
 	ptx/libbitcoin_server_a-ptx_fanout.$(OBJEXT) \
 	ptx/libbitcoin_server_a-ptx_mempool.$(OBJEXT) \
+	ptx/libbitcoin_server_a-ptx_lottery.$(OBJEXT) \
 	ptx/libbitcoin_server_a-ptx_exclude.$(OBJEXT) \
 	ptx/libbitcoin_server_a-ptx_bls.$(OBJEXT) \
 	ptx/libbitcoin_server_a-ptx_validation_interface.$(OBJEXT) \
@@ -523,8 +524,8 @@ am_libbitcoin_server_a_OBJECTS = libbitcoin_server_a-addrdb.$(OBJEXT) \
 	rpc/libbitcoin_server_a-misc.$(OBJEXT) \
 	rpc/libbitcoin_server_a-net.$(OBJEXT) \
 	rpc/libbitcoin_server_a-rawtransaction.$(OBJEXT) \
-	rpc/libbitcoin_server_a-ptx.$(OBJEXT) \
 	rpc/libbitcoin_server_a-rpcevo.$(OBJEXT) \
+	rpc/libbitcoin_server_a-ptx.$(OBJEXT) \
 	rpc/libbitcoin_server_a-rpcquorums.$(OBJEXT) \
 	rpc/libbitcoin_server_a-server.$(OBJEXT) \
 	script/libbitcoin_server_a-sigcache.$(OBJEXT) \
@@ -1668,16 +1669,17 @@ am__depfiles_remade = ./$(DEPDIR)/Hemis_cli-Hemis-cli.Po \
 	primitives/$(DEPDIR)/libbitcoin_common_a-block.Po \
 	primitives/$(DEPDIR)/libbitcoin_common_a-transaction.Po \
 	primitives/$(DEPDIR)/libbitcoinconsensus_la-transaction.Plo \
+	ptx/$(DEPDIR)/libbitcoin_server_a-ptx_bls.Po \
 	ptx/$(DEPDIR)/libbitcoin_server_a-ptx_commit_reveal.Po \
+	ptx/$(DEPDIR)/libbitcoin_server_a-ptx_exclude.Po \
+	ptx/$(DEPDIR)/libbitcoin_server_a-ptx_fanout.Po \
+	ptx/$(DEPDIR)/libbitcoin_server_a-ptx_lottery.Po \
+	ptx/$(DEPDIR)/libbitcoin_server_a-ptx_mempool.Po \
 	ptx/$(DEPDIR)/libbitcoin_server_a-ptx_output_mapping.Po \
 	ptx/$(DEPDIR)/libbitcoin_server_a-ptx_pose.Po \
 	ptx/$(DEPDIR)/libbitcoin_server_a-ptx_quorum.Po \
-	ptx/$(DEPDIR)/libbitcoin_server_a-ptx_fanout.Po \
-	ptx/$(DEPDIR)/libbitcoin_server_a-ptx_mempool.Po \
-	ptx/$(DEPDIR)/libbitcoin_server_a-ptx_exclude.Po \
-	ptx/$(DEPDIR)/libbitcoin_server_a-ptx_bls.Po \
-	ptx/$(DEPDIR)/libbitcoin_server_a-ptx_validation_interface.Po \
 	ptx/$(DEPDIR)/libbitcoin_server_a-ptx_seed.Po \
+	ptx/$(DEPDIR)/libbitcoin_server_a-ptx_validation_interface.Po \
 	qt/$(DEPDIR)/Hemis_qt-Hemis.Po \
 	qt/$(DEPDIR)/Hemis_qt-macdockiconhandler.Po \
 	qt/$(DEPDIR)/Hemis_qt-macnotificationhandler.Po \
@@ -1874,8 +1876,8 @@ am__depfiles_remade = ./$(DEPDIR)/Hemis_cli-Hemis-cli.Po \
 	rpc/$(DEPDIR)/libbitcoin_server_a-mining.Po \
 	rpc/$(DEPDIR)/libbitcoin_server_a-misc.Po \
 	rpc/$(DEPDIR)/libbitcoin_server_a-net.Po \
-	rpc/$(DEPDIR)/libbitcoin_server_a-rawtransaction.Po \
 	rpc/$(DEPDIR)/libbitcoin_server_a-ptx.Po \
+	rpc/$(DEPDIR)/libbitcoin_server_a-rawtransaction.Po \
 	rpc/$(DEPDIR)/libbitcoin_server_a-rpcevo.Po \
 	rpc/$(DEPDIR)/libbitcoin_server_a-rpcquorums.Po \
 	rpc/$(DEPDIR)/libbitcoin_server_a-server.Po \
@@ -2877,6 +2879,7 @@ libbitcoin_server_a_SOURCES = \
   ptx/ptx_quorum.cpp \
   ptx/ptx_fanout.cpp \
   ptx/ptx_mempool.cpp \
+  ptx/ptx_lottery.cpp \
   ptx/ptx_exclude.cpp \
   ptx/ptx_bls.cpp \
   ptx/ptx_validation_interface.cpp \
@@ -2908,8 +2911,8 @@ libbitcoin_server_a_SOURCES = \
   rpc/misc.cpp \
   rpc/net.cpp \
   rpc/rawtransaction.cpp \
-  rpc/ptx.cpp \
   rpc/rpcevo.cpp \
+  rpc/ptx.cpp \
   rpc/rpcquorums.cpp \
   rpc/server.cpp \
   script/sigcache.cpp \
@@ -4556,6 +4559,20 @@ ptx/libbitcoin_server_a-ptx_output_mapping.$(OBJEXT):  \
 	ptx/$(am__dirstamp) ptx/$(DEPDIR)/$(am__dirstamp)
 ptx/libbitcoin_server_a-ptx_pose.$(OBJEXT): ptx/$(am__dirstamp) \
 	ptx/$(DEPDIR)/$(am__dirstamp)
+ptx/libbitcoin_server_a-ptx_quorum.$(OBJEXT): ptx/$(am__dirstamp) \
+	ptx/$(DEPDIR)/$(am__dirstamp)
+ptx/libbitcoin_server_a-ptx_fanout.$(OBJEXT): ptx/$(am__dirstamp) \
+	ptx/$(DEPDIR)/$(am__dirstamp)
+ptx/libbitcoin_server_a-ptx_mempool.$(OBJEXT): ptx/$(am__dirstamp) \
+	ptx/$(DEPDIR)/$(am__dirstamp)
+ptx/libbitcoin_server_a-ptx_lottery.$(OBJEXT): ptx/$(am__dirstamp) \
+	ptx/$(DEPDIR)/$(am__dirstamp)
+ptx/libbitcoin_server_a-ptx_exclude.$(OBJEXT): ptx/$(am__dirstamp) \
+	ptx/$(DEPDIR)/$(am__dirstamp)
+ptx/libbitcoin_server_a-ptx_bls.$(OBJEXT): ptx/$(am__dirstamp) \
+	ptx/$(DEPDIR)/$(am__dirstamp)
+ptx/libbitcoin_server_a-ptx_validation_interface.$(OBJEXT):  \
+	ptx/$(am__dirstamp) ptx/$(DEPDIR)/$(am__dirstamp)
 llmq/libbitcoin_server_a-quorums_signing_shares.$(OBJEXT):  \
 	llmq/$(am__dirstamp) llmq/$(DEPDIR)/$(am__dirstamp)
 tiertwo/libbitcoin_server_a-gamemaster_meta_manager.$(OBJEXT):  \
@@ -4598,9 +4615,9 @@ rpc/libbitcoin_server_a-net.$(OBJEXT): rpc/$(am__dirstamp) \
 	rpc/$(DEPDIR)/$(am__dirstamp)
 rpc/libbitcoin_server_a-rawtransaction.$(OBJEXT): rpc/$(am__dirstamp) \
 	rpc/$(DEPDIR)/$(am__dirstamp)
-rpc/libbitcoin_server_a-ptx.$(OBJEXT): rpc/$(am__dirstamp) \
-	rpc/$(DEPDIR)/$(am__dirstamp)
 rpc/libbitcoin_server_a-rpcevo.$(OBJEXT): rpc/$(am__dirstamp) \
+	rpc/$(DEPDIR)/$(am__dirstamp)
+rpc/libbitcoin_server_a-ptx.$(OBJEXT): rpc/$(am__dirstamp) \
 	rpc/$(DEPDIR)/$(am__dirstamp)
 rpc/libbitcoin_server_a-rpcquorums.$(OBJEXT): rpc/$(am__dirstamp) \
 	rpc/$(DEPDIR)/$(am__dirstamp)
@@ -5531,15 +5548,17 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@primitives/$(DEPDIR)/libbitcoin_common_a-block.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@primitives/$(DEPDIR)/libbitcoin_common_a-transaction.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@primitives/$(DEPDIR)/libbitcoinconsensus_la-transaction.Plo@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@ptx/$(DEPDIR)/libbitcoin_server_a-ptx_commit_reveal.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@ptx/$(DEPDIR)/libbitcoin_server_a-ptx_output_mapping.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@ptx/$(DEPDIR)/libbitcoin_server_a-ptx_fanout.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@ptx/$(DEPDIR)/libbitcoin_server_a-ptx_mempool.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@ptx/$(DEPDIR)/libbitcoin_server_a-ptx_exclude.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@ptx/$(DEPDIR)/libbitcoin_server_a-ptx_bls.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@ptx/$(DEPDIR)/libbitcoin_server_a-ptx_validation_interface.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@ptx/$(DEPDIR)/libbitcoin_server_a-ptx_commit_reveal.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@ptx/$(DEPDIR)/libbitcoin_server_a-ptx_exclude.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@ptx/$(DEPDIR)/libbitcoin_server_a-ptx_fanout.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@ptx/$(DEPDIR)/libbitcoin_server_a-ptx_lottery.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@ptx/$(DEPDIR)/libbitcoin_server_a-ptx_mempool.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@ptx/$(DEPDIR)/libbitcoin_server_a-ptx_output_mapping.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@ptx/$(DEPDIR)/libbitcoin_server_a-ptx_pose.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@ptx/$(DEPDIR)/libbitcoin_server_a-ptx_quorum.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@ptx/$(DEPDIR)/libbitcoin_server_a-ptx_seed.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@ptx/$(DEPDIR)/libbitcoin_server_a-ptx_validation_interface.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@qt/$(DEPDIR)/Hemis_qt-Hemis.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@qt/$(DEPDIR)/Hemis_qt-macdockiconhandler.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@qt/$(DEPDIR)/Hemis_qt-macnotificationhandler.Po@am__quote@ # am--include-marker
@@ -5736,8 +5755,8 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@rpc/$(DEPDIR)/libbitcoin_server_a-mining.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@rpc/$(DEPDIR)/libbitcoin_server_a-misc.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@rpc/$(DEPDIR)/libbitcoin_server_a-net.Po@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@rpc/$(DEPDIR)/libbitcoin_server_a-rawtransaction.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@rpc/$(DEPDIR)/libbitcoin_server_a-ptx.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@rpc/$(DEPDIR)/libbitcoin_server_a-rawtransaction.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@rpc/$(DEPDIR)/libbitcoin_server_a-rpcevo.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@rpc/$(DEPDIR)/libbitcoin_server_a-rpcquorums.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@rpc/$(DEPDIR)/libbitcoin_server_a-server.Po@am__quote@ # am--include-marker
@@ -7977,6 +7996,20 @@ ptx/libbitcoin_server_a-ptx_mempool.obj: ptx/ptx_mempool.cpp
 @AMDEP_TRUE@@am__fastdepCXX_FALSE@	$(AM_V_CXX)source='ptx/ptx_mempool.cpp' object='ptx/libbitcoin_server_a-ptx_mempool.obj' libtool=no @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCXX_FALSE@	DEPDIR=$(DEPDIR) $(CXXDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCXX_FALSE@	$(AM_V_CXX@am__nodep@)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libbitcoin_server_a_CPPFLAGS) $(CPPFLAGS) $(libbitcoin_server_a_CXXFLAGS) $(CXXFLAGS) -c -o ptx/libbitcoin_server_a-ptx_mempool.obj `if test -f 'ptx/ptx_mempool.cpp'; then $(CYGPATH_W) 'ptx/ptx_mempool.cpp'; else $(CYGPATH_W) '$(srcdir)/ptx/ptx_mempool.cpp'; fi`
+
+ptx/libbitcoin_server_a-ptx_lottery.o: ptx/ptx_lottery.cpp
+@am__fastdepCXX_TRUE@	$(AM_V_CXX)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libbitcoin_server_a_CPPFLAGS) $(CPPFLAGS) $(libbitcoin_server_a_CXXFLAGS) $(CXXFLAGS) -MT ptx/libbitcoin_server_a-ptx_lottery.o -MD -MP -MF ptx/$(DEPDIR)/libbitcoin_server_a-ptx_lottery.Tpo -c -o ptx/libbitcoin_server_a-ptx_lottery.o `test -f 'ptx/ptx_lottery.cpp' || echo '$(srcdir)/'`ptx/ptx_lottery.cpp
+@am__fastdepCXX_TRUE@	$(AM_V_at)$(am__mv) ptx/$(DEPDIR)/libbitcoin_server_a-ptx_lottery.Tpo ptx/$(DEPDIR)/libbitcoin_server_a-ptx_lottery.Po
+@AMDEP_TRUE@@am__fastdepCXX_FALSE@	$(AM_V_CXX)source='ptx/ptx_lottery.cpp' object='ptx/libbitcoin_server_a-ptx_lottery.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCXX_FALSE@	DEPDIR=$(DEPDIR) $(CXXDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCXX_FALSE@	$(AM_V_CXX@am__nodep@)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libbitcoin_server_a_CPPFLAGS) $(CPPFLAGS) $(libbitcoin_server_a_CXXFLAGS) $(CXXFLAGS) -c -o ptx/libbitcoin_server_a-ptx_lottery.o `test -f 'ptx/ptx_lottery.cpp' || echo '$(srcdir)/'`ptx/ptx_lottery.cpp
+
+ptx/libbitcoin_server_a-ptx_lottery.obj: ptx/ptx_lottery.cpp
+@am__fastdepCXX_TRUE@	$(AM_V_CXX)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libbitcoin_server_a_CPPFLAGS) $(CPPFLAGS) $(libbitcoin_server_a_CXXFLAGS) $(CXXFLAGS) -MT ptx/libbitcoin_server_a-ptx_lottery.obj -MD -MP -MF ptx/$(DEPDIR)/libbitcoin_server_a-ptx_lottery.Tpo -c -o ptx/libbitcoin_server_a-ptx_lottery.obj `if test -f 'ptx/ptx_lottery.cpp'; then $(CYGPATH_W) 'ptx/ptx_lottery.cpp'; else $(CYGPATH_W) '$(srcdir)/ptx/ptx_lottery.cpp'; fi`
+@am__fastdepCXX_TRUE@	$(AM_V_at)$(am__mv) ptx/$(DEPDIR)/libbitcoin_server_a-ptx_lottery.Tpo ptx/$(DEPDIR)/libbitcoin_server_a-ptx_lottery.Po
+@AMDEP_TRUE@@am__fastdepCXX_FALSE@	$(AM_V_CXX)source='ptx/ptx_lottery.cpp' object='ptx/libbitcoin_server_a-ptx_lottery.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCXX_FALSE@	DEPDIR=$(DEPDIR) $(CXXDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCXX_FALSE@	$(AM_V_CXX@am__nodep@)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libbitcoin_server_a_CPPFLAGS) $(CPPFLAGS) $(libbitcoin_server_a_CXXFLAGS) $(CXXFLAGS) -c -o ptx/libbitcoin_server_a-ptx_lottery.obj `if test -f 'ptx/ptx_lottery.cpp'; then $(CYGPATH_W) 'ptx/ptx_lottery.cpp'; else $(CYGPATH_W) '$(srcdir)/ptx/ptx_lottery.cpp'; fi`
 
 ptx/libbitcoin_server_a-ptx_exclude.o: ptx/ptx_exclude.cpp
 @am__fastdepCXX_TRUE@	$(AM_V_CXX)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libbitcoin_server_a_CPPFLAGS) $(CPPFLAGS) $(libbitcoin_server_a_CXXFLAGS) $(CXXFLAGS) -MT ptx/libbitcoin_server_a-ptx_exclude.o -MD -MP -MF ptx/$(DEPDIR)/libbitcoin_server_a-ptx_exclude.Tpo -c -o ptx/libbitcoin_server_a-ptx_exclude.o `test -f 'ptx/ptx_exclude.cpp' || echo '$(srcdir)/'`ptx/ptx_exclude.cpp
@@ -13175,16 +13208,17 @@ distclean: distclean-recursive
 	-rm -f primitives/$(DEPDIR)/libbitcoin_common_a-block.Po
 	-rm -f primitives/$(DEPDIR)/libbitcoin_common_a-transaction.Po
 	-rm -f primitives/$(DEPDIR)/libbitcoinconsensus_la-transaction.Plo
+	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_bls.Po
 	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_commit_reveal.Po
+	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_exclude.Po
+	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_fanout.Po
+	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_lottery.Po
+	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_mempool.Po
 	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_output_mapping.Po
 	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_pose.Po
 	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_quorum.Po
-	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_fanout.Po
-	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_mempool.Po
-	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_exclude.Po
-	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_validation_interface.Po
-	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_bls.Po
 	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_seed.Po
+	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_validation_interface.Po
 	-rm -f qt/$(DEPDIR)/Hemis_qt-Hemis.Po
 	-rm -f qt/$(DEPDIR)/Hemis_qt-macdockiconhandler.Po
 	-rm -f qt/$(DEPDIR)/Hemis_qt-macnotificationhandler.Po
@@ -13381,8 +13415,8 @@ distclean: distclean-recursive
 	-rm -f rpc/$(DEPDIR)/libbitcoin_server_a-mining.Po
 	-rm -f rpc/$(DEPDIR)/libbitcoin_server_a-misc.Po
 	-rm -f rpc/$(DEPDIR)/libbitcoin_server_a-net.Po
-	-rm -f rpc/$(DEPDIR)/libbitcoin_server_a-rawtransaction.Po
 	-rm -f rpc/$(DEPDIR)/libbitcoin_server_a-ptx.Po
+	-rm -f rpc/$(DEPDIR)/libbitcoin_server_a-rawtransaction.Po
 	-rm -f rpc/$(DEPDIR)/libbitcoin_server_a-rpcevo.Po
 	-rm -f rpc/$(DEPDIR)/libbitcoin_server_a-rpcquorums.Po
 	-rm -f rpc/$(DEPDIR)/libbitcoin_server_a-server.Po
@@ -13698,16 +13732,17 @@ maintainer-clean: maintainer-clean-recursive
 	-rm -f primitives/$(DEPDIR)/libbitcoin_common_a-block.Po
 	-rm -f primitives/$(DEPDIR)/libbitcoin_common_a-transaction.Po
 	-rm -f primitives/$(DEPDIR)/libbitcoinconsensus_la-transaction.Plo
+	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_bls.Po
 	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_commit_reveal.Po
+	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_exclude.Po
+	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_fanout.Po
+	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_lottery.Po
+	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_mempool.Po
 	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_output_mapping.Po
 	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_pose.Po
 	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_quorum.Po
-	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_fanout.Po
-	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_mempool.Po
-	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_exclude.Po
-	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_validation_interface.Po
-	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_bls.Po
 	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_seed.Po
+	-rm -f ptx/$(DEPDIR)/libbitcoin_server_a-ptx_validation_interface.Po
 	-rm -f qt/$(DEPDIR)/Hemis_qt-Hemis.Po
 	-rm -f qt/$(DEPDIR)/Hemis_qt-macdockiconhandler.Po
 	-rm -f qt/$(DEPDIR)/Hemis_qt-macnotificationhandler.Po
@@ -13904,8 +13939,8 @@ maintainer-clean: maintainer-clean-recursive
 	-rm -f rpc/$(DEPDIR)/libbitcoin_server_a-mining.Po
 	-rm -f rpc/$(DEPDIR)/libbitcoin_server_a-misc.Po
 	-rm -f rpc/$(DEPDIR)/libbitcoin_server_a-net.Po
-	-rm -f rpc/$(DEPDIR)/libbitcoin_server_a-rawtransaction.Po
 	-rm -f rpc/$(DEPDIR)/libbitcoin_server_a-ptx.Po
+	-rm -f rpc/$(DEPDIR)/libbitcoin_server_a-rawtransaction.Po
 	-rm -f rpc/$(DEPDIR)/libbitcoin_server_a-rpcevo.Po
 	-rm -f rpc/$(DEPDIR)/libbitcoin_server_a-rpcquorums.Po
 	-rm -f rpc/$(DEPDIR)/libbitcoin_server_a-server.Po

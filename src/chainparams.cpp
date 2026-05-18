@@ -847,6 +847,8 @@ public:
         // Derived from RIPEMD160(SHA256("Hemis PTX lottery pool ptxtestnet v1")) with prefix 0x8B
         strPTXLotteryPoolAddress = "y9ameyKwSUpyX8EY1L8FfniMfSSfYHahhB";
         nPTXServiceFee = 1 * COIN;
+        // KDD-030: 5-block window for testnet (~5 min at 1 block/min); mainnet default 1440.
+        nPTXSettlementWindow = 5;
     }
 
     const CCheckpointData& Checkpoints() const

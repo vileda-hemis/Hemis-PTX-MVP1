@@ -6,15 +6,25 @@
 #define HEMIS_PTX_VALIDATION_INTERFACE_H
 
 #include "chain.h"
+#include "chainparams.h"
+#include "logging.h"
 #include "validationinterface.h"
-#include "ptx/ptx_pose.h"
+#include "ptx/ptx_lottery.h"
+#include "ptx/ptx_quorum.h"
 
 class PTXValidationInterface : public CValidationInterface {
 public:
     void BlockConnected(const std::shared_ptr<const CBlock>& block,
                         const CBlockIndex* pindex) override {
-        if (pindex && pindex->nHeight % 1440 == 0)
-            g_ptx_pose_tracker.AdvanceLotteryWindow();
+        if (!pindex || pindex->nHeight <= 0) return;
+        const int window = Params().PTXSettlementWindow();
+        if (pindex->nHeight % window != 0) return;
+
+        // Use the last PTX beacon as settlement randomness (KDD-030).
+        const uint256 beacon = PTX_GetLastBeacon();
+        const std::string txid = PTX_SettleLotteryWindow(pindex->nHeight, beacon);
+        if (!txid.empty())
+            LogPrintf("PTX: lottery settled at h=%d txid=%s\n", pindex->nHeight, txid);
     }
 };
 
