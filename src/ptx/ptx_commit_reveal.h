@@ -40,6 +40,12 @@ struct PTXCommitRevealRound {
     bool unique{false};
     std::vector<int64_t> exclude_integers;
     std::vector<std::string> exclude_txids;
+
+    // BLS threshold signature fields (Phase 2)
+    // node_id -> 96-byte partial BLS signature (G2 element serialized)
+    std::map<std::string, std::vector<uint8_t>> bls_partial_sigs;
+    // 96-byte recovered threshold signature (set when round resolves via BLS)
+    std::vector<uint8_t> threshold_sig;
 };
 
 extern std::map<std::string, PTXCommitRevealRound> g_ptx_rounds;

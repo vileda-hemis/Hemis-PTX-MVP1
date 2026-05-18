@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include "ptx/ptx_bls.h"
 #include "ptx/ptx_commit_reveal.h"
 #include "ptx/ptx_fanout.h"
 #include "ptx/ptx_mempool.h"
@@ -9,6 +10,7 @@
 #include "ptx/ptx_pose.h"
 #include "ptx/ptx_quorum.h"
 #include "ptx/ptx_seed.h"
+#include "bls/bls_wrapper.h"
 #include "crypto/sha256.h"
 #include "logging.h"
 #include "primitives/transaction.h"
@@ -31,6 +33,13 @@
 
 RecursiveMutex cs_ptx_secrets;
 std::map<std::string, std::map<std::string, uint256>> g_ptx_local_secrets;
+
+// GM-side BLS key share (received via gm_bls_keyset, used in gm_bls_sign).
+static CBLSSecretKey g_ptx_my_bls_sk;
+static RecursiveMutex cs_ptx_my_bls_sk;
+
+// BLS threshold: t-of-n. KDD-TBD; using simple majority floor(n/2)+1.
+static int PTX_BLS_Threshold(int n) { return n / 2 + 1; }
 
 // ---------------------------------------------------------------------------
 // Exclude-list helpers
@@ -142,78 +151,122 @@ UniValue ptx_roll(const JSONRPCRequest& request)
     uint256     round_seed  = PTX_BuildRoundSeed(game_id, block_height, {}, nonce, params_hash);
     std::string round_id    = PTX_MakeRoundId(game_id, block_height, params_hash);
 
-    PTXQuorumAssignment quorum = PTX_AssignQuorum(round_id, round_seed, 5, 3);
-    if ((int)quorum.members.size() < quorum.threshold)
-        throw JSONRPCError(RPC_MISC_ERROR, "PTX: insufficient eligible nodes");
+    // BLS threshold: select all eligible GMs; t = majority.
+    int n_nodes = (int)g_ptx_nodes.size();
+    if (n_nodes < 1)
+        throw JSONRPCError(RPC_MISC_ERROR, "PTX: no registered nodes");
+    int bls_threshold = PTX_BLS_Threshold(n_nodes);
 
-    // Generate one secret per quorum member. Coordinator owns all secrets.
-    std::map<std::string, uint256> secrets;
-    for (const auto& nid : quorum.members) {
-        CSHA256 h;
-        h.Write(round_seed.begin(), 32);
-        h.Write((const unsigned char*)nid.data(), nid.size());
-        unsigned char rb[8];
-        GetRandBytes(rb, 8);
-        h.Write(rb, 8);
-        uint256 s;
-        h.Finalize(s.begin());
-        secrets[nid] = s;
+    // Lazy-init BLS state: generate master polynomial and per-GM key shares once per session.
+    {
+        LOCK(cs_ptx_bls);
+        if (!g_ptx_bls.initialized || g_ptx_bls.threshold != bls_threshold) {
+            // Unlock while calling Init (it re-acquires internally).
+        }
     }
-    { LOCK(cs_ptx_secrets); g_ptx_local_secrets[round_id] = secrets; }
+    {
+        bool need_init = false;
+        {
+            LOCK(cs_ptx_bls);
+            need_init = !g_ptx_bls.initialized || g_ptx_bls.threshold != bls_threshold;
+        }
+        if (need_init) {
+            std::vector<std::string> all_ids;
+            for (const auto& ni : g_ptx_nodes) all_ids.push_back(ni.node_id);
+            if (!PTX_BLS_Init(all_ids, bls_threshold))
+                throw JSONRPCError(RPC_MISC_ERROR, "PTX: BLS init failed");
+        }
+    }
+
+    PTXQuorumAssignment quorum = PTX_AssignQuorum(round_id, round_seed, n_nodes, bls_threshold);
+    if ((int)quorum.members.size() < bls_threshold)
+        throw JSONRPCError(RPC_MISC_ERROR, "PTX: insufficient eligible nodes for BLS threshold");
 
     // Sort members deterministically.
-    std::vector<std::string> member_ids;
-    for (const auto& nid : quorum.members) member_ids.push_back(nid);
+    std::vector<std::string> member_ids = quorum.members;
     std::sort(member_ids.begin(), member_ids.end());
 
     // Initialise coordinator's round entry.
     {
         LOCK(cs_ptx_rounds);
         PTXCommitRevealRound round;
-        round.round_id          = round_id;
-        round.round_seed        = round_seed;
-        round.threshold         = 3;
-        round.quorum_members    = member_ids;
-        round.count             = (uint32_t)count;
-        round.low               = low;
-        round.high              = high;
-        round.unique            = unique;
-        round.exclude_integers  = exc_ints;
-        round.exclude_txids     = exc_txids;
+        round.round_id       = round_id;
+        round.round_seed     = round_seed;
+        round.threshold      = bls_threshold;
+        round.quorum_members = member_ids;
+        round.count          = (uint32_t)count;
+        round.low            = low;
+        round.high           = high;
+        round.unique         = unique;
+        round.exclude_integers = exc_ints;
+        round.exclude_txids    = exc_txids;
+        round.state          = PTXRoundState::COMMIT_PHASE;
         g_ptx_rounds[round_id] = round;
     }
 
-    PTX_FanOutCommit(round_id, secrets, round_seed, member_ids);
+    // Distribute BLS key shares to any GMs that haven't received one this session.
+    PTX_FanOutKeySet(member_ids);
 
-    {
-        LOCK(cs_ptx_rounds);
-        if (!PTX_ForceRevealPhase(g_ptx_rounds[round_id]))
-            throw JSONRPCError(RPC_MISC_ERROR, "PTX: threshold commits not reached");
+    // Collect partial BLS signatures from each quorum member.
+    auto partial_sigs_raw = PTX_FanOutSign(round_id, round_seed, member_ids);
+
+    // Build parallel vectors of (sig, id) for CBLSSignature::Recover.
+    std::vector<CBLSSignature> bls_sigs;
+    std::vector<CBLSId>        bls_ids;
+    std::vector<std::string>   signed_nodes;
+    std::vector<std::string>   withheld;
+
+    for (const auto& nid : member_ids) {
+        auto it = partial_sigs_raw.find(nid);
+        if (it != partial_sigs_raw.end()) {
+            CBLSSignature sig(it->second);
+            if (sig.IsValid()) {
+                bls_sigs.push_back(sig);
+                bls_ids.push_back(PTX_BLS_NodeId(nid));
+                signed_nodes.push_back(nid);
+                continue;
+            }
+        }
+        withheld.push_back(nid);
     }
 
-    PTX_FanOutReveal(round_id, secrets);
+    if ((int)bls_sigs.size() < bls_threshold)
+        throw JSONRPCError(RPC_MISC_ERROR,
+            strprintf("PTX: BLS threshold not met: got %d/%d",
+                      (int)bls_sigs.size(), bls_threshold));
 
-    uint256 beacon;
-    std::vector<std::string> withheld;
-    std::vector<std::string> abstained;
+    // Recover threshold signature from the first t partial sigs.
+    std::vector<CBLSSignature> thresh_sigs(bls_sigs.begin(),
+                                            bls_sigs.begin() + bls_threshold);
+    std::vector<CBLSId> thresh_ids(bls_ids.begin(),
+                                    bls_ids.begin() + bls_threshold);
+
+    CBLSSignature threshold_sig = PTX_BLS_Recover(thresh_sigs, thresh_ids);
+    if (!threshold_sig.IsValid())
+        throw JSONRPCError(RPC_MISC_ERROR, "PTX: BLS threshold signature recovery failed");
+
+    // Verify: threshold sig must check against master public key over round_seed.
+    CBLSPublicKey master_pk = PTX_BLS_GetMasterPubKey();
+    if (!threshold_sig.VerifyInsecure(master_pk, round_seed))
+        throw JSONRPCError(RPC_MISC_ERROR, "PTX: BLS threshold signature verification failed");
+
+    std::vector<uint8_t> threshold_sig_bytes = threshold_sig.ToByteVector();
+    uint256 beacon = PTX_BLS_SigToBeacon(threshold_sig);
+
+    // Update round state in coordinator's record.
     {
         LOCK(cs_ptx_rounds);
-        if (!PTX_TryResolve(g_ptx_rounds[round_id]))
-            throw JSONRPCError(RPC_MISC_ERROR, "PTX: threshold reveals not reached");
-        beacon   = g_ptx_rounds[round_id].beacon;
-        withheld = g_ptx_rounds[round_id].withheld_nodes;
-        abstained = g_ptx_rounds[round_id].abstained_nodes;
+        auto& round = g_ptx_rounds[round_id];
+        for (const auto& nid : signed_nodes)
+            round.bls_partial_sigs[nid] = partial_sigs_raw[nid];
+        round.threshold_sig = threshold_sig_bytes;
+        round.beacon        = beacon;
+        round.state         = PTXRoundState::RESOLVED;
     }
 
     // PoSe scoring.
-    for (const auto& nid : withheld)  g_ptx_pose_tracker.RecordWithhold(nid);
-    for (const auto& nid : abstained) g_ptx_pose_tracker.RecordAbstain(nid);
-    for (const auto& nid : member_ids) {
-        if (std::find(withheld.begin(),  withheld.end(),  nid) == withheld.end() &&
-            std::find(abstained.begin(), abstained.end(), nid) == abstained.end()) {
-            g_ptx_pose_tracker.RecordHonestParticipation(nid);
-        }
-    }
+    for (const auto& nid : withheld)     g_ptx_pose_tracker.RecordWithhold(nid);
+    for (const auto& nid : signed_nodes) g_ptx_pose_tracker.RecordHonestParticipation(nid);
 
     std::set<int64_t> exclude_set = PTX_ResolveExclude(exc_arr);
     std::vector<int64_t> results  = PTX_MapBeacon(beacon, (uint32_t)count, low, high, unique, exclude_set);
@@ -224,7 +277,7 @@ UniValue ptx_roll(const JSONRPCRequest& request)
     CProbabilisticTxPayload payload;
     payload.game_id          = game_id;
     payload.nSeedHeight      = block_height;
-    payload.nExpiryHeight    = block_height; // KDD-027: no accept_window, no expires_at
+    payload.nExpiryHeight    = block_height;
     payload.nonce            = nonce;
     payload.ptx_params_hash  = params_hash;
     payload.count            = (uint32_t)count;
@@ -237,10 +290,11 @@ UniValue ptx_roll(const JSONRPCRequest& request)
     payload.beacon           = beacon;
     payload.results          = results;
     payload.quorum_members   = member_ids;
+    payload.quorum_sig       = threshold_sig_bytes;
+    // quorum_sig_hash = SHA256(threshold_sig); non-null satisfies existing validation.
     {
-        // Phase 1 quorum_sig_hash: deterministic hash of the round_id.
         CSHA256 qh;
-        qh.Write((const unsigned char*)round_id.data(), round_id.size());
+        qh.Write(threshold_sig_bytes.data(), threshold_sig_bytes.size());
         qh.Finalize(payload.quorum_sig_hash.begin());
     }
 
@@ -253,7 +307,8 @@ UniValue ptx_roll(const JSONRPCRequest& request)
     for (int64_t v : results) res_arr.push_back(v);
     ret.pushKV("results",        res_arr);
     ret.pushKV("round_seed",     round_seed.GetHex());
-    ret.pushKV("quorum_sig",     payload.quorum_sig_hash.GetHex());
+    ret.pushKV("quorum_sig",     HexStr(threshold_sig_bytes));
+    ret.pushKV("quorum_sig_hash", payload.quorum_sig_hash.GetHex());
     UniValue qm_arr(UniValue::VARR);
     for (const auto& nid : member_ids) qm_arr.push_back(nid);
     ret.pushKV("quorum_members", qm_arr);
@@ -343,6 +398,84 @@ UniValue gm_reveal(const JSONRPCRequest& request)
     UniValue ret(UniValue::VOBJ);
     ret.pushKV("accepted", ok);
     ret.pushKV("resolved", false);
+    return ret;
+}
+
+// ---------------------------------------------------------------------------
+// RPC: gm_bls_keyset  (coordinator → GM)
+// ---------------------------------------------------------------------------
+
+UniValue gm_bls_keyset(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() < 1) {
+        throw std::runtime_error(
+            "gm_bls_keyset sk_share_hex\n"
+            "\nStore this node's BLS key share (32-byte hex). Called by the coordinator.\n"
+            "\nArguments:\n"
+            "1. sk_share_hex (str) BLS private key share as hex\n"
+            + HelpExampleRpc("gm_bls_keyset", "\"aabb...\"")
+        );
+    }
+
+    std::string sk_hex = request.params[0].get_str();
+    if (!IsHex(sk_hex))
+        throw JSONRPCError(RPC_INVALID_PARAMS, "sk_share_hex must be a hex string");
+
+    std::vector<uint8_t> sk_bytes = ParseHex(sk_hex);
+    if (sk_bytes.size() != BLS_CURVE_SECKEY_SIZE)
+        throw JSONRPCError(RPC_INVALID_PARAMS,
+            strprintf("sk_share_hex must be %d bytes", BLS_CURVE_SECKEY_SIZE));
+
+    CBLSSecretKey sk;
+    sk.SetByteVector(sk_bytes);
+    if (!sk.IsValid())
+        throw JSONRPCError(RPC_INVALID_PARAMS, "invalid BLS secret key share");
+
+    { LOCK(cs_ptx_my_bls_sk); g_ptx_my_bls_sk = sk; }
+    LogPrintf("PTX: gm_bls_keyset: key share stored for node=%s\n", g_ptx_my_node_id);
+
+    UniValue ret(UniValue::VOBJ);
+    ret.pushKV("accepted", true);
+    return ret;
+}
+
+// ---------------------------------------------------------------------------
+// RPC: gm_bls_sign  (coordinator → GM)
+// ---------------------------------------------------------------------------
+
+UniValue gm_bls_sign(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() < 1) {
+        throw std::runtime_error(
+            "gm_bls_sign round_seed_hex\n"
+            "\nSign round_seed with this node's BLS key share and return the partial signature.\n"
+            "\nArguments:\n"
+            "1. round_seed_hex (str) 64-char hex round seed\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"sig_hex\" : \"hex\"  96-byte BLS partial signature\n"
+            "}\n"
+            + HelpExampleRpc("gm_bls_sign", "\"aabb...\"")
+        );
+    }
+
+    std::string seed_hex = request.params[0].get_str();
+    if (!IsHex(seed_hex))
+        throw JSONRPCError(RPC_INVALID_PARAMS, "round_seed_hex must be a hex string");
+
+    uint256 round_seed = uint256S(seed_hex);
+
+    CBLSSecretKey sk;
+    { LOCK(cs_ptx_my_bls_sk); sk = g_ptx_my_bls_sk; }
+    if (!sk.IsValid())
+        throw JSONRPCError(RPC_MISC_ERROR, "BLS key not set: coordinator must call gm_bls_keyset first");
+
+    CBLSSignature sig = sk.Sign(round_seed);
+    if (!sig.IsValid())
+        throw JSONRPCError(RPC_MISC_ERROR, "BLS signing failed");
+
+    UniValue ret(UniValue::VOBJ);
+    ret.pushKV("sig_hex", HexStr(sig.ToByteVector()));
     return ret;
 }
 
@@ -478,6 +611,8 @@ static const CRPCCommand commands[] = {
     { "ptx",  "ptx_roll",                  &ptx_roll,                   true,   {"count","low","high","unique","exclude","game_id","caller_salt"} },
     { "ptx",  "gm_commit",                 &gm_commit,                  true,   {"round_id","round_seed_hex","members_json","commitment_hex"} },
     { "ptx",  "gm_reveal",                 &gm_reveal,                  true,   {"round_id","secret_hex"} },
+    { "ptx",  "gm_bls_keyset",             &gm_bls_keyset,              true,   {"sk_share_hex"} },
+    { "ptx",  "gm_bls_sign",               &gm_bls_sign,                true,   {"round_seed_hex"} },
     { "ptx",  "ptx_debug_setnodefailmode", &ptx_debug_setnodefailmode,  true,   {"target_node_id","mode"} },
     { "ptx",  "ptx_getroundstatus",        &ptx_getroundstatus,         true,   {"round_id"} },
 };

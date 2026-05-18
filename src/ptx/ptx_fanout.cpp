@@ -4,6 +4,7 @@
 
 #include "ptx/ptx_fanout.h"
 
+#include "ptx/ptx_bls.h"
 #include "ptx/ptx_commit_reveal.h"
 #include "crypto/sha256.h"
 #include "logging.h"
@@ -252,4 +253,132 @@ void PTX_FanOutReveal(const std::string& round_id,
         LogPrintf("PTX: FanOutReveal: %s %s\n", node_id,
                   resp.success ? "accepted" : "rejected/unreachable");
     }
+}
+
+// ---------------------------------------------------------------------------
+// PTX_FanOutKeySet  (Phase 2 BLS)
+// ---------------------------------------------------------------------------
+
+void PTX_FanOutKeySet(const std::vector<std::string>& member_ids)
+{
+    for (const auto& node_id : member_ids) {
+        // Check if this node already has its keyset for this session.
+        {
+            LOCK(cs_ptx_bls);
+            if (g_ptx_bls.keyset_sent.count(node_id)) continue;
+        }
+
+        std::string sk_hex;
+        {
+            LOCK(cs_ptx_bls);
+            auto it = g_ptx_bls.shares.find(node_id);
+            if (it == g_ptx_bls.shares.end() || !it->second.IsValid()) {
+                LogPrintf("PTX: FanOutKeySet: no share for %s\n", node_id);
+                continue;
+            }
+            sk_hex = HexStr(it->second.ToByteVector());
+        }
+
+        const PTXNodeInfo* ni = PTX_FindNode(node_id);
+        if (!ni) {
+            LogPrintf("PTX: FanOutKeySet: no node info for %s\n", node_id);
+            continue;
+        }
+
+        UniValue params(UniValue::VARR);
+        params.push_back(sk_hex);
+
+        auto resp = PTX_CallNodeRpc(*ni, "gm_bls_keyset", params);
+        LogPrintf("PTX: FanOutKeySet: %s %s\n", node_id,
+                  resp.success ? "accepted" : "rejected/unreachable");
+
+        if (resp.success) {
+            LOCK(cs_ptx_bls);
+            g_ptx_bls.keyset_sent.insert(node_id);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PTX_FanOutSign  (Phase 2 BLS)
+// ---------------------------------------------------------------------------
+
+std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
+    const std::string& round_id,
+    const uint256& round_seed,
+    const std::vector<std::string>& member_ids)
+{
+    std::map<std::string, std::vector<uint8_t>> collected;
+
+    for (const auto& node_id : member_ids) {
+        const PTXNodeInfo* ni = PTX_FindNode(node_id);
+        if (!ni) {
+            LogPrintf("PTX: FanOutSign: no node info for %s\n", node_id);
+            continue;
+        }
+
+        UniValue params(UniValue::VARR);
+        params.push_back(round_seed.GetHex());
+
+        // Use raw HTTP call; parse sig_hex from body directly (not "accepted" pattern).
+        raii_event_base base = obtain_event_base();
+        raii_evhttp_connection evcon = obtain_evhttp_connection_base(base.get(), ni->host, ni->port);
+        evhttp_connection_set_timeout(evcon.get(), 5);
+
+        PTXHTTPReply response;
+        raii_evhttp_request req = obtain_evhttp_request(ptx_http_done, &response);
+        if (!req) continue;
+#if LIBEVENT_VERSION_NUMBER >= 0x02010300
+        evhttp_request_set_error_cb(req.get(), ptx_http_error_cb);
+#endif
+
+        struct evkeyvalq* hdrs = evhttp_request_get_output_headers(req.get());
+        evhttp_add_header(hdrs, "Host", ni->host.c_str());
+        evhttp_add_header(hdrs, "Connection", "close");
+        evhttp_add_header(hdrs, "Content-Type", "application/json");
+
+        std::string rpcpass = gArgs.GetArg("-rpcpassword", "");
+        if (!rpcpass.empty()) {
+            std::string creds = gArgs.GetArg("-rpcuser", "") + ":" + rpcpass;
+            evhttp_add_header(hdrs, "Authorization",
+                              (std::string("Basic ") + EncodeBase64(creds)).c_str());
+        }
+
+        std::string body = JSONRPCRequestObj("gm_bls_sign", params, 1).write() + "\n";
+        struct evbuffer* out = evhttp_request_get_output_buffer(req.get());
+        if (!out) continue;
+        evbuffer_add(out, body.data(), body.size());
+
+        int r = evhttp_make_request(evcon.get(), req.get(), EVHTTP_REQ_POST, "/");
+        req.release();
+        if (r != 0) continue;
+        event_base_dispatch(base.get());
+
+        if (response.status != 200) {
+            LogPrintf("PTX: FanOutSign: %s HTTP %d\n", node_id, response.status);
+            continue;
+        }
+
+        try {
+            UniValue res;
+            if (!res.read(response.body)) continue;
+            UniValue rval = find_value(res, "result");
+            if (!rval.isObject()) continue;
+            UniValue sig_val = find_value(rval, "sig_hex");
+            if (!sig_val.isStr()) continue;
+            std::string sig_hex = sig_val.get_str();
+            if (!IsHex(sig_hex)) continue;
+            std::vector<uint8_t> sig_bytes = ParseHex(sig_hex);
+            if (sig_bytes.size() != BLS_CURVE_SIG_SIZE) {
+                LogPrintf("PTX: FanOutSign: %s bad sig size %d\n", node_id, (int)sig_bytes.size());
+                continue;
+            }
+            collected[node_id] = std::move(sig_bytes);
+            LogPrintf("PTX: FanOutSign: %s got partial sig\n", node_id);
+        } catch (...) {
+            LogPrintf("PTX: FanOutSign: %s parse error\n", node_id);
+        }
+    }
+
+    return collected;
 }

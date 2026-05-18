@@ -509,6 +509,8 @@ struct CProbabilisticTxPayload {
     std::vector<int64_t> results;
     uint256 quorum_sig_hash;
     std::vector<std::string> quorum_members;
+    // BLS threshold signature (96 bytes, Phase 2); quorum_sig_hash = SHA256(quorum_sig).
+    std::vector<uint8_t> quorum_sig;
 
     SERIALIZE_METHODS(CProbabilisticTxPayload, obj)
     {
@@ -517,7 +519,8 @@ struct CProbabilisticTxPayload {
                   obj.count, obj.low, obj.high, obj.unique,
                   obj.exclude_integers, obj.exclude_txids,
                   obj.round_seed, obj.beacon, obj.results,
-                  obj.quorum_sig_hash, obj.quorum_members);
+                  obj.quorum_sig_hash, obj.quorum_members,
+                  obj.quorum_sig);
     }
 };
 
