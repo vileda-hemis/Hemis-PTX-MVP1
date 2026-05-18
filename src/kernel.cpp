@@ -117,12 +117,16 @@ bool Stake(const CBlockIndex* pindexPrev, CStakeInput* stakeInput, unsigned int 
     if (!stakeInput) return false;
 
     // Get the new time slot (and verify it's not the same as previous block).
-    // PTXTestNet uses free timestamps (like regtest) until UPGRADE_V4_0 at h265,
-    // allowing rapid PoS block generation during chain bootstrap.
+    // Before UPGRADE_V4_0 (e.g. ptxtestnet bootstrap phase), use free timestamps
+    // with monotonic advancement so rapid generatetoaddress doesn't stall.
     const bool fRegTest = Params().IsRegTestNet();
     const bool fFreeTime = fRegTest || !Params().GetConsensus().IsTimeProtocolV2(pindexPrev->nHeight + 1);
-    nTimeTx = fFreeTime ? GetAdjustedTime() : GetCurrentTimeSlot();
-    if (nTimeTx <= pindexPrev->nTime && !fFreeTime) return false;
+    if (fFreeTime) {
+        nTimeTx = std::max(GetAdjustedTime(), pindexPrev->GetMedianTimePast() + 1);
+    } else {
+        nTimeTx = GetCurrentTimeSlot();
+        if (nTimeTx <= pindexPrev->nTime) return false;
+    }
 
     // Verify Proof Of Stake
     CStakeKernel stakeKernel(pindexPrev, stakeInput, nBits, nTimeTx);
