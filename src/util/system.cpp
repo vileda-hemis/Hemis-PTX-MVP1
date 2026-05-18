@@ -862,13 +862,16 @@ std::string ArgsManager::GetChainName() const
 {
     bool fRegTest = ArgsManagerHelper::GetNetBoolArg(*this, "-regtest");
     bool fTestNet = ArgsManagerHelper::GetNetBoolArg(*this, "-testnet");
+    bool fPTXTestNet = ArgsManagerHelper::GetNetBoolArg(*this, "-ptxtestnet");
 
-    if (fTestNet && fRegTest)
-        throw std::runtime_error("Invalid combination of -regtest and -testnet.");
+    if ((int)fTestNet + (int)fRegTest + (int)fPTXTestNet > 1)
+        throw std::runtime_error("Only one of -testnet, -regtest, -ptxtestnet can be used.");
     if (fRegTest)
         return CBaseChainParams::REGTEST;
     if (fTestNet)
         return CBaseChainParams::TESTNET;
+    if (fPTXTestNet)
+        return CBaseChainParams::PTXTESTNET;
     return CBaseChainParams::MAIN;
 }
 

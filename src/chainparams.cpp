@@ -7,12 +7,15 @@
 
 #include "chainparams.h"
 
+#include "arith_uint256.h"
 #include "chainparamsseeds.h"
 #include "consensus/merkle.h"
 #include "tinyformat.h"
 #include "utilstrencodings.h"
 
 #include <assert.h>
+#include <cstdio>
+#include <cstdlib>
 
 #include <thread>
 #include <atomic>
@@ -712,6 +715,142 @@ public:
     }
 };
 
+/**
+ * PTX closed testnet — isolated network for PTX protocol development.
+ * pchMessageStart = "PTX2"  P2P port 29993  RPC port 29902
+ */
+static MapCheckpoints mapCheckpointsPTXTestNet = {
+    {0, uint256S("0x000000db769489f483ec8f2a48ef03a9c030933084087097376ef7985a58c8ce")}
+};
+static const CCheckpointData dataPTXTestNet = {
+    &mapCheckpointsPTXTestNet,
+    1779115621,
+    0,
+    0
+};
+
+class CPTXTestNetParams : public CChainParams
+{
+public:
+    CPTXTestNetParams()
+    {
+        strNetworkID = "ptxtestnet";
+
+        genesis = CreateGenesisBlock(1779115621, 9801932, 0x1e00ffff, 1, 0 * COIN);
+        consensus.hashGenesisBlock = genesis.GetHash();
+
+        assert(consensus.hashGenesisBlock == uint256S("0x000000db769489f483ec8f2a48ef03a9c030933084087097376ef7985a58c8ce"));
+        assert(genesis.hashMerkleRoot == uint256S("0x93ad7b455294f429da00d11b656d62f7fb197a72b7315f58de8c9380dbdaa113"));
+
+        consensus.fPowAllowMinDifficultyBlocks = false;
+        consensus.fPowNoRetargeting = false;
+        consensus.powLimit   = uint256S("0x000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+        consensus.posLimitV1 = uint256S("0x000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+        consensus.posLimitV2 = uint256S("0x0000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+        consensus.nBudgetCycleBlocks = 144;
+        consensus.nBudgetFeeConfirmations = 3;
+        consensus.nCoinbaseMaturity = 10;
+        consensus.nFutureTimeDriftPoW = 7200;
+        consensus.nFutureTimeDriftPoS = 180;
+        consensus.nMaxMoneyOut = 30000000 * COIN;
+        consensus.nGMCollateralAmt = 100 * COIN;
+        consensus.nGMBlockReward = 3 * COIN;
+        consensus.nNewGMBlockReward = 6 * COIN;
+        consensus.nGMCollateralMinConf = 1;
+        consensus.nProposalEstablishmentTime = 60 * 5;
+        consensus.nStakeMinAge = 0;
+        consensus.nStakeMinDepth = 20;
+        consensus.nTargetTimespan = 20 * 60;
+        consensus.nTargetTimespanV2 = 20 * 60;
+        consensus.nTargetSpacing = 1 * 60;
+        consensus.nTimeSlotLength = 15;
+        consensus.nMaxProposalPayments = 6;
+
+        consensus.strSporkPubKey = "047F4B276E7852D6FC9AE1869B758C479759FD8CD0DC0E760EAE370161E0A75076E2CB12FE351431BA2ECAEF749FDADE63F18C0BB9BD5A0B7183C223724D9CDB48";
+
+        consensus.height_last_invalid_UTXO = -1;
+        consensus.height_last_ZC_AccumCheckpoint = -1;
+        consensus.height_last_ZC_WrappedSerials = -1;
+
+        consensus.ZC_Modulus = "25195908475657893494027183240048398571429282126204032027777137836043662020707595556264018525880784"
+                "4069182906412495150821892985591491761845028084891200728449926873928072877767359714183472702618963750149718246911"
+                "6507761337985909570009733045974880842840179742910064245869181719511874612151517265463228221686998754918242243363"
+                "7259085141865462043576798423387184774447920739934236584823824281198163815010674810451660377306056201619676256133"
+                "8441436038339044149526344321901146575444541784240209246165157233507787077498171257724679629263863563732899121548"
+                "31438167899885040445364023527381951378636564391212010397122822120720357";
+        consensus.ZC_MaxPublicSpendsPerTx = 637;
+        consensus.ZC_MaxSpendsPerTx = 7;
+        consensus.ZC_MinMintConfirmations = 10;
+        consensus.ZC_MinMintFee = 1 * CENT;
+        consensus.ZC_MinStakeDepth = 10;
+        consensus.ZC_TimeStart = 4070908800;
+        consensus.ZC_HeightStart = 100000000;
+
+        // Network upgrades — all active from genesis so PTX nodes are ready immediately
+        consensus.vUpgrades[Consensus::BASE_NETWORK].nActivationHeight =
+                Consensus::NetworkUpgrade::ALWAYS_ACTIVE;
+        consensus.vUpgrades[Consensus::UPGRADE_TESTDUMMY].nActivationHeight =
+                Consensus::NetworkUpgrade::NO_ACTIVATION_HEIGHT;
+        consensus.vUpgrades[Consensus::UPGRADE_POS].nActivationHeight           = 50;
+        consensus.vUpgrades[Consensus::UPGRADE_POS_V2].nActivationHeight        = 50;
+        consensus.vUpgrades[Consensus::UPGRADE_ZC].nActivationHeight            = 100000000;
+        consensus.vUpgrades[Consensus::UPGRADE_ZC_V2].nActivationHeight         = 100000000;
+        consensus.vUpgrades[Consensus::UPGRADE_BIP65].nActivationHeight         =
+                Consensus::NetworkUpgrade::ALWAYS_ACTIVE;
+        consensus.vUpgrades[Consensus::UPGRADE_ZC_PUBLIC].nActivationHeight     = 100000000;
+        consensus.vUpgrades[Consensus::UPGRADE_V3_4].nActivationHeight          = 51;
+        consensus.vUpgrades[Consensus::UPGRADE_V4_0].nActivationHeight          =
+                Consensus::NetworkUpgrade::ALWAYS_ACTIVE;
+        consensus.vUpgrades[Consensus::UPGRADE_V5_0].nActivationHeight          = 50;
+        consensus.vUpgrades[Consensus::UPGRADE_V5_2].nActivationHeight          = 50;
+        consensus.vUpgrades[Consensus::UPGRADE_V5_3].nActivationHeight          = 50;
+        consensus.vUpgrades[Consensus::UPGRADE_V5_5].nActivationHeight          = 50;
+        consensus.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight          =
+                Consensus::NetworkUpgrade::NO_ACTIVATION_HEIGHT;
+
+        pchMessageStart[0] = 0x50; // 'P'
+        pchMessageStart[1] = 0x54; // 'T'
+        pchMessageStart[2] = 0x58; // 'X'
+        pchMessageStart[3] = 0x32; // '2'
+        nDefaultPort = 29993;
+
+        vSeeds.clear();
+
+        base58Prefixes[PUBKEY_ADDRESS] = std::vector<unsigned char>(1, 139);
+        base58Prefixes[SCRIPT_ADDRESS] = std::vector<unsigned char>(1, 19);
+        base58Prefixes[STAKING_ADDRESS] = std::vector<unsigned char>(1, 73);
+        base58Prefixes[SECRET_KEY] = std::vector<unsigned char>(1, 239);
+        base58Prefixes[EXT_PUBLIC_KEY] = {0x3a, 0x80, 0x61, 0xa0};
+        base58Prefixes[EXT_SECRET_KEY] = {0x3a, 0x80, 0x58, 0x37};
+        base58Prefixes[EXT_COIN_TYPE] = {0x80, 0x00, 0x00, 0x01};
+
+        vFixedSeeds.clear();
+
+        fRequireStandard = false;
+
+        bech32HRPs[SAPLING_PAYMENT_ADDRESS]      = "ptxtest";
+        bech32HRPs[SAPLING_FULL_VIEWING_KEY]     = "ptxtestview";
+        bech32HRPs[SAPLING_INCOMING_VIEWING_KEY] = "ptxtestivk";
+        bech32HRPs[SAPLING_EXTENDED_SPEND_KEY]   = "p-secret-spending-key-ptxtest";
+        bech32HRPs[SAPLING_EXTENDED_FVK]         = "ptxtestxview";
+
+        bech32HRPs[BLS_SECRET_KEY]               = "bls-sk-ptx";
+        bech32HRPs[BLS_PUBLIC_KEY]               = "bls-pk-ptx";
+
+        // Small LLMQ suitable for a 4-node PTX testnet
+        consensus.llmqs[Consensus::LLMQ_TEST] = llmq_test;
+        nLLMQConnectionRetryTimeout = 10;
+        consensus.llmqChainLocks = Consensus::LLMQ_TEST;
+
+        nFulfilledRequestExpireTime = 60 * 60;
+    }
+
+    const CCheckpointData& Checkpoints() const
+    {
+        return dataPTXTestNet;
+    }
+};
+
 static std::unique_ptr<CChainParams> globalChainParams;
 
 const CChainParams &Params()
@@ -728,6 +867,8 @@ std::unique_ptr<CChainParams> CreateChainParams(const std::string& chain)
         return std::unique_ptr<CChainParams>(new CTestNetParams());
     else if (chain == CBaseChainParams::REGTEST)
         return std::unique_ptr<CChainParams>(new CRegTestParams());
+    else if (chain == CBaseChainParams::PTXTESTNET)
+        return std::unique_ptr<CChainParams>(new CPTXTestNetParams());
     throw std::runtime_error(strprintf("%s: Unknown chain %s.", __func__, chain));
 }
 

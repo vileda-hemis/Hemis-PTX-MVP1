@@ -14,11 +14,13 @@
 const std::string CBaseChainParams::MAIN = "main";
 const std::string CBaseChainParams::TESTNET = "test";
 const std::string CBaseChainParams::REGTEST = "regtest";
+const std::string CBaseChainParams::PTXTESTNET = "ptxtestnet";
 
 void AppendParamsHelpMessages(std::string& strUsage, bool debugHelp)
 {
     strUsage += HelpMessageGroup("Chain selection options:");
     strUsage += HelpMessageOpt("-testnet", "Use the test chain");
+    strUsage += HelpMessageOpt("-ptxtestnet", "Use the PTX closed testnet chain");
     if (debugHelp) {
         strUsage += HelpMessageOpt("-regtest", "Enter regression test mode, which uses a special chain in which blocks can be solved instantly. "
                                                "This is intended for regression testing tools and app development.");
@@ -41,6 +43,8 @@ std::unique_ptr<CBaseChainParams> CreateBaseChainParams(const std::string& chain
         return std::make_unique<CBaseChainParams>("testnet5", 51475);
     else if (chain == CBaseChainParams::REGTEST)
         return std::make_unique<CBaseChainParams>("regtest", 51477);
+    else if (chain == CBaseChainParams::PTXTESTNET)
+        return std::make_unique<CBaseChainParams>("ptxtestnet", 29902);
     else
         throw std::runtime_error(strprintf("%s: Unknown chain %s.", __func__, chain));
 }

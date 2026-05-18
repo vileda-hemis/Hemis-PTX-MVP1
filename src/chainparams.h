@@ -78,7 +78,7 @@ public:
     /** How long to wait until we allow retrying of a LLMQ connection  */
     int LLMQConnectionRetryTimeout() const { return nLLMQConnectionRetryTimeout; }
     /** If this chain is exclusively used for testing */
-    bool IsTestChain() const { return IsTestnet() || IsRegTestNet(); }
+    bool IsTestChain() const { return IsTestnet() || IsRegTestNet() || IsPTXTestNet(); }
     /** Make miner wait to have peers to avoid wasting work */
     bool MiningRequiresPeers() const { return !IsRegTestNet(); }
     /** Headers first syncing is disabled */
@@ -96,6 +96,7 @@ public:
 
     bool IsRegTestNet() const { return NetworkIDString() == CBaseChainParams::REGTEST; }
     bool IsTestnet() const { return NetworkIDString() == CBaseChainParams::TESTNET; }
+    bool IsPTXTestNet() const { return NetworkIDString() == CBaseChainParams::PTXTESTNET; }
 
     /** Tier two requests blockage mark expiration time */
     int FulfilledRequestExpireTime() const { return nFulfilledRequestExpireTime; }
