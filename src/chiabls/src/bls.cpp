@@ -20,7 +20,11 @@
 
 namespace bls {
 
-bool __attribute__((init_priority(101))) BLSInitResult = BLS::Init();
+// Ensure BLS::Init() (which sets secureAllocCallback) runs before any user-code
+// static constructor that default-constructs a BLS type (e.g. CBLSSecretKey).
+// Priority 101 fires before the default priority (65535) of all user statics.
+__attribute__((constructor(101))) static void bls_init_priority_ctor() { BLS::Init(); }
+bool BLSInitResult = BLS::Init();
 
 Util::SecureAllocCallback Util::secureAllocCallback;
 Util::SecureFreeCallback Util::secureFreeCallback;
