@@ -842,6 +842,11 @@ public:
         consensus.llmqChainLocks = Consensus::LLMQ_TEST;
 
         nFulfilledRequestExpireTime = 60 * 60;
+
+        // PTX lottery pool — burn-style address, no known private key
+        // Derived from RIPEMD160(SHA256("Hemis PTX lottery pool ptxtestnet v1")) with prefix 0x8B
+        strPTXLotteryPoolAddress = "y9ameyKwSUpyX8EY1L8FfniMfSSfYHahhB";
+        nPTXServiceFee = 1 * COIN;
     }
 
     const CCheckpointData& Checkpoints() const

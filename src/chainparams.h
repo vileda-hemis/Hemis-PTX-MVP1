@@ -101,6 +101,12 @@ public:
     /** Tier two requests blockage mark expiration time */
     int FulfilledRequestExpireTime() const { return nFulfilledRequestExpireTime; }
 
+    /** PTX lottery pool address (burn-style, no known private key) */
+    const std::string& PTXLotteryPoolAddress() const { return strPTXLotteryPoolAddress; }
+
+    /** PTX service fee amount in satoshis (sent to lottery pool per PTXSESS tx) */
+    CAmount PTXServiceFee() const { return nPTXServiceFee; }
+
     void UpdateNetworkUpgradeParameters(Consensus::UpgradeIndex idx, int nActivationHeight);
 protected:
     CChainParams() {}
@@ -119,6 +125,10 @@ protected:
     // Tier two
     int nLLMQConnectionRetryTimeout;
     int nFulfilledRequestExpireTime;
+
+    // PTX
+    std::string strPTXLotteryPoolAddress;
+    CAmount nPTXServiceFee{0};
 };
 
 /**
