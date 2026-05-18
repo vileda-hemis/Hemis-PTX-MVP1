@@ -21,7 +21,8 @@ RecursiveMutex           cs_ptx_last_beacon;
 void PTX_LoadNodesFromArgs()
 {
     g_ptx_nodes.clear();
-    g_ptx_my_node_id = gArgs.GetArg("-ptxnodeid", "");
+    // Accept -ptxnodeid (canonical) or legacy -ptxmynodeid from docker-compose.
+    g_ptx_my_node_id = gArgs.GetArg("-ptxnodeid", gArgs.GetArg("-ptxmynodeid", ""));
 
     for (const std::string& spec : gArgs.GetArgs("-ptxnode")) {
         // Expected format: id:host:port:user:password (5 colon-separated fields)
