@@ -2,7 +2,7 @@
 
 **Date:** 18 May 2026  
 **Branch:** `feature/ptx-phase2-bls`  
-**Completed milestone:** P2-BLS-01 (threshold BLS12-381 beacon)
+**Completed milestone:** P2-BLS-02 (threshold BLS end-to-end verified in Docker cluster)
 
 ---
 
@@ -10,67 +10,54 @@
 
 | Hash | Summary |
 |------|---------|
+| `e1bcb55` | bls: fix init_priority — use constructor(101) for non-class bool |
+| `cefd5e1` | bls: fix static-init-order crash (SIGSEGV at startup) |
+| `2bb52dd` | ptx: config status — fix arg name, add caller ptxnode registry |
+| `fcb566c` | chore: end-of-session handoff — P2-BLS-01 complete |
 | `5ed4dea` | ptx: P2-BLS-01 — replace commit-reveal beacon with threshold BLS12-381 |
-| `e9ce9de` | chore: end-of-session handoff — P2-INF-01 complete, 11/11 GMs ENABLED |
-| `7a0e31a` | gamemaster: allow RFC1918 addresses on ptxtestnet |
-| `2f22c52` | kernel: monotonic nTimeTx during free-time bootstrap phase |
-| `1259f8b` | kernel: use GetAdjustedTime() when IsTimeProtocolV2 not yet active |
-| `5e3849b` | ptxtestnet: nTimeSlotLength=1s for rapid PoS block generation |
 
 ---
 
-## P2-BLS-01 — What was implemented
+## P2-BLS-02 — What was verified
 
-### Library
-**chiabls** (BLS12-381, vendored at `src/bls/`) — already in the repo, fully
-built. The HANDOFF mentioned "supranational/blst" but chiabls covers all needed
-operations including threshold signatures.
+### End-to-end `ptx_roll` via threshold BLS12-381
 
-### New files
-- `src/ptx/ptx_bls.h` / `ptx_bls.cpp` — `PTXBLSState` (coordinator BLS
-  state: master polynomial, verification vector, per-GM key shares),
-  `PTX_BLS_Init`, `PTX_BLS_GetMasterPubKey`, `PTX_BLS_NodeId`,
-  `PTX_BLS_Recover`, `PTX_BLS_SigToBeacon`
+Called via JSON-RPC from `ptx-caller`. Two rounds confirmed:
 
-### Modified files
-- `src/ptx/ptx_commit_reveal.h` — added `bls_partial_sigs` and `threshold_sig`
-  to `PTXCommitRevealRound`
-- `src/ptx/ptx_fanout.h` / `ptx_fanout.cpp` — added `PTX_FanOutKeySet` and
-  `PTX_FanOutSign`
-- `src/rpc/ptx.cpp` — added `gm_bls_keyset` / `gm_bls_sign` RPCs; rewrote
-  `ptx_roll` to use BLS signing instead of hash commit-reveal
-- `src/primitives/transaction.h` — added `quorum_sig` (96-byte raw threshold
-  sig) to `CProbabilisticTxPayload`; serialization updated
-- `src/Makefile.am`, `Makefile.in`, `Makefile` — ptx_bls.cpp added; dep stub
-  `src/ptx/.deps/libbitcoin_server_a-ptx_bls.Po` created
+**Round 1 (1 draw, 1–100):**
+```json
+{
+  "results": [84],
+  "round_seed": "36bf5d66...",
+  "quorum_sig": "b4391bb5...66" (192 hex chars = 96 bytes),
+  "quorum_sig_hash": "c169f7db...",
+  "quorum_members": ["gm01".."gm11"]
+}
+```
 
-### Protocol
+**Round 2 (3 draws, 1–52, game "poker"):**
+```json
+{ "results": [34, 16, 7], "quorum_sig": "ad71012d...", ... }
+```
 
-**Coordinator (caller node) at `ptx_roll` time:**
-1. Lazy-init BLS: generate master polynomial (degree `t-1`), compute per-GM
-   key shares via `CBLSSecretKey::SecretKeyShare`.
-2. `PTX_FanOutKeySet`: send each GM its 32-byte key share via `gm_bls_keyset`.
-3. `PTX_FanOutSign`: ask each GM to sign `round_seed` via `gm_bls_sign`;
-   collect 96-byte partial BLS signatures.
-4. `CBLSSignature::Recover` (Lagrange interpolation) → threshold signature.
-5. Verify: `threshold_sig.VerifyInsecure(master_pubkey, round_seed)`.
-6. Beacon = `SHA256(96-byte threshold sig)`.
-7. `quorum_sig` = raw 96-byte sig stored in payload;
-   `quorum_sig_hash` = `SHA256(quorum_sig)`.
+All 11 GMs signed both rounds. Key observations:
+- BLS key shares auto-distributed in round 1 via `gm_bls_keyset`
+- Round 2 reused existing key shares (keyset_sent set)
+- `quorum_sig` is 96 bytes (192 hex) as expected
+- `round_seed` and `beacon` are distinct across rounds
+- 11/11 GMs participated; threshold = 6 (floor(11/2)+1)
 
-**GM side (`gm_bls_keyset`):**  
-Parse 32-byte key share; store in `g_ptx_my_bls_sk` (in-memory, session only).
+### Bugs fixed during P2-BLS-02
 
-**GM side (`gm_bls_sign`):**  
-Sign `round_seed` with stored key share; return `{"sig_hex": "96-byte hex"}`.
+**BUG: SIGSEGV at startup (Static Initialization Order Fiasco)**  
+- **Root cause:** `PrivateKey::AllocateKeyData()` calls `Util::SecAlloc` → `secureAllocCallback` (set by `BLS::Init()`). The file-scope `static CBLSSecretKey g_ptx_my_bls_sk` in `rpc/ptx.cpp` constructed before `BLS::Init()` ran, calling through a null function pointer (crash at 0x0).
+- **Fix:** Added `__attribute__((constructor(101)))` on a void function in `src/chiabls/src/bls.cpp` to guarantee `BLS::Init()` runs at priority 101 (before all user-code statics at priority 65535). Also added `init_priority(102)` to `pScheme` in `src/bls/bls_wrapper.cpp`.
+- **Commits:** `cefd5e1` + `e1bcb55`
 
-### Threshold
-`floor(n/2)+1` (simple majority). For n=11: t=6. KDD-TBD for final value.
-
-### Build note
-`CBLSSecretKey` does NOT inherit `CBLSWrapper`'s vector constructor (unlike
-`CBLSPublicKey`/`CBLSSignature` which have `using CBLSWrapper::CBLSWrapper`).
-Use `sk.SetByteVector(bytes)` to initialise from a byte vector.
+**BUG: RPC only binding to 127.0.0.1 (not reachable from other containers)**  
+- **Root cause:** Hemis ignores `rpcbind=` in the config file — must be a CLI argument.
+- **Fix:** Added `-rpcbind=0.0.0.0` to `entrypoint.sh` exec line.
+- **Location:** `/mnt/pve/Node14TB/hemis-ptx/docker/entrypoint.sh` (local file, not in git)
 
 ---
 
@@ -79,23 +66,19 @@ Use `sk.SetByteVector(bytes)` to initialise from a byte vector.
 **Location:** `/mnt/pve/Node14TB/hemis-ptx/docker/`  
 **Network:** `ptx-net` bridge, 172.28.0.0/24
 
-### Containers (14 total — last known Up as of P2-INF-01 session)
+### Containers (14 total — all Up after P2-BLS-02)
 
 ```
-NAME             STATUS          PORTS
-ptx-caller       Up              0.0.0.0:29902->29902/tcp, 0.0.0.0:29910->29910/tcp, 29993/tcp
-ptx-gm01 … gm11 Up              29902/tcp, 29993/tcp
-ptx-grafana      Up              0.0.0.0:3000->3000/tcp
-ptx-prometheus   Up              9090/tcp
+NAME             STATUS
+ptx-caller       Up
+ptx-gm01..gm11  Up (11 nodes)
+ptx-grafana      Up
+ptx-prometheus   Up
 ```
-
-The Docker images were built from `feature/ptx-phase2-bls` **before P2-BLS-01**.
-They must be rebuilt to include the new BLS RPCs. See Rebuild reference below.
 
 ### Chain (last known)
-
-- **Height:** 326+ and advancing
-- **Staking:** active on gm01
+- **Height:** 417+ and advancing
+- **Staking:** active on gm01 (183K HMS balance)
 - **Gamemasters:** 11/11 ENABLED
 
 ### Caller node
@@ -104,69 +87,67 @@ They must be rebuilt to include the new BLS RPCs. See Rebuild reference below.
 - **Balance:** 1,000 HMS
 - **Role:** sole `ptx_roll()` caller
 
-### GM private keys (gamemaster.conf — stored in ptx-gm01 container)
+### RPC call format (ptx_roll)
 
-Path inside container: `/root/.hemis-ptxtestnet/ptxtestnet/gamemaster.conf`
-
-**`initgamemaster <privkey> <ip:29993>` must be re-run on each GM node
-after any container restart.** Re-run the loop:
+The Hemis-cli does NOT parse `false` and `[]` correctly from the shell when combined with string arguments. Use curl with JSON-RPC directly:
 
 ```sh
-# /tmp/gm_data.txt on the host (regenerate if lost — see session transcript)
+source /mnt/pve/Node14TB/hemis-ptx/docker/.env
+docker exec ptx-caller curl -s --user "${RPCUSER}:${RPCPASSWORD}" \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"1.0","id":"test","method":"ptx_roll","params":[1,1,100,false,[],"mygame","00aabbcc"]}' \
+  http://127.0.0.1:29902/
+```
+
+### initgamemaster persistence
+
+After any container restart, re-run:
+```sh
 while IFS=' ' read -r alias privkey txhash outputidx ip; do
   docker exec "ptx-${alias}" Hemis-cli -ptxtestnet -datadir=/root/.hemis-ptxtestnet \
     initgamemaster "$privkey" "${ip}:29993"
 done < /tmp/gm_data.txt
-# Then: docker exec ptx-gm01 Hemis-cli ... startgamemaster "all" false "" true
+docker exec ptx-gm01 Hemis-cli -ptxtestnet -datadir=/root/.hemis-ptxtestnet startgamemaster "all" false "" true
 ```
 
-After rebuild + restart, `gm_bls_keyset` is re-sent automatically by the
-coordinator on the first `ptx_roll` call.
+Wait for `IsBlockchainSynced: true` before running `startgamemaster`.  
+Wait for 11/11 ENABLED before calling `ptx_roll`.
 
 ---
 
-## Next task: P2-BLS-02
+## Next tasks
 
-**Objective:** End-to-end test of `ptx_roll` using the rebuilt Docker cluster.
+### P2-BLS-03 — On-chain quorum_sig embedding
+
+The `quorum_sig` field is in `CProbabilisticTxPayload` (96 bytes) but `tx_id` in the response is `"pending"` — the probabilistic transaction is not yet broadcast to the mempool.
 
 **Steps:**
-1. Push `feature/ptx-phase2-bls` to GitHub.
-2. Rebuild Docker images: `docker compose build --no-cache && docker compose up -d`
-3. Re-run `initgamemaster` loop; verify `startgamemaster all` → 11/11 ENABLED.
-4. Call `ptx_roll` from `ptx-caller`:
-   ```sh
-   docker exec ptx-caller Hemis-cli -ptxtestnet -datadir=/root/.hemis-ptxtestnet \
-     -rpcport=29910 ptx_roll 1 1 100 false '[]' mygame 00aabbcc
-   ```
-5. Verify in response: `quorum_sig` is 192-char hex (96 bytes), `quorum_sig_hash` is
-   non-null, `beacon` is non-null, `results` has 1 value in [1,100].
-6. Check `ptx_getroundstatus` → round state = RESOLVED (3), threshold_sig populated.
+1. Implement `ptx_submittx` RPC (or extend `ptx_roll`) to serialize the PTX payload + quorum_sig into a transaction and broadcast it.
+2. The transaction should be accepted by gm01's mempool and staked into a block.
+3. Verify: `gettransaction <tx_id>` returns the quorum_sig.
 
-**Watch for:**
-- GMs failing to sign (check gm logs for "BLS key not set" — means keyset failed)
-- Threshold not met (< 6 of 11 responding)
-- Signature verification failure (would surface as JSON-RPC error in ptx_roll)
+### P2-BLS-04 — PoSe scoring live test
 
----
+Call `ptx_roll` with one or more GMs stopped (or firewall their port), verify:
+- Non-signing GMs accumulate positive `pose_score`
+- Signing GMs accumulate lottery tickets
+- POSE-ineligible GMs are excluded from future quorums
 
-## Open items
-
-### Infrastructure / ops
+### Infrastructure
 
 | Item | Status | Notes |
 |------|--------|-------|
-| Docker images | **Stale** | Must rebuild to include P2-BLS-01 code |
-| Grafana password | **Pending** | `docker exec ptx-grafana grafana-cli admin reset-admin-password <new>` |
-| SPORKs | **Not activated** | Defaults (4070908800) acceptable for Phase 2 |
-| `initgamemaster` persistence | **Manual** | Must re-run after every daemon/container restart |
-| UPGRADE\_V6\_0 (DGM) | Disabled | Display bug only; legacy GM system in use |
+| Docker images | **Current** | Rebuilt with SIGSEGV + rpcbind fixes |
+| Grafana password | Pending | `docker exec ptx-grafana grafana-cli admin reset-admin-password <new>` |
+| SPORKs | Not activated | Defaults (4070908800) acceptable for Phase 2 |
+| `initgamemaster` persistence | Manual | Must re-run after every container restart |
+| UPGRADE\_V6\_0 (DGM) | Disabled | Legacy GM system in use |
 
-### Code bugs
+### Code bugs (carry-over)
 
-| Bug | Description |
-|-----|-------------|
-| BUG-005 | (carry-over from Phase 1) |
-| BUG-006/007/008 | Fixed in `da55bb5` |
+| Bug | Status |
+|-----|--------|
+| BUG-005 | Open |
 | BUG-009 | Open |
 | BUG-011 | Open |
 | T13 | Fix pending |
@@ -176,16 +157,20 @@ coordinator on the first `ptx_roll` call.
 ## Rebuild reference
 
 ```sh
-# Push first so Dockerfile can clone the updated branch
-git push origin feature/ptx-phase2-bls
+# entrypoint.sh is a local file in /mnt/pve/Node14TB/hemis-ptx/docker/ (not git-tracked)
+# It now has -rpcbind=0.0.0.0 in the exec Hemisd line — DO NOT remove this.
 
 cd /mnt/pve/Node14TB/hemis-ptx/docker
 docker compose down
-# Only wipe volumes if a full chain reset is needed:
-# docker volume rm $(docker volume ls -q | grep ptx)
+docker compose build       # uses cached layers; only runtime stage rebuilds if only entrypoint changed
+docker compose up -d
+```
+
+Full rebuild from scratch (if binary needs recompile):
+```sh
+git push origin feature/ptx-phase2-bls  # push new code first
 docker compose build --no-cache
 docker compose up -d
 ```
 
-**Important:** Use `docker compose build` (per-service images), NOT
-`docker build -t hemisd-ptx:latest`.
+**Important:** Use `docker compose build`, NOT `docker build -t hemisd-ptx:latest`.
