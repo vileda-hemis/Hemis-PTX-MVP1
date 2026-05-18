@@ -763,7 +763,7 @@ public:
         consensus.nTargetTimespan = 20 * 60;
         consensus.nTargetTimespanV2 = 20 * 60;
         consensus.nTargetSpacing = 1 * 60;
-        consensus.nTimeSlotLength = 15;
+        consensus.nTimeSlotLength = 1;
         consensus.nMaxProposalPayments = 6;
 
         consensus.strSporkPubKey = "047F4B276E7852D6FC9AE1869B758C479759FD8CD0DC0E760EAE370161E0A75076E2CB12FE351431BA2ECAEF749FDADE63F18C0BB9BD5A0B7183C223724D9CDB48";
