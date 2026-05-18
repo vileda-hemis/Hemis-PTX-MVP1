@@ -56,7 +56,7 @@ bool CheckTransaction(const CTransaction& tx, CValidationState& state, bool fCol
     // Basic checks that don't depend on any context
     // Transactions containing empty `vin` must have non-empty `vShieldedSpend`,
     // or they must be quorum commitments (only one per-type allowed in a block)
-    if (tx.vin.empty() && (tx.sapData && tx.sapData->vShieldedSpend.empty()) && !tx.IsQuorumCommitmentTx())
+    if (tx.vin.empty() && (tx.sapData && tx.sapData->vShieldedSpend.empty()) && !tx.IsQuorumCommitmentTx() && !tx.IsProbabilisticTx())
         return state.DoS(10, false, REJECT_INVALID, "bad-txns-vin-empty");
     // Transactions containing empty `vout` must have non-empty `vShieldedOutput`,
     // or they must be quorum commitments (only one per-type allowed in a block)

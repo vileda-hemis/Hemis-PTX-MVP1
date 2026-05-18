@@ -345,6 +345,11 @@ public:
         return IsSpecialTx() && nType == TxType::LLMQCOMM;
     }
 
+    bool IsProbabilisticTx() const
+    {
+        return IsSpecialTx() && nType == TxType::PTX;
+    }
+
     // Ensure that special and sapling fields are signed
     SigVersion GetRequiredSigVersion() const
     {

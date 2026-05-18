@@ -562,7 +562,7 @@ bool CheckSpecialTx(const CTransaction& tx, const CBlockIndex* pindexPrev, const
     }
     if (pindexPrev) {
         // reject special transactions before enforcement
-        if (!tx.IsNormalType() && !Params().GetConsensus().NetworkUpgradeActive(pindexPrev->nHeight + 1, Consensus::UPGRADE_V6_0)) {
+        if (!tx.IsNormalType() && !tx.IsProbabilisticTx() && !Params().GetConsensus().NetworkUpgradeActive(pindexPrev->nHeight + 1, Consensus::UPGRADE_V6_0)) {
             return state.DoS(100, error("%s: Special tx when v6 upgrade not enforced yet", __func__),
                              REJECT_INVALID, "bad-txns-v6-not-active");
         }
