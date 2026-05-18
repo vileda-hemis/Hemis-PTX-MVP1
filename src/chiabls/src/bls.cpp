@@ -20,7 +20,7 @@
 
 namespace bls {
 
-bool BLSInitResult = BLS::Init();
+bool __attribute__((init_priority(101))) BLSInitResult = BLS::Init();
 
 Util::SecureAllocCallback Util::secureAllocCallback;
 Util::SecureFreeCallback Util::secureFreeCallback;

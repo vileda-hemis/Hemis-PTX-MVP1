@@ -15,7 +15,7 @@
 #include <assert.h>
 #include <string.h>
 
-static std::unique_ptr<bls::CoreMPL> pScheme(new bls::BasicSchemeMPL);
+static std::unique_ptr<bls::CoreMPL> __attribute__((init_priority(102))) pScheme(new bls::BasicSchemeMPL);
 
 CBLSId::CBLSId(const uint256& nHash) : CBLSWrapper<CBLSIdImplicit, BLS_CURVE_ID_SIZE, CBLSId>()
 {
