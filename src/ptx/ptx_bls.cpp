@@ -167,16 +167,16 @@ bool PTX_BLS_Recover(
     memset(&combined, 0, sizeof(combined));  // point at infinity
 
     for (int i = 0; i < t; i++) {
-        blst_scalar xi_s = {}; xi_s.b[31] = (uint8_t)indices[i];
+        blst_scalar xi_s = {}; xi_s.b[0] = (uint8_t)indices[i];
         blst_fr xi; blst_fr_from_scalar(&xi, &xi_s);
 
-        blst_scalar one_s = {}; one_s.b[31] = 1;
+        blst_scalar one_s = {}; one_s.b[0] = 1;
         blst_fr lambda; blst_fr_from_scalar(&lambda, &one_s);
 
         for (int j = 0; j < t; j++) {
             if (j == i) continue;
 
-            blst_scalar xj_s = {}; xj_s.b[31] = (uint8_t)indices[j];
+            blst_scalar xj_s = {}; xj_s.b[0] = (uint8_t)indices[j];
             blst_fr xj; blst_fr_from_scalar(&xj, &xj_s);
 
             blst_fr diff;
@@ -193,12 +193,7 @@ bool PTX_BLS_Recover(
         blst_scalar lambda_scalar;
         blst_scalar_from_fr(&lambda_scalar, &lambda);
         uint8_t lambda_bytes[32];
-        blst_bendian_from_scalar(lambda_bytes, &lambda_scalar);
-        LogPrintf("PTX Lagrange: i=%d index=%d lambda[0..3]=%02x%02x%02x%02x\n",
-                  i, indices[i],
-                  lambda_bytes[0],lambda_bytes[1],
-                  lambda_bytes[2],lambda_bytes[3]);
-
+        blst_lendian_from_scalar(lambda_bytes, &lambda_scalar);
         blst_p2 sig_jac, scaled;
         blst_p2_from_affine(&sig_jac, &sigs[i]);
         blst_p2_mult(&scaled, &sig_jac, lambda_bytes, 256);
@@ -244,30 +239,6 @@ bool PTX_BLS_Verify(const uint256& msg, const uint8_t sig[PTX_SIG_BYTES])
         msg.begin(), 32,
         (const uint8_t*)PTX_BLS_DST, strlen(PTX_BLS_DST),
         nullptr, 0);
-
-    LogPrintf("PTX_BLS_Verify: core_verify err=%d\n", (int)err);
-
-    // Master self-test: sign msg with master_sk directly (bypasses Lagrange),
-    // verify with core API. master_ok=1 → sign+verify OK, bug is in Lagrange.
-    // master_ok=0 → blst fundamental operations broken.
-    {
-        blst_p2 test_hash, test_sig_jac;
-        blst_p2_affine test_sig;
-        blst_hash_to_g2(&test_hash, msg.begin(), 32,
-                        (const uint8_t*)PTX_BLS_DST, strlen(PTX_BLS_DST),
-                        nullptr, 0);
-        blst_sign_pk_in_g1(&test_sig_jac, &test_hash,
-                           &g_ptx_bls_state.master_sk);
-        blst_p2_to_affine(&test_sig, &test_sig_jac);
-
-        BLST_ERROR self_err = blst_core_verify_pk_in_g1(
-            &g_ptx_bls_state.group_pk, &test_sig,
-            true, msg.begin(), 32,
-            (const uint8_t*)PTX_BLS_DST, strlen(PTX_BLS_DST),
-            nullptr, 0);
-        LogPrintf("PTX_BLS_Verify: master_v2=%d (0=PASS, bug in Lagrange)\n",
-                  (int)self_err);
-    }
 
     return err == BLST_SUCCESS;
 }
