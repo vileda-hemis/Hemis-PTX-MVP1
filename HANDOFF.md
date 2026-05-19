@@ -1,66 +1,59 @@
-# End-of-Session Handoff — P2-BLS-00 COMPLETE
+# End-of-Session Handoff — P2-BLS-00 + P2-POSE-01 COMPLETE
 
 **Branch**: `feature/ptx-phase2-bls`  
 **Date**: 2026-05-19  
-**Session result**: P2-BLS-00 COMPLETE — chiabls → blst migration, both ptx_roll() verified
+**Session result**: Lagrange scalar endianness bug fixed and verified; P2-POSE-01 PoSe scoring confirmed.
 
 ---
 
 ## What was done this session
 
-### P2-BLS-00: Migrate PTX BLS from chiabls to supranational/blst (KDD-032)
+### Lagrange Montgomery fix (KDD-032, commit 37dc4ec)
 
-**Design ref**: KDD-032 — replace chiabls (relic-toolkit wrapper) with supranational/blst,
-a modern, audited BLS12-381 implementation. Wire format (96-byte G2 sig) is unchanged.
+Two interacting bugs in `PTX_BLS_Recover` caused `core_verify err=5` on every roll:
 
-**Source changes** (all committed in `cd6bf1b`):
-- `src/blst/` — vendored blst (bindings/ + src/), pure-C build via `__BLST_PORTABLE__` + `__BLST_NO_ASM__`
-- `src/ptx/ptx_bls.h` — blst API types, `PTXBLSState` with `blst_scalar`/`blst_p1_affine`, `extern PTX_BLS_DST`
-- `src/ptx/ptx_bls.cpp` — trusted-dealer DKG, `PTX_BLS_PartialSign`, `PTX_BLS_Recover` (Lagrange in G2), `PTX_BLS_Verify` (pairing), `PTX_BLS_SigToBeacon`
-- `src/Makefile.am` — `LIBBLST=libblst.a`, `libblst_a_SOURCES=blst/src/server.c`, `-D__BLST_PORTABLE__ -D__BLST_NO_ASM__`, added to `EXTRA_LIBRARIES` and `Hemisd_LDADD`
-- `src/rpc/ptx.cpp` — HexStr Span API fix for `sig_buf`
-- `src/ptx/ptx_fanout.cpp` — HexStr Span API fix for `sk_bytes`
+**Bug 1 — wrong byte position in `blst_scalar` init**  
+`blst_scalar` (`pow256`) is little-endian: `b[0]` is the LSB. The WIP commit used `b[31]`
+(the MSB) for `xi_s`, `xj_s`, and `one_s`, giving values `indices[i] * 2^248` instead of
+`indices[i]`. The Lagrange ratios cancelled the `2^248` in numerator/denominator, but the
+accumulator started at `2^248` (from `one_s.b[31]=1`) instead of `1`. Every lambda ended up
+scaled by `2^248`, so the recovered signature was `2^248 * f(0) * H` ≠ `f(0) * H`.
 
-**Build fixes required**:
-- `blst_fr_set_to_one` does not exist in blst — replaced with `blst_fr_from_uint64(&x, (uint64_t[]){1,0,0,0})`
-- `blst_p2_mult` takes `blst_p2*` (Jacobian), not `blst_p2_affine*` — added `blst_p2_from_affine` conversions
-- `HexStr` API changed to `Span<const uint8_t>` — fixed in 2 sites
-- `static const char* PTX_BLS_DST` in header caused unused-variable warnings — moved definition to ptx_bls.cpp, `extern` decl in header
-- blst's `no_asm.h` is 32-bit-only (`llimb_t` undefined for 64-bit) — added `typedef unsigned __int128 llimb_t` for `LIMB_T_BITS==64`
-- `-D__BLST_NO_ASM__` is required (not just `__BLST_PORTABLE__`) to activate `no_asm.h` inclusion in `vect.c`
+**Bug 2 — wrong endianness for `blst_p2_mult`**  
+`blst_p2_mult` copies `scalar[i]` directly into an internal `pow256` (LE), so it expects
+little-endian bytes. The code used `blst_bendian_from_scalar` which outputs big-endian
+(proven from `exports.c`: `limbs_from_le_bytes` + `be_bytes_from_limbs`). Changed to
+`blst_lendian_from_scalar` (identity memcpy of the canonical LE representation).
 
-**Two verified ptx_roll() calls**:
+**Fixes**: `b[31]` → `b[0]` for all three scalars; `blst_bendian_from_scalar` → `blst_lendian_from_scalar`.
 
-Call #1 — `ptx_roll(1, 1, 100, false, [], "game", "deadbeef01020304")`:
+**Build path**: source edited on host → `docker cp` to `ptx-compile` → `make` inside ptx-compile (Boost 1.74) → `docker cp` binary to `docker/` → `docker compose build` → `docker compose up -d`.
+
+### P2-POSE-01: PoSe scoring live test — PASS
+
+- Stopped `ptx-gm05`, ran `ptx_roll` → 192-char quorum sig from 10/11 (threshold=6).
+- `ptx_pose_status`: gm05 `pose_score=5`, `tickets=0`; all others `score=0`, `tickets=7`. ✓
+- `ptx-gm05` restarted and re-inited.
+
+---
+
+## Verification results
+
 ```
-quorum_sig: 845a94b8522766fca5e7251bd645a20071d6fe5c4964ccd5f8eb2d5cc768e7c24518248ee2f5bc6795c76d6a626652210b21be2183fe272a67c1d8b8edb97359eeb71540446d49c37f44f8c954745d6f7baa5d75ceba68028881a834f5525f96
-results:    [35]
-tx_id:      7624e1afdcfadd7db146ac27832487a196d4f42fe36228033f4e4b86eab7e380
+Roll 1: len=192 PASS  members=gm01..gm11
+Roll 2: len=192 PASS  members=gm01..gm11
+Roll 3: len=192 PASS  members=gm01..gm11
+Roll 4: len=192 PASS  members=gm01..gm11
+Roll 5: len=192 PASS  members=gm01..gm11
 ```
-
-Call #2 — `ptx_roll(3, 1, 52, false, [], "poker", "cafebabe01020304")`:
-```
-quorum_sig: a61e9d2cc3c7bab90e1f059b4d9d9ef23e60b06e2d3cb9cec2db6b7ed4f1d0464e52947e3bd3db9e4a837e54f08d163013e7b730bf8280967ee3fb1d3eef4e16a7f7c209b822b6a0331e3e1b750588cbdb6bfbf05c064e006699a4cf6a673a45
-results:    [39, 45, 4]
-tx_id:      3ff7f275c957420d85e5b859486cb1c0ca9f1cc60762457bbe7efd94f57d3761
-```
-
-Both `quorum_sig` fields are exactly 192 hex chars (96 bytes compressed G2). ✓
-
-**Test suite** (ptx_test_suite_v4, --skip-fail-modes --skip-stress --skip-advanced --skip-excl --skip-excl-probe):
-```
-PASS: 59   FAIL: 3   SKIP: 4   TOTAL: 66
-```
-Failures are pre-existing (T13=node naming mismatch; T26/T27=same; all in carry-over list).
-All crypto tests T11-T20 pass. Pass profile unchanged from pre-migration.
 
 ---
 
 ## Cluster state
 
 - Docker cluster: **UP** (all 14 containers)
-- All 11 GMs: **ENABLED**
-- Block height: ~1256 at close of session
+- All 11 GMs: **ENABLED** (gm05 pose_score=5 from test stop, still eligible)
+- Block height: ~1600 at close of session
 - `initgamemaster` syntax: `initgamemaster <privkey> <ip:port>` (no txhash/outputidx)
 - GM init data: `/tmp/gm_data.txt`
 
@@ -78,31 +71,41 @@ done < /tmp/gm_data.txt
 
 Note: after restart run `ptx_roll` once to refund the lottery pool before the next settlement window.
 
-RPC credentials: `ptxrpc:ptxpass2026` on port 29902 (inside container at 127.0.0.1:29902).
+RPC credentials: `ptxrpc:ptxpass2026` on port 29902 (172.28.0.10 from host).
 
 ---
 
-## Completed milestones (P2-BLS series)
+## Completed milestones
 
 | Milestone | Commit | Description |
 |-----------|--------|-------------|
-| P2-BLS-00 | `cd6bf1b` | chiabls → blst migration (KDD-032) |
+| P2-BLS-00 | `cd6bf1b` + `37dc4ec` | chiabls → blst migration + Lagrange fix (KDD-032) |
 | P2-BLS-01 | `5ed4dea` | Threshold BLS12-381 beacon |
 | P2-BLS-02 | `09024d6` | End-to-end test PASSED |
 | P2-BLS-03 | `2c6fe54` | PTXSESS wallet-funded tx |
 | P2-BLS-04 | `75ea59c`+`2a204fd` | GM lottery distribution |
+| P2-POSE-01 | (verified 2026-05-19) | PoSe scoring live: score accumulates, tickets zeroed |
 
 ---
 
-## Next milestone: P2-BLS-05
+## Next milestone: P2-BLS-05 — PoSe ban threshold
 
-**PoSe scoring live test** — stop one or more GMs mid-round, verify `pose_score` accumulates on the absent nodes and they eventually get banned from the quorum.
-
-Steps:
-1. Run `ptx_roll` to start a round with 11/11 GMs
-2. `docker stop ptx-gm05` (or any GM) mid-fanout
-3. Confirm quorum still resolves with 10/11 sigs (above threshold)
-4. Check `ptx_pose_scores` or equivalent RPC to see score increment on gm05
-5. Repeat until ban threshold crossed; verify gm05 excluded from next fanout
+Repeat `docker stop ptx-gmXX` + `ptx_roll` until the target GM's `pose_score` crosses the
+ban threshold and it is excluded from the next fanout quorum selection. Verify that:
+1. The banned GM no longer appears in `quorum_members`.
+2. The roll still resolves with the remaining ≥ threshold GMs.
+3. Score decays on subsequent rounds where the GM participates.
 
 Carry-over open items: BUG-005, BUG-009, BUG-011, T13.
+</content>
+</invoke>
+## Extended verification (2026-05-19 final)
+
+**50-roll extended test**: 50/50 PASS, 0 container restarts
+
+**Test suite v4** (Phase 1 suite, skip-stress/advanced/excl):
+- PASS: 61  FAIL: 3  SKIP: 12  TOTAL: 76
+- T13: Phase 1 expects 5 GMs, Phase 2 has 11 — expected
+- T17: BUG-005 carry-over (round status P2P not implemented)
+- T74: BUG-005 carry-over (PoSe withhold path changed in Phase 2)
+- No new failures vs pre-migration baseline
