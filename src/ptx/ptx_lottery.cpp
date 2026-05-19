@@ -27,7 +27,7 @@
 #include <string>
 #include <univalue.h>
 
-extern void TryATMP(const CMutableTransaction& mtx, bool fOverrideFees);
+// RelayTx is defined in rpc/rawtransaction.cpp; no public header.
 extern void RelayTx(const uint256& hashTx);
 
 static RecursiveMutex cs_ptx_pool_balance;
@@ -188,20 +188,26 @@ std::string PTX_SettleLotteryWindow(int height, const uint256& beacon)
         }
     }
 
+    // AcceptToMemoryPool acquires cs_main internally.
+    // We do NOT use TryATMP here: TryATMP's promise-wait pattern deadlocks when
+    // called from the CValidationInterface scheduler thread (BlockConnected).
     const uint256 settle_txid = mtx.GetHash();
-    try {
-        TryATMP(mtx, false);
-        RelayTx(settle_txid);
-        txid = settle_txid.GetHex();
-        LogPrintf("PTX: lottery settled h=%d winner=%s addr=%s pool=%d sat txid=%s\n",
-                  height, winner_id, winner_addr, pool_balance, txid);
-        // Reset pool balance only after successful broadcast.
-        LOCK(cs_ptx_pool_balance);
-        g_ptx_pool_balance = 0;
-    } catch (const UniValue& objError) {
-        LogPrintf("PTX: lottery settle rejected: %s\n", objError["message"].getValStr());
-    } catch (const std::exception& e) {
-        LogPrintf("PTX: lottery settle error: %s\n", e.what());
+    {
+        CValidationState state;
+        bool fMissingInputs = false;
+        if (!AcceptToMemoryPool(mempool, state, MakeTransactionRef(CTransaction(mtx)),
+                                /*fLimitFree=*/true, &fMissingInputs,
+                                /*fOverrideMempoolLimit=*/false, /*nAbsurdFee=*/false)) {
+            const std::string reason = fMissingInputs ? "missing inputs" : state.GetRejectReason();
+            LogPrintf("PTX: lottery settle rejected: %s %s\n", reason, state.GetDebugMessage());
+        } else {
+            RelayTx(settle_txid);
+            txid = settle_txid.GetHex();
+            LogPrintf("PTX: lottery settled h=%d winner=%s addr=%s pool=%d sat txid=%s\n",
+                      height, winner_id, winner_addr, pool_balance, txid);
+            LOCK(cs_ptx_pool_balance);
+            g_ptx_pool_balance = 0;
+        }
     }
 #else
     LogPrintf("PTX: wallet not compiled in, cannot distribute lottery\n");
