@@ -108,13 +108,21 @@ EXTRA_LIBRARIES += \
   $(LIBSAPLING) \
   $(LIBBLST)
 
-# blst static library — PTX threshold BLS (not chiabls)
-# Pure-C build: __BLST_NO_ASM__ triggers inclusion of no_asm.h (portable
-# C implementations of mul_mont_384, sha256_block_data_order, etc.).
-# __BLST_PORTABLE__ prevents ADX macro renaming on top of that.
-libblst_a_SOURCES = blst/src/server.c
-libblst_a_CFLAGS  = -I$(srcdir)/blst/src -I$(srcdir)/blst/bindings \
-                    -D__BLST_PORTABLE__ -D__BLST_NO_ASM__ -O2 -fno-builtin
+# blst static library — PTX threshold BLS (KDD-032)
+# x86-64 assembly path for AMD Ryzen 9 5950X (ADX/BMI2 capable)
+# Do NOT use __BLST_NO_ASM__ — pure-C path overflows RPC thread stack
+# under concurrent load from 11 GMs (3-4KB stack per signing call).
+# __BLST_PORTABLE__ stays — controls ADX fallback at runtime, not stack usage.
+libblst_a_SOURCES  = blst/src/server.c blst/build/assembly.S
+libblst_a_CFLAGS   = -I$(srcdir)/blst/src \
+                     -I$(srcdir)/blst/bindings \
+                     -D__BLST_PORTABLE__ \
+                     -O2 -fno-builtin -fPIC
+libblst_a_CCASFLAGS = -I$(srcdir)/blst/src \
+                      -I$(srcdir)/blst/bindings \
+                      -I$(srcdir)/blst/build \
+                      -D__BLST_PORTABLE__ \
+                      -fPIC -Wa,--noexecstack
 
 lib_LTLIBRARIES = $(LIBBITCOINCONSENSUS)
 

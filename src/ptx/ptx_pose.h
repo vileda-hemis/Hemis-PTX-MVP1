@@ -28,7 +28,7 @@ public:
     // Reveal failed verification. pose_score += 10.
     void RecordInvalidCommit(const std::string& node_id);
 
-    // Valid commit + valid reveal. lottery_tickets += 1 (if !window_zeroed).
+    // Valid partial sig: lottery_tickets += 1, pose_score -= 1 (decay, floor 0).
     void RecordHonestParticipation(const std::string& node_id);
 
     // Unknown nodes return true. Known nodes return quorum_eligible.
@@ -41,6 +41,10 @@ public:
     PTXNodeRecord GetRecord(const std::string& node_id) const;
     std::map<std::string, PTXNodeRecord> GetAllRecords() const;
 
+    // Load state from <datadir>/ptx_pose.dat. Call once at startup.
+    // Missing or corrupt file: log WARNING, start fresh (never crashes).
+    void Load();
+
 private:
     mutable RecursiveMutex cs_pose;
     std::map<std::string, PTXNodeRecord> records_;
@@ -50,6 +54,10 @@ private:
     void ApplyPenalty(const std::string& nid, int delta, const char* reason);
 
     PTXNodeRecord& GetOrCreate(const std::string& nid);
+
+    // Atomically persist records_ to <datadir>/ptx_pose.dat.
+    // Must be called with cs_pose already held.
+    void Save() const;
 };
 
 extern PTXPoSeTracker g_ptx_pose_tracker;

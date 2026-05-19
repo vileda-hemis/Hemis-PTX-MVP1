@@ -48,11 +48,9 @@ bool PTX_BLS_Init(const std::vector<std::string>& node_ids, int threshold)
             blst_scalar_from_fr(&state.master_sk, &coeffs[0]);
     }
 
-    // Group public key: G1 * master_sk
-    uint8_t sk_bytes[32];
-    blst_bendian_from_scalar(sk_bytes, &state.master_sk);
+    // Group public key: master_sk * G1
     blst_p1 pk_p1;
-    blst_p1_mult(&pk_p1, blst_p1_generator(), sk_bytes, 256);
+    blst_sk_to_pk_in_g1(&pk_p1, &state.master_sk);
     blst_p1_to_affine(&state.group_pk, &pk_p1);
 
     // Compute per-GM shares: share[i] = f(i+1) for i in [0, n-1].
@@ -132,11 +130,8 @@ bool PTX_BLS_PartialSign(const uint8_t sk_bytes[32], const uint256& msg,
                     (const uint8_t*)PTX_BLS_DST, strlen(PTX_BLS_DST),
                     nullptr, 0);
 
-    uint8_t sk_be[32];
-    blst_bendian_from_scalar(sk_be, &sk);
-
     blst_p2 sig_p2;
-    blst_p2_mult(&sig_p2, &hash_point, sk_be, 256);
+    blst_sign_pk_in_g1(&sig_p2, &hash_point, &sk);
 
     blst_p2_affine sig_affine;
     blst_p2_to_affine(&sig_affine, &sig_p2);
@@ -172,19 +167,17 @@ bool PTX_BLS_Recover(
     memset(&combined, 0, sizeof(combined));  // point at infinity
 
     for (int i = 0; i < t; i++) {
-        uint64_t xi_val[4] = {(uint64_t)indices[i], 0, 0, 0};
-        blst_fr xi;
-        blst_fr_from_uint64(&xi, xi_val);
+        blst_scalar xi_s = {}; xi_s.b[31] = (uint8_t)indices[i];
+        blst_fr xi; blst_fr_from_scalar(&xi, &xi_s);
 
-        blst_fr lambda;
-        { const uint64_t one[4] = {1,0,0,0}; blst_fr_from_uint64(&lambda, one); }
+        blst_scalar one_s = {}; one_s.b[31] = 1;
+        blst_fr lambda; blst_fr_from_scalar(&lambda, &one_s);
 
         for (int j = 0; j < t; j++) {
             if (j == i) continue;
 
-            uint64_t xj_val[4] = {(uint64_t)indices[j], 0, 0, 0};
-            blst_fr xj;
-            blst_fr_from_uint64(&xj, xj_val);
+            blst_scalar xj_s = {}; xj_s.b[31] = (uint8_t)indices[j];
+            blst_fr xj; blst_fr_from_scalar(&xj, &xj_s);
 
             blst_fr diff;
             blst_fr_sub(&diff, &xj, &xi);       // xj - xi
@@ -201,6 +194,10 @@ bool PTX_BLS_Recover(
         blst_scalar_from_fr(&lambda_scalar, &lambda);
         uint8_t lambda_bytes[32];
         blst_bendian_from_scalar(lambda_bytes, &lambda_scalar);
+        LogPrintf("PTX Lagrange: i=%d index=%d lambda[0..3]=%02x%02x%02x%02x\n",
+                  i, indices[i],
+                  lambda_bytes[0],lambda_bytes[1],
+                  lambda_bytes[2],lambda_bytes[3]);
 
         blst_p2 sig_jac, scaled;
         blst_p2_from_affine(&sig_jac, &sigs[i]);
@@ -240,21 +237,37 @@ bool PTX_BLS_Verify(const uint256& msg, const uint8_t sig[PTX_SIG_BYTES])
     blst_p2_affine sig_affine;
     if (blst_p2_uncompress(&sig_affine, sig) != BLST_SUCCESS) return false;
 
-    blst_pairing* ctx = (blst_pairing*)malloc(blst_pairing_sizeof());
-    if (!ctx) return false;
+    BLST_ERROR err = blst_core_verify_pk_in_g1(
+        &g_ptx_bls_state.group_pk,
+        &sig_affine,
+        true,
+        msg.begin(), 32,
+        (const uint8_t*)PTX_BLS_DST, strlen(PTX_BLS_DST),
+        nullptr, 0);
 
-    blst_pairing_init(ctx, true,
-                      (const uint8_t*)PTX_BLS_DST, strlen(PTX_BLS_DST));
+    LogPrintf("PTX_BLS_Verify: core_verify err=%d\n", (int)err);
 
-    BLST_ERROR err = blst_pairing_chk_n_mul_n_aggr_pk_in_g1(
-        ctx,
-        &g_ptx_bls_state.group_pk, true,
-        &sig_affine,               true,
-        msg.begin(),               32,
-        nullptr,                   0);
+    // Master self-test: sign msg with master_sk directly (bypasses Lagrange),
+    // verify with core API. master_ok=1 → sign+verify OK, bug is in Lagrange.
+    // master_ok=0 → blst fundamental operations broken.
+    {
+        blst_p2 test_hash, test_sig_jac;
+        blst_p2_affine test_sig;
+        blst_hash_to_g2(&test_hash, msg.begin(), 32,
+                        (const uint8_t*)PTX_BLS_DST, strlen(PTX_BLS_DST),
+                        nullptr, 0);
+        blst_sign_pk_in_g1(&test_sig_jac, &test_hash,
+                           &g_ptx_bls_state.master_sk);
+        blst_p2_to_affine(&test_sig, &test_sig_jac);
 
-    blst_pairing_commit(ctx);
-    bool valid = (err == BLST_SUCCESS) && blst_pairing_finalverify(ctx, nullptr);
-    free(ctx);
-    return valid;
+        BLST_ERROR self_err = blst_core_verify_pk_in_g1(
+            &g_ptx_bls_state.group_pk, &test_sig,
+            true, msg.begin(), 32,
+            (const uint8_t*)PTX_BLS_DST, strlen(PTX_BLS_DST),
+            nullptr, 0);
+        LogPrintf("PTX_BLS_Verify: master_v2=%d (0=PASS, bug in Lagrange)\n",
+                  (int)self_err);
+    }
+
+    return err == BLST_SUCCESS;
 }

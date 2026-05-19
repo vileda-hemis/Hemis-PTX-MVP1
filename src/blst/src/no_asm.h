@@ -6,10 +6,6 @@
 
 #if LIMB_T_BITS==32
 typedef unsigned long long llimb_t;
-#elif defined(__SIZEOF_INT128__)
-typedef unsigned __int128 llimb_t;
-#else
-# error "no 128-bit integer type available for blst no_asm build"
 #endif
 
 #if !defined(__STDC_VERSION__) || __STDC_VERSION__<199901 || defined(__STDC_NO_VLA__)

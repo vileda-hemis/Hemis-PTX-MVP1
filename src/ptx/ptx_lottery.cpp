@@ -37,7 +37,7 @@ void PTX_AddToPoolBalance(CAmount amount)
 {
     LOCK(cs_ptx_pool_balance);
     g_ptx_pool_balance += amount;
-    LogPrintf("PTX: lottery pool +%d sat → %d sat\n", amount, g_ptx_pool_balance);
+    LogPrintf("PTX: lottery pool +%lld sat -> %lld sat\n", (long long)amount, (long long)g_ptx_pool_balance);
 }
 
 CAmount PTX_GetPoolBalance()
@@ -123,8 +123,8 @@ std::string PTX_SettleLotteryWindow(int height, const uint256& beacon)
         return "";
     }
 
-    LogPrintf("PTX: lottery window h=%d: distributing %d sat to %s (%s)\n",
-              height, pool_balance, winner_id, winner_addr);
+    LogPrintf("PTX: lottery window h=%d: distributing %lld sat to %s (%s)\n",
+              height, (long long)pool_balance, winner_id, winner_addr);
 
     std::string txid;
 
@@ -203,8 +203,8 @@ std::string PTX_SettleLotteryWindow(int height, const uint256& beacon)
         } else {
             RelayTx(settle_txid);
             txid = settle_txid.GetHex();
-            LogPrintf("PTX: lottery settled h=%d winner=%s addr=%s pool=%d sat txid=%s\n",
-                      height, winner_id, winner_addr, pool_balance, txid);
+            LogPrintf("PTX: lottery settled h=%d winner=%s addr=%s pool=%lld sat txid=%s\n",
+                      height, winner_id, winner_addr, (long long)pool_balance, txid);
             LOCK(cs_ptx_pool_balance);
             g_ptx_pool_balance = 0;
         }

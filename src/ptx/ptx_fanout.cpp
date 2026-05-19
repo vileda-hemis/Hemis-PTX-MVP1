@@ -261,6 +261,16 @@ void PTX_FanOutReveal(const std::string& round_id,
 
 void PTX_FanOutKeySet(const std::vector<std::string>& member_ids)
 {
+    {
+        LOCK(cs_ptx_bls);
+        uint8_t gpk_check[48];
+        blst_p1_affine_compress(gpk_check, &g_ptx_bls_state.group_pk);
+        LogPrintf("PTX DKG: group_pk[0..7]=%02x%02x%02x%02x%02x%02x%02x%02x n=%d t=%d\n",
+                  gpk_check[0],gpk_check[1],gpk_check[2],gpk_check[3],
+                  gpk_check[4],gpk_check[5],gpk_check[6],gpk_check[7],
+                  g_ptx_bls_state.n, g_ptx_bls_state.t);
+    }
+
     for (const auto& node_id : member_ids) {
         // Track keyset_sent in g_ptx_bls_state node_index presence
         // (re-send if not yet acknowledged this session).

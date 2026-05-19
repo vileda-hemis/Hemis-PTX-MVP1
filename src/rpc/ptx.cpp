@@ -470,6 +470,9 @@ UniValue gm_bls_sign(const JSONRPCRequest& request)
     if (!PTX_BLS_PartialSign(sk_bytes, round_seed, sig_buf))
         throw JSONRPCError(RPC_MISC_ERROR, "BLS signing failed");
 
+    LogPrintf("PTX gm_bls_sign: node=%s sig[0..3]=%02x%02x%02x%02x\n",
+              g_ptx_my_node_id, sig_buf[0],sig_buf[1],sig_buf[2],sig_buf[3]);
+
     UniValue ret(UniValue::VOBJ);
     ret.pushKV("sig_hex", HexStr(Span<const uint8_t>(sig_buf, PTX_SIG_BYTES)));
     return ret;
@@ -598,6 +601,43 @@ UniValue ptx_getroundstatus(const JSONRPCRequest& request)
 }
 
 // ---------------------------------------------------------------------------
+// RPC: ptx_pose_status
+// ---------------------------------------------------------------------------
+
+UniValue ptx_pose_status(const JSONRPCRequest& request)
+{
+    if (request.fHelp) {
+        throw std::runtime_error(
+            "ptx_pose_status\n"
+            "\nReturn PoSe scores, lottery tickets, and eligibility for all known GMs.\n"
+            "\nResult:\n"
+            "[\n"
+            "  {\n"
+            "    \"node_id\"    : \"str\"\n"
+            "    \"pose_score\" : n\n"
+            "    \"eligible\"   : bool\n"
+            "    \"tickets\"    : n\n"
+            "  }, ...\n"
+            "]\n"
+            + HelpExampleCli("ptx_pose_status", "")
+            + HelpExampleRpc("ptx_pose_status", "")
+        );
+    }
+
+    UniValue arr(UniValue::VARR);
+    for (const auto& kv : g_ptx_pose_tracker.GetAllRecords()) {
+        const auto& rec = kv.second;
+        UniValue po(UniValue::VOBJ);
+        po.pushKV("node_id",    rec.node_id);
+        po.pushKV("pose_score", rec.pose_score);
+        po.pushKV("eligible",   rec.quorum_eligible);
+        po.pushKV("tickets",    rec.lottery_tickets);
+        arr.push_back(po);
+    }
+    return arr;
+}
+
+// ---------------------------------------------------------------------------
 // RPC: ptx_lottery_status
 // ---------------------------------------------------------------------------
 
@@ -659,6 +699,7 @@ static const CRPCCommand commands[] = {
     { "ptx",  "gm_bls_sign",               &gm_bls_sign,                true,   {"round_seed_hex"} },
     { "ptx",  "ptx_debug_setnodefailmode", &ptx_debug_setnodefailmode,  true,   {"target_node_id","mode"} },
     { "ptx",  "ptx_getroundstatus",        &ptx_getroundstatus,         true,   {"round_id"} },
+    { "ptx",  "ptx_pose_status",           &ptx_pose_status,            true,   {} },
     { "ptx",  "ptx_lottery_status",        &ptx_lottery_status,         true,   {} },
 };
 // clang-format on
