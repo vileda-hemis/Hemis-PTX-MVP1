@@ -1,49 +1,58 @@
-# End-of-Session Handoff — P2-BLS-04 PASSED
+# End-of-Session Handoff — P2-BLS-00 COMPLETE
 
 **Branch**: `feature/ptx-phase2-bls`  
 **Date**: 2026-05-19  
-**Session result**: P2-BLS-04 COMPLETE — GM lottery settlement fired at block 575, tx confirmed
+**Session result**: P2-BLS-00 COMPLETE — chiabls → blst migration, both ptx_roll() verified
 
 ---
 
 ## What was done this session
 
-### P2-BLS-04: GM lottery reward distribution
+### P2-BLS-00: Migrate PTX BLS from chiabls to supranational/blst (KDD-032)
 
-**Design ref**: KDD-030 — at each settlement window boundary the coordinator selects a winning GM, fetches a payout address via `getnewaddress`, and broadcasts a distribution tx paying the full accumulated pool balance.
+**Design ref**: KDD-032 — replace chiabls (relic-toolkit wrapper) with supranational/blst,
+a modern, audited BLS12-381 implementation. Wire format (96-byte G2 sig) is unchanged.
 
-**Implementation**:
-- `src/ptx/ptx_lottery.cpp/h` — new module: `PTX_AddToPoolBalance`, `PTX_GetPoolBalance`, `PTX_SelectLotteryWinner` (sort by node_id, beacon-derived index), `PTX_SettleLotteryWindow` (fetch addr, FundTransaction, sign, AcceptToMemoryPool)
-- `src/chainparams.cpp/h` — added `PTXSettlementWindow()` (`nPTXSettlementWindow=5` for testnet, `1440` for mainnet)
-- `src/ptx/ptx_mempool.cpp` — call `PTX_AddToPoolBalance` after each successful relay
-- `src/ptx/ptx_validation_interface.h` — trigger `PTX_SettleLotteryWindow` at `Params().PTXSettlementWindow()` boundary
-- `src/rpc/ptx.cpp` — added `ptx_lottery_status` RPC
+**Source changes** (all committed in `cd6bf1b`):
+- `src/blst/` — vendored blst (bindings/ + src/), pure-C build via `__BLST_PORTABLE__` + `__BLST_NO_ASM__`
+- `src/ptx/ptx_bls.h` — blst API types, `PTXBLSState` with `blst_scalar`/`blst_p1_affine`, `extern PTX_BLS_DST`
+- `src/ptx/ptx_bls.cpp` — trusted-dealer DKG, `PTX_BLS_PartialSign`, `PTX_BLS_Recover` (Lagrange in G2), `PTX_BLS_Verify` (pairing), `PTX_BLS_SigToBeacon`
+- `src/Makefile.am` — `LIBBLST=libblst.a`, `libblst_a_SOURCES=blst/src/server.c`, `-D__BLST_PORTABLE__ -D__BLST_NO_ASM__`, added to `EXTRA_LIBRARIES` and `Hemisd_LDADD`
+- `src/rpc/ptx.cpp` — HexStr Span API fix for `sig_buf`
+- `src/ptx/ptx_fanout.cpp` — HexStr Span API fix for `sk_bytes`
 
-**Deadlock fix** (`2a204fd`): `TryATMP` posts to the CValidationInterface scheduler queue and waits on a promise — deadlocks when called from `BlockConnected` (same scheduler thread). Fixed by calling `AcceptToMemoryPool` directly in `ptx_lottery.cpp`.
+**Build fixes required**:
+- `blst_fr_set_to_one` does not exist in blst — replaced with `blst_fr_from_uint64(&x, (uint64_t[]){1,0,0,0})`
+- `blst_p2_mult` takes `blst_p2*` (Jacobian), not `blst_p2_affine*` — added `blst_p2_from_affine` conversions
+- `HexStr` API changed to `Span<const uint8_t>` — fixed in 2 sites
+- `static const char* PTX_BLS_DST` in header caused unused-variable warnings — moved definition to ptx_bls.cpp, `extern` decl in header
+- blst's `no_asm.h` is 32-bit-only (`llimb_t` undefined for 64-bit) — added `typedef unsigned __int128 llimb_t` for `LIMB_T_BITS==64`
+- `-D__BLST_NO_ASM__` is required (not just `__BLST_PORTABLE__`) to activate `no_asm.h` inclusion in `vect.c`
 
-### Commits this session
-- `75ea59c` — ptx: GM lottery distribution at configurable settlement window (P2-BLS-04)
-- `2a204fd` — ptx: fix lottery settle deadlock on scheduler thread
+**Two verified ptx_roll() calls**:
 
-### Test result
-
+Call #1 — `ptx_roll(1, 1, 100, false, [], "game", "deadbeef01020304")`:
 ```
-ptx_roll called → pool funded (+100000000 sat)
-Block 575 → lottery window triggered
-  winner: gm05 (idx=4/11 candidates)
-  addr:   yDcr8ZtCiB8xY4yw2v9U5dc1fnUkanSnCj
-  payout: 0.9999698 HMS (100000000 sat minus miner fee)
-  txid:   547c0954a0b7d5f1046deac79ec95c6b099549203e3e75231e9705f451de0674
-  confirmations at check: 4
+quorum_sig: 845a94b8522766fca5e7251bd645a20071d6fe5c4964ccd5f8eb2d5cc768e7c24518248ee2f5bc6795c76d6a626652210b21be2183fe272a67c1d8b8edb97359eeb71540446d49c37f44f8c954745d6f7baa5d75ceba68028881a834f5525f96
+results:    [35]
+tx_id:      7624e1afdcfadd7db146ac27832487a196d4f42fe36228033f4e4b86eab7e380
 ```
 
-Log excerpt:
+Call #2 — `ptx_roll(3, 1, 52, false, [], "poker", "cafebabe01020304")`:
 ```
-PTX: lottery pool +100000000 sat → 100000000 sat
-PTX: lottery winner selected: gm05 (idx=4/11 candidates)
-PTX: lottery window h=575: distributing 100000000 sat to gm05 (yDcr8ZtCiB8xY4yw2v9U5dc1fnUkanSnCj)
-PTX: lottery settled h=575 winner=gm05 addr=yDcr8ZtCiB8xY4yw2v9U5dc1fnUkanSnCj pool=100000000 sat txid=547c0954...
+quorum_sig: a61e9d2cc3c7bab90e1f059b4d9d9ef23e60b06e2d3cb9cec2db6b7ed4f1d0464e52947e3bd3db9e4a837e54f08d163013e7b730bf8280967ee3fb1d3eef4e16a7f7c209b822b6a0331e3e1b750588cbdb6bfbf05c064e006699a4cf6a673a45
+results:    [39, 45, 4]
+tx_id:      3ff7f275c957420d85e5b859486cb1c0ca9f1cc60762457bbe7efd94f57d3761
 ```
+
+Both `quorum_sig` fields are exactly 192 hex chars (96 bytes compressed G2). ✓
+
+**Test suite** (ptx_test_suite_v4, --skip-fail-modes --skip-stress --skip-advanced --skip-excl --skip-excl-probe):
+```
+PASS: 59   FAIL: 3   SKIP: 4   TOTAL: 66
+```
+Failures are pre-existing (T13=node naming mismatch; T26/T27=same; all in carry-over list).
+All crypto tests T11-T20 pass. Pass profile unchanged from pre-migration.
 
 ---
 
@@ -51,7 +60,7 @@ PTX: lottery settled h=575 winner=gm05 addr=yDcr8ZtCiB8xY4yw2v9U5dc1fnUkanSnCj p
 
 - Docker cluster: **UP** (all 14 containers)
 - All 11 GMs: **ENABLED**
-- Block height: ~579 at close of session
+- Block height: ~1256 at close of session
 - `initgamemaster` syntax: `initgamemaster <privkey> <ip:port>` (no txhash/outputidx)
 - GM init data: `/tmp/gm_data.txt`
 
@@ -68,6 +77,20 @@ done < /tmp/gm_data.txt
 ```
 
 Note: after restart run `ptx_roll` once to refund the lottery pool before the next settlement window.
+
+RPC credentials: `ptxrpc:ptxpass2026` on port 29902 (inside container at 127.0.0.1:29902).
+
+---
+
+## Completed milestones (P2-BLS series)
+
+| Milestone | Commit | Description |
+|-----------|--------|-------------|
+| P2-BLS-00 | `cd6bf1b` | chiabls → blst migration (KDD-032) |
+| P2-BLS-01 | `5ed4dea` | Threshold BLS12-381 beacon |
+| P2-BLS-02 | `09024d6` | End-to-end test PASSED |
+| P2-BLS-03 | `2c6fe54` | PTXSESS wallet-funded tx |
+| P2-BLS-04 | `75ea59c`+`2a204fd` | GM lottery distribution |
 
 ---
 
