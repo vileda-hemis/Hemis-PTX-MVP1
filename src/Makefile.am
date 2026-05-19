@@ -26,6 +26,7 @@ BITCOIN_INCLUDES += -I$(srcdir)/rust/include
 BITCOIN_INCLUDES += -I$(srcdir)/secp256k1/include
 BITCOIN_INCLUDES += -I$(srcdir)/chiabls/src
 BITCOIN_INCLUDES += -I$(srcdir)/chiabls/contrib/relic/include
+BITCOIN_INCLUDES += -I$(srcdir)/blst/bindings
 BITCOIN_INCLUDES += $(UNIVALUE_CFLAGS)
 
 LIBBITCOIN_SERVER=libbitcoin_server.a
@@ -38,6 +39,7 @@ LIBBITCOINQT=qt/libbitcoinqt.a
 LIBSECP256K1=secp256k1/libsecp256k1.la
 LIBSAPLING=libsapling.a
 LIBCHIABLS=chiabls/libchiabls.la
+LIBBLST=libblst.a
 if ENABLE_ONLINE_RUST
 LIBRUSTZCASH=$(top_builddir)/target/release/librustzcash.a
 else
@@ -103,7 +105,16 @@ EXTRA_LIBRARIES += \
   $(LIBBITCOIN_CLI) \
   $(LIBBITCOIN_WALLET) \
   $(LIBBITCOIN_ZMQ) \
-  $(LIBSAPLING)
+  $(LIBSAPLING) \
+  $(LIBBLST)
+
+# blst static library — PTX threshold BLS (not chiabls)
+# Pure-C build: __BLST_NO_ASM__ triggers inclusion of no_asm.h (portable
+# C implementations of mul_mont_384, sha256_block_data_order, etc.).
+# __BLST_PORTABLE__ prevents ADX macro renaming on top of that.
+libblst_a_SOURCES = blst/src/server.c
+libblst_a_CFLAGS  = -I$(srcdir)/blst/src -I$(srcdir)/blst/bindings \
+                    -D__BLST_PORTABLE__ -D__BLST_NO_ASM__ -O2 -fno-builtin
 
 lib_LTLIBRARIES = $(LIBBITCOINCONSENSUS)
 
@@ -703,7 +714,7 @@ Hemisd_LDADD = \
   $(LIBRUSTZCASH) \
   $(LIBZCASH_LIBS)
 
-Hemisd_LDADD += $(BOOST_LIBS) $(BDB_LIBS) $(MINIUPNPC_LIBS) $(NATPMP_LIBS) $(EVENT_PTHREADS_LIBS) $(EVENT_LIBS) $(ZMQ_LIBS) $(BLS_LIBS)
+Hemisd_LDADD += $(BOOST_LIBS) $(BDB_LIBS) $(MINIUPNPC_LIBS) $(NATPMP_LIBS) $(EVENT_PTHREADS_LIBS) $(EVENT_LIBS) $(ZMQ_LIBS) $(BLS_LIBS) $(LIBBLST)
 
 # Hemis-cli binary #
 Hemis_cli_SOURCES = Hemis-cli.cpp

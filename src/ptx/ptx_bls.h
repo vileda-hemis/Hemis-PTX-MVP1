@@ -2,58 +2,90 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+// PTX threshold BLS12-381 using supranational/blst (KDD-032)
+// Scope: PTX only. src/bls/ (ChainLocks / LLMQ) is UNCHANGED.
+// Wire format: quorum_sig = 96 bytes (compressed G2). Unchanged.
+
 #ifndef HEMIS_PTX_BLS_H
 #define HEMIS_PTX_BLS_H
 
-#include "bls/bls_wrapper.h"
+#include "blst.h"   // src/blst/bindings/blst.h
 #include "sync.h"
 #include "uint256.h"
 
+#include <cstdint>
 #include <map>
-#include <set>
 #include <string>
 #include <vector>
 
-// Trusted-dealer threshold BLS state (coordinator side).
-// Coordinator generates the master polynomial and distributes key shares to GMs.
-// Any t-of-n GMs can produce partial signatures that reconstruct the same
-// deterministic threshold signature — the basis for the PTX beacon.
-struct PTXBLSState {
-    // Master polynomial coefficients: msk[0] is the master secret; msk[1..t-1] are random.
-    std::vector<CBLSSecretKey> msk;
-    // Verification vector: mpk[i] = msk[i].GetPublicKey(); threshold sig verifies vs mpk[0].
-    std::vector<CBLSPublicKey> mpk;
-    // Per-GM key shares derived from the polynomial: node_id -> share
-    std::map<std::string, CBLSSecretKey> shares;
-    // Per-GM BLS IDs (SHA256 of node_id_string as uint256): node_id -> CBLSId
-    std::map<std::string, CBLSId> ids;
-    // Tracks which GMs have received their key share this session.
-    std::set<std::string> keyset_sent;
+// Domain separation tag — unique to Hemis PTX, prevents cross-protocol reuse.
+extern const char* PTX_BLS_DST;
 
-    int threshold{0};
-    bool initialized{false};
+// Compressed G2 point = 96 bytes. Must match CProbabilisticTxPayload quorum_sig.
+static const int PTX_SIG_BYTES = 96;
+
+// Trusted-dealer DKG state (coordinator side).
+// Coordinator generates the master polynomial f(x) of degree t-1 over Zr.
+// Share for GM at 1-indexed position i = f(i).  Lagrange recovery at x=0
+// yields f(0) = master_sk, whose paired G1 point is group_pk.
+struct PTXBLSState {
+    bool initialized = false;
+    int  n           = 0;   // total GM count
+    int  t           = 0;   // threshold
+    blst_scalar        master_sk;
+    blst_p1_affine     group_pk;
+    std::vector<blst_scalar>    shares;      // shares[i] = f(i+1), 0-indexed
+    std::map<std::string, int>  node_index;  // node_id -> 1-indexed position
 };
 
-extern PTXBLSState g_ptx_bls;
-extern RecursiveMutex cs_ptx_bls;
+extern PTXBLSState     g_ptx_bls_state;
+extern RecursiveMutex  cs_ptx_bls;
 
-// Initialize BLS state with all registered GM node_ids and threshold t.
-// Generates a fresh master polynomial of degree t-1; computes per-GM key shares.
-// Must be called after g_ptx_nodes is populated (PTX_LoadNodesFromArgs).
+// blst has no global init requirement — no BLS::Init() needed.
+
+// ---------------------------------------------------------------------------
+// Coordinator-side API
+// ---------------------------------------------------------------------------
+
+// Trusted-dealer DKG: generate master polynomial and per-GM key shares.
+// Call once on ptx_roll() first call (lazy-init, as before).
+// node_ids determines 1-indexed positions (alphabetical sort order).
 bool PTX_BLS_Init(const std::vector<std::string>& node_ids, int threshold);
 
-// Return master public key (mpk[0]) — threshold signatures verify against this.
-CBLSPublicKey PTX_BLS_GetMasterPubKey();
+// Copy the 32-byte big-endian scalar share for node_id into sk_out.
+// Used by PTX_FanOutKeySet to extract the share for a given GM.
+bool PTX_BLS_GetShareBytes(const std::string& node_id, uint8_t sk_out[32]);
 
-// Derive a deterministic CBLSId for a node: CBLSId(SHA256(node_id_bytes)).
-CBLSId PTX_BLS_NodeId(const std::string& node_id);
+// Return the 1-indexed polynomial position for node_id (0 = not found).
+int PTX_BLS_GetNodeIndex(const std::string& node_id);
 
-// Recover a threshold signature from t partial signatures and their node CBLSIds.
-// Returns an invalid CBLSSignature on failure (< t sigs or Lagrange error).
-CBLSSignature PTX_BLS_Recover(const std::vector<CBLSSignature>& partial_sigs,
-                               const std::vector<CBLSId>& ids);
+// ---------------------------------------------------------------------------
+// GM-side API
+// ---------------------------------------------------------------------------
 
-// Derive the PTX beacon from a threshold signature: SHA256(96-byte sig serialization).
-uint256 PTX_BLS_SigToBeacon(const CBLSSignature& sig);
+// Sign msg with a raw 32-byte blst scalar (the GM's stored share).
+// Called by gm_bls_sign RPC handler on GM nodes.
+bool PTX_BLS_PartialSign(const uint8_t sk_bytes[32], const uint256& msg,
+                          uint8_t sig_out[PTX_SIG_BYTES]);
+
+// ---------------------------------------------------------------------------
+// Coordinator recovery / verification
+// ---------------------------------------------------------------------------
+
+// Lagrange interpolation: recover threshold sig from t partial sigs.
+// indices: 1-indexed signer positions (matching polynomial evaluation points).
+// partial_sigs: each element is PTX_SIG_BYTES compressed G2 bytes.
+// combined_out: 96-byte result (the recovered threshold signature).
+bool PTX_BLS_Recover(
+    const std::vector<int>&                    indices,
+    const std::vector<std::vector<uint8_t>>&   partial_sigs,
+    uint8_t                                    combined_out[PTX_SIG_BYTES]);
+
+// Compute beacon = SHA256(96-byte threshold sig). Unchanged from chiabls era.
+uint256 PTX_BLS_SigToBeacon(const uint8_t sig[PTX_SIG_BYTES]);
+
+// Verify the combined signature against group_pk.
+// Used by ptx_roll() after recovery, and available to ptx_verify() RPC.
+bool PTX_BLS_Verify(const uint256& msg, const uint8_t sig[PTX_SIG_BYTES]);
 
 #endif // HEMIS_PTX_BLS_H

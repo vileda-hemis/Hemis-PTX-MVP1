@@ -262,22 +262,22 @@ void PTX_FanOutReveal(const std::string& round_id,
 void PTX_FanOutKeySet(const std::vector<std::string>& member_ids)
 {
     for (const auto& node_id : member_ids) {
-        // Check if this node already has its keyset for this session.
+        // Track keyset_sent in g_ptx_bls_state node_index presence
+        // (re-send if not yet acknowledged this session).
         {
             LOCK(cs_ptx_bls);
-            if (g_ptx_bls.keyset_sent.count(node_id)) continue;
-        }
-
-        std::string sk_hex;
-        {
-            LOCK(cs_ptx_bls);
-            auto it = g_ptx_bls.shares.find(node_id);
-            if (it == g_ptx_bls.shares.end() || !it->second.IsValid()) {
-                LogPrintf("PTX: FanOutKeySet: no share for %s\n", node_id);
+            if (g_ptx_bls_state.node_index.count(node_id) == 0) {
+                LogPrintf("PTX: FanOutKeySet: no BLS state for %s\n", node_id);
                 continue;
             }
-            sk_hex = HexStr(it->second.ToByteVector());
         }
+
+        uint8_t sk_bytes[32];
+        if (!PTX_BLS_GetShareBytes(node_id, sk_bytes)) {
+            LogPrintf("PTX: FanOutKeySet: no share for %s\n", node_id);
+            continue;
+        }
+        std::string sk_hex = HexStr(Span<const uint8_t>(sk_bytes, 32));
 
         const PTXNodeInfo* ni = PTX_FindNode(node_id);
         if (!ni) {
@@ -291,11 +291,6 @@ void PTX_FanOutKeySet(const std::vector<std::string>& member_ids)
         auto resp = PTX_CallNodeRpc(*ni, "gm_bls_keyset", params);
         LogPrintf("PTX: FanOutKeySet: %s %s\n", node_id,
                   resp.success ? "accepted" : "rejected/unreachable");
-
-        if (resp.success) {
-            LOCK(cs_ptx_bls);
-            g_ptx_bls.keyset_sent.insert(node_id);
-        }
     }
 }
 
@@ -369,7 +364,7 @@ std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
             std::string sig_hex = sig_val.get_str();
             if (!IsHex(sig_hex)) continue;
             std::vector<uint8_t> sig_bytes = ParseHex(sig_hex);
-            if (sig_bytes.size() != BLS_CURVE_SIG_SIZE) {
+            if ((int)sig_bytes.size() != PTX_SIG_BYTES) {
                 LogPrintf("PTX: FanOutSign: %s bad sig size %d\n", node_id, (int)sig_bytes.size());
                 continue;
             }

@@ -11,7 +11,6 @@
 #include "ptx/ptx_pose.h"
 #include "ptx/ptx_quorum.h"
 #include "ptx/ptx_seed.h"
-#include "bls/bls_wrapper.h"
 #include "crypto/sha256.h"
 #include "logging.h"
 #include "primitives/transaction.h"
@@ -36,7 +35,9 @@ RecursiveMutex cs_ptx_secrets;
 std::map<std::string, std::map<std::string, uint256>> g_ptx_local_secrets;
 
 // GM-side BLS key share (received via gm_bls_keyset, used in gm_bls_sign).
-static CBLSSecretKey g_ptx_my_bls_sk;
+// Stored as 32-byte big-endian blst scalar.
+static uint8_t g_ptx_my_bls_sk_bytes[32] = {};
+static bool    g_ptx_my_bls_sk_set = false;
 static RecursiveMutex cs_ptx_my_bls_sk;
 
 // BLS threshold: t-of-n. KDD-TBD; using simple majority floor(n/2)+1.
@@ -160,16 +161,10 @@ UniValue ptx_roll(const JSONRPCRequest& request)
 
     // Lazy-init BLS state: generate master polynomial and per-GM key shares once per session.
     {
-        LOCK(cs_ptx_bls);
-        if (!g_ptx_bls.initialized || g_ptx_bls.threshold != bls_threshold) {
-            // Unlock while calling Init (it re-acquires internally).
-        }
-    }
-    {
         bool need_init = false;
         {
             LOCK(cs_ptx_bls);
-            need_init = !g_ptx_bls.initialized || g_ptx_bls.threshold != bls_threshold;
+            need_init = !g_ptx_bls_state.initialized || g_ptx_bls_state.t != bls_threshold;
         }
         if (need_init) {
             std::vector<std::string> all_ids;
@@ -211,24 +206,23 @@ UniValue ptx_roll(const JSONRPCRequest& request)
     // Collect partial BLS signatures from each quorum member.
     auto partial_sigs_raw = PTX_FanOutSign(round_id, round_seed, member_ids);
 
-    // Build parallel vectors of (sig, id) for CBLSSignature::Recover.
-    std::vector<CBLSSignature> bls_sigs;
-    std::vector<CBLSId>        bls_ids;
-    std::vector<std::string>   signed_nodes;
-    std::vector<std::string>   withheld;
+    // Collect blst partial signatures and 1-indexed polynomial positions.
+    std::vector<std::vector<uint8_t>> bls_sigs;
+    std::vector<int>                  bls_indices;
+    std::vector<std::string>          signed_nodes;
+    std::vector<std::string>          withheld;
 
     for (const auto& nid : member_ids) {
         auto it = partial_sigs_raw.find(nid);
-        if (it != partial_sigs_raw.end()) {
-            CBLSSignature sig(it->second);
-            if (sig.IsValid()) {
-                bls_sigs.push_back(sig);
-                bls_ids.push_back(PTX_BLS_NodeId(nid));
-                signed_nodes.push_back(nid);
-                continue;
-            }
+        int idx = PTX_BLS_GetNodeIndex(nid);
+        if (it != partial_sigs_raw.end() && idx > 0 &&
+            (int)it->second.size() == PTX_SIG_BYTES) {
+            bls_sigs.push_back(it->second);
+            bls_indices.push_back(idx);
+            signed_nodes.push_back(nid);
+        } else {
+            withheld.push_back(nid);
         }
-        withheld.push_back(nid);
     }
 
     if ((int)bls_sigs.size() < bls_threshold)
@@ -236,23 +230,21 @@ UniValue ptx_roll(const JSONRPCRequest& request)
             strprintf("PTX: BLS threshold not met: got %d/%d",
                       (int)bls_sigs.size(), bls_threshold));
 
-    // Recover threshold signature from the first t partial sigs.
-    std::vector<CBLSSignature> thresh_sigs(bls_sigs.begin(),
-                                            bls_sigs.begin() + bls_threshold);
-    std::vector<CBLSId> thresh_ids(bls_ids.begin(),
-                                    bls_ids.begin() + bls_threshold);
+    // Lagrange recovery from the first t partial sigs.
+    std::vector<std::vector<uint8_t>> thresh_sigs(bls_sigs.begin(),
+                                                   bls_sigs.begin() + bls_threshold);
+    std::vector<int> thresh_indices(bls_indices.begin(),
+                                    bls_indices.begin() + bls_threshold);
 
-    CBLSSignature threshold_sig = PTX_BLS_Recover(thresh_sigs, thresh_ids);
-    if (!threshold_sig.IsValid())
+    uint8_t combined_sig[PTX_SIG_BYTES];
+    if (!PTX_BLS_Recover(thresh_indices, thresh_sigs, combined_sig))
         throw JSONRPCError(RPC_MISC_ERROR, "PTX: BLS threshold signature recovery failed");
 
-    // Verify: threshold sig must check against master public key over round_seed.
-    CBLSPublicKey master_pk = PTX_BLS_GetMasterPubKey();
-    if (!threshold_sig.VerifyInsecure(master_pk, round_seed))
+    if (!PTX_BLS_Verify(round_seed, combined_sig))
         throw JSONRPCError(RPC_MISC_ERROR, "PTX: BLS threshold signature verification failed");
 
-    std::vector<uint8_t> threshold_sig_bytes = threshold_sig.ToByteVector();
-    uint256 beacon = PTX_BLS_SigToBeacon(threshold_sig);
+    std::vector<uint8_t> threshold_sig_bytes(combined_sig, combined_sig + PTX_SIG_BYTES);
+    uint256 beacon = PTX_BLS_SigToBeacon(combined_sig);
 
     // Update round state in coordinator's record.
     {
@@ -423,16 +415,14 @@ UniValue gm_bls_keyset(const JSONRPCRequest& request)
         throw JSONRPCError(RPC_INVALID_PARAMS, "sk_share_hex must be a hex string");
 
     std::vector<uint8_t> sk_bytes = ParseHex(sk_hex);
-    if (sk_bytes.size() != BLS_CURVE_SECKEY_SIZE)
-        throw JSONRPCError(RPC_INVALID_PARAMS,
-            strprintf("sk_share_hex must be %d bytes", BLS_CURVE_SECKEY_SIZE));
+    if ((int)sk_bytes.size() != 32)
+        throw JSONRPCError(RPC_INVALID_PARAMS, "sk_share_hex must be 32 bytes");
 
-    CBLSSecretKey sk;
-    sk.SetByteVector(sk_bytes);
-    if (!sk.IsValid())
-        throw JSONRPCError(RPC_INVALID_PARAMS, "invalid BLS secret key share");
-
-    { LOCK(cs_ptx_my_bls_sk); g_ptx_my_bls_sk = sk; }
+    {
+        LOCK(cs_ptx_my_bls_sk);
+        memcpy(g_ptx_my_bls_sk_bytes, sk_bytes.data(), 32);
+        g_ptx_my_bls_sk_set = true;
+    }
     LogPrintf("PTX: gm_bls_keyset: key share stored for node=%s\n", g_ptx_my_node_id);
 
     UniValue ret(UniValue::VOBJ);
@@ -466,17 +456,22 @@ UniValue gm_bls_sign(const JSONRPCRequest& request)
 
     uint256 round_seed = uint256S(seed_hex);
 
-    CBLSSecretKey sk;
-    { LOCK(cs_ptx_my_bls_sk); sk = g_ptx_my_bls_sk; }
-    if (!sk.IsValid())
+    uint8_t sk_bytes[32];
+    bool    have_key = false;
+    {
+        LOCK(cs_ptx_my_bls_sk);
+        have_key = g_ptx_my_bls_sk_set;
+        if (have_key) memcpy(sk_bytes, g_ptx_my_bls_sk_bytes, 32);
+    }
+    if (!have_key)
         throw JSONRPCError(RPC_MISC_ERROR, "BLS key not set: coordinator must call gm_bls_keyset first");
 
-    CBLSSignature sig = sk.Sign(round_seed);
-    if (!sig.IsValid())
+    uint8_t sig_buf[PTX_SIG_BYTES];
+    if (!PTX_BLS_PartialSign(sk_bytes, round_seed, sig_buf))
         throw JSONRPCError(RPC_MISC_ERROR, "BLS signing failed");
 
     UniValue ret(UniValue::VOBJ);
-    ret.pushKV("sig_hex", HexStr(sig.ToByteVector()));
+    ret.pushKV("sig_hex", HexStr(Span<const uint8_t>(sig_buf, PTX_SIG_BYTES)));
     return ret;
 }
 
