@@ -675,8 +675,9 @@ UniValue ptx_lottery_status(const JSONRPCRequest& request)
     const int height  = chainActive.Height();
     const int next_at = height + (window - (height % window));
 
-    // Derive pool_balance_sat live from the UTXO set.
+    // Derive pool_balance_sat and pool_utxo_count live from the UTXO set.
     CAmount pool_balance = 0;
+    int64_t pool_utxo_count = 0;
     {
         const CTxDestination pool_dest = DecodeDestination(Params().PTXLotteryPoolAddress());
         const CScript pool_script = GetScriptForDestination(pool_dest);
@@ -687,8 +688,10 @@ UniValue ptx_lottery_status(const JSONRPCRequest& request)
             COutPoint key;
             Coin coin;
             if (pcursor->GetKey(key) && pcursor->GetValue(coin)) {
-                if (coin.out.scriptPubKey == pool_script)
+                if (coin.out.scriptPubKey == pool_script) {
                     pool_balance += coin.out.nValue;
+                    pool_utxo_count++;
+                }
             }
             pcursor->Next();
         }
@@ -696,6 +699,7 @@ UniValue ptx_lottery_status(const JSONRPCRequest& request)
 
     UniValue ret(UniValue::VOBJ);
     ret.pushKV("pool_balance_sat",  (int64_t)pool_balance);
+    ret.pushKV("pool_utxo_count",   pool_utxo_count);
     ret.pushKV("settlement_window", window);
     ret.pushKV("current_height",    (int64_t)height);
     ret.pushKV("next_settlement_at",(int64_t)next_at);

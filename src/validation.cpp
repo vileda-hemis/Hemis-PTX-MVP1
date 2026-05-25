@@ -423,6 +423,15 @@ static bool AcceptToMemoryPoolWorker(CTxMemPool& pool, CValidationState &state, 
         }
     }
 
+    // PTXCONSOLIDATE: reject if a PTXSETTLE is already in the mempool.
+    if (tx.nType == CTransaction::TxType::PTXCONSOLIDATE) {
+        LOCK(pool.cs);
+        for (const auto& entry : pool.mapTx) {
+            if (entry.GetTx().nType == CTransaction::TxType::PTXSETTLE)
+                return state.DoS(0, false, REJECT_CONFLICT, "ptxconsolidate-settle-in-mempool");
+        }
+    }
+
     // Only accept nLockTime-using transactions that can be mined in the next
     // block; we don't want our mempool filled up with transactions that can't
     // be mined yet.
@@ -1136,10 +1145,10 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsVi
         // before the last block chain checkpoint. This is safe because block merkle hashes are
         // still computed and checked, and any change will be caught at the next checkpoint.
         if (fScriptChecks) {
-            // Rule 8: PTXSETTLE pool inputs skip scriptSig validation — validity
-            // is established by payload correctness, not key ownership (no private
-            // key exists for the lottery pool address).
-            if (tx.nType == CTransaction::TxType::PTXSETTLE) {
+            // Rule 8: PTXSETTLE and PTXCONSOLIDATE pool inputs skip scriptSig validation —
+            // validity is established by payload correctness (no private key for pool address).
+            if (tx.nType == CTransaction::TxType::PTXSETTLE ||
+                tx.nType == CTransaction::TxType::PTXCONSOLIDATE) {
                 return true;
             }
 
@@ -1614,6 +1623,20 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
             control.Add(vChecks);
         }
         nValueOut += txValueOut;
+
+        // Pre-verify pool special tx inputs BEFORE UpdateCoins marks them spent.
+        // ProcessSpecialTxsInBlock runs after the loop; coins are spent by then.
+        if (tx.IsPTXConsolidateTx() || tx.IsPTXSettleTx()) {
+            const CScript pool_script = GetScriptForDestination(
+                DecodeDestination(Params().PTXLotteryPoolAddress()));
+            for (const auto& txin : tx.vin) {
+                const Coin& c = view.AccessCoin(txin.prevout);
+                if (c.IsSpent() || c.out.scriptPubKey != pool_script)
+                    return state.DoS(100, error("%s: pool tx %s input not from pool address",
+                                    __func__, tx.GetHash().ToString()),
+                                    REJECT_INVALID, "ptx-non-pool-input");
+            }
+        }
 
         CTxUndo undoDummy;
         if (i > 0) {

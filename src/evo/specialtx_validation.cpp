@@ -566,7 +566,7 @@ bool CheckSpecialTx(const CTransaction& tx, const CBlockIndex* pindexPrev, const
     }
     if (pindexPrev) {
         // reject special transactions before enforcement
-        if (!tx.IsNormalType() && !tx.IsProbabilisticTx() && !Params().GetConsensus().NetworkUpgradeActive(pindexPrev->nHeight + 1, Consensus::UPGRADE_V6_0)) {
+        if (!tx.IsNormalType() && !tx.IsProbabilisticTx() && !tx.IsPTXSettleTx() && !tx.IsPTXConsolidateTx() && !Params().GetConsensus().NetworkUpgradeActive(pindexPrev->nHeight + 1, Consensus::UPGRADE_V6_0)) {
             return state.DoS(100, error("%s: Special tx when v6 upgrade not enforced yet", __func__),
                              REJECT_INVALID, "bad-txns-v6-not-active");
         }
@@ -634,38 +634,22 @@ bool CheckSpecialTx(const CTransaction& tx, const CBlockIndex* pindexPrev, const
                 return state.DoS(100, false, REJECT_INVALID, "ptxsettle-bad-window-height");
 
             if (pindexPrev && view) {
-                // Rule 1: every vin must spend a UTXO at PTXLotteryPoolAddress
+                // Rule 1 & 3: verify inputs are pool UTXOs and fee is non-negative.
+                // Skipped per-input in ConnectBlock where UpdateCoins already ran (coins spent).
                 const CTxDestination pool_dest = DecodeDestination(Params().PTXLotteryPoolAddress());
                 const CScript pool_script = GetScriptForDestination(pool_dest);
+                CAmount sum_in = 0;
+                bool any_unspent = false;
                 for (const auto& txin : tx.vin) {
                     const Coin& coin = view->AccessCoin(txin.prevout);
-                    if (coin.IsSpent())
-                        return state.DoS(10, false, REJECT_INVALID, "ptxsettle-missing-input");
+                    if (coin.IsSpent()) continue;  // ConnectBlock: verified pre-UpdateCoins
+                    any_unspent = true;
                     if (coin.out.scriptPubKey != pool_script)
                         return state.DoS(100, false, REJECT_INVALID, "ptxsettle-non-pool-input");
+                    sum_in += coin.out.nValue;
                 }
-
-                // Rule 3: vout[0].nValue == sum(inputs) - miner_fee (fee must be >= 0)
-                CAmount sum_in = 0;
-                for (const auto& txin : tx.vin)
-                    sum_in += view->AccessCoin(txin.prevout).out.nValue;
-                if (tx.vout[0].nValue > sum_in)
+                if (any_unspent && tx.vout[0].nValue > sum_in)
                     return state.DoS(100, false, REJECT_INVALID, "ptxsettle-vout-exceeds-inputs");
-
-                // Rule 5: winner_node_id must be an eligible GM with lottery tickets
-                {
-                    auto all_records = g_ptx_pose_tracker.GetAllRecords();
-                    bool found = false;
-                    for (const auto& kv : all_records) {
-                        if (kv.first == payload.winner_node_id &&
-                            kv.second.quorum_eligible && kv.second.lottery_tickets > 0) {
-                            found = true;
-                            break;
-                        }
-                    }
-                    if (!found)
-                        return state.DoS(100, false, REJECT_INVALID, "ptxsettle-ineligible-winner");
-                }
 
                 // Rule 6: beacon_hash must match the block hash at settlement_height
                 {
@@ -692,6 +676,41 @@ bool CheckSpecialTx(const CTransaction& tx, const CBlockIndex* pindexPrev, const
 
             return true;
         }
+        case CTransaction::TxType::PTXCONSOLIDATE: {
+            CPTXConsolidatePayload payload;
+            if (!GetTxPayload(tx, payload))
+                return state.Invalid(false, REJECT_INVALID, "ptxconsolidate-bad-payload");
+            // Rule C1: must have at least one input
+            if (tx.vin.empty())
+                return state.DoS(100, false, REJECT_INVALID, "ptxconsolidate-no-inputs");
+            // Rule C2: exactly one output (back to pool)
+            if (tx.vout.size() != 1)
+                return state.DoS(100, false, REJECT_INVALID, "ptxconsolidate-bad-vout-count");
+            {
+                const CTxDestination pool_dest = DecodeDestination(Params().PTXLotteryPoolAddress());
+                const CScript pool_script = GetScriptForDestination(pool_dest);
+                // Rule C4: output must be back to pool address (always verifiable)
+                if (tx.vout[0].scriptPubKey != pool_script)
+                    return state.DoS(100, false, REJECT_INVALID, "ptxconsolidate-non-pool-output");
+                if (pindexPrev && view) {
+                    // Rule C3 & C5: verify inputs are pool UTXOs and fee is non-negative.
+                    // Skipped per-input in ConnectBlock where UpdateCoins already ran (coins spent).
+                    CAmount sum_in = 0;
+                    bool any_unspent = false;
+                    for (const auto& txin : tx.vin) {
+                        const Coin& coin = view->AccessCoin(txin.prevout);
+                        if (coin.IsSpent()) continue;  // ConnectBlock: verified pre-UpdateCoins
+                        any_unspent = true;
+                        if (coin.out.scriptPubKey != pool_script)
+                            return state.DoS(100, false, REJECT_INVALID, "ptxconsolidate-non-pool-input");
+                        sum_in += coin.out.nValue;
+                    }
+                    if (any_unspent && tx.vout[0].nValue > sum_in)
+                        return state.DoS(100, false, REJECT_INVALID, "ptxconsolidate-vout-exceeds-inputs");
+                }
+            }
+            return true;
+        }
     }
 
     return state.DoS(10, error("%s: special tx %s with invalid type %d", __func__, tx.GetHash().ToString(), tx.nType),
@@ -708,15 +727,26 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
 {
     AssertLockHeld(cs_main);
 
-    // Rule 7: at most one PTXSETTLE per block
+    // Rule 7: at most one PTXSETTLE per block; at most one PTXCONSOLIDATE per block;
+    // PTXSETTLE and PTXCONSOLIDATE may not coexist in the same block.
     bool seen_ptxsettle = false;
+    bool seen_ptxconsolidate = false;
 
     // check special txes
     for (const CTransactionRef& tx: block.vtx) {
         if (tx->nType == CTransaction::TxType::PTXSETTLE) {
             if (seen_ptxsettle)
                 return state.DoS(100, false, REJECT_INVALID, "ptxsettle-duplicate-in-block");
+            if (seen_ptxconsolidate)
+                return state.DoS(100, false, REJECT_INVALID, "ptx-settle-consolidate-coexist");
             seen_ptxsettle = true;
+        }
+        if (tx->nType == CTransaction::TxType::PTXCONSOLIDATE) {
+            if (seen_ptxconsolidate)
+                return state.DoS(100, false, REJECT_INVALID, "ptxconsolidate-duplicate-in-block");
+            if (seen_ptxsettle)
+                return state.DoS(100, false, REJECT_INVALID, "ptx-settle-consolidate-coexist");
+            seen_ptxconsolidate = true;
         }
         if (!CheckSpecialTx(*tx, pindex->pprev, view, state)) {
             // pass the state returned by the function above

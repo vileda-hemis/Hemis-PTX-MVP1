@@ -17,6 +17,12 @@ public:
     void BlockConnected(const std::shared_ptr<const CBlock>& block,
                         const CBlockIndex* pindex) override {
         if (!pindex || pindex->nHeight <= 0) return;
+
+        // KDD-034: consolidate pool UTXOs every block when count >= 150.
+        const std::string con_txid = PTX_ConsolidateLotteryPool(pindex->nHeight);
+        if (!con_txid.empty())
+            LogPrintf("PTX: pool consolidation at h=%d txid=%s\n", pindex->nHeight, con_txid);
+
         const int window = Params().PTXSettlementWindow();
         if (pindex->nHeight % window != 0) return;
 

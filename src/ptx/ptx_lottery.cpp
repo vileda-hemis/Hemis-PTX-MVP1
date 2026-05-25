@@ -55,6 +55,92 @@ std::string PTX_SelectLotteryWinner(const uint256& beacon)
     return candidates[winner_idx];
 }
 
+std::string PTX_ConsolidateLotteryPool(int height)
+{
+    static const int THRESHOLD = 150;
+    static const int CAP = 500;
+
+    const CChainParams& chainparams = Params();
+    const std::string pool_addr_str = chainparams.PTXLotteryPoolAddress();
+    const CTxDestination pool_dest = DecodeDestination(pool_addr_str);
+    if (!IsValidDestination(pool_dest)) return "";
+    const CScript pool_script = GetScriptForDestination(pool_dest);
+
+    struct PoolCoin { COutPoint outpoint; CAmount value; };
+    std::vector<PoolCoin> pool_coins;
+    CAmount total_input = 0;
+
+    {
+        LOCK(cs_main);
+        FlushStateToDisk();
+        std::unique_ptr<CCoinsViewCursor> pcursor(pcoinsdbview->Cursor());
+        while (pcursor->Valid()) {
+            if ((int)pool_coins.size() >= CAP) break;
+            COutPoint key;
+            Coin coin;
+            if (pcursor->GetKey(key) && pcursor->GetValue(coin)) {
+                if (coin.out.scriptPubKey == pool_script) {
+                    pool_coins.push_back({key, coin.out.nValue});
+                    total_input += coin.out.nValue;
+                }
+            }
+            pcursor->Next();
+        }
+    }
+
+    if ((int)pool_coins.size() < THRESHOLD) return "";
+
+    // Skip if PTXSETTLE is already in mempool — let it confirm first.
+    {
+        LOCK(mempool.cs);
+        for (const auto& entry : mempool.mapTx) {
+            if (entry.GetTx().nType == CTransaction::TxType::PTXSETTLE)
+                return "";
+        }
+    }
+
+    const unsigned int tx_bytes = 20 + (unsigned int)pool_coins.size() * 150 + 34;
+    const CAmount fee = ::minRelayTxFee.GetFee(tx_bytes);
+    const CAmount out_amount = total_input - fee;
+    if (out_amount <= 0) {
+        LogPrintf("PTX: consolidate h=%d: fee %lld >= total %lld sat, skipping\n",
+                  height, (long long)fee, (long long)total_input);
+        return "";
+    }
+
+    CPTXConsolidatePayload payload;
+    payload.height      = (uint64_t)height;
+    payload.input_count = (uint64_t)pool_coins.size();
+    payload.total_sat   = (uint64_t)total_input;
+
+    CMutableTransaction mtx;
+    mtx.nVersion = CTransaction::TxVersion::SAPLING;
+    mtx.nType    = CTransaction::TxType::PTXCONSOLIDATE;
+    for (const auto& pc : pool_coins)
+        mtx.vin.push_back(CTxIn(pc.outpoint, CScript(), CTxIn::SEQUENCE_FINAL));
+    mtx.vout.push_back(CTxOut(out_amount, pool_script));
+    SetTxPayload(mtx, payload);
+
+    const uint256 txid = mtx.GetHash();
+    {
+        CValidationState val_state;
+        bool fMissingInputs = false;
+        if (!AcceptToMemoryPool(mempool, val_state, MakeTransactionRef(CTransaction(mtx)),
+                                /*fLimitFree=*/true, &fMissingInputs,
+                                /*fOverrideMempoolLimit=*/false, /*nAbsurdFee=*/false)) {
+            const std::string reason = fMissingInputs ? "missing inputs" : val_state.GetRejectReason();
+            LogPrintf("PTX: consolidate rejected: %s %s\n", reason, val_state.GetDebugMessage());
+            return "";
+        }
+    }
+
+    RelayTx(txid);
+    const std::string txid_str = txid.GetHex();
+    LogPrintf("PTX: pool consolidated h=%d inputs=%zu total=%lld sat txid=%s\n",
+              height, pool_coins.size(), (long long)total_input, txid_str);
+    return txid_str;
+}
+
 std::string PTX_SettleLotteryWindow(int height, const uint256& /*beacon*/)
 {
     const CChainParams& chainparams = Params();
@@ -90,7 +176,7 @@ std::string PTX_SettleLotteryWindow(int height, const uint256& /*beacon*/)
 
         std::unique_ptr<CCoinsViewCursor> pcursor(pcoinsdbview->Cursor());
         while (pcursor->Valid()) {
-            if (pool_coins.size() >= 1000) break;
+            if (pool_coins.size() >= 200) break;
             COutPoint key;
             Coin coin;
             if (pcursor->GetKey(key) && pcursor->GetValue(coin)) {

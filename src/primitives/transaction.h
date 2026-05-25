@@ -261,6 +261,7 @@ public:
         LLMQCOMM = 5,
         PTX = 6,
         PTXSETTLE = 7,
+        PTXCONSOLIDATE = 8,
     };
 
     static const int16_t CURRENT_VERSION = TxVersion::LEGACY;
@@ -349,6 +350,16 @@ public:
     bool IsProbabilisticTx() const
     {
         return IsSpecialTx() && nType == TxType::PTX;
+    }
+
+    bool IsPTXSettleTx() const
+    {
+        return IsSpecialTx() && nType == TxType::PTXSETTLE;
+    }
+
+    bool IsPTXConsolidateTx() const
+    {
+        return IsSpecialTx() && nType == TxType::PTXCONSOLIDATE;
     }
 
     // Ensure that special and sapling fields are signed

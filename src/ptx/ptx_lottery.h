@@ -11,6 +11,17 @@
 #include <cstdint>
 #include <string>
 
+struct CPTXConsolidatePayload {
+    uint64_t height{0};       // block height at which consolidation fires
+    uint64_t input_count{0};  // number of pool UTXOs merged
+    uint64_t total_sat{0};    // total value of all inputs
+
+    SERIALIZE_METHODS(CPTXConsolidatePayload, obj)
+    {
+        READWRITE(obj.height, obj.input_count, obj.total_sat);
+    }
+};
+
 struct CPTXSettlePayload {
     uint64_t settlement_height{0};  // block height at which this settlement fires
     std::string winner_node_id;     // eligible GM node ID selected by beacon
@@ -38,5 +49,10 @@ std::string PTX_SelectLotteryWinner(const uint256& beacon);
 //   5. Build and broadcast a PTXSETTLE tx paying pool total (fee-deducted) to winner.
 // Returns txid hex on success, "" if no distribution was made this window.
 std::string PTX_SettleLotteryWindow(int height, const uint256& beacon);
+
+// KDD-034: Consolidate pool UTXOs when count >= 150 to prevent PTXSETTLE from
+// accumulating > 200 inputs. Skipped if PTXSETTLE is already in the mempool.
+// Returns txid hex on success, "" if consolidation was not needed or failed.
+std::string PTX_ConsolidateLotteryPool(int height);
 
 #endif // HEMIS_PTX_LOTTERY_H
