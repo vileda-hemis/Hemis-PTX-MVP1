@@ -260,6 +260,7 @@ public:
         PROUPREV = 4,
         LLMQCOMM = 5,
         PTX = 6,
+        PTXSETTLE = 7,
     };
 
     static const int16_t CURRENT_VERSION = TxVersion::LEGACY;
@@ -497,6 +498,11 @@ void SetTxPayload(CMutableTransaction& tx, const T& payload)
 }
 
 struct CProbabilisticTxPayload {
+    // Payload version bump on each schema addition.
+    // v1: original fields through quorum_sig
+    // v2: KDD-031 caller_address appended
+    static constexpr uint16_t PTXSESS_PAYLOAD_VERSION = 2;
+
     std::string game_id;
     uint32_t nSeedHeight{0};
     uint32_t nExpiryHeight{0};
@@ -511,11 +517,13 @@ struct CProbabilisticTxPayload {
     std::vector<std::string> exclude_txids;
     uint256 round_seed;
     uint256 beacon;
-    std::vector<int64_t> results;
+    std::vector<int64_t> results;      // KDD-033: final mapped values in [low,high]
     uint256 quorum_sig_hash;
     std::vector<std::string> quorum_members;
     // BLS threshold signature (96 bytes, Phase 2); quorum_sig_hash = SHA256(quorum_sig).
     std::vector<uint8_t> quorum_sig;
+    // KDD-031 (v2): base58 address of the funding wallet. Empty on pre-v2 txs only.
+    std::string caller_address;
 
     SERIALIZE_METHODS(CProbabilisticTxPayload, obj)
     {
@@ -526,6 +534,12 @@ struct CProbabilisticTxPayload {
                   obj.round_seed, obj.beacon, obj.results,
                   obj.quorum_sig_hash, obj.quorum_members,
                   obj.quorum_sig);
+        // v2 optional field: absent in pre-KDD-031 payloads — catch stream exhaustion.
+        try {
+            READWRITE(obj.caller_address);
+        } catch (const std::ios_base::failure&) {
+            SER_READ(obj, obj.caller_address.clear());
+        }
     }
 };
 

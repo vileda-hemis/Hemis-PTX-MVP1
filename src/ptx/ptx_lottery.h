@@ -5,16 +5,24 @@
 #ifndef HEMIS_PTX_LOTTERY_H
 #define HEMIS_PTX_LOTTERY_H
 
-#include "amount.h"
+#include "serialize.h"
 #include "uint256.h"
 
+#include <cstdint>
 #include <string>
 
-// Add service fee to accumulated pool balance (called after each successful PTX tx).
-void PTX_AddToPoolBalance(CAmount amount);
+struct CPTXSettlePayload {
+    uint64_t settlement_height{0};  // block height at which this settlement fires
+    std::string winner_node_id;     // eligible GM node ID selected by beacon
+    uint64_t pool_balance_sat{0};   // total pool input value (sum of all pool UTXOs spent)
+    uint256 beacon_hash;            // block hash at settlement_height
 
-// Return current accumulated pool balance (satoshis).
-CAmount PTX_GetPoolBalance();
+    SERIALIZE_METHODS(CPTXSettlePayload, obj)
+    {
+        READWRITE(obj.settlement_height, obj.winner_node_id,
+                  obj.pool_balance_sat, obj.beacon_hash);
+    }
+};
 
 // Select lottery winner node_id from eligible pose records using beacon as entropy.
 // Returns "" if no eligible nodes have lottery tickets this window.
@@ -23,11 +31,11 @@ CAmount PTX_GetPoolBalance();
 std::string PTX_SelectLotteryWinner(const uint256& beacon);
 
 // Execute settlement at the given block height:
-//   1. Select winner from eligible GMs using beacon entropy.
-//   2. Fetch a fresh payment address from the winning GM via getnewaddress RPC.
-//   3. Build and broadcast a distribution tx paying pool_balance (fee-deducted) to winner.
-//   4. Advance the lottery window (reset per-window pose state).
-// Resets pool balance only if the distribution tx is successfully relayed.
+//   1. Enumerate all pool UTXOs from UTXO set (capped at 1000).
+//   2. Derive beacon from chainActive[height]->GetBlockHash().
+//   3. Select winner from eligible GMs using beacon entropy.
+//   4. Fetch a fresh payment address from the winning GM via getnewaddress RPC.
+//   5. Build and broadcast a PTXSETTLE tx paying pool total (fee-deducted) to winner.
 // Returns txid hex on success, "" if no distribution was made this window.
 std::string PTX_SettleLotteryWindow(int height, const uint256& beacon);
 

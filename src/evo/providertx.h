@@ -16,7 +16,7 @@
 class ProRegPL
 {
 public:
-    static const uint16_t CURRENT_VERSION = 1;
+    static const uint16_t CURRENT_VERSION = 2;
 
 public:
     uint16_t nVersion{CURRENT_VERSION};                         // message version
@@ -30,6 +30,7 @@ public:
     CScript scriptPayout;
     uint16_t nOperatorReward{0};
     CScript scriptOperatorPayout;
+    CScript scriptPTXPayment;           // ODC-020: optional PTX lottery payment address (v2+)
     uint256 inputsHash; // replay protection
     std::vector<unsigned char> vchSig;
 
@@ -49,6 +50,9 @@ public:
         READWRITE(obj.nOperatorReward);
         READWRITE(obj.scriptOperatorPayout);
         READWRITE(obj.inputsHash);
+        if (obj.nVersion >= 2) {
+            READWRITE(obj.scriptPTXPayment);
+        }
         if (!(s.GetType() & SER_GETHASH)) {
             READWRITE(obj.vchSig);
         }

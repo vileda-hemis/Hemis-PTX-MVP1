@@ -4,6 +4,8 @@
 
 #include "ptx/ptx_bls.h"
 #include "ptx/ptx_commit_reveal.h"
+#include "key_io.h"
+#include "txdb.h"
 #include "ptx/ptx_fanout.h"
 #include "ptx/ptx_lottery.h"
 #include "ptx/ptx_mempool.h"
@@ -295,6 +297,12 @@ UniValue ptx_roll(const JSONRPCRequest& request)
     { LOCK(cs_ptx_rounds); round_copy = g_ptx_rounds[round_id]; }
     std::string txid = PTX_AutoCommit(round_copy, payload);
 
+    // KDD-031: persist caller_address from payload back into in-memory round
+    {
+        LOCK(cs_ptx_rounds);
+        g_ptx_rounds[round_id].caller_address = payload.caller_address;
+    }
+
     UniValue ret(UniValue::VOBJ);
     UniValue res_arr(UniValue::VARR);
     for (int64_t v : results) res_arr.push_back(v);
@@ -561,7 +569,9 @@ UniValue ptx_getroundstatus(const JSONRPCRequest& request)
             UniValue res(UniValue::VARR);
             for (int64_t v : derived) res.push_back(v);
             ro.pushKV("results", res);
+            ro.pushKV("results_onchain", res); // KDD-033: alias — same values as committed payload
         }
+        ro.pushKV("caller_address", r.caller_address); // KDD-031
         return ro;
     };
 
@@ -646,7 +656,7 @@ UniValue ptx_lottery_status(const JSONRPCRequest& request)
     if (request.fHelp) {
         throw std::runtime_error(
             "ptx_lottery_status\n"
-            "\nReturn current PTX lottery state: pool balance, settlement window, eligible nodes.\n"
+            "\nReturn current PTX lottery state: pool balance, settlement window, eligible nodes, settlement history.\n"
             "\nResult:\n"
             "{\n"
             "  \"pool_balance_sat\"    : n\n"
@@ -654,6 +664,7 @@ UniValue ptx_lottery_status(const JSONRPCRequest& request)
             "  \"current_height\"      : n\n"
             "  \"next_settlement_at\"  : n\n"
             "  \"eligible_nodes\"      : [{\"node_id\", \"tickets\", \"pose_score\", \"eligible\"}, ...]\n"
+            "  \"settlement_history\"  : [{\"winner\", \"height\", \"amount_sat\", \"txid\"}, ...]\n"
             "}\n"
             + HelpExampleCli("ptx_lottery_status", "")
             + HelpExampleRpc("ptx_lottery_status", "")
@@ -664,8 +675,27 @@ UniValue ptx_lottery_status(const JSONRPCRequest& request)
     const int height  = chainActive.Height();
     const int next_at = height + (window - (height % window));
 
+    // Derive pool_balance_sat live from the UTXO set.
+    CAmount pool_balance = 0;
+    {
+        const CTxDestination pool_dest = DecodeDestination(Params().PTXLotteryPoolAddress());
+        const CScript pool_script = GetScriptForDestination(pool_dest);
+        LOCK(cs_main);
+        FlushStateToDisk();
+        std::unique_ptr<CCoinsViewCursor> pcursor(pcoinsdbview->Cursor());
+        while (pcursor->Valid()) {
+            COutPoint key;
+            Coin coin;
+            if (pcursor->GetKey(key) && pcursor->GetValue(coin)) {
+                if (coin.out.scriptPubKey == pool_script)
+                    pool_balance += coin.out.nValue;
+            }
+            pcursor->Next();
+        }
+    }
+
     UniValue ret(UniValue::VOBJ);
-    ret.pushKV("pool_balance_sat",  PTX_GetPoolBalance());
+    ret.pushKV("pool_balance_sat",  (int64_t)pool_balance);
     ret.pushKV("settlement_window", window);
     ret.pushKV("current_height",    (int64_t)height);
     ret.pushKV("next_settlement_at",(int64_t)next_at);
@@ -682,6 +712,119 @@ UniValue ptx_lottery_status(const JSONRPCRequest& request)
     }
     ret.pushKV("eligible_nodes", nodes_arr);
 
+    // Derive settlement_history by scanning the chain for all PTXSETTLE transactions.
+    UniValue hist_arr(UniValue::VARR);
+    {
+        LOCK(cs_main);
+        for (int h = 1; h <= height; h++) {
+            CBlockIndex* pindex = chainActive[h];
+            if (!pindex) continue;
+            CBlock block;
+            if (!ReadBlockFromDisk(block, pindex)) continue;
+            for (const auto& tx : block.vtx) {
+                if (tx->nType != CTransaction::TxType::PTXSETTLE) continue;
+                CPTXSettlePayload payload;
+                if (!GetTxPayload(*tx, payload)) continue;
+
+                // Winner address is the first non-zero-value output.
+                std::string winner_addr;
+                for (const auto& vout : tx->vout) {
+                    if (vout.nValue <= 0) continue;
+                    CTxDestination dest;
+                    if (ExtractDestination(vout.scriptPubKey, dest)) {
+                        winner_addr = EncodeDestination(dest);
+                        break;
+                    }
+                }
+
+                UniValue eo(UniValue::VOBJ);
+                eo.pushKV("winner",     winner_addr);
+                eo.pushKV("height",     h);
+                eo.pushKV("amount_sat", (int64_t)payload.pool_balance_sat);
+                eo.pushKV("txid",       tx->GetHash().GetHex());
+                hist_arr.push_back(eo);
+            }
+        }
+    }
+    ret.pushKV("settlement_history", hist_arr);
+
+    return ret;
+}
+
+// ---------------------------------------------------------------------------
+// RPC: ptx_caller_stats
+// ---------------------------------------------------------------------------
+
+UniValue ptx_caller_stats(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.empty()) {
+        throw std::runtime_error(
+            "ptx_caller_stats address ( limit )\n"
+            "\nScan the last <limit> blocks (default 1000, max 1000) for PTXSESS\n"
+            "transactions made by <address> and return aggregate statistics.\n"
+            "\nArguments:\n"
+            "1. address (str) Base58 caller address to search for\n"
+            "2. limit   (int, optional) Number of blocks to scan (default 1000)\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"address\"               : \"str\"\n"
+            "  \"total_rounds\"          : n\n"
+            "  \"total_hms_contributed\" : x.xxxx\n"
+            "  \"first_round_height\"    : n\n"
+            "  \"last_round_height\"     : n\n"
+            "  \"game_ids\"              : [\"str\", ...]\n"
+            "  \"partial_scan\"          : bool\n"
+            "}\n"
+            + HelpExampleCli("ptx_caller_stats", "\"yXxx...\" 500")
+            + HelpExampleRpc("ptx_caller_stats", "\"yXxx...\", 500")
+        );
+    }
+
+    std::string address = request.params[0].get_str();
+    int limit = request.params.size() > 1 ? request.params[1].get_int() : 1000;
+    if (limit < 1 || limit > 1000)
+        throw JSONRPCError(RPC_INVALID_PARAMS, "limit must be between 1 and 1000");
+
+    int tip_height = chainActive.Height();
+    int scan_start = std::max(0, tip_height - limit + 1);
+
+    int n_rounds = 0;
+    CAmount total_contributed = 0;
+    int first_height = -1;
+    int last_height  = -1;
+    std::set<std::string> game_ids;
+    const CAmount service_fee = Params().PTXServiceFee();
+
+    LOCK(cs_main);
+    for (int h = scan_start; h <= tip_height; h++) {
+        CBlockIndex* pindex = chainActive[h];
+        if (!pindex) continue;
+        CBlock block;
+        if (!ReadBlockFromDisk(block, pindex)) continue;
+        for (const auto& tx : block.vtx) {
+            if (tx->nType != CTransaction::TxType::PTX) continue;
+            CProbabilisticTxPayload p;
+            if (!GetTxPayload(*tx, p)) continue;
+            if (p.caller_address != address) continue;
+            n_rounds++;
+            total_contributed += service_fee;
+            if (first_height < 0) first_height = h;
+            last_height = h;
+            game_ids.insert(p.game_id);
+        }
+    }
+
+    UniValue game_arr(UniValue::VARR);
+    for (const auto& gid : game_ids) game_arr.push_back(gid);
+
+    UniValue ret(UniValue::VOBJ);
+    ret.pushKV("address",               address);
+    ret.pushKV("total_rounds",          n_rounds);
+    ret.pushKV("total_hms_contributed", ValueFromAmount(total_contributed));
+    ret.pushKV("first_round_height",    first_height);
+    ret.pushKV("last_round_height",     last_height);
+    ret.pushKV("game_ids",              game_arr);
+    ret.pushKV("partial_scan",          !fTxIndex);
     return ret;
 }
 
@@ -701,6 +844,7 @@ static const CRPCCommand commands[] = {
     { "ptx",  "ptx_getroundstatus",        &ptx_getroundstatus,         true,   {"round_id"} },
     { "ptx",  "ptx_pose_status",           &ptx_pose_status,            true,   {} },
     { "ptx",  "ptx_lottery_status",        &ptx_lottery_status,         true,   {} },
+    { "ptx",  "ptx_caller_stats",          &ptx_caller_stats,           true,   {"address","limit"} },
 };
 // clang-format on
 

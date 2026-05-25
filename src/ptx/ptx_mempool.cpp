@@ -28,7 +28,7 @@ extern void TryATMP(const CMutableTransaction& mtx, bool fOverrideFees);
 extern void RelayTx(const uint256& hashTx);
 
 std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
-                            const CProbabilisticTxPayload& payload)
+                            CProbabilisticTxPayload& payload)
 {
 #ifndef ENABLE_WALLET
     LogPrintf("PTX: wallet not compiled in, cannot fund PTXSESS transaction\n");
@@ -58,6 +58,13 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
     }
     mtx.vout.push_back(CTxOut(chainparams.PTXServiceFee(), GetScriptForDestination(poolDest)));
 
+    // KDD-031: pre-size extraPayload with a placeholder caller_address so FundTransaction
+    // computes a fee that covers the full final payload. Real address is extracted from
+    // the funding UTXOs after FundTransaction and swapped in before signing (same length
+    // for P2PKH y-addresses → no fee change on re-embed).
+    if (payload.caller_address.empty())
+        payload.caller_address = std::string(34, '0');
+
     // Embed payload before FundTransaction so tx size (and thus fee) is accurate
     SetTxPayload(mtx, payload);
 
@@ -72,9 +79,24 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
         }
     }
 
-    // Sign all inputs added by FundTransaction
+    // KDD-031: extract caller_address from first funding UTXO; re-embed payload before signing
+    // so the signature covers the complete payload including caller_address.
     {
         LOCK2(cs_main, pwallet->cs_wallet);
+
+        for (const auto& txin : mtx.vin) {
+            const Coin& c = pcoinsTip->AccessCoin(txin.prevout);
+            if (c.IsSpent()) continue;
+            CTxDestination dest;
+            if (ExtractDestination(c.out.scriptPubKey, dest)) {
+                payload.caller_address = EncodeDestination(dest);
+                break;
+            }
+        }
+        if (payload.caller_address.empty())
+            throw std::runtime_error("PTX: KDD-031: could not determine caller address from funding UTXOs");
+        SetTxPayload(mtx, payload);
+
         for (unsigned int i = 0; i < mtx.vin.size(); i++) {
             CTxIn& txin = mtx.vin[i];
             const Coin& coin = pcoinsTip->AccessCoin(txin.prevout);
@@ -99,8 +121,6 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
         TryATMP(mtx, false);
         RelayTx(txid);
         LogPrintf("PTX: committed and relayed %s\n", txid.GetHex());
-        // Accumulate service fee in lottery pool tracker (KDD-030).
-        PTX_AddToPoolBalance(chainparams.PTXServiceFee());
         return txid.GetHex();
     } catch (const UniValue& objError) {
         LogPrintf("PTX: mempool rejected: %s\n", objError["message"].getValStr());

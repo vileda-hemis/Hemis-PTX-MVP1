@@ -12,12 +12,16 @@
 #include "consensus/validation.h"
 #include "evo/deterministicgms.h"
 #include "evo/providertx.h"
+#include "key_io.h"
 #include "llmq/quorums_blockprocessor.h"
 #include "messagesigner.h"
 #include "primitives/transaction.h"
 #include "primitives/block.h"
+#include "ptx/ptx_lottery.h"
+#include "ptx/ptx_pose.h"
 #include "script/standard.h"
 #include "spork.h"
+#include "validation.h"
 
 /* -- Helper static functions -- */
 
@@ -612,6 +616,82 @@ bool CheckSpecialTx(const CTransaction& tx, const CBlockIndex* pindexPrev, const
                 return state.Invalid(false, REJECT_INVALID, "ptx-bad-height");
             return true;
         }
+        case CTransaction::TxType::PTXSETTLE: {
+            CPTXSettlePayload payload;
+            if (!GetTxPayload(tx, payload))
+                return state.Invalid(false, REJECT_INVALID, "ptxsettle-bad-payload");
+
+            // Rule 2: exactly one vout with nValue > 0
+            int value_outputs = 0;
+            for (const auto& out : tx.vout)
+                if (out.nValue > 0) value_outputs++;
+            if (value_outputs != 1)
+                return state.DoS(100, false, REJECT_INVALID, "ptxsettle-bad-vout-count");
+
+            // Rule 4: settlement_height must be on a window boundary
+            if (Params().PTXSettlementWindow() == 0 ||
+                payload.settlement_height % (uint64_t)Params().PTXSettlementWindow() != 0)
+                return state.DoS(100, false, REJECT_INVALID, "ptxsettle-bad-window-height");
+
+            if (pindexPrev && view) {
+                // Rule 1: every vin must spend a UTXO at PTXLotteryPoolAddress
+                const CTxDestination pool_dest = DecodeDestination(Params().PTXLotteryPoolAddress());
+                const CScript pool_script = GetScriptForDestination(pool_dest);
+                for (const auto& txin : tx.vin) {
+                    const Coin& coin = view->AccessCoin(txin.prevout);
+                    if (coin.IsSpent())
+                        return state.DoS(10, false, REJECT_INVALID, "ptxsettle-missing-input");
+                    if (coin.out.scriptPubKey != pool_script)
+                        return state.DoS(100, false, REJECT_INVALID, "ptxsettle-non-pool-input");
+                }
+
+                // Rule 3: vout[0].nValue == sum(inputs) - miner_fee (fee must be >= 0)
+                CAmount sum_in = 0;
+                for (const auto& txin : tx.vin)
+                    sum_in += view->AccessCoin(txin.prevout).out.nValue;
+                if (tx.vout[0].nValue > sum_in)
+                    return state.DoS(100, false, REJECT_INVALID, "ptxsettle-vout-exceeds-inputs");
+
+                // Rule 5: winner_node_id must be an eligible GM with lottery tickets
+                {
+                    auto all_records = g_ptx_pose_tracker.GetAllRecords();
+                    bool found = false;
+                    for (const auto& kv : all_records) {
+                        if (kv.first == payload.winner_node_id &&
+                            kv.second.quorum_eligible && kv.second.lottery_tickets > 0) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found)
+                        return state.DoS(100, false, REJECT_INVALID, "ptxsettle-ineligible-winner");
+                }
+
+                // Rule 6: beacon_hash must match the block hash at settlement_height
+                {
+                    CBlockIndex* psettle = chainActive[(int)payload.settlement_height];
+                    if (!psettle)
+                        return state.DoS(10, false, REJECT_INVALID, "ptxsettle-unknown-height");
+                    if (psettle->GetBlockHash() != payload.beacon_hash)
+                        return state.DoS(100, false, REJECT_INVALID, "ptxsettle-beacon-mismatch");
+                }
+
+                // Rule 9 (ODC-020): if the winner GM registered a PTX payment address,
+                // the settlement output must pay to that address.
+                {
+                    uint256 proTxHash;
+                    proTxHash.SetHex(payload.winner_node_id);
+                    auto gmList = deterministicGMManager->GetListForBlock(pindexPrev);
+                    auto dgm = gmList.GetGM(proTxHash);
+                    if (dgm && !dgm->pdgmState->scriptPTXPayment.empty()) {
+                        if (tx.vout[0].scriptPubKey != dgm->pdgmState->scriptPTXPayment)
+                            return state.DoS(100, false, REJECT_INVALID, "ptxsettle-wrong-payment-address");
+                    }
+                }
+            }
+
+            return true;
+        }
     }
 
     return state.DoS(10, error("%s: special tx %s with invalid type %d", __func__, tx.GetHash().ToString(), tx.nType),
@@ -628,8 +708,16 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
 {
     AssertLockHeld(cs_main);
 
+    // Rule 7: at most one PTXSETTLE per block
+    bool seen_ptxsettle = false;
+
     // check special txes
     for (const CTransactionRef& tx: block.vtx) {
+        if (tx->nType == CTransaction::TxType::PTXSETTLE) {
+            if (seen_ptxsettle)
+                return state.DoS(100, false, REJECT_INVALID, "ptxsettle-duplicate-in-block");
+            seen_ptxsettle = true;
+        }
         if (!CheckSpecialTx(*tx, pindex->pprev, view, state)) {
             // pass the state returned by the function above
             return false;

@@ -23,6 +23,7 @@
 #include "consensus/zerocoin_verify.h"
 #include "evo/evodb.h"
 #include "evo/specialtx_validation.h"
+#include "ptx/ptx_lottery.h"
 #include "flatfile.h"
 #include "guiinterface.h"
 #include "interfaces/handler.h"
@@ -411,6 +412,15 @@ static bool AcceptToMemoryPoolWorker(CTxMemPool& pool, CValidationState &state, 
 
     if (pool.existsProviderTxConflict(tx)) {
         return state.DoS(0, false, REJECT_DUPLICATE, "protx-dup");
+    }
+
+    // PTXSETTLE: reject before settlement_height (TX_PREMATURE_SPEND).
+    if (tx.nType == CTransaction::TxType::PTXSETTLE) {
+        CPTXSettlePayload settle_payload;
+        if (GetTxPayload(tx, settle_payload)) {
+            if (chainHeight < (int)settle_payload.settlement_height)
+                return state.DoS(0, false, REJECT_NONSTANDARD, "ptxsettle-premature-spend");
+        }
     }
 
     // Only accept nLockTime-using transactions that can be mined in the next
@@ -1126,6 +1136,13 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsVi
         // before the last block chain checkpoint. This is safe because block merkle hashes are
         // still computed and checked, and any change will be caught at the next checkpoint.
         if (fScriptChecks) {
+            // Rule 8: PTXSETTLE pool inputs skip scriptSig validation — validity
+            // is established by payload correctness, not key ownership (no private
+            // key exists for the lottery pool address).
+            if (tx.nType == CTransaction::TxType::PTXSETTLE) {
+                return true;
+            }
+
             for (unsigned int i = 0; i < tx.vin.size(); i++) {
                 const COutPoint& prevout = tx.vin[i].prevout;
                 const Coin& coin = inputs.AccessCoin(prevout);
