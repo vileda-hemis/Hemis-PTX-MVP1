@@ -66,6 +66,10 @@ void CDeterministicGMState::ToJson(UniValue& obj) const
     if (ExtractDestination(scriptOperatorPayout, dest2)) {
         obj.pushKV("operatorPayoutAddress", EncodeDestination(dest2));
     }
+    CTxDestination dest3;
+    if (ExtractDestination(scriptPTXPayment, dest3)) {
+        obj.pushKV("ptxPaymentAddress", EncodeDestination(dest3));
+    }
 }
 
 uint64_t CDeterministicGM::GetInternalId() const
