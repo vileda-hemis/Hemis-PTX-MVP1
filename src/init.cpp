@@ -52,6 +52,7 @@
 #include "validationinterface.h"
 #include "warnings.h"
 #include "ptx/ptx_accum_script.h"
+#include "ptx/ptx_lottery_state.h"
 #include "ptx/ptx_pose.h"
 #include "ptx/ptx_quorum.h"
 #include "ptx/ptx_validation_interface.h"
@@ -1564,6 +1565,8 @@ bool AppInitMain()
                         break;
                     }
                     assert(chainActive.Tip() != nullptr);
+                    // ODC-022: restore LotteryState from evodb snapshot at chain tip
+                    LoadLotteryStateFromDB(chainActive.Tip()->GetBlockHash());
                 }
 
                 if (Params().NetworkIDString() == CBaseChainParams::MAIN) {
