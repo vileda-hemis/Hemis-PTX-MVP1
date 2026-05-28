@@ -10,6 +10,7 @@
 #include "validation.h"
 
 static const std::string DB_LOTTERY_STATE_SNAP = "ls_S";
+static const std::string DB_LOTTERY_SNAP_HASHES = "ls_H";
 
 static LotteryState g_lotteryState;
 
@@ -37,9 +38,33 @@ void WriteLotteryStateSnapshotForBlock(const uint256& blockHash, const LotterySt
 {
     AssertLockHeld(cs_main);
     evoDb->Write(std::make_pair(DB_LOTTERY_STATE_SNAP, blockHash), state);
+
+    // Maintain hash list for PurgeStaleSnapshots
+    std::vector<uint256> hashes;
+    evoDb->Read(DB_LOTTERY_SNAP_HASHES, hashes);
+    hashes.push_back(blockHash);
+    evoDb->Write(DB_LOTTERY_SNAP_HASHES, hashes);
 }
 
 bool ReadLotteryStateSnapshotForBlock(const uint256& blockHash, LotteryState& stateOut)
 {
     return evoDb->Read(std::make_pair(DB_LOTTERY_STATE_SNAP, blockHash), stateOut);
+}
+
+void PurgeStaleSnapshots(int keepCount)
+{
+    std::vector<uint256> hashes;
+    if (!evoDb->Read(DB_LOTTERY_SNAP_HASHES, hashes)) return;
+
+    int total = static_cast<int>(hashes.size());
+    if (total <= keepCount) return;
+
+    int eraseCount = total - keepCount;
+    for (int i = 0; i < eraseCount; i++) {
+        evoDb->Erase(std::make_pair(DB_LOTTERY_STATE_SNAP, hashes[i]));
+    }
+    hashes.erase(hashes.begin(), hashes.begin() + eraseCount);
+    evoDb->Write(DB_LOTTERY_SNAP_HASHES, hashes);
+
+    LogPrintf("PTX LotteryState: purged %d stale snapshots, %d retained\n", eraseCount, keepCount);
 }

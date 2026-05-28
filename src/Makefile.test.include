@@ -206,6 +206,35 @@ if ENABLE_ZMQ
 test_test_Hemis_LDADD += $(LIBBITCOIN_ZMQ) $(ZMQ_LIBS)
 endif
 
+# PTX consensus tests — minimal harness, no PIVX test debt, no wallet dependency.
+# Steps 6-12 add PTX-specific tests here. Full make check is deferred (see standup).
+PTX_TESTS = \
+  test/ptx_lottery_state_tests.cpp
+
+noinst_PROGRAMS += test/test_ptx
+test_test_ptx_SOURCES = \
+  test/test_Hemis.h \
+  test/test_Hemis.cpp \
+  $(PTX_TESTS)
+test_test_ptx_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES) -I$(builddir)/test/ $(TESTDEFS) $(EVENT_FLAGS)
+test_test_ptx_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
+test_test_ptx_LDADD = \
+  $(LIBBITCOIN_SERVER)
+
+if ENABLE_WALLET
+test_test_ptx_LDADD += $(LIBBITCOIN_WALLET)
+endif
+
+test_test_ptx_LDADD += $(LIBBITCOIN_CLI) $(LIBBITCOIN_COMMON) $(LIBBITCOIN_UTIL) $(LIBBITCOIN_CRYPTO) $(LIBUNIVALUE) $(LIBBITCOIN_ZEROCOIN) \
+  $(LIBLEVELDB) $(LIBLEVELDB_SSE42) $(LIBMEMENV) $(BOOST_LIBS) $(BOOST_UNIT_TEST_FRAMEWORK_LIB) $(LIBSECP256K1) $(LIBSAPLING) $(EVENT_LIBS) $(EVENT_PTHREADS_LIBS)
+
+test_test_ptx_LDADD += $(LIBRUSTZCASH) $(LIBBITCOIN_CONSENSUS) $(BDB_LIBS) $(MINIUPNPC_LIBS) $(NATPMP_LIBS) $(LIBZCASH_LIBS) $(BLS_LIBS) $(LIBBLST)
+test_test_ptx_LDFLAGS = $(RELDFLAGS) $(AM_LDFLAGS) $(LIBTOOL_APP_LDFLAGS) -static
+
+if ENABLE_ZMQ
+test_test_ptx_LDADD += $(LIBBITCOIN_ZMQ) $(ZMQ_LIBS)
+endif
+
 if ENABLE_FUZZ
 
 # base dependencies #

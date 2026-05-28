@@ -49,6 +49,8 @@ struct LotteryState {
     }
 
     void Reset() { *this = LotteryState{}; }
+
+    bool HasAccumulator() const { return !accumulator_outpoint.IsNull(); }
 };
 
 /**
@@ -67,8 +69,8 @@ void LoadLotteryStateFromDB(const uint256& tipHash);
 
 /**
  * Write a post-block snapshot of state to evodb under blockHash.
- * Called inside ConnectBlock (within an open evoDb transaction) before
- * the transaction commits.
+ * Also appends blockHash to the persistent snapshot hash list used by PurgeStaleSnapshots.
+ * Called inside ConnectBlock (within an open evoDb transaction) before the transaction commits.
  */
 void WriteLotteryStateSnapshotForBlock(const uint256& blockHash, const LotteryState& state);
 
@@ -77,5 +79,18 @@ void WriteLotteryStateSnapshotForBlock(const uint256& blockHash, const LotterySt
  * Returns true if found. Called at DisconnectBlock to restore to pprev state.
  */
 bool ReadLotteryStateSnapshotForBlock(const uint256& blockHash, LotteryState& stateOut);
+
+// Snapshots to retain for reorg rollback. Covers the 100-block coinbase-maturity
+// finality horizon used by Bitcoin-lineage chains; any reorg deeper than this
+// would already violate other consensus rules before reaching LotteryState.
+static const int PTX_LOTTERY_SNAPSHOT_DEPTH = 100;
+
+/**
+ * Erase evodb snapshots older than keepCount blocks.
+ * Reads the snapshot hash list, erases the oldest (size - keepCount) entries
+ * from evodb, then rewrites the trimmed list.
+ * TODO: wire at Step 7 — call from ConnectBlock every PTX_LOTTERY_SNAPSHOT_DEPTH blocks.
+ */
+void PurgeStaleSnapshots(int keepCount = PTX_LOTTERY_SNAPSHOT_DEPTH);
 
 #endif // Hemis_PTX_LOTTERY_STATE_H

@@ -83,7 +83,10 @@ src/qt/test/moc*.cpp
 .*.swp
 *.*~*
 *.bak
+*.old
+*~
 *.rej
+src/test/test_ptx
 *.orig
 *.pyc
 *.o
