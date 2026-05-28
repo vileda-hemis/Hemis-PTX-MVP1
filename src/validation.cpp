@@ -49,6 +49,7 @@
 #include "validationinterface.h"
 #include "warnings.h"
 #include "zpiv/zpivmodule.h"
+#include "ptx/ptx_accum_script.h"
 
 #include <future>
 
@@ -385,6 +386,13 @@ static bool AcceptToMemoryPoolWorker(CTxMemPool& pool, CValidationState &state, 
     // LLMQ final commitment too, not valid as a loose transaction
     if (tx.IsQuorumCommitmentTx())
         return state.DoS(100, false, REJECT_INVALID, "llmqcomm");
+
+    // ODC-022: PTXCOALESCE/PTXPAYOUT are block-only; empty scriptSigs would
+    // fail VerifyScript, and they must never enter the mempool.
+    if (tx.IsPTXCoalesceTx())
+        return state.DoS(100, false, REJECT_INVALID, "ptxcoalesce-mempool-rejected");
+    if (tx.IsPTXPayoutTx())
+        return state.DoS(100, false, REJECT_INVALID, "ptxpayout-mempool-rejected");
 
     if (pfMissingInputs)
         *pfMissingInputs = false;
@@ -1136,6 +1144,15 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsVi
                 // a sanity check that our caching is not introducing consensus
                 // failures through additional data in, eg, the coins being
                 // spent being checked as a part of CScriptCheck.
+
+                // ODC-022: PTXCOALESCE spends LOTTERY_ACCUM_SCRIPT UTXOs with
+                // empty scriptSigs; script validity is established by the
+                // consensus rules in CheckSpecialTx, not by VerifyScript.
+                // Both conditions must hold — nType alone is not sufficient.
+                if (tx.IsPTXCoalesceTx() &&
+                    coin.out.scriptPubKey == GetLotteryAccumScript()) {
+                    continue;
+                }
 
                 // Verify signature
                 CScriptCheck check(coin.out, tx, i, flags, cacheStore, &precomTxData);

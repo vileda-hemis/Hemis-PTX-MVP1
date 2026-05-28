@@ -260,6 +260,8 @@ public:
         PROUPREV = 4,
         LLMQCOMM = 5,
         PTX = 6,
+        PTXCOALESCE = 9,   // ODC-022: lottery accumulator coalesce (block-only, empty extraPayload)
+        PTXPAYOUT = 10,    // ODC-022: lottery payout to winner  (block-only, empty extraPayload)
     };
 
     static const int16_t CURRENT_VERSION = TxVersion::LEGACY;
@@ -349,6 +351,12 @@ public:
     {
         return IsSpecialTx() && nType == TxType::PTX;
     }
+
+    // ODC-022: pure nType checks (no side effects, no extraPayload dependency).
+    // PTXCOALESCE/PTXPAYOUT use present-but-empty extraPayload so IsSpecialTx()
+    // returns false for them; predicates must stand alone.
+    bool IsPTXCoalesceTx() const { return isSaplingVersion() && nType == TxType::PTXCOALESCE; }
+    bool IsPTXPayoutTx()   const { return isSaplingVersion() && nType == TxType::PTXPAYOUT; }
 
     // Ensure that special and sapling fields are signed
     SigVersion GetRequiredSigVersion() const

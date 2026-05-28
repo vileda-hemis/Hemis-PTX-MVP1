@@ -534,14 +534,19 @@ static bool CheckSpecialTxBasic(const CTransaction& tx, CValidationState& state)
                          REJECT_INVALID, "bad-txns-special-coinbase");
     }
 
-    // Special txes must have a non-empty payload
-    if (!hasExtraPayload) {
+    // Special txes must have a non-empty payload.
+    // Exception: PTXCOALESCE/PTXPAYOUT carry present-but-empty extraPayload by
+    // design (ODC-022 §3.1) — their validity is established by consensus rules,
+    // not by payload content.  Exempt both here so rules in CheckSpecialTx run.
+    bool isPTXBlockOnly = (tx.nType == CTransaction::TxType::PTXCOALESCE ||
+                           tx.nType == CTransaction::TxType::PTXPAYOUT);
+    if (!hasExtraPayload && !isPTXBlockOnly) {
         return state.DoS(100, error("%s: Special tx (type=%d) without extra payload", __func__, tx.nType),
                          REJECT_INVALID, "bad-txns-payload-empty");
     }
 
-    // Size limits
-    if (tx.extraPayload->size() > MAX_SPECIALTX_EXTRAPAYLOAD) {
+    // Size limits (skipped for present-but-empty payloads; size() == 0 is always safe)
+    if (hasExtraPayload && tx.extraPayload->size() > MAX_SPECIALTX_EXTRAPAYLOAD) {
         return state.DoS(100, error("%s: Special tx payload oversize (%d)", __func__, tx.extraPayload->size()),
                          REJECT_INVALID, "bad-txns-payload-oversize");
     }
@@ -563,7 +568,9 @@ bool CheckSpecialTx(const CTransaction& tx, const CBlockIndex* pindexPrev, const
     }
     if (pindexPrev) {
         // reject special transactions before enforcement
-        if (!tx.IsNormalType() && !tx.IsProbabilisticTx() && !Params().GetConsensus().NetworkUpgradeActive(pindexPrev->nHeight + 1, Consensus::UPGRADE_V6_0)) {
+        if (!tx.IsNormalType() && !tx.IsProbabilisticTx() &&
+            !tx.IsPTXCoalesceTx() && !tx.IsPTXPayoutTx() &&
+            !Params().GetConsensus().NetworkUpgradeActive(pindexPrev->nHeight + 1, Consensus::UPGRADE_V6_0)) {
             return state.DoS(100, error("%s: Special tx when v6 upgrade not enforced yet", __func__),
                              REJECT_INVALID, "bad-txns-v6-not-active");
         }
@@ -626,6 +633,74 @@ bool CheckSpecialTx(const CTransaction& tx, const CBlockIndex* pindexPrev, const
             }
             return true;
         }
+        case CTransaction::TxType::PTXCOALESCE: {
+            // ODC-022 §3.4 — per-tx rules C1–C6.
+            // C7 (at-most-one-per-block) and C8 (mandatory-iff-PTXSESS) are
+            // block-scoped and checked in ProcessSpecialTxsInBlock below.
+
+            const CScript& accumScript = GetLotteryAccumScript();
+
+            // C1: every input must spend a LOTTERY_ACCUM_SCRIPT UTXO.
+            if (tx.vin.empty()) {
+                return state.DoS(100, error("%s: PTXCOALESCE has no inputs", __func__),
+                                 REJECT_INVALID, "ptxcoalesce-no-inputs");
+            }
+            // view is non-null in all production paths (ConnectBlock→ProcessSpecialTxsInBlock
+            // always provides a view).  CheckSpecialTxNoContext (used by CheckBlock) passes
+            // view=nullptr; the authoritative enforcement is in ConnectBlock.
+            if (view) {
+                for (const CTxIn& txin : tx.vin) {
+                    const Coin& coin = view->AccessCoin(txin.prevout);
+                    if (coin.IsSpent() || coin.out.scriptPubKey != accumScript) {
+                        return state.DoS(100, error("%s: PTXCOALESCE input is not LOTTERY_ACCUM_SCRIPT", __func__),
+                                         REJECT_INVALID, "ptxcoalesce-non-accum-input");
+                    }
+                }
+            }
+
+            // C2: exactly one output.
+            if (tx.vout.size() != 1) {
+                return state.DoS(100, error("%s: PTXCOALESCE must have exactly 1 output, got %d",
+                                            __func__, tx.vout.size()),
+                                 REJECT_INVALID, "ptxcoalesce-bad-output-count");
+            }
+
+            // C3: output scriptPubKey is LOTTERY_ACCUM_SCRIPT.
+            if (tx.vout[0].scriptPubKey != accumScript) {
+                return state.DoS(100, error("%s: PTXCOALESCE output script is not LOTTERY_ACCUM_SCRIPT", __func__),
+                                 REJECT_INVALID, "ptxcoalesce-bad-output-script");
+            }
+
+            // C4: output value equals sum of input values (zero miner fee).
+            // view guard: same rationale as C1 above.
+            if (view) {
+                CAmount inputSum = 0;
+                for (const CTxIn& txin : tx.vin) {
+                    inputSum += view->AccessCoin(txin.prevout).out.nValue;
+                }
+                if (tx.vout[0].nValue != inputSum) {
+                    return state.DoS(100, error("%s: PTXCOALESCE output value %d != input sum %d",
+                                                __func__, tx.vout[0].nValue, inputSum),
+                                     REJECT_INVALID, "ptxcoalesce-value-mismatch");
+                }
+            }
+
+            // C5: extraPayload must be present-but-empty (not nullopt, not non-empty).
+            if (tx.extraPayload == nullopt || !tx.extraPayload->empty()) {
+                return state.DoS(100, error("%s: PTXCOALESCE extraPayload must be present-but-empty", __func__),
+                                 REJECT_INVALID, "ptxcoalesce-bad-payload");
+            }
+
+            // C6: all scriptSigs must be empty.
+            for (unsigned int i = 0; i < tx.vin.size(); i++) {
+                if (!tx.vin[i].scriptSig.empty()) {
+                    return state.DoS(100, error("%s: PTXCOALESCE input %d has non-empty scriptSig", __func__, i),
+                                     REJECT_INVALID, "ptxcoalesce-nonempty-scriptsig");
+                }
+            }
+
+            return true;
+        }
     }
 
     return state.DoS(10, error("%s: special tx %s with invalid type %d", __func__, tx.GetHash().ToString(), tx.nType),
@@ -647,6 +722,31 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
         if (!CheckSpecialTx(*tx, pindex->pprev, view, state)) {
             // pass the state returned by the function above
             return false;
+        }
+    }
+
+    // ODC-022 §3.4 block-level rules C7 and C8 for PTXCOALESCE.
+    // These require counts across the full block and cannot be checked per-tx.
+    {
+        int ptxSessCount    = 0;
+        int coalesceCount   = 0;
+        for (const CTransactionRef& tx : block.vtx) {
+            if (tx->IsProbabilisticTx())  ++ptxSessCount;
+            if (tx->IsPTXCoalesceTx())    ++coalesceCount;
+        }
+        // C7: at most one PTXCOALESCE per block.
+        if (coalesceCount > 1) {
+            return state.DoS(100, error("%s: block contains %d PTXCOALESCE txs, max 1", __func__, coalesceCount),
+                             REJECT_INVALID, "ptxcoalesce-duplicate");
+        }
+        // C8: PTXCOALESCE is mandatory when PTXSESS confirmed; rejected when PTXSESS absent.
+        if (ptxSessCount > 0 && coalesceCount == 0) {
+            return state.DoS(100, error("%s: block has %d PTXSESS but no PTXCOALESCE", __func__, ptxSessCount),
+                             REJECT_INVALID, "ptxcoalesce-missing");
+        }
+        if (ptxSessCount == 0 && coalesceCount > 0) {
+            return state.DoS(100, error("%s: block has PTXCOALESCE but no PTXSESS", __func__),
+                             REJECT_INVALID, "ptxcoalesce-unexpected");
         }
     }
 
