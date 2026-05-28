@@ -49,6 +49,7 @@ public:
     CService addr;
     CScript scriptPayout;
     CScript scriptOperatorPayout;
+    CScript scriptPTXPayment; // ODC-020: registered PTX lottery payment address (empty = unset)
 
 public:
     CDeterministicGMState() {}
@@ -60,6 +61,7 @@ public:
         addr = pl.addr;
         scriptPayout = pl.scriptPayout;
         scriptOperatorPayout = pl.scriptOperatorPayout;
+        scriptPTXPayment = pl.scriptPTXPayment;
     }
     template <typename Stream>
     CDeterministicGMState(deserialize_type, Stream& s) { s >> *this; }
@@ -80,6 +82,11 @@ public:
         READWRITE(obj.addr);
         READWRITE(obj.scriptPayout);
         READWRITE(obj.scriptOperatorPayout);
+        try {
+            READWRITE(obj.scriptPTXPayment);
+        } catch (const std::ios_base::failure&) {
+            // old record without scriptPTXPayment — keep default empty CScript
+        }
     }
 
     void ResetOperatorFields()
@@ -129,6 +136,7 @@ public:
         Field_addr                              = 0x0800,
         Field_scriptPayout                      = 0x1000,
         Field_scriptOperatorPayout              = 0x2000,
+        Field_scriptPTXPayment                  = 0x4000,
     };
 
 #define DGM_STATE_DIFF_ALL_FIELDS \
@@ -145,7 +153,8 @@ public:
     DGM_STATE_DIFF_LINE(keyIDVoting) \
     DGM_STATE_DIFF_LINE(addr) \
     DGM_STATE_DIFF_LINE(scriptPayout) \
-    DGM_STATE_DIFF_LINE(scriptOperatorPayout)
+    DGM_STATE_DIFF_LINE(scriptOperatorPayout) \
+    DGM_STATE_DIFF_LINE(scriptPTXPayment)
 
 public:
     uint32_t fields{0};

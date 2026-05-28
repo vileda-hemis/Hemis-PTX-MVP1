@@ -53,6 +53,7 @@ enum ProRegParam {
     revocationReason,
     votingAddress_register,
     votingAddress_update,
+    ptxPaymentAddress,
 };
 
 static const std::map<ProRegParam, std::string> mapParamHelp = {
@@ -133,6 +134,11 @@ static const std::map<ProRegParam, std::string> mapParamHelp = {
             "%d. \"votingAddress\"          (string, required) The voting key address. The private key does not have to be known by your wallet.\n"
             "                                 It has to match the private key which is later used when voting on proposals.\n"
             "                                 If set to an empty string, the currently active voting key address is reused.\n"
+        },
+        {ptxPaymentAddress,
+            "%d. \"ptxPaymentAddress\"      (string, optional) The address to receive PTX lottery rewards (ODC-020/ODC-022).\n"
+            "                                 GMs without this set are ineligible for PTXPAYOUT lottery wins.\n"
+            "                                 Must be set at registration time to participate in the lottery.\n"
         },
     };
 
@@ -390,7 +396,7 @@ static std::string SignAndSendSpecialTx(CWallet* const pwallet, CMutableTransact
 static ProRegPL ParseProRegPLParams(const UniValue& params, unsigned int paramIdx)
 {
     assert(params.size() > paramIdx + 4);
-    assert(params.size() < paramIdx + 8);
+    assert(params.size() < paramIdx + 9);
     const auto& chainparams = Params();
     ProRegPL pl;
 
@@ -438,6 +444,13 @@ static ProRegPL ParseProRegPLParams(const UniValue& params, unsigned int paramId
             }
         }
     }
+    // ODC-020: optional PTX lottery payment address
+    if (params.size() > paramIdx + 7) {
+        const std::string& strPTXPayee = params[paramIdx + 7].get_str();
+        if (!strPTXPayee.empty()) {
+            pl.scriptPTXPayment = GetScriptForDestination(CTxDestination(ParsePubKeyIDFromAddress(strPTXPayee)));
+        }
+    }
     return pl;
 }
 
@@ -449,14 +462,14 @@ static UniValue ProTxRegister(const JSONRPCRequest& request, bool fSignAndSend)
     if (!EnsureWalletIsAvailable(pwallet, request.fHelp))
         return NullUniValue;
 
-    if (request.fHelp || request.params.size() < 7 || request.params.size() > 9) {
+    if (request.fHelp || request.params.size() < 7 || request.params.size() > 10) {
         throw std::runtime_error(
                 (fSignAndSend ?
-                    "protx_register \"collateralHash\" collateralIndex \"ipAndPort\" \"ownerAddress\" \"operatorPubKey\" \"votingAddress\" \"payoutAddress\" (operatorReward \"operatorPayoutAddress\")\n"
+                    "protx_register \"collateralHash\" collateralIndex \"ipAndPort\" \"ownerAddress\" \"operatorPubKey\" \"votingAddress\" \"payoutAddress\" (operatorReward \"operatorPayoutAddress\" \"ptxPaymentAddress\")\n"
                     "The collateral is specified through \"collateralHash\" and \"collateralIndex\" and must be an unspent\n"
                     "transaction output spendable by this wallet. It must also not be used by any other gamemaster.\n"
                         :
-                    "protx_register_prepare \"collateralHash\" collateralIndex \"ipAndPort\" \"ownerAddress\" \"operatorPubKey\" \"votingAddress\" \"payoutAddress\" (operatorReward \"operatorPayoutAddress\")\n"
+                    "protx_register_prepare \"collateralHash\" collateralIndex \"ipAndPort\" \"ownerAddress\" \"operatorPubKey\" \"votingAddress\" \"payoutAddress\" (operatorReward \"operatorPayoutAddress\" \"ptxPaymentAddress\")\n"
                     "\nCreates an unsigned ProTx and returns it. The ProTx must be signed externally with the collateral\n"
                     "key and then passed to \"protx_register_submit\".\n"
                     "The collateral is specified through \"collateralHash\" and \"collateralIndex\" and must be an unspent transaction output.\n"
@@ -471,7 +484,8 @@ static UniValue ProTxRegister(const JSONRPCRequest& request, bool fSignAndSend)
                 + GetHelpString(6, votingAddress_register)
                 + GetHelpString(7, payoutAddress_register)
                 + GetHelpString(8, operatorReward)
-                + GetHelpString(9, operatorPayoutAddress_register) +
+                + GetHelpString(9, operatorPayoutAddress_register)
+                + GetHelpString(10, ptxPaymentAddress) +
                 "\nResult:\n" +
                 (fSignAndSend ? (
                         "\"txid\"                 (string) The transaction id.\n"
@@ -616,9 +630,9 @@ UniValue protx_register_fund(const JSONRPCRequest& request)
     if (!EnsureWalletIsAvailable(pwallet, request.fHelp))
         return NullUniValue;
 
-    if (request.fHelp || request.params.size() < 6 || request.params.size() > 8) {
+    if (request.fHelp || request.params.size() < 6 || request.params.size() > 9) {
         throw std::runtime_error(
-                "protx_register_fund \"collateralAddress\" \"ipAndPort\" \"ownerAddress\" \"operatorPubKey\" \"votingAddress\" \"payoutAddress\" (operatorReward \"operatorPayoutAddress\")\n"
+                "protx_register_fund \"collateralAddress\" \"ipAndPort\" \"ownerAddress\" \"operatorPubKey\" \"votingAddress\" \"payoutAddress\" (operatorReward \"operatorPayoutAddress\" \"ptxPaymentAddress\")\n"
                 "\nCreates, funds and sends a ProTx to the network. The resulting transaction will move 10000 HMS\n"
                 "to the address specified by collateralAddress and will then function as gamemaster collateral.\n"
                 + HelpRequiringPassphrase(pwallet) + "\n"
@@ -630,7 +644,8 @@ UniValue protx_register_fund(const JSONRPCRequest& request)
                 + GetHelpString(5, votingAddress_register)
                 + GetHelpString(6, payoutAddress_register)
                 + GetHelpString(7, operatorReward)
-                + GetHelpString(8, operatorPayoutAddress_register) +
+                + GetHelpString(8, operatorPayoutAddress_register)
+                + GetHelpString(9, ptxPaymentAddress) +
                 "\nResult:\n"
                 "\"txid\"                        (string) The transaction id.\n"
                 "\nExamples:\n"
@@ -1067,9 +1082,9 @@ static const CRPCCommand commands[] =
     { "evo",         "generateblskeypair",             &generateblskeypair,     true,  {} },
     { "evo",         "protx_list",                     &protx_list,             true,  {"detailed","wallet_only","valid_only","height"} },
 #ifdef ENABLE_WALLET
-    { "evo",         "protx_register",                 &protx_register,         true,  {"collateralHash","collateralIndex","ipAndPort","ownerAddress","operatorPubKey","votingAddress","payoutAddress","operatorReward","operatorPayoutAddress"} },
-    { "evo",         "protx_register_fund",            &protx_register_fund,    true,  {"collateralAddress","ipAndPort","ownerAddress","operatorPubKey","votingAddress","payoutAddress","operatorReward","operatorPayoutAddress"} },
-    { "evo",         "protx_register_prepare",         &protx_register_prepare, true,  {"collateralHash","collateralIndex","ipAndPort","ownerAddress","operatorPubKey","votingAddress","payoutAddress","operatorReward","operatorPayoutAddress"} },
+    { "evo",         "protx_register",                 &protx_register,         true,  {"collateralHash","collateralIndex","ipAndPort","ownerAddress","operatorPubKey","votingAddress","payoutAddress","operatorReward","operatorPayoutAddress","ptxPaymentAddress"} },
+    { "evo",         "protx_register_fund",            &protx_register_fund,    true,  {"collateralAddress","ipAndPort","ownerAddress","operatorPubKey","votingAddress","payoutAddress","operatorReward","operatorPayoutAddress","ptxPaymentAddress"} },
+    { "evo",         "protx_register_prepare",         &protx_register_prepare, true,  {"collateralHash","collateralIndex","ipAndPort","ownerAddress","operatorPubKey","votingAddress","payoutAddress","operatorReward","operatorPayoutAddress","ptxPaymentAddress"} },
     { "evo",         "protx_register_submit",          &protx_register_submit,  true,  {"tx","sig"} },
     { "evo",         "protx_revoke",                   &protx_revoke,           true,  {"proTxHash","operatorKey","reason"} },
     { "evo",         "protx_update_registrar",         &protx_update_registrar, true,  {"proTxHash","operatorPubKey","votingAddress","payoutAddress","ownerKey"} },
