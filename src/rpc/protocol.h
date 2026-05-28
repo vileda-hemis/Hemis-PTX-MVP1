@@ -52,6 +52,9 @@ enum RPCErrorCode {
     RPC_IN_WARMUP                       = -28, //! Client still warming up
     RPC_METHOD_DEPRECATED               = -32, //! RPC method is deprecated
 
+    //! PTX errors
+    RPC_PTX_SETTLEMENT_FAILED           = -32050, //! PTX_AutoCommit could not build/fund/sign/submit the PTXSESS tx
+
     //! Aliases for backward compatibility
     RPC_TRANSACTION_ERROR               = RPC_VERIFY_ERROR,
     RPC_TRANSACTION_REJECTED            = RPC_VERIFY_REJECTED,

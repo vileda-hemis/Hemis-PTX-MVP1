@@ -17,6 +17,7 @@
 #include "primitives/transaction.h"
 #include "primitives/block.h"
 #include "script/standard.h"
+#include "ptx/ptx_accum_script.h"
 #include "spork.h"
 
 /* -- Helper static functions -- */
@@ -610,6 +611,19 @@ bool CheckSpecialTx(const CTransaction& tx, const CBlockIndex* pindexPrev, const
                 return state.Invalid(false, REJECT_INVALID, "ptx-missing-sig");
             if (payload.nSeedHeight == 0)
                 return state.Invalid(false, REJECT_INVALID, "ptx-bad-height");
+            // ODC-022 §3.3: every PTXSESS must carry exactly one output to
+            // LOTTERY_ACCUM_SCRIPT at value nPTXServiceFee.
+            {
+                const CScript& accumScript = GetLotteryAccumScript();
+                const CAmount  serviceFee  = Params().PTXServiceFee();
+                int accumCount = 0;
+                for (const CTxOut& out : tx.vout) {
+                    if (out.scriptPubKey == accumScript && out.nValue == serviceFee)
+                        ++accumCount;
+                }
+                if (accumCount != 1)
+                    return state.Invalid(false, REJECT_INVALID, "ptx-bad-accum-output");
+            }
             return true;
         }
     }

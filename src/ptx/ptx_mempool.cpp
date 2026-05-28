@@ -5,11 +5,12 @@
 #include "ptx/ptx_mempool.h"
 
 #include "chainparams.h"
-#include "ptx/ptx_lottery.h"
 #include "consensus/validation.h"
 #include "key_io.h"
 #include "logging.h"
 #include "primitives/transaction.h"
+#include "ptx/ptx_accum_script.h"
+#include "rpc/protocol.h"
 #include "script/script.h"
 #include "script/sign.h"
 #include "script/standard.h"
@@ -32,11 +33,11 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
 {
 #ifndef ENABLE_WALLET
     LogPrintf("PTX: wallet not compiled in, cannot fund PTXSESS transaction\n");
-    return "pending";
+    throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED, "wallet not compiled in");
 #else
     if (vpwallets.empty()) {
         LogPrintf("PTX: no wallet available, cannot fund PTXSESS transaction\n");
-        return "pending";
+        throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED, "no wallet available");
     }
     CWallet* pwallet = vpwallets[0];
 
@@ -49,14 +50,8 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
     opret << OP_RETURN << ToByteVector(round.round_seed);
     mtx.vout.push_back(CTxOut(0, opret));
 
-    // vout[1]: ptx_service_fee — 1 HMS to the lottery pool (KDD-023 §9)
-    const CChainParams& chainparams = Params();
-    const CTxDestination poolDest = DecodeDestination(chainparams.PTXLotteryPoolAddress());
-    if (!IsValidDestination(poolDest)) {
-        LogPrintf("PTX: invalid lottery pool address: %s\n", chainparams.PTXLotteryPoolAddress());
-        return "pending";
-    }
-    mtx.vout.push_back(CTxOut(chainparams.PTXServiceFee(), GetScriptForDestination(poolDest)));
+    // vout[1]: 1 HMS service fee to LOTTERY_ACCUM_SCRIPT (ODC-022 §3.3)
+    mtx.vout.push_back(CTxOut(Params().PTXServiceFee(), GetLotteryAccumScript()));
 
     // Embed payload before FundTransaction so tx size (and thus fee) is accurate
     SetTxPayload(mtx, payload);
@@ -68,7 +63,7 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
         std::string strFailReason;
         if (!pwallet->FundTransaction(mtx, nFee, false, CFeeRate(0), nChangePos, strFailReason, false, false, {})) {
             LogPrintf("PTX: FundTransaction failed: %s\n", strFailReason);
-            return "pending";
+            throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED, strFailReason);
         }
     }
 
@@ -80,7 +75,8 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
             const Coin& coin = pcoinsTip->AccessCoin(txin.prevout);
             if (coin.IsSpent()) {
                 LogPrintf("PTX: input %d already spent\n", i);
-                return "pending";
+                throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED,
+                                   "input " + std::to_string(i) + " already spent");
             }
             const SigVersion sv = mtx.GetRequiredSigVersion();
             txin.scriptSig.clear();
@@ -88,7 +84,8 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
             if (!ProduceSignature(MutableTransactionSignatureCreator(pwallet, &mtx, i, coin.out.nValue, SIGHASH_ALL),
                                   coin.out.scriptPubKey, sigdata, sv, false)) {
                 LogPrintf("PTX: signing input %d failed\n", i);
-                return "pending";
+                throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED,
+                                   "signing input " + std::to_string(i) + " failed");
             }
             UpdateTransaction(mtx, i, sigdata);
         }
@@ -99,15 +96,14 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
         TryATMP(mtx, false);
         RelayTx(txid);
         LogPrintf("PTX: committed and relayed %s\n", txid.GetHex());
-        // Accumulate service fee in lottery pool tracker (KDD-030).
-        PTX_AddToPoolBalance(chainparams.PTXServiceFee());
         return txid.GetHex();
     } catch (const UniValue& objError) {
         LogPrintf("PTX: mempool rejected: %s\n", objError["message"].getValStr());
-        return "pending";
+        throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED,
+                           "mempool rejected: " + objError["message"].getValStr());
     } catch (const std::exception& e) {
         LogPrintf("PTX: error: %s\n", e.what());
-        return "pending";
+        throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED, e.what());
     }
 #endif
 }
