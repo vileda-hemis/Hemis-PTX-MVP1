@@ -415,6 +415,7 @@ libbitcoin_server_a_SOURCES = \
   ptx/ptx_exclude.cpp \
   ptx/ptx_bls.cpp \
   ptx/ptx_validation_interface.cpp \
+  ptx/ptx_accum_script.cpp \
   llmq/quorums_signing_shares.cpp \
   tiertwo/gamemaster_meta_manager.cpp \
   tiertwo/net_gamemasters.cpp \

@@ -863,15 +863,18 @@ std::string ArgsManager::GetChainName() const
     bool fRegTest = ArgsManagerHelper::GetNetBoolArg(*this, "-regtest");
     bool fTestNet = ArgsManagerHelper::GetNetBoolArg(*this, "-testnet");
     bool fPTXTestNet = ArgsManagerHelper::GetNetBoolArg(*this, "-ptxtestnet");
+    bool fPTXBeaTestNet = ArgsManagerHelper::GetNetBoolArg(*this, "-ptxbea");
 
-    if ((int)fTestNet + (int)fRegTest + (int)fPTXTestNet > 1)
-        throw std::runtime_error("Only one of -testnet, -regtest, -ptxtestnet can be used.");
+    if ((int)fTestNet + (int)fRegTest + (int)fPTXTestNet + (int)fPTXBeaTestNet > 1)
+        throw std::runtime_error("Only one of -testnet, -regtest, -ptxtestnet, -ptxbea can be used.");
     if (fRegTest)
         return CBaseChainParams::REGTEST;
     if (fTestNet)
         return CBaseChainParams::TESTNET;
     if (fPTXTestNet)
         return CBaseChainParams::PTXTESTNET;
+    if (fPTXBeaTestNet)
+        return CBaseChainParams::PTXBEATESTNET;
     return CBaseChainParams::MAIN;
 }
 

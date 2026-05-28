@@ -51,6 +51,7 @@
 #include "validation.h"
 #include "validationinterface.h"
 #include "warnings.h"
+#include "ptx/ptx_accum_script.h"
 #include "ptx/ptx_pose.h"
 #include "ptx/ptx_quorum.h"
 #include "ptx/ptx_validation_interface.h"
@@ -1432,6 +1433,7 @@ bool AppInitMain()
     // PTX: load node registry from config, then restore PoSe state from disk.
     PTX_LoadNodesFromArgs();
     g_ptx_pose_tracker.Load();
+    LogLotteryAccumScriptAtStartup();
     g_ptx_validation_interface = new PTXValidationInterface();
     RegisterValidationInterface(g_ptx_validation_interface);
 

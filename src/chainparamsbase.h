@@ -23,6 +23,7 @@ public:
     static const std::string TESTNET;
     static const std::string REGTEST;
     static const std::string PTXTESTNET;
+    static const std::string PTXBEATESTNET;
     ///@}
 
     const std::string& DataDir() const { return strDataDir; }

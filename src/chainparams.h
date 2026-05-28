@@ -78,7 +78,7 @@ public:
     /** How long to wait until we allow retrying of a LLMQ connection  */
     int LLMQConnectionRetryTimeout() const { return nLLMQConnectionRetryTimeout; }
     /** If this chain is exclusively used for testing */
-    bool IsTestChain() const { return IsTestnet() || IsRegTestNet() || IsPTXTestNet(); }
+    bool IsTestChain() const { return IsTestnet() || IsRegTestNet() || IsPTXTestNet() || IsPTXBeaTestNet(); }
     /** Make miner wait to have peers to avoid wasting work */
     bool MiningRequiresPeers() const { return !IsRegTestNet(); }
     /** Headers first syncing is disabled */
@@ -97,6 +97,7 @@ public:
     bool IsRegTestNet() const { return NetworkIDString() == CBaseChainParams::REGTEST; }
     bool IsTestnet() const { return NetworkIDString() == CBaseChainParams::TESTNET; }
     bool IsPTXTestNet() const { return NetworkIDString() == CBaseChainParams::PTXTESTNET; }
+    bool IsPTXBeaTestNet() const { return NetworkIDString() == CBaseChainParams::PTXBEATESTNET; }
 
     /** Tier two requests blockage mark expiration time */
     int FulfilledRequestExpireTime() const { return nFulfilledRequestExpireTime; }
@@ -109,6 +110,9 @@ public:
 
     /** PTX lottery settlement window in blocks (KDD-030: 5 for testnet, 1440 for mainnet) */
     int PTXSettlementWindow() const { return nPTXSettlementWindow; }
+
+    /** PTX payout miner fee: amount sent to block miner inside PTXPAYOUT (ODC-022) */
+    CAmount PTXPayoutMinerFee() const { return nPTXPayoutMinerFee; }
 
     void UpdateNetworkUpgradeParameters(Consensus::UpgradeIndex idx, int nActivationHeight);
 protected:
@@ -133,6 +137,7 @@ protected:
     std::string strPTXLotteryPoolAddress;
     CAmount nPTXServiceFee{0};
     int nPTXSettlementWindow{1440};
+    CAmount nPTXPayoutMinerFee{0};
 };
 
 /**
