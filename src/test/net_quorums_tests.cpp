@@ -1,16 +1,8 @@
-<<<<<<< HEAD
-// Copyright (c) 2022 The PIVX Core developers
-// Distributed under the MIT software license, see the accompanying
-// file COPYING or https://www.opensource.org/licenses/mit-license.php.
-
-#include "test/test_pivx.h"
-=======
 // Copyright (c) 2022 The Hemis Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or https://www.opensource.org/licenses/mit-license.php.
 
 #include "test/test_Hemis.h"
->>>>>>> 1f345019d (first step)
 
 #include "evo/deterministicgms.h"
 #include "llmq/quorums_connections.h"

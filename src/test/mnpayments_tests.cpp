@@ -1,16 +1,8 @@
-<<<<<<< HEAD
-// Copyright (c) 2021 The PIVX Core developers
-// Distributed under the MIT software license, see the accompanying
-// file COPYING or https://www.opensource.org/licenses/mit-license.php.
-
-#include "test/test_pivx.h"
-=======
 // Copyright (c) 2021 The Hemis Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or https://www.opensource.org/licenses/mit-license.php.
 
 #include "test/test_Hemis.h"
->>>>>>> 1f345019d (first step)
 
 #include "blockassembler.h"
 #include "consensus/merkle.h"

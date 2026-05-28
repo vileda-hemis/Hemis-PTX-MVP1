@@ -25,8 +25,4 @@ struct SaplingRegTestingSetup : public SaplingTestingSetup
 };
 
 
-<<<<<<< HEAD
-#endif //PIVX_SAPLING_TEST_FIXTURE_H
-=======
 #endif //Hemis_SAPLING_TEST_FIXTURE_H
->>>>>>> 1f345019d (first step)
