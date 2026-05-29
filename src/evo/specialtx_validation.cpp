@@ -170,6 +170,17 @@ bool ValidateProRegNodeId(const std::string& node_id, const COutPoint& collatera
     return true;
 }
 
+// ODC-022 Step 10: validate the optional scriptPTXPayment field on a ProRegPL.
+// Empty is the legitimate opt-out; non-empty must be P2PKH so the PTXPAYOUT output
+// is always spendable.  Mirrors the identical constraint on scriptPayout.
+bool ValidateProRegPTXPayee(const ProRegPL& pl, CValidationState& state)
+{
+    if (!pl.scriptPTXPayment.empty() && !pl.scriptPTXPayment.IsPayToPublicKeyHash()) {
+        return state.DoS(10, false, REJECT_INVALID, "bad-protx-ptx-payee");
+    }
+    return true;
+}
+
 // Provider Register Payload
 static bool CheckProRegTx(const CTransaction& tx, const CBlockIndex* pindexPrev, const CCoinsViewCache* view, CValidationState& state)
 {
@@ -203,6 +214,7 @@ static bool CheckProRegTx(const CTransaction& tx, const CBlockIndex* pindexPrev,
     if (!pl.scriptOperatorPayout.empty() && !pl.scriptOperatorPayout.IsPayToPublicKeyHash()) {
         return state.DoS(10, false, REJECT_INVALID, "bad-protx-operator-payee");
     }
+    if (!ValidateProRegPTXPayee(pl, state)) return false;
 
     CTxDestination payoutDest;
     if (!ExtractDestination(pl.scriptPayout, payoutDest)) {

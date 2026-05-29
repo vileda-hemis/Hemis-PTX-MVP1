@@ -42,6 +42,13 @@ bool ValidateProRegNodeId(const std::string& node_id,
                            const COutPoint& collateral,
                            CValidationState& state);
 
+// ODC-022 Step 10: validate the optional scriptPTXPayment field on a ProRegPL.
+// Empty is allowed (operator opts out of lottery eligibility). Non-empty must be P2PKH —
+// same constraint as scriptPayout — to prevent an unspendable script from becoming the
+// PTXPAYOUT recipient and burning accumulated lottery funds.
+// Exposed for unit tests (mirrors ValidateProRegNodeId extraction pattern).
+bool ValidateProRegPTXPayee(const ProRegPL& pl, CValidationState& state);
+
 // ODC-022: block-level PTXCOALESCE count rules C7 (≤1 per block) and C8
 // (mandatory iff PTXSESS present, forbidden otherwise).  Called from
 // ProcessSpecialTxsInBlock and from the integration test so the test

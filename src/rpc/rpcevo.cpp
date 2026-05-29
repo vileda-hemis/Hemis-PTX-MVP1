@@ -589,10 +589,13 @@ static UniValue ProTxRegister(const JSONRPCRequest& request, bool fSignAndSend)
         SignSpecialTxPayloadByString(pl, keyCollateral); // prove we own the collateral
         // check the payload, add the tx inputs sigs, and send the tx.
         UniValue txid = SignAndSendSpecialTx(pwallet, tx, pl);
-        if (!pl.node_id.empty()) {
+        CTxDestination ptxDest1;
+        bool hasPTXPayee1 = !pl.scriptPTXPayment.empty() && ExtractDestination(pl.scriptPTXPayment, ptxDest1);
+        if (!pl.node_id.empty() || hasPTXPayee1) {
             UniValue ret(UniValue::VOBJ);
             ret.pushKV("txid", txid);
-            ret.pushKV("ptxNodeId", pl.node_id);
+            if (!pl.node_id.empty()) ret.pushKV("ptxNodeId", pl.node_id);
+            if (hasPTXPayee1) ret.pushKV("ptxPaymentAddress", EncodeDestination(ptxDest1));
             return ret;
         }
         return txid;
@@ -605,6 +608,9 @@ static UniValue ProTxRegister(const JSONRPCRequest& request, bool fSignAndSend)
     ret.pushKV("collateralAddress", EncodeDestination(txDest));
     ret.pushKV("signMessage", pl.MakeSignString());
     if (!pl.node_id.empty()) ret.pushKV("ptxNodeId", pl.node_id);
+    CTxDestination ptxDest2;
+    if (!pl.scriptPTXPayment.empty() && ExtractDestination(pl.scriptPTXPayment, ptxDest2))
+        ret.pushKV("ptxPaymentAddress", EncodeDestination(ptxDest2));
     return ret;
 }
 
@@ -736,10 +742,13 @@ UniValue protx_register_fund(const JSONRPCRequest& request)
     pl.vchSig.clear();
     // check the payload, add the tx inputs sigs, and send the tx.
     UniValue txid = SignAndSendSpecialTx(pwallet, tx, pl);
-    if (!pl.node_id.empty()) {
+    CTxDestination ptxDest3;
+    bool hasPTXPayee3 = !pl.scriptPTXPayment.empty() && ExtractDestination(pl.scriptPTXPayment, ptxDest3);
+    if (!pl.node_id.empty() || hasPTXPayee3) {
         UniValue ret(UniValue::VOBJ);
         ret.pushKV("txid", txid);
-        ret.pushKV("ptxNodeId", pl.node_id);
+        if (!pl.node_id.empty()) ret.pushKV("ptxNodeId", pl.node_id);
+        if (hasPTXPayee3) ret.pushKV("ptxPaymentAddress", EncodeDestination(ptxDest3));
         return ret;
     }
     return txid;
