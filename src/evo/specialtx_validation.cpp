@@ -726,6 +726,31 @@ bool CheckSpecialTxNoContext(const CTransaction& tx, CValidationState& state)
     return CheckSpecialTx(tx, nullptr, nullptr, state);
 }
 
+bool CheckPTXCoalesceBlockRules(const CBlock& block, CValidationState& state)
+{
+    AssertLockHeld(cs_main);
+    int ptxSessCount  = 0;
+    int coalesceCount = 0;
+    for (const CTransactionRef& tx : block.vtx) {
+        if (tx->IsProbabilisticTx()) ++ptxSessCount;
+        if (tx->IsPTXCoalesceTx())   ++coalesceCount;
+    }
+    // C7: at most one PTXCOALESCE per block.
+    if (coalesceCount > 1) {
+        return state.DoS(100, error("%s: block contains %d PTXCOALESCE txs, max 1", __func__, coalesceCount),
+                         REJECT_INVALID, "ptxcoalesce-duplicate");
+    }
+    // C8: PTXCOALESCE mandatory iff PTXSESS present.
+    if (ptxSessCount > 0 && coalesceCount == 0) {
+        return state.DoS(100, error("%s: block has %d PTXSESS but no PTXCOALESCE", __func__, ptxSessCount),
+                         REJECT_INVALID, "ptxcoalesce-missing");
+    }
+    if (ptxSessCount == 0 && coalesceCount > 0) {
+        return state.DoS(100, error("%s: block has PTXCOALESCE but no PTXSESS", __func__),
+                         REJECT_INVALID, "ptxcoalesce-unexpected");
+    }
+    return true;
+}
 
 bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, const CCoinsViewCache* view, CValidationState& state, bool fJustCheck)
 {
@@ -739,29 +764,8 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
         }
     }
 
-    // ODC-022 §3.4 block-level rules C7 and C8 for PTXCOALESCE.
-    // These require counts across the full block and cannot be checked per-tx.
-    {
-        int ptxSessCount    = 0;
-        int coalesceCount   = 0;
-        for (const CTransactionRef& tx : block.vtx) {
-            if (tx->IsProbabilisticTx())  ++ptxSessCount;
-            if (tx->IsPTXCoalesceTx())    ++coalesceCount;
-        }
-        // C7: at most one PTXCOALESCE per block.
-        if (coalesceCount > 1) {
-            return state.DoS(100, error("%s: block contains %d PTXCOALESCE txs, max 1", __func__, coalesceCount),
-                             REJECT_INVALID, "ptxcoalesce-duplicate");
-        }
-        // C8: PTXCOALESCE is mandatory when PTXSESS confirmed; rejected when PTXSESS absent.
-        if (ptxSessCount > 0 && coalesceCount == 0) {
-            return state.DoS(100, error("%s: block has %d PTXSESS but no PTXCOALESCE", __func__, ptxSessCount),
-                             REJECT_INVALID, "ptxcoalesce-missing");
-        }
-        if (ptxSessCount == 0 && coalesceCount > 0) {
-            return state.DoS(100, error("%s: block has PTXCOALESCE but no PTXSESS", __func__),
-                             REJECT_INVALID, "ptxcoalesce-unexpected");
-        }
+    if (!CheckPTXCoalesceBlockRules(block, state)) {
+        return false;
     }
 
     if (!CheckAndApplyPTXCoalesce(block, pindex, state, fJustCheck)) {

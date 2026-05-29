@@ -312,9 +312,12 @@ BOOST_AUTO_TEST_CASE(Coalesce_GeneratedTxPassesStep6Rules)
             "CheckSpecialTx rejected: " + state.GetRejectReason());
     }
 
-    // --- Step 7 structural check (C7–C8 + input/value correctness) ---
-    // fJustCheck=true: validates but does not mutate LotteryState or write snapshots.
-    // pprev=nullptr is safe: CheckAndApplyPTXCoalesce does not dereference pprev.
+    // --- Block-level count rules (C7: ≤1 coalesce, C8: mandatory iff PTXSESS) ---
+    // --- plus Step 7 structural check (input/value correctness) ---
+    // Both helpers are called directly so the test exercises C7/C8 against
+    // the generator's output without invoking deterministicGMManager or llmq.
+    // fJustCheck=true in CheckAndApplyPTXCoalesce: validates without mutating state.
+    // pprev=nullptr is safe: neither helper dereferences pprev.
     {
         LOCK(cs_main);
         CBlock block;
@@ -333,10 +336,15 @@ BOOST_AUTO_TEST_CASE(Coalesce_GeneratedTxPassesStep6Rules)
         idx.nHeight    = 1;
         idx.pprev      = nullptr;
 
-        CValidationState state;
+        CValidationState stateC78;
         BOOST_CHECK_MESSAGE(
-            CheckAndApplyPTXCoalesce(block, &idx, state, /*fJustCheck=*/true),
-            "CheckAndApplyPTXCoalesce rejected: " + state.GetRejectReason());
+            CheckPTXCoalesceBlockRules(block, stateC78),
+            "CheckPTXCoalesceBlockRules rejected: " + stateC78.GetRejectReason());
+
+        CValidationState stateStep7;
+        BOOST_CHECK_MESSAGE(
+            CheckAndApplyPTXCoalesce(block, &idx, stateStep7, /*fJustCheck=*/true),
+            "CheckAndApplyPTXCoalesce rejected: " + stateStep7.GetRejectReason());
     }
 }
 

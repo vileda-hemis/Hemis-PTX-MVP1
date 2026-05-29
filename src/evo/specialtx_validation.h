@@ -33,6 +33,13 @@ bool CheckSpecialTxNoContext(const CTransaction& tx, CValidationState& state) EX
 bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, const CCoinsViewCache* view, CValidationState& state, bool fJustCheck) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 bool UndoSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex);
 
+// ODC-022: block-level PTXCOALESCE count rules C7 (≤1 per block) and C8
+// (mandatory iff PTXSESS present, forbidden otherwise).  Called from
+// ProcessSpecialTxsInBlock and from the integration test so the test
+// exercises C7/C8 against the generator's output without invoking DGM or LLMQ.
+bool CheckPTXCoalesceBlockRules(const CBlock& block,
+                                CValidationState& state) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
 // ODC-022 Step 7: PTXCOALESCE structural check + LotteryState update.
 // Validates that the PTXCOALESCE in block (if any) spends exactly the expected inputs
 // (prior accumulator + all PTXSESS fee outputs from this block, in block order) and
