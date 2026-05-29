@@ -15,8 +15,11 @@
 #include "consensus/upgrades.h"
 #include "consensus/validation.h"
 #include "llmq/quorums_blockprocessor.h"
+#include "evo/deterministicgms.h"
 #include "ptx/ptx_coalesce.h"
 #include "ptx/ptx_lottery_state.h"
+#include "ptx/ptx_payout.h"
+#include "ptx/ptx_pose.h"
 #include "gamemaster-payments.h"
 #include "policy/policy.h"
 #include "pow.h"
@@ -224,21 +227,48 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
         pblocktemplate->vTxFees[0] = -nFees;
     }
 
-    // ODC-022 §3.4: if any PTXSESS txs landed in the block, generate and append the
-    // PTXCOALESCE.  Must be after addPackageTxs() (PTXSESS come from mempool) and
-    // before header/Merkle finalisation so the tx is part of the committed block.
+    // ODC-022 §3.4/§3.5: generate PTXCOALESCE (if PTXSESS present) then PTXPAYOUT
+    // (at settlement boundaries with eligible winner).  Both must precede header/Merkle
+    // finalisation.  PTXCOALESCE must precede PTXPAYOUT (§3.6 ordering).
     {
         LOCK(cs_main);
+
+        // Track post-coalesce accumulator; starts at current LotteryState.
+        COutPoint currentAccumOutpoint = GetLotteryState().accumulator_outpoint;
+        CAmount   currentAccumValue    = GetLotteryState().accumulator_value;
+
+        // PTXCOALESCE: generated when any PTXSESS confirmed in this block.
         std::vector<AccumInput> newFees = PTX_CollectPTXSESSFeeOutputs(pblock->vtx);
         if (!newFees.empty()) {
-            const LotteryState& ls = GetLotteryState();
             CTransactionRef coalesceTx = PTX_BuildCoalesceTx(
-                ls.accumulator_outpoint, ls.accumulator_value, newFees);
+                currentAccumOutpoint, currentAccumValue, newFees);
             pblock->vtx.emplace_back(coalesceTx);
             pblocktemplate->vTxFees.emplace_back(0);    // zero miner fee (C4)
-            pblocktemplate->vTxSigOps.emplace_back(0);  // no standard sigops
+            pblocktemplate->vTxSigOps.emplace_back(0);
             nBlockSize += coalesceTx->GetTotalSize();
             ++nBlockTx;
+            // Update local view: PTXCOALESCE's output is the new accumulator.
+            currentAccumOutpoint = COutPoint(coalesceTx->GetHash(), 0);
+            currentAccumValue    = coalesceTx->vout[0].nValue;
+        }
+
+        // PTXPAYOUT: generated at settlement boundaries when eligible winner exists.
+        if (nHeight % Params().PTXSettlementWindow() == 0 &&
+            !currentAccumOutpoint.IsNull()) {
+            LotteryState tempLs = GetLotteryState();
+            tempLs.accumulator_outpoint = currentAccumOutpoint;
+            tempLs.accumulator_value    = currentAccumValue;
+            CDeterministicGMList gmList = deterministicGMManager->GetListForBlock(pindexPrev);
+            const Optional<CTransactionRef> payoutTx = PTX_BuildPayoutTx(
+                tempLs, gmList, g_ptx_pose_tracker, nHeight, pindexPrev->GetBlockHash());
+            if (payoutTx) {
+                pblock->vtx.emplace_back(*payoutTx);
+                nFees += Params().PTXPayoutMinerFee();
+                pblocktemplate->vTxFees.emplace_back(Params().PTXPayoutMinerFee());
+                pblocktemplate->vTxSigOps.emplace_back(0);
+                nBlockSize += (*payoutTx)->GetTotalSize();
+                ++nBlockTx;
+            }
         }
     }
 

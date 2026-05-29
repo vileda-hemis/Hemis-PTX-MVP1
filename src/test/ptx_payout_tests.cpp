@@ -99,6 +99,10 @@ static std::string RunPayoutBlockRules(const std::vector<CTransactionRef>& txs, 
 
 // Run CheckAndApplyPTXPayout with hand-built DGM list and the global pose tracker.
 // Callers must call PopulateTracker() before this to set up tracker state.
+//
+// Entropy fix (Step 8 amendment): CheckAndApplyPTXPayout uses pindex->pprev->GetBlockHash()
+// as entropy base — not pindex->GetBlockHash() — to break the circular dependency between
+// the block hash and PTXPAYOUT content.  Wire a dummy pprev so P10 can derive entropy.
 static std::string RunApplyPayout(const std::vector<CTransactionRef>& txs,
                                    const CDeterministicGMList&          gmList,
                                    int                                  height,
@@ -108,10 +112,18 @@ static std::string RunApplyPayout(const std::vector<CTransactionRef>& txs,
     CBlock block;
     block.vtx = txs;
     CValidationState state;
+
+    // Parent block: fixed hash used as entropy base by tests that call PTX_ComputeSelectionEntropy.
+    uint256 prevBlockHash = uint256S("2222222222222222222222222222222222222222222222222222222222222222");
+    CBlockIndex dummyPrev;
+    dummyPrev.phashBlock = &prevBlockHash;
+
     uint256 blockHash = uint256S("3333333333333333333333333333333333333333333333333333333333333333");
     CBlockIndex dummyIndex;
     dummyIndex.nHeight    = height;
     dummyIndex.phashBlock = &blockHash;
+    dummyIndex.pprev      = &dummyPrev;
+
     if (CheckAndApplyPTXPayout(block, &dummyIndex, gmList, g_ptx_pose_tracker, state, fJustCheck)) return "";
     return state.GetRejectReason();
 }
@@ -306,9 +318,9 @@ BOOST_AUTO_TEST_CASE(PTXPayout_AcceptsValidStructure)
     });
 
     // Compute what the validator will compute for P10.
-    // The blockHash for dummyIndex is 333...3 (set in RunApplyPayout).
-    uint256 blockHash = uint256S("3333333333333333333333333333333333333333333333333333333333333333");
-    uint256 entropy   = PTX_ComputeSelectionEntropy(0, blockHash);
+    // Entropy uses the PARENT block hash (222...2) — matches RunApplyPayout's dummyPrev.
+    uint256 prevBlockHash = uint256S("2222222222222222222222222222222222222222222222222222222222222222");
+    uint256 entropy   = PTX_ComputeSelectionEntropy(0, prevBlockHash);
     Optional<CScript> winner = PTX_SelectWinner(gmList, g_ptx_pose_tracker, entropy);
     BOOST_REQUIRE_MESSAGE(winner, "PTX_SelectWinner returned nullopt — eligible GMs set up incorrectly");
 
@@ -401,8 +413,9 @@ BOOST_AUTO_TEST_CASE(PTXPayout_RejectedIfWrongWinnerSelected)
     // The exact winner (gm01 or gm02) doesn't matter; what matters is that gm03 is the
     // planted wrong winner AND the broken algo (last-alphabetically) picks gm03, making
     // PTXPayout_RejectedIfWrongWinnerSelected flip RED under the broken algo.
-    uint256 blockHash = uint256S("3333333333333333333333333333333333333333333333333333333333333333");
-    uint256 entropy   = PTX_ComputeSelectionEntropy(0, blockHash);
+    // Entropy uses parent hash (222...2) — matches RunApplyPayout's dummyPrev.
+    uint256 prevBlockHash = uint256S("2222222222222222222222222222222222222222222222222222222222222222");
+    uint256 entropy   = PTX_ComputeSelectionEntropy(0, prevBlockHash);
     Optional<CScript> realWinner = PTX_SelectWinner(gmList, g_ptx_pose_tracker, entropy);
     BOOST_REQUIRE(realWinner);
     BOOST_REQUIRE(*realWinner != script03);  // the real winner must not be gm03 (the planted wrong winner)

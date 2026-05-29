@@ -5,7 +5,7 @@
 #include "ptx/ptx_bls.h"
 #include "ptx/ptx_commit_reveal.h"
 #include "ptx/ptx_fanout.h"
-#include "ptx/ptx_lottery.h"
+#include "ptx/ptx_lottery_state.h"
 #include "ptx/ptx_mempool.h"
 #include "ptx/ptx_output_mapping.h"
 #include "ptx/ptx_pose.h"
@@ -665,7 +665,7 @@ UniValue ptx_lottery_status(const JSONRPCRequest& request)
     const int next_at = height + (window - (height % window));
 
     UniValue ret(UniValue::VOBJ);
-    ret.pushKV("pool_balance_sat",  PTX_GetPoolBalance());
+    ret.pushKV("pool_balance_sat",  WITH_LOCK(cs_main, return GetLotteryState().accumulator_value));
     ret.pushKV("settlement_window", window);
     ret.pushKV("current_height",    (int64_t)height);
     ret.pushKV("next_settlement_at",(int64_t)next_at);

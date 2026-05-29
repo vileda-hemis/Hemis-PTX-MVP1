@@ -918,7 +918,24 @@ bool CheckAndApplyPTXPayout(const CBlock& block,
     }
 
     if (payoutTx == nullptr) {
-        // No PTXPAYOUT: write unchanged snapshot so DisconnectBlock finds a pprev snapshot.
+        // P11: at settlement boundaries, reject if accumulator exists and eligible winner found.
+        // §5.4 rollover (no eligible GMs) is the only legitimate reason to omit PTXPAYOUT.
+        if (pindex != nullptr && pindex->pprev != nullptr &&
+            pindex->nHeight % Params().PTXSettlementWindow() == 0) {
+            const LotteryState& ls = GetLotteryState();
+            if (!ls.accumulator_outpoint.IsNull() &&
+                ls.accumulator_value >= Params().PTXPayoutMinerFee()) {
+                const uint256 entropy = PTX_ComputeSelectionEntropy(
+                    pindex->nHeight, pindex->pprev->GetBlockHash());
+                if (PTX_SelectWinner(gmList, poseTracker, entropy)) {
+                    return state.DoS(100,
+                        error("%s: settlement-boundary block h=%d has eligible winner but no PTXPAYOUT",
+                              __func__, pindex->nHeight),
+                        REJECT_INVALID, "ptxpayout-missing-at-boundary");
+                }
+            }
+        }
+        // No PTXPAYOUT (legitimate): write unchanged snapshot so DisconnectBlock finds a pprev snapshot.
         if (!fJustCheck && pindex != nullptr) {
             WriteLotteryStateSnapshotForBlock(pindex->GetBlockHash(), GetLotteryState());
         }
@@ -952,9 +969,11 @@ bool CheckAndApplyPTXPayout(const CBlock& block,
     }
 
     // P10: output script must match the deterministically-selected winner (§5.3).
-    // Entropy derived from the settlement block's height and hash per §5.1.
-    if (pindex != nullptr) {
-        const uint256 entropy  = PTX_ComputeSelectionEntropy(pindex->nHeight, pindex->GetBlockHash());
+    // Entropy uses the PARENT block hash (pindex->pprev), not pindex->GetBlockHash().
+    // The current block hash includes hashMerkleRoot which commits PTXPAYOUT — circular
+    // for the generator.  Parent hash is fully determined before the block is assembled.
+    if (pindex != nullptr && pindex->pprev != nullptr) {
+        const uint256 entropy  = PTX_ComputeSelectionEntropy(pindex->nHeight, pindex->pprev->GetBlockHash());
         const Optional<CScript> winner = PTX_SelectWinner(gmList, poseTracker, entropy);
         if (!winner) {
             return state.DoS(100, error("%s: PTXPAYOUT present but no eligible GMs for selection", __func__),

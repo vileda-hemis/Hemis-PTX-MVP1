@@ -411,14 +411,13 @@ libbitcoin_server_a_SOURCES = \
   ptx/ptx_quorum.cpp \
   ptx/ptx_fanout.cpp \
   ptx/ptx_mempool.cpp \
-  ptx/ptx_lottery.cpp \
   ptx/ptx_exclude.cpp \
   ptx/ptx_bls.cpp \
-  ptx/ptx_validation_interface.cpp \
   ptx/ptx_accum_script.cpp \
   ptx/ptx_coalesce.cpp \
   ptx/ptx_lottery_state.cpp \
   ptx/ptx_winner_selection.cpp \
+  ptx/ptx_payout.cpp \
   llmq/quorums_signing_shares.cpp \
   tiertwo/gamemaster_meta_manager.cpp \
   tiertwo/net_gamemasters.cpp \
