@@ -4,7 +4,8 @@ name: Discord Commit Notification
 on:
   push:
     branches:
-      - feature/ptx-phase2-bls
+      - 'ptx-**'
+      - 'feature/ptx-**'
 
 jobs:
   notify:
@@ -49,7 +50,7 @@ jobs:
                   }
                 ],
                 \"footer\": {
-                  \"text\": \"Hemis PTX — Phase 2\"
+                  \"text\": \"Hemis PTX\"
                 }
               }]
             }"
