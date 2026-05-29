@@ -12,6 +12,32 @@
 #include "uint256.h"
 
 /**
+ * Metadata from a single PTXPAYOUT settlement event.
+ * Defined as a standalone serializable struct so it can be stored in the
+ * settlement_history ring buffer inside LotteryState.
+ */
+struct LastSettlement {
+    int height{0};
+    uint256 winner_protx;
+    CScript winner_script;
+    CAmount amount{0};
+    uint256 selection_entropy;
+    uint256 payout_txid;
+
+    SERIALIZE_METHODS(LastSettlement, obj) {
+        READWRITE(obj.height);
+        READWRITE(obj.winner_protx);
+        READWRITE(obj.winner_script);
+        READWRITE(obj.amount);
+        READWRITE(obj.selection_entropy);
+        READWRITE(obj.payout_txid);
+    }
+};
+
+// Number of recent settlements retained in LotteryState::settlement_history.
+static constexpr size_t kSettlementHistoryDepth = 20;
+
+/**
  * LotteryState — consensus chain state for the ODC-022 lottery accumulator.
  *
  * Stored in evodb as a per-block post-block snapshot (keyed by block hash).
@@ -19,6 +45,11 @@
  *
  * Reorg: at DisconnectBlock, restore from the snapshot written for pprev.
  * Startup: load from snapshot at chain tip hash.
+ *
+ * Serialization versions:
+ *   v1 — accumulator_outpoint, accumulator_value, last_settle fields.
+ *   v2 — adds total_rolls and settlement_history.  v1 snapshots decode cleanly
+ *        via try/catch; new fields keep their in-struct defaults (0 / empty).
  */
 struct LotteryState {
     // Outpoint of the current accumulator UTXO. IsNull() if no accumulator exists yet.
@@ -28,16 +59,17 @@ struct LotteryState {
     CAmount accumulator_value{0};
 
     // Metadata from the most recent successful PTXPAYOUT, for RPC display.
-    struct LastSettlement {
-        int height{0};
-        uint256 winner_protx;
-        CScript winner_script;
-        CAmount amount{0};
-        uint256 selection_entropy;
-        uint256 payout_txid;
-    } last_settle;
+    LastSettlement last_settle;
+
+    // Cumulative count of PTX rolls (PTXSESS transactions) since chain genesis.
+    uint64_t total_rolls{0};
+
+    // Ring buffer of recent settlements, newest at back, capped at kSettlementHistoryDepth.
+    std::vector<LastSettlement> settlement_history;
 
     SERIALIZE_METHODS(LotteryState, obj) {
+        // v1 fields — written individually to preserve the v1 wire format for
+        // backward-compat with existing evodb snapshots.
         READWRITE(obj.accumulator_outpoint);
         READWRITE(obj.accumulator_value);
         READWRITE(obj.last_settle.height);
@@ -46,6 +78,16 @@ struct LotteryState {
         READWRITE(obj.last_settle.amount);
         READWRITE(obj.last_settle.selection_entropy);
         READWRITE(obj.last_settle.payout_txid);
+        // v2 fields — try/catch: if stream ends here (v1 snapshot), the catch is empty.
+        // Both fields have in-struct defaults (0 / empty vector) set before deserialization
+        // runs, so no explicit assignment is needed on failure — same pattern as
+        // CDeterministicGMState's scriptPTXPayment / node_id catch blocks.
+        try {
+            READWRITE(obj.total_rolls);
+            READWRITE(obj.settlement_history);
+        } catch (const std::ios_base::failure&) {
+            // v1 snapshot: total_rolls stays 0, settlement_history stays empty.
+        }
     }
 
     void Reset() { *this = LotteryState{}; }

@@ -12,11 +12,13 @@
 #include "ptx/ptx_quorum.h"
 #include "ptx/ptx_seed.h"
 #include "crypto/sha256.h"
+#include "key_io.h"
 #include "logging.h"
 #include "primitives/transaction.h"
 #include "random.h"
 #include "rpc/protocol.h"
 #include "rpc/server.h"
+#include "script/standard.h"
 #include "sync.h"
 #include "uint256.h"
 #include "util/system.h"
@@ -641,19 +643,67 @@ UniValue ptx_pose_status(const JSONRPCRequest& request)
 // RPC: ptx_lottery_status
 // ---------------------------------------------------------------------------
 
+// Build one settlement JSON entry for last_settle or settlement_history.
+// "gm" is omitted when winner_script is empty or yields no standard destination —
+// this cannot happen in normal operation (PTX_SelectWinner skips empty scripts) but
+// the omit-not-empty-string contract makes any anomaly clearly visible to consumers.
+// include_amount_sat: true for last_settle (flat monitoring field), false for history entries.
+static UniValue PTX_MakeSettlementJson(const LastSettlement& s, bool include_amount_sat)
+{
+    UniValue obj(UniValue::VOBJ);
+    obj.pushKV("height",       (int64_t)s.height);
+    obj.pushKV("winner_protx", s.winner_protx.GetHex());
+    if (include_amount_sat) obj.pushKV("amount_sat", s.amount);
+    obj.pushKV("amount",       strprintf("%.8f", (double)s.amount / COIN));
+    obj.pushKV("txid",         s.payout_txid.GetHex());
+    if (!s.winner_script.empty()) {
+        CTxDestination dest;
+        if (ExtractDestination(s.winner_script, dest)) {
+            obj.pushKV("gm", EncodeDestination(dest));
+        }
+    }
+    return obj;
+}
+
 UniValue ptx_lottery_status(const JSONRPCRequest& request)
 {
     if (request.fHelp) {
         throw std::runtime_error(
             "ptx_lottery_status\n"
-            "\nReturn current PTX lottery state: pool balance, settlement window, eligible nodes.\n"
+            "\nReturn current PTX lottery state for explorer and monitoring consumption.\n"
             "\nResult:\n"
             "{\n"
-            "  \"pool_balance_sat\"    : n\n"
-            "  \"settlement_window\"   : n\n"
-            "  \"current_height\"      : n\n"
-            "  \"next_settlement_at\"  : n\n"
-            "  \"eligible_nodes\"      : [{\"node_id\", \"tickets\", \"pose_score\", \"eligible\"}, ...]\n"
+            "  \"pool_balance_sat\"   : n,        (numeric) accumulator UTXO value in satoshis\n"
+            "  \"settlement_window\"  : n,        (numeric) blocks per settlement window\n"
+            "  \"current_height\"     : n,        (numeric) current chain tip height\n"
+            "  \"next_settlement_at\" : n,        (numeric) height of next settlement boundary\n"
+            "  \"total_rolls\"        : n,        (numeric) cumulative PTX sessions since genesis\n"
+            "  \"eligible_nodes\"     : [         (array) all pose-tracker nodes\n"
+            "    {\n"
+            "      \"node_id\"    : \"str\",\n"
+            "      \"tickets\"    : n,\n"
+            "      \"pose_score\" : n,\n"
+            "      \"eligible\"   : bool\n"
+            "    }, ...\n"
+            "  ],\n"
+            "  \"last_settle\"        : {         (object) most recent settlement;\n"
+            "                                     height=0 and winner_protx all-zero indicate no settlement yet\n"
+            "    \"height\"       : n,\n"
+            "    \"gm\"           : \"str\",   Base58Check payment address (field absent if script empty)\n"
+            "    \"winner_protx\" : \"hex\",\n"
+            "    \"amount_sat\"   : n,        (extra field on last_settle only)\n"
+            "    \"amount\"       : \"str\",   HMS, 8 decimal places\n"
+            "    \"txid\"         : \"hex\"\n"
+            "  },\n"
+            "  \"settlement_history\" : [         (array) recent settlements, newest first, cap=20\n"
+            "    {\n"
+            "      \"height\"       : n,\n"
+            "      \"gm\"           : \"str\",   Base58Check payment address (field absent if script empty)\n"
+            "      \"winner_protx\" : \"hex\",\n"
+            "      \"amount\"       : \"str\",   HMS, 8 decimal places\n"
+            "      \"txid\"         : \"hex\"\n"
+            "    }, ...\n"
+            "  ]\n"
             "}\n"
             + HelpExampleCli("ptx_lottery_status", "")
             + HelpExampleRpc("ptx_lottery_status", "")
@@ -664,11 +714,20 @@ UniValue ptx_lottery_status(const JSONRPCRequest& request)
     const int height  = chainActive.Height();
     const int next_at = height + (window - (height % window));
 
+    // Snapshot the full LotteryState under a single cs_main acquisition so all
+    // fields are consistent with each other.
+    LotteryState snapshot;
+    {
+        LOCK(cs_main);
+        snapshot = GetLotteryState();
+    }
+
     UniValue ret(UniValue::VOBJ);
-    ret.pushKV("pool_balance_sat",  WITH_LOCK(cs_main, return GetLotteryState().accumulator_value));
-    ret.pushKV("settlement_window", window);
-    ret.pushKV("current_height",    (int64_t)height);
-    ret.pushKV("next_settlement_at",(int64_t)next_at);
+    ret.pushKV("pool_balance_sat",   snapshot.accumulator_value);
+    ret.pushKV("settlement_window",  window);
+    ret.pushKV("current_height",     (int64_t)height);
+    ret.pushKV("next_settlement_at", (int64_t)next_at);
+    ret.pushKV("total_rolls",        (int64_t)snapshot.total_rolls);
 
     UniValue nodes_arr(UniValue::VARR);
     for (const auto& kv : g_ptx_pose_tracker.GetAllRecords()) {
@@ -681,6 +740,17 @@ UniValue ptx_lottery_status(const JSONRPCRequest& request)
         nodes_arr.push_back(no);
     }
     ret.pushKV("eligible_nodes", nodes_arr);
+
+    // last_settle: sentinel when height==0 and winner_protx all-zero (no settlement yet).
+    ret.pushKV("last_settle", PTX_MakeSettlementJson(snapshot.last_settle, /*include_amount_sat=*/true));
+
+    // settlement_history: newest first (reverse-iterate the ring buffer).
+    UniValue hist_arr(UniValue::VARR);
+    const std::vector<LastSettlement>& hist = snapshot.settlement_history;
+    for (int i = (int)hist.size() - 1; i >= 0; --i) {
+        hist_arr.push_back(PTX_MakeSettlementJson(hist[i], /*include_amount_sat=*/false));
+    }
+    ret.pushKV("settlement_history", hist_arr);
 
     return ret;
 }

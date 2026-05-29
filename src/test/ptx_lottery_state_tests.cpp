@@ -198,4 +198,85 @@ BOOST_AUTO_TEST_CASE(LotteryState_PurgeStaleSnapshots)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Step 11: v2 field round-trips and backward-compat deserialisation
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(LotteryState_TotalRolls_RoundTrip)
+{
+    LotteryState s;
+    s.total_rolls = 12345ULL;
+
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << s;
+    LotteryState restored;
+    ss >> restored;
+
+    BOOST_CHECK_EQUAL(restored.total_rolls, 12345ULL);
+    BOOST_CHECK(restored.settlement_history.empty());
+}
+
+BOOST_AUTO_TEST_CASE(LotteryState_SettlementHistory_RoundTrip)
+{
+    LotteryState s;
+    s.total_rolls = 7;
+
+    LastSettlement settle;
+    settle.height      = 100;
+    settle.amount      = 500000000LL;
+    settle.winner_protx =
+        uint256S("abcdef12abcdef12abcdef12abcdef12abcdef12abcdef12abcdef12abcdef12");
+    settle.payout_txid  =
+        uint256S("fedcba09fedcba09fedcba09fedcba09fedcba09fedcba09fedcba09fedcba09");
+    settle.winner_script = CScript() << OP_DUP << OP_HASH160
+                                     << std::vector<uint8_t>(20, 0xCC)
+                                     << OP_EQUALVERIFY << OP_CHECKSIG;
+    s.settlement_history.push_back(settle);
+
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << s;
+    LotteryState restored;
+    ss >> restored;
+
+    BOOST_CHECK_EQUAL(restored.total_rolls, 7ULL);
+    BOOST_REQUIRE_EQUAL(restored.settlement_history.size(), 1U);
+    BOOST_CHECK_EQUAL(restored.settlement_history[0].height,     100);
+    BOOST_CHECK_EQUAL(restored.settlement_history[0].amount,     500000000LL);
+    BOOST_CHECK_EQUAL(restored.settlement_history[0].winner_protx, settle.winner_protx);
+    BOOST_CHECK_EQUAL(restored.settlement_history[0].payout_txid,  settle.payout_txid);
+    BOOST_CHECK(restored.settlement_history[0].winner_script == settle.winner_script);
+}
+
+// Simulate loading a v1 snapshot (only the original 8 fields) with the new deserialiser.
+// v2 fields (total_rolls, settlement_history) must silently default to 0 / empty.
+BOOST_AUTO_TEST_CASE(LotteryState_V1BackwardCompatDeserialize)
+{
+    LotteryState orig = MakePopulatedState();
+
+    // Write only the v1 fields — the exact bytes an old node would have persisted.
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << orig.accumulator_outpoint;
+    ss << orig.accumulator_value;
+    ss << orig.last_settle.height;
+    ss << orig.last_settle.winner_protx;
+    ss << orig.last_settle.winner_script;
+    ss << orig.last_settle.amount;
+    ss << orig.last_settle.selection_entropy;
+    ss << orig.last_settle.payout_txid;
+
+    // Deserialise with the new code.
+    LotteryState restored;
+    ss >> restored;
+
+    // v1 fields must be preserved exactly.
+    BOOST_CHECK_EQUAL(restored.accumulator_outpoint.hash, orig.accumulator_outpoint.hash);
+    BOOST_CHECK_EQUAL(restored.accumulator_outpoint.n,    orig.accumulator_outpoint.n);
+    BOOST_CHECK_EQUAL(restored.accumulator_value,         orig.accumulator_value);
+    BOOST_CHECK_EQUAL(restored.last_settle.height,        orig.last_settle.height);
+    BOOST_CHECK_EQUAL(restored.last_settle.payout_txid,   orig.last_settle.payout_txid);
+    // v2 fields must silently default.
+    BOOST_CHECK_EQUAL(restored.total_rolls, 0ULL);
+    BOOST_CHECK(restored.settlement_history.empty());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

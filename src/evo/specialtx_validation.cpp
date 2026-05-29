@@ -1003,6 +1003,19 @@ bool CheckAndApplyPTXPayout(const CBlock& block,
         mls.last_settle.winner_script = payoutTx->vout[0].scriptPubKey;
         mls.last_settle.amount        = payoutTx->vout[0].nValue;
         mls.last_settle.payout_txid   = payoutTx->GetHash();
+        // Resolve winner_protx by scanning gmList for the DGM whose scriptPTXPayment
+        // matches the payout output.  O(N_GMs) — negligible at settlement frequency.
+        mls.last_settle.winner_protx  = uint256();
+        gmList.ForEachGM(false, [&](const CDeterministicGMCPtr& dgm) {
+            if (dgm->pdgmState->scriptPTXPayment == mls.last_settle.winner_script) {
+                mls.last_settle.winner_protx = dgm->proTxHash;
+            }
+        });
+        // Push to settlement_history ring buffer; trim to cap.
+        mls.settlement_history.push_back(mls.last_settle);
+        if (mls.settlement_history.size() > kSettlementHistoryDepth) {
+            mls.settlement_history.erase(mls.settlement_history.begin());
+        }
         // Reset accumulator — payout UTXO goes to the winner, not back into the pool.
         mls.accumulator_outpoint.SetNull();
         mls.accumulator_value = 0;
@@ -1120,6 +1133,9 @@ bool CheckAndApplyPTXCoalesce(const CBlock& block,
             LotteryState& mls = GetLotteryState();
             mls.accumulator_outpoint = COutPoint(coalesceTx->GetHash(), 0);
             mls.accumulator_value    = expectedValue;
+            // Semantic count: ptxsessFees is the canonical list from PTX_CollectPTXSESSFeeOutputs,
+            // not inferred from vin shape (robust to future PTXCOALESCE schema changes).
+            mls.total_rolls += ptxsessFees.size();
             WriteLotteryStateSnapshotForBlock(pindex->GetBlockHash(), mls);
         }
     } else {
