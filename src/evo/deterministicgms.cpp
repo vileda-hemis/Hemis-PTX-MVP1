@@ -70,6 +70,9 @@ void CDeterministicGMState::ToJson(UniValue& obj) const
     if (ExtractDestination(scriptPTXPayment, dest3)) {
         obj.pushKV("ptxPaymentAddress", EncodeDestination(dest3));
     }
+    if (!node_id.empty()) {
+        obj.pushKV("ptxNodeId", node_id);
+    }
 }
 
 uint64_t CDeterministicGM::GetInternalId() const

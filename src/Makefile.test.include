@@ -212,7 +212,9 @@ PTX_TESTS = \
   test/ptx_lottery_state_tests.cpp \
   test/ptx_sess_tests.cpp \
   test/ptx_coalesce_tests.cpp \
-  test/ptx_coalesce_gen_tests.cpp
+  test/ptx_coalesce_gen_tests.cpp \
+  test/ptx_node_id_tests.cpp \
+  test/ptx_payout_tests.cpp
 
 noinst_PROGRAMS += test/test_ptx
 test_test_ptx_SOURCES = \

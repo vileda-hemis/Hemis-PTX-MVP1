@@ -1145,11 +1145,11 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsVi
                 // failures through additional data in, eg, the coins being
                 // spent being checked as a part of CScriptCheck.
 
-                // ODC-022: PTXCOALESCE spends LOTTERY_ACCUM_SCRIPT UTXOs with
-                // empty scriptSigs; script validity is established by the
-                // consensus rules in CheckSpecialTx, not by VerifyScript.
+                // ODC-022: PTXCOALESCE/PTXPAYOUT spend LOTTERY_ACCUM_SCRIPT UTXOs with
+                // empty scriptSigs; validity is established by consensus rules in
+                // CheckSpecialTx/CheckAndApplyPTXPayout, not by VerifyScript.
                 // Both conditions must hold — nType alone is not sufficient.
-                if (tx.IsPTXCoalesceTx() &&
+                if ((tx.IsPTXCoalesceTx() || tx.IsPTXPayoutTx()) &&
                     coin.out.scriptPubKey == GetLotteryAccumScript()) {
                     continue;
                 }

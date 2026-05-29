@@ -50,6 +50,7 @@ public:
     CScript scriptPayout;
     CScript scriptOperatorPayout;
     CScript scriptPTXPayment; // ODC-020: registered PTX lottery payment address (empty = unset)
+    std::string node_id;      // ODC-022 KDD-033: compound label:suffix join key (v3+, empty on v1/v2)
 
 public:
     CDeterministicGMState() {}
@@ -62,6 +63,7 @@ public:
         scriptPayout = pl.scriptPayout;
         scriptOperatorPayout = pl.scriptOperatorPayout;
         scriptPTXPayment = pl.scriptPTXPayment;
+        node_id = pl.node_id;
     }
     template <typename Stream>
     CDeterministicGMState(deserialize_type, Stream& s) { s >> *this; }
@@ -86,6 +88,12 @@ public:
             READWRITE(obj.scriptPTXPayment);
         } catch (const std::ios_base::failure&) {
             // old record without scriptPTXPayment — keep default empty CScript
+        }
+        try {
+            // 33 bytes max legitimate (24-byte label + ":" + 8 hex chars); 40 gives 7 bytes headroom
+            READWRITE(LIMITED_STRING(obj.node_id, 40));
+        } catch (const std::ios_base::failure&) {
+            // v1/v2 record without node_id — keep default empty string (ineligible for lottery)
         }
     }
 
@@ -137,6 +145,7 @@ public:
         Field_scriptPayout                      = 0x1000,
         Field_scriptOperatorPayout              = 0x2000,
         Field_scriptPTXPayment                  = 0x4000,
+        Field_node_id                           = 0x8000,
     };
 
 #define DGM_STATE_DIFF_ALL_FIELDS \
@@ -154,7 +163,8 @@ public:
     DGM_STATE_DIFF_LINE(addr) \
     DGM_STATE_DIFF_LINE(scriptPayout) \
     DGM_STATE_DIFF_LINE(scriptOperatorPayout) \
-    DGM_STATE_DIFF_LINE(scriptPTXPayment)
+    DGM_STATE_DIFF_LINE(scriptPTXPayment) \
+    DGM_STATE_DIFF_LINE(node_id)
 
 public:
     uint32_t fields{0};

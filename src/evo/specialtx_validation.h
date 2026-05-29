@@ -6,7 +6,9 @@
 #ifndef Hemis_SPECIALTX_H
 #define Hemis_SPECIALTX_H
 
+#include "evo/deterministicgms.h"
 #include "llmq/quorums_commitment.h"
+#include "ptx/ptx_pose.h"
 #include "validation.h" // cs_main needed by CheckLLMQCommitment (!TODO: remove)
 #include "version.h"
 
@@ -33,6 +35,13 @@ bool CheckSpecialTxNoContext(const CTransaction& tx, CValidationState& state) EX
 bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, const CCoinsViewCache* view, CValidationState& state, bool fJustCheck) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 bool UndoSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex);
 
+// ODC-022 KDD-033: validate a v3 ProRegPL node_id (Amendment 1 label rules + chain-derived
+// suffix check).  collateral is the actual resolved outpoint (tx hash + index).
+// Exposed for unit tests so node_id correctness can be checked without a valid BLS pubkey.
+bool ValidateProRegNodeId(const std::string& node_id,
+                           const COutPoint& collateral,
+                           CValidationState& state);
+
 // ODC-022: block-level PTXCOALESCE count rules C7 (≤1 per block) and C8
 // (mandatory iff PTXSESS present, forbidden otherwise).  Called from
 // ProcessSpecialTxsInBlock and from the integration test so the test
@@ -52,6 +61,27 @@ bool CheckAndApplyPTXCoalesce(const CBlock& block,
                               const CBlockIndex* pindex,
                               CValidationState& state,
                               bool fJustCheck) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
+// ODC-022 Step 8: block-level PTXPAYOUT count rule P8 (≤1 per block) and
+// settlement-boundary rule P9 (height % nPTXSettlementWindow == 0).
+// No DGM list access — safe to call with a dummy pindex (unit tests).
+// Called from ProcessSpecialTxsInBlock after CheckAndApplyPTXCoalesce.
+bool CheckPTXPayoutBlockRules(const CBlock& block,
+                               const CBlockIndex* pindex,
+                               CValidationState& state) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
+// ODC-022 Step 8: PTXPAYOUT contextual checks (P2, P5, P10) + LotteryState update.
+// gmList and poseTracker are pre-fetched by the caller so unit tests can inject
+// hand-built fixtures without needing a live deterministicGMManager or chain.
+// When !fJustCheck, updates LotteryState and writes the post-block snapshot to evodb.
+//
+// Called by ProcessSpecialTxsInBlock; exposed separately for unit tests.
+bool CheckAndApplyPTXPayout(const CBlock& block,
+                             const CBlockIndex* pindex,
+                             const CDeterministicGMList& gmList,
+                             const PTXPoSeTracker& poseTracker,
+                             CValidationState& state,
+                             bool fJustCheck) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
 // Validate given LLMQ final commitment with the list at pindexQuorum
 bool VerifyLLMQCommitment(const llmq::CFinalCommitment& qfc, const CBlockIndex* pindexPrev, CValidationState& state) EXCLUSIVE_LOCKS_REQUIRED(cs_main);

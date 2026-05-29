@@ -16,7 +16,7 @@
 class ProRegPL
 {
 public:
-    static const uint16_t CURRENT_VERSION = 2;
+    static const uint16_t CURRENT_VERSION = 3;
 
 public:
     uint16_t nVersion{CURRENT_VERSION};                         // message version
@@ -31,6 +31,7 @@ public:
     uint16_t nOperatorReward{0};
     CScript scriptOperatorPayout;
     CScript scriptPTXPayment;           // ODC-020: optional PTX lottery payment address (v2+)
+    std::string node_id;                // ODC-022 KDD-033: compound label:suffix join key (v3+)
     uint256 inputsHash; // replay protection
     std::vector<unsigned char> vchSig;
 
@@ -52,6 +53,10 @@ public:
         READWRITE(obj.inputsHash);
         if (obj.nVersion >= 2) {
             READWRITE(obj.scriptPTXPayment);
+        }
+        if (obj.nVersion >= 3) {
+            // 33 bytes max legitimate (24-byte label + ":" + 8 hex chars); 40 gives 7 bytes headroom
+            READWRITE(LIMITED_STRING(obj.node_id, 40));
         }
         if (!(s.GetType() & SER_GETHASH)) {
             READWRITE(obj.vchSig);

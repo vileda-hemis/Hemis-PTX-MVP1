@@ -23,6 +23,8 @@
 #include "tiertwo/gamemaster_meta_manager.h"
 #include "util/validation.h"
 #include "utilmoneystr.h"
+#include "crypto/sha256.h"
+#include "utilstrencodings.h"
 
 #ifdef ENABLE_WALLET
 #include "coincontrol.h"
@@ -54,6 +56,7 @@ enum ProRegParam {
     votingAddress_register,
     votingAddress_update,
     ptxPaymentAddress,
+    ptxNodeId,
 };
 
 static const std::map<ProRegParam, std::string> mapParamHelp = {
@@ -139,6 +142,13 @@ static const std::map<ProRegParam, std::string> mapParamHelp = {
             "%d. \"ptxPaymentAddress\"      (string, optional) The address to receive PTX lottery rewards (ODC-020/ODC-022).\n"
             "                                 GMs without this set are ineligible for PTXPAYOUT lottery wins.\n"
             "                                 Must be set at registration time to participate in the lottery.\n"
+        },
+        {ptxNodeId,
+            "%d. \"ptxNodeId\"              (string, optional) Human-readable label for this GM's PTX pose-tracker identity (ODC-022 KDD-033).\n"
+            "                                 Supply the label only (e.g. \"gm01\"); the chain appends the collateral-derived :suffix.\n"
+            "                                 The full compound identifier (label:suffix) is echoed in the RPC response.\n"
+            "                                 Label rules: 3-24 chars, [a-zA-Z0-9_-], no leading/trailing -/_, not all-numeric, not a reserved word.\n"
+            "                                 Operators must use this same label as their -ptxnodeid= config value.\n"
         },
     };
 
@@ -396,7 +406,7 @@ static std::string SignAndSendSpecialTx(CWallet* const pwallet, CMutableTransact
 static ProRegPL ParseProRegPLParams(const UniValue& params, unsigned int paramIdx)
 {
     assert(params.size() > paramIdx + 4);
-    assert(params.size() < paramIdx + 9);
+    assert(params.size() < paramIdx + 10);
     const auto& chainparams = Params();
     ProRegPL pl;
 
@@ -451,7 +461,29 @@ static ProRegPL ParseProRegPLParams(const UniValue& params, unsigned int paramId
             pl.scriptPTXPayment = GetScriptForDestination(CTxDestination(ParsePubKeyIDFromAddress(strPTXPayee)));
         }
     }
+    // ODC-022: optional PTX node label (operator supplies label only; :suffix appended by caller after collateral is known)
+    if (params.size() > paramIdx + 8) {
+        const std::string& strLabel = params[paramIdx + 8].get_str();
+        if (!strLabel.empty()) {
+            if (strLabel.find(':') != std::string::npos) {
+                throw JSONRPCError(RPC_INVALID_PARAMETER,
+                    "ptxNodeId must be a label only (no colon); the chain appends the :suffix automatically");
+            }
+            pl.node_id = strLabel;  // temporary: just the label; caller appends :suffix after collateral outpoint is known
+        }
+    }
     return pl;
+}
+
+// Compute the chain-derived :suffix for a compound node_id from the collateral outpoint.
+// Returns 8 lowercase hex chars = hex_lower(SHA256(serialize(outpoint))[0:4]).
+static std::string PTXNodeIdSuffix(const COutPoint& outpoint)
+{
+    CDataStream ss(SER_GETHASH, PROTOCOL_VERSION);
+    ss << outpoint;
+    unsigned char digest[32];
+    CSHA256().Write((const unsigned char*)ss.data(), ss.size()).Finalize(digest);
+    return HexStr(Span<const uint8_t>(digest, digest + 4));
 }
 
 // handles protx_register, and protx_register_prepare
@@ -462,14 +494,14 @@ static UniValue ProTxRegister(const JSONRPCRequest& request, bool fSignAndSend)
     if (!EnsureWalletIsAvailable(pwallet, request.fHelp))
         return NullUniValue;
 
-    if (request.fHelp || request.params.size() < 7 || request.params.size() > 10) {
+    if (request.fHelp || request.params.size() < 7 || request.params.size() > 11) {
         throw std::runtime_error(
                 (fSignAndSend ?
-                    "protx_register \"collateralHash\" collateralIndex \"ipAndPort\" \"ownerAddress\" \"operatorPubKey\" \"votingAddress\" \"payoutAddress\" (operatorReward \"operatorPayoutAddress\" \"ptxPaymentAddress\")\n"
+                    "protx_register \"collateralHash\" collateralIndex \"ipAndPort\" \"ownerAddress\" \"operatorPubKey\" \"votingAddress\" \"payoutAddress\" (operatorReward \"operatorPayoutAddress\" \"ptxPaymentAddress\" \"ptxNodeId\")\n"
                     "The collateral is specified through \"collateralHash\" and \"collateralIndex\" and must be an unspent\n"
                     "transaction output spendable by this wallet. It must also not be used by any other gamemaster.\n"
                         :
-                    "protx_register_prepare \"collateralHash\" collateralIndex \"ipAndPort\" \"ownerAddress\" \"operatorPubKey\" \"votingAddress\" \"payoutAddress\" (operatorReward \"operatorPayoutAddress\" \"ptxPaymentAddress\")\n"
+                    "protx_register_prepare \"collateralHash\" collateralIndex \"ipAndPort\" \"ownerAddress\" \"operatorPubKey\" \"votingAddress\" \"payoutAddress\" (operatorReward \"operatorPayoutAddress\" \"ptxPaymentAddress\" \"ptxNodeId\")\n"
                     "\nCreates an unsigned ProTx and returns it. The ProTx must be signed externally with the collateral\n"
                     "key and then passed to \"protx_register_submit\".\n"
                     "The collateral is specified through \"collateralHash\" and \"collateralIndex\" and must be an unspent transaction output.\n"
@@ -485,7 +517,8 @@ static UniValue ProTxRegister(const JSONRPCRequest& request, bool fSignAndSend)
                 + GetHelpString(7, payoutAddress_register)
                 + GetHelpString(8, operatorReward)
                 + GetHelpString(9, operatorPayoutAddress_register)
-                + GetHelpString(10, ptxPaymentAddress) +
+                + GetHelpString(10, ptxPaymentAddress)
+                + GetHelpString(11, ptxNodeId) +
                 "\nResult:\n" +
                 (fSignAndSend ? (
                         "\"txid\"                 (string) The transaction id.\n"
@@ -519,6 +552,10 @@ static UniValue ProTxRegister(const JSONRPCRequest& request, bool fSignAndSend)
     ProRegPL pl = ParseProRegPLParams(request.params, 2);
     pl.nVersion = ProRegPL::CURRENT_VERSION;
     pl.collateralOutpoint = COutPoint(collateralHash, (uint32_t)collateralIndex);
+    // ODC-022: if operator supplied a label, append the chain-derived :suffix now that collateral is known
+    if (!pl.node_id.empty()) {
+        pl.node_id = pl.node_id + ":" + PTXNodeIdSuffix(pl.collateralOutpoint);
+    }
 
     CMutableTransaction tx;
     tx.nVersion = CTransaction::TxVersion::SAPLING;
@@ -551,7 +588,14 @@ static UniValue ProTxRegister(const JSONRPCRequest& request, bool fSignAndSend)
     if (fSignAndSend) {
         SignSpecialTxPayloadByString(pl, keyCollateral); // prove we own the collateral
         // check the payload, add the tx inputs sigs, and send the tx.
-        return SignAndSendSpecialTx(pwallet, tx, pl);
+        UniValue txid = SignAndSendSpecialTx(pwallet, tx, pl);
+        if (!pl.node_id.empty()) {
+            UniValue ret(UniValue::VOBJ);
+            ret.pushKV("txid", txid);
+            ret.pushKV("ptxNodeId", pl.node_id);
+            return ret;
+        }
+        return txid;
     }
     // external signing with collateral key
     pl.vchSig.clear();
@@ -560,6 +604,7 @@ static UniValue ProTxRegister(const JSONRPCRequest& request, bool fSignAndSend)
     ret.pushKV("tx", EncodeHexTx(tx));
     ret.pushKV("collateralAddress", EncodeDestination(txDest));
     ret.pushKV("signMessage", pl.MakeSignString());
+    if (!pl.node_id.empty()) ret.pushKV("ptxNodeId", pl.node_id);
     return ret;
 }
 
@@ -630,9 +675,9 @@ UniValue protx_register_fund(const JSONRPCRequest& request)
     if (!EnsureWalletIsAvailable(pwallet, request.fHelp))
         return NullUniValue;
 
-    if (request.fHelp || request.params.size() < 6 || request.params.size() > 9) {
+    if (request.fHelp || request.params.size() < 6 || request.params.size() > 10) {
         throw std::runtime_error(
-                "protx_register_fund \"collateralAddress\" \"ipAndPort\" \"ownerAddress\" \"operatorPubKey\" \"votingAddress\" \"payoutAddress\" (operatorReward \"operatorPayoutAddress\" \"ptxPaymentAddress\")\n"
+                "protx_register_fund \"collateralAddress\" \"ipAndPort\" \"ownerAddress\" \"operatorPubKey\" \"votingAddress\" \"payoutAddress\" (operatorReward \"operatorPayoutAddress\" \"ptxPaymentAddress\" \"ptxNodeId\")\n"
                 "\nCreates, funds and sends a ProTx to the network. The resulting transaction will move 10000 HMS\n"
                 "to the address specified by collateralAddress and will then function as gamemaster collateral.\n"
                 + HelpRequiringPassphrase(pwallet) + "\n"
@@ -645,7 +690,8 @@ UniValue protx_register_fund(const JSONRPCRequest& request)
                 + GetHelpString(6, payoutAddress_register)
                 + GetHelpString(7, operatorReward)
                 + GetHelpString(8, operatorPayoutAddress_register)
-                + GetHelpString(9, ptxPaymentAddress) +
+                + GetHelpString(9, ptxPaymentAddress)
+                + GetHelpString(10, ptxNodeId) +
                 "\nResult:\n"
                 "\"txid\"                        (string) The transaction id.\n"
                 "\nExamples:\n"
@@ -680,10 +726,23 @@ UniValue protx_register_fund(const JSONRPCRequest& request)
         }
     }
     assert(pl.collateralOutpoint.n != (uint32_t) -1);
-    // update payload on tx (with final collateral outpoint)
+    // ODC-022: collateral outpoint now known — append chain-derived :suffix to complete node_id
+    if (!pl.node_id.empty()) {
+        // collateral is in this tx (hash is null in collateralOutpoint), use tx hash
+        COutPoint collateral(tx.GetHash(), pl.collateralOutpoint.n);
+        pl.node_id = pl.node_id + ":" + PTXNodeIdSuffix(collateral);
+    }
+    // update payload on tx (with final collateral outpoint and completed node_id)
     pl.vchSig.clear();
     // check the payload, add the tx inputs sigs, and send the tx.
-    return SignAndSendSpecialTx(pwallet, tx, pl);
+    UniValue txid = SignAndSendSpecialTx(pwallet, tx, pl);
+    if (!pl.node_id.empty()) {
+        UniValue ret(UniValue::VOBJ);
+        ret.pushKV("txid", txid);
+        ret.pushKV("ptxNodeId", pl.node_id);
+        return ret;
+    }
+    return txid;
 }
 
 #endif  //ENABLE_WALLET
@@ -1082,9 +1141,9 @@ static const CRPCCommand commands[] =
     { "evo",         "generateblskeypair",             &generateblskeypair,     true,  {} },
     { "evo",         "protx_list",                     &protx_list,             true,  {"detailed","wallet_only","valid_only","height"} },
 #ifdef ENABLE_WALLET
-    { "evo",         "protx_register",                 &protx_register,         true,  {"collateralHash","collateralIndex","ipAndPort","ownerAddress","operatorPubKey","votingAddress","payoutAddress","operatorReward","operatorPayoutAddress","ptxPaymentAddress"} },
-    { "evo",         "protx_register_fund",            &protx_register_fund,    true,  {"collateralAddress","ipAndPort","ownerAddress","operatorPubKey","votingAddress","payoutAddress","operatorReward","operatorPayoutAddress","ptxPaymentAddress"} },
-    { "evo",         "protx_register_prepare",         &protx_register_prepare, true,  {"collateralHash","collateralIndex","ipAndPort","ownerAddress","operatorPubKey","votingAddress","payoutAddress","operatorReward","operatorPayoutAddress","ptxPaymentAddress"} },
+    { "evo",         "protx_register",                 &protx_register,         true,  {"collateralHash","collateralIndex","ipAndPort","ownerAddress","operatorPubKey","votingAddress","payoutAddress","operatorReward","operatorPayoutAddress","ptxPaymentAddress","ptxNodeId"} },
+    { "evo",         "protx_register_fund",            &protx_register_fund,    true,  {"collateralAddress","ipAndPort","ownerAddress","operatorPubKey","votingAddress","payoutAddress","operatorReward","operatorPayoutAddress","ptxPaymentAddress","ptxNodeId"} },
+    { "evo",         "protx_register_prepare",         &protx_register_prepare, true,  {"collateralHash","collateralIndex","ipAndPort","ownerAddress","operatorPubKey","votingAddress","payoutAddress","operatorReward","operatorPayoutAddress","ptxPaymentAddress","ptxNodeId"} },
     { "evo",         "protx_register_submit",          &protx_register_submit,  true,  {"tx","sig"} },
     { "evo",         "protx_revoke",                   &protx_revoke,           true,  {"proTxHash","operatorKey","reason"} },
     { "evo",         "protx_update_registrar",         &protx_update_registrar, true,  {"proTxHash","operatorPubKey","votingAddress","payoutAddress","ownerKey"} },

@@ -20,7 +20,10 @@
 #include "ptx/ptx_accum_script.h"
 #include "ptx/ptx_coalesce.h"
 #include "ptx/ptx_lottery_state.h"
+#include "ptx/ptx_winner_selection.h"
 #include "spork.h"
+#include "crypto/sha256.h"
+#include "utilstrencodings.h"
 
 /* -- Helper static functions -- */
 
@@ -108,6 +111,65 @@ static bool CheckCollateralOut(const CTxOut& out, const ProRegPL& pl, CValidatio
     return true;
 }
 
+// ODC-022 KDD-033: validate a v3 ProRegPL node_id against Amendment 1 rules and the
+// chain-derived suffix.  Exposed for unit testing (avoids needing a valid BLS pubkey
+// in tests focused on node_id format correctness).
+bool ValidateProRegNodeId(const std::string& node_id, const COutPoint& collateral, CValidationState& state)
+{
+    // Must have exactly one colon separating label from chain-computed suffix.
+    size_t colon = node_id.find(':');
+    if (colon == std::string::npos || node_id.find(':', colon + 1) != std::string::npos) {
+        return state.DoS(100, error("%s: node_id not in label:suffix form", __func__),
+                         REJECT_INVALID, "bad-protx-node-id-format");
+    }
+    std::string label  = node_id.substr(0, colon);
+    std::string suffix = node_id.substr(colon + 1);
+
+    // Amendment 1: label sanity envelope
+    if (label.size() < 3 || label.size() > 24) {
+        return state.DoS(100, error("%s: node_id label length %d not in [3,24]", __func__, (int)label.size()),
+                         REJECT_INVALID, "bad-protx-node-id-label-length");
+    }
+    for (unsigned char c : label) {
+        bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                  (c >= '0' && c <= '9') || c == '_' || c == '-';
+        if (!ok) {
+            return state.DoS(100, error("%s: node_id label contains invalid character", __func__),
+                             REJECT_INVALID, "bad-protx-node-id-label-charset");
+        }
+    }
+    if (label.front() == '-' || label.front() == '_' ||
+        label.back()  == '-' || label.back()  == '_') {
+        return state.DoS(100, error("%s: node_id label has leading/trailing edge character", __func__),
+                         REJECT_INVALID, "bad-protx-node-id-label-edge");
+    }
+    bool allNumeric = true;
+    for (char c : label) { if (c < '0' || c > '9') { allNumeric = false; break; } }
+    if (allNumeric) {
+        return state.DoS(100, error("%s: node_id label is all-numeric", __func__),
+                         REJECT_INVALID, "bad-protx-node-id-label-numeric");
+    }
+    static const std::set<std::string> reserved = {
+        "admin","system","null","none","gm","gamemaster","node","default","test"};
+    if (reserved.count(ToLower(label))) {
+        return state.DoS(100, error("%s: node_id label is a reserved word", __func__),
+                         REJECT_INVALID, "bad-protx-node-id-label-reserved");
+    }
+
+    // Verify suffix = hex_lower(SHA256(serialize(collateralOutpoint))[0:4])
+    CDataStream ss(SER_GETHASH, PROTOCOL_VERSION);
+    ss << collateral;
+    unsigned char digest[32];
+    CSHA256().Write((const unsigned char*)ss.data(), ss.size()).Finalize(digest);
+    std::string expectedSuffix = HexStr(Span<const uint8_t>(digest, digest + 4));
+    if (suffix != expectedSuffix) {
+        return state.DoS(100, error("%s: node_id suffix %s does not match collateral-derived %s",
+                                    __func__, suffix, expectedSuffix),
+                         REJECT_INVALID, "bad-protx-node-id-suffix");
+    }
+    return true;
+}
+
 // Provider Register Payload
 static bool CheckProRegTx(const CTransaction& tx, const CBlockIndex* pindexPrev, const CCoinsViewCache* view, CValidationState& state)
 {
@@ -162,6 +224,14 @@ static bool CheckProRegTx(const CTransaction& tx, const CBlockIndex* pindexPrev,
 
     if (pl.nOperatorReward > 10000) {
         return state.DoS(10, false, REJECT_INVALID, "bad-protx-operator-reward");
+    }
+
+    // ODC-022 KDD-033: v3 node_id validation (Amendment 1 label envelope + suffix verification)
+    if (pl.nVersion >= 3 && !pl.node_id.empty()) {
+        COutPoint actual = pl.collateralOutpoint.hash.IsNull()
+            ? COutPoint(tx.GetHash(), pl.collateralOutpoint.n)
+            : pl.collateralOutpoint;
+        if (!ValidateProRegNodeId(pl.node_id, actual, state)) return false;
     }
 
     if (pl.collateralOutpoint.hash.IsNull()) {
@@ -223,6 +293,20 @@ static bool CheckProRegTx(const CTransaction& tx, const CBlockIndex* pindexPrev,
         }
         if (gmList.HasUniqueProperty(pl.pubKeyOperator)) {
             return state.DoS(10, false, REJECT_DUPLICATE, "bad-protx-dup-operator-key");
+        }
+        // ODC-022: case-insensitive full compound node_id uniqueness (prevents confusable squatting)
+        if (pl.nVersion >= 3 && !pl.node_id.empty()) {
+            const std::string lowerFull = ToLower(pl.node_id);
+            bool dup = false;
+            gmList.ForEachGM(false, [&](const CDeterministicGMCPtr& dgm) {
+                if (!dup && !dgm->pdgmState->node_id.empty() &&
+                    ToLower(dgm->pdgmState->node_id) == lowerFull) {
+                    dup = true;
+                }
+            });
+            if (dup) {
+                return state.DoS(10, false, REJECT_DUPLICATE, "bad-protx-dup-node-id");
+            }
         }
     }
 
@@ -715,6 +799,46 @@ bool CheckSpecialTx(const CTransaction& tx, const CBlockIndex* pindexPrev, const
 
             return true;
         }
+        case CTransaction::TxType::PTXPAYOUT: {
+            // ODC-022 §3.5 — per-tx rules P1, P3, P4-structural, P6, P7.
+            // P2 (input matches accumulator), P5 (output value), P8 (at-most-one),
+            // P9 (boundary height), and P10 (winner) are block-scoped; checked in
+            // CheckPTXPayoutBlockRules / CheckAndApplyPTXPayout.
+
+            // P1: exactly one input.
+            if (tx.vin.size() != 1) {
+                return state.DoS(100, error("%s: PTXPAYOUT must have exactly 1 input, got %d",
+                                            __func__, (int)tx.vin.size()),
+                                 REJECT_INVALID, "ptxpayout-bad-input-count");
+            }
+
+            // P3: exactly one output.
+            if (tx.vout.size() != 1) {
+                return state.DoS(100, error("%s: PTXPAYOUT must have exactly 1 output, got %d",
+                                            __func__, (int)tx.vout.size()),
+                                 REJECT_INVALID, "ptxpayout-bad-output-count");
+            }
+
+            // P4 (structural): output must not loop back to the accumulator.
+            if (tx.vout[0].scriptPubKey == GetLotteryAccumScript()) {
+                return state.DoS(100, error("%s: PTXPAYOUT output must not be LOTTERY_ACCUM_SCRIPT", __func__),
+                                 REJECT_INVALID, "ptxpayout-output-is-accum");
+            }
+
+            // P6: extraPayload must be present-but-empty (not nullopt, not non-empty).
+            if (tx.extraPayload == nullopt || !tx.extraPayload->empty()) {
+                return state.DoS(100, error("%s: PTXPAYOUT extraPayload must be present-but-empty", __func__),
+                                 REJECT_INVALID, "ptxpayout-bad-payload");
+            }
+
+            // P7: input scriptSig must be empty.
+            if (!tx.vin[0].scriptSig.empty()) {
+                return state.DoS(100, error("%s: PTXPAYOUT input has non-empty scriptSig", __func__),
+                                 REJECT_INVALID, "ptxpayout-nonempty-scriptsig");
+            }
+
+            return true;
+        }
     }
 
     return state.DoS(10, error("%s: special tx %s with invalid type %d", __func__, tx.GetHash().ToString(), tx.nType),
@@ -752,6 +876,111 @@ bool CheckPTXCoalesceBlockRules(const CBlock& block, CValidationState& state)
     return true;
 }
 
+bool CheckPTXPayoutBlockRules(const CBlock& block, const CBlockIndex* pindex, CValidationState& state)
+{
+    AssertLockHeld(cs_main);
+    int payoutCount = 0;
+    for (const CTransactionRef& tx : block.vtx) {
+        if (tx->IsPTXPayoutTx()) ++payoutCount;
+    }
+    // P8: at most one PTXPAYOUT per block.
+    if (payoutCount > 1) {
+        return state.DoS(100, error("%s: block contains %d PTXPAYOUT txs, max 1", __func__, payoutCount),
+                         REJECT_INVALID, "ptxpayout-duplicate");
+    }
+    // P9: PTXPAYOUT only at settlement boundary heights.
+    if (payoutCount > 0 && pindex != nullptr) {
+        const int window = Params().PTXSettlementWindow();
+        if (window > 0 && pindex->nHeight % window != 0) {
+            return state.DoS(100, error("%s: PTXPAYOUT at non-boundary height %d (window=%d)",
+                                        __func__, pindex->nHeight, window),
+                             REJECT_INVALID, "ptxpayout-wrong-height");
+        }
+    }
+    return true;
+}
+
+bool CheckAndApplyPTXPayout(const CBlock& block,
+                             const CBlockIndex* pindex,
+                             const CDeterministicGMList& gmList,
+                             const PTXPoSeTracker& poseTracker,
+                             CValidationState& state,
+                             bool fJustCheck)
+{
+    AssertLockHeld(cs_main);
+
+    const CTransaction* payoutTx = nullptr;
+    for (const CTransactionRef& tx : block.vtx) {
+        if (tx->IsPTXPayoutTx()) {
+            payoutTx = tx.get();
+            break;
+        }
+    }
+
+    if (payoutTx == nullptr) {
+        // No PTXPAYOUT: write unchanged snapshot so DisconnectBlock finds a pprev snapshot.
+        if (!fJustCheck && pindex != nullptr) {
+            WriteLotteryStateSnapshotForBlock(pindex->GetBlockHash(), GetLotteryState());
+        }
+        return true;
+    }
+
+    const LotteryState& ls = GetLotteryState();
+
+    // P2: input must spend the current accumulator UTXO.
+    if (payoutTx->vin[0].prevout != ls.accumulator_outpoint) {
+        return state.DoS(100, error("%s: PTXPAYOUT input %s:%u != accumulator %s:%u",
+                                    __func__,
+                                    payoutTx->vin[0].prevout.hash.GetHex(),
+                                    payoutTx->vin[0].prevout.n,
+                                    ls.accumulator_outpoint.hash.GetHex(),
+                                    ls.accumulator_outpoint.n),
+                         REJECT_INVALID, "ptxpayout-wrong-input");
+    }
+
+    // P5: output value must equal accumulator_value - nPTXPayoutMinerFee.
+    const CAmount minerFee    = Params().PTXPayoutMinerFee();
+    const CAmount expectedOut = ls.accumulator_value - minerFee;
+    if (payoutTx->vout[0].nValue != expectedOut) {
+        return state.DoS(100, error("%s: PTXPAYOUT output value %lld != expected %lld (accum=%lld fee=%lld)",
+                                    __func__,
+                                    (long long)payoutTx->vout[0].nValue,
+                                    (long long)expectedOut,
+                                    (long long)ls.accumulator_value,
+                                    (long long)minerFee),
+                         REJECT_INVALID, "ptxpayout-wrong-output-value");
+    }
+
+    // P10: output script must match the deterministically-selected winner (§5.3).
+    // Entropy derived from the settlement block's height and hash per §5.1.
+    if (pindex != nullptr) {
+        const uint256 entropy  = PTX_ComputeSelectionEntropy(pindex->nHeight, pindex->GetBlockHash());
+        const Optional<CScript> winner = PTX_SelectWinner(gmList, poseTracker, entropy);
+        if (!winner) {
+            return state.DoS(100, error("%s: PTXPAYOUT present but no eligible GMs for selection", __func__),
+                             REJECT_INVALID, "ptxpayout-no-eligible-winner");
+        }
+        if (payoutTx->vout[0].scriptPubKey != *winner) {
+            return state.DoS(100, error("%s: PTXPAYOUT output script does not match expected winner", __func__),
+                             REJECT_INVALID, "ptxpayout-wrong-recipient");
+        }
+    }
+
+    if (!fJustCheck && pindex != nullptr) {
+        LotteryState& mls = GetLotteryState();
+        mls.last_settle.height        = pindex->nHeight;
+        mls.last_settle.winner_script = payoutTx->vout[0].scriptPubKey;
+        mls.last_settle.amount        = payoutTx->vout[0].nValue;
+        mls.last_settle.payout_txid   = payoutTx->GetHash();
+        // Reset accumulator — payout UTXO goes to the winner, not back into the pool.
+        mls.accumulator_outpoint.SetNull();
+        mls.accumulator_value = 0;
+        WriteLotteryStateSnapshotForBlock(pindex->GetBlockHash(), mls);
+    }
+
+    return true;
+}
+
 bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, const CCoinsViewCache* view, CValidationState& state, bool fJustCheck)
 {
     AssertLockHeld(cs_main);
@@ -768,7 +997,22 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
         return false;
     }
 
+    // PTXCOALESCE must be applied first so that LotteryState.accumulator_outpoint reflects
+    // the post-coalesce value when PTXPAYOUT P2 runs (§3.5 validation ordering).
     if (!CheckAndApplyPTXCoalesce(block, pindex, state, fJustCheck)) {
+        return false;
+    }
+
+    if (!CheckPTXPayoutBlockRules(block, pindex, state)) {
+        return false;
+    }
+
+    // Fetch DGM list and pose tracker once for both P10 and the state update.
+    CDeterministicGMList gmList;
+    if (pindex->pprev != nullptr) {
+        gmList = deterministicGMManager->GetListForBlock(pindex->pprev);
+    }
+    if (!CheckAndApplyPTXPayout(block, pindex, gmList, g_ptx_pose_tracker, state, fJustCheck)) {
         return false;
     }
 
