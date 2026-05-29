@@ -18,6 +18,8 @@
 #include "primitives/block.h"
 #include "script/standard.h"
 #include "ptx/ptx_accum_script.h"
+#include "ptx/ptx_coalesce.h"
+#include "ptx/ptx_lottery_state.h"
 #include "spork.h"
 
 /* -- Helper static functions -- */
@@ -651,7 +653,11 @@ bool CheckSpecialTx(const CTransaction& tx, const CBlockIndex* pindexPrev, const
             if (view) {
                 for (const CTxIn& txin : tx.vin) {
                     const Coin& coin = view->AccessCoin(txin.prevout);
-                    if (coin.IsSpent() || coin.out.scriptPubKey != accumScript) {
+                    // If spent: inputs were consumed by UpdateCoins earlier in this block's
+                    // per-tx loop; HaveInputs + VerifyScript exemption already verified them
+                    // as LOTTERY_ACCUM_SCRIPT.  Skip to avoid false positive.
+                    if (coin.IsSpent()) continue;
+                    if (coin.out.scriptPubKey != accumScript) {
                         return state.DoS(100, error("%s: PTXCOALESCE input is not LOTTERY_ACCUM_SCRIPT", __func__),
                                          REJECT_INVALID, "ptxcoalesce-non-accum-input");
                     }
@@ -672,13 +678,21 @@ bool CheckSpecialTx(const CTransaction& tx, const CBlockIndex* pindexPrev, const
             }
 
             // C4: output value equals sum of input values (zero miner fee).
-            // view guard: same rationale as C1 above.
+            // When all inputs are spent (post-UpdateCoins path in ConnectBlock), this check
+            // is skipped here and enforced instead by the block-level structural check in
+            // ProcessSpecialTxsInBlock (Step 7), which derives the expected value from
+            // LotteryState and the PTXSESS fee set.
             if (view) {
                 CAmount inputSum = 0;
+                bool anyUnspent = false;
                 for (const CTxIn& txin : tx.vin) {
-                    inputSum += view->AccessCoin(txin.prevout).out.nValue;
+                    const Coin& coin = view->AccessCoin(txin.prevout);
+                    if (!coin.IsSpent()) {
+                        anyUnspent = true;
+                        inputSum += coin.out.nValue;
+                    }
                 }
-                if (tx.vout[0].nValue != inputSum) {
+                if (anyUnspent && tx.vout[0].nValue != inputSum) {
                     return state.DoS(100, error("%s: PTXCOALESCE output value %d != input sum %d",
                                                 __func__, tx.vout[0].nValue, inputSum),
                                      REJECT_INVALID, "ptxcoalesce-value-mismatch");
@@ -750,6 +764,10 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
         }
     }
 
+    if (!CheckAndApplyPTXCoalesce(block, pindex, state, fJustCheck)) {
+        return false;
+    }
+
     if (!llmq::quorumBlockProcessor->ProcessBlock(block, pindex, state, fJustCheck)) {
         // pass the state returned by the function above
         return false;
@@ -763,8 +781,98 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
     return true;
 }
 
+bool CheckAndApplyPTXCoalesce(const CBlock& block,
+                              const CBlockIndex* pindex,
+                              CValidationState& state,
+                              bool fJustCheck)
+{
+    AssertLockHeld(cs_main);
+
+    // Find the PTXCOALESCE (if present — C7/C8 guarantee at most one).
+    const CTransaction* coalesceTx = nullptr;
+    for (const CTransactionRef& tx : block.vtx) {
+        if (tx->IsPTXCoalesceTx()) {
+            coalesceTx = tx.get();
+            break;
+        }
+    }
+
+    if (coalesceTx != nullptr) {
+        const LotteryState& ls = GetLotteryState();
+
+        // Build the expected input list from LotteryState + vtx scan.
+        // Relies on Step 5 invariant: every PTXSESS carries exactly nPTXServiceFee to
+        // LOTTERY_ACCUM_SCRIPT (specialtx_validation.cpp, ptx-bad-accum-output rule).
+        // If that rule changes, this arithmetic must be revisited.
+        std::vector<COutPoint> expectedVin;
+        CAmount expectedValue = ls.accumulator_value;
+
+        if (ls.HasAccumulator()) {
+            expectedVin.push_back(ls.accumulator_outpoint);
+        }
+
+        std::vector<AccumInput> ptxsessFees = PTX_CollectPTXSESSFeeOutputs(block.vtx);
+        for (const AccumInput& inp : ptxsessFees) {
+            expectedVin.push_back(inp.outpoint);
+            expectedValue += inp.value;
+        }
+
+        if (coalesceTx->vin.size() != expectedVin.size()) {
+            return state.DoS(100, error("%s: PTXCOALESCE has %d inputs, expected %d",
+                                        __func__, (int)coalesceTx->vin.size(), (int)expectedVin.size()),
+                             REJECT_INVALID, "ptxcoalesce-wrong-input-count");
+        }
+
+        for (size_t i = 0; i < expectedVin.size(); ++i) {
+            if (coalesceTx->vin[i].prevout != expectedVin[i]) {
+                return state.DoS(100, error("%s: PTXCOALESCE vin[%d] wrong outpoint", __func__, (int)i),
+                                 REJECT_INVALID, "ptxcoalesce-wrong-input");
+            }
+        }
+
+        if (coalesceTx->vout[0].nValue != expectedValue) {
+            return state.DoS(100, error("%s: PTXCOALESCE output value %lld != expected %lld",
+                                        __func__, (long long)coalesceTx->vout[0].nValue,
+                                        (long long)expectedValue),
+                             REJECT_INVALID, "ptxcoalesce-wrong-output-value");
+        }
+
+        if (!fJustCheck) {
+            LotteryState& mls = GetLotteryState();
+            mls.accumulator_outpoint = COutPoint(coalesceTx->GetHash(), 0);
+            mls.accumulator_value    = expectedValue;
+            WriteLotteryStateSnapshotForBlock(pindex->GetBlockHash(), mls);
+        }
+    } else {
+        // No PTXCOALESCE: LotteryState unchanged.  Still write the post-block snapshot
+        // so DisconnectBlock can always find a valid pprev snapshot.
+        if (!fJustCheck) {
+            WriteLotteryStateSnapshotForBlock(pindex->GetBlockHash(), GetLotteryState());
+        }
+    }
+
+    return true;
+}
+
 bool UndoSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex)
 {
+    // Restore LotteryState to the pre-block state (= post-pprev snapshot).
+    // Called from DisconnectBlock which holds cs_main; AssertLockHeld documents this.
+    {
+        AssertLockHeld(cs_main);
+        // genesis is never disconnected — null pprev here is a programmer error
+        assert(pindex->pprev != nullptr);
+        LotteryState prevState;
+        if (!ReadLotteryStateSnapshotForBlock(pindex->pprev->GetBlockHash(), prevState)) {
+            // Missing snapshot indicates evodb integrity failure (lost write, corruption).
+            // Refuse the disconnect rather than silently restoring a default-constructed state.
+            LogPrintf("%s: missing LotteryState snapshot for %s — evodb integrity failure\n",
+                      __func__, pindex->pprev->GetBlockHash().ToString());
+            return false;
+        }
+        GetLotteryState() = prevState;
+    }
+
     if (!deterministicGMManager->UndoBlock(block, pindex)) {
         return false;
     }

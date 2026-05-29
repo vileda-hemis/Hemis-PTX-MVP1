@@ -15,6 +15,8 @@
 #include "consensus/upgrades.h"
 #include "consensus/validation.h"
 #include "llmq/quorums_blockprocessor.h"
+#include "ptx/ptx_coalesce.h"
+#include "ptx/ptx_lottery_state.h"
 #include "gamemaster-payments.h"
 #include "policy/policy.h"
 #include "pow.h"
@@ -220,6 +222,24 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
         txCoinbase.vout[0].nValue += nFees;
         pblock->vtx[0] = MakeTransactionRef(txCoinbase);
         pblocktemplate->vTxFees[0] = -nFees;
+    }
+
+    // ODC-022 §3.4: if any PTXSESS txs landed in the block, generate and append the
+    // PTXCOALESCE.  Must be after addPackageTxs() (PTXSESS come from mempool) and
+    // before header/Merkle finalisation so the tx is part of the committed block.
+    {
+        LOCK(cs_main);
+        std::vector<AccumInput> newFees = PTX_CollectPTXSESSFeeOutputs(pblock->vtx);
+        if (!newFees.empty()) {
+            const LotteryState& ls = GetLotteryState();
+            CTransactionRef coalesceTx = PTX_BuildCoalesceTx(
+                ls.accumulator_outpoint, ls.accumulator_value, newFees);
+            pblock->vtx.emplace_back(coalesceTx);
+            pblocktemplate->vTxFees.emplace_back(0);    // zero miner fee (C4)
+            pblocktemplate->vTxSigOps.emplace_back(0);  // no standard sigops
+            nBlockSize += coalesceTx->GetTotalSize();
+            ++nBlockTx;
+        }
     }
 
     nLastBlockTx = nBlockTx;

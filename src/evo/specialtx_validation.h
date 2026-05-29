@@ -33,6 +33,19 @@ bool CheckSpecialTxNoContext(const CTransaction& tx, CValidationState& state) EX
 bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, const CCoinsViewCache* view, CValidationState& state, bool fJustCheck) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 bool UndoSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex);
 
+// ODC-022 Step 7: PTXCOALESCE structural check + LotteryState update.
+// Validates that the PTXCOALESCE in block (if any) spends exactly the expected inputs
+// (prior accumulator + all PTXSESS fee outputs from this block, in block order) and
+// carries the correct accumulated value.  When !fJustCheck, updates the in-memory
+// LotteryState singleton and writes the post-block snapshot to evodb.
+//
+// Called by ProcessSpecialTxsInBlock; exposed separately so unit tests can exercise
+// the Step 7 logic without invoking deterministicGMManager or llmq::quorumBlockProcessor.
+bool CheckAndApplyPTXCoalesce(const CBlock& block,
+                              const CBlockIndex* pindex,
+                              CValidationState& state,
+                              bool fJustCheck) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
 // Validate given LLMQ final commitment with the list at pindexQuorum
 bool VerifyLLMQCommitment(const llmq::CFinalCommitment& qfc, const CBlockIndex* pindexPrev, CValidationState& state) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
