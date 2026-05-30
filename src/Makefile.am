@@ -418,6 +418,7 @@ libbitcoin_server_a_SOURCES = \
   ptx/ptx_lottery_state.cpp \
   ptx/ptx_winner_selection.cpp \
   ptx/ptx_payout.cpp \
+  ptx/ptx_wallet.cpp \
   llmq/quorums_signing_shares.cpp \
   tiertwo/gamemaster_meta_manager.cpp \
   tiertwo/net_gamemasters.cpp \

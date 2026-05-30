@@ -25,6 +25,12 @@
 #include "utilstrencodings.h"
 #include "validation.h"
 
+#ifdef ENABLE_WALLET
+#include "ptx/ptx_wallet.h"
+#include "wallet/rpcwallet.h"
+#include "wallet/wallet.h"
+#endif // ENABLE_WALLET
+
 #include <univalue.h>
 
 #include <algorithm>
@@ -756,6 +762,127 @@ UniValue ptx_lottery_status(const JSONRPCRequest& request)
 }
 
 // ---------------------------------------------------------------------------
+// Wallet-scoped RPCs (Step 12)
+// ---------------------------------------------------------------------------
+
+#ifdef ENABLE_WALLET
+
+UniValue ptx_wallet_lottery_status(const JSONRPCRequest& request)
+{
+    CWallet* const pwallet = GetWalletForJSONRPCRequest(request);
+    if (!EnsureWalletIsAvailable(pwallet, request.fHelp))
+        return NullUniValue;
+
+    if (request.fHelp) {
+        throw std::runtime_error(
+            "ptx_wallet_lottery_status\n"
+            "\nReturn wallet-scoped PTX lottery state: GMs whose scriptPTXPayment is spendable\n"
+            "by keys in this wallet, and their current lottery participation status.\n"
+            "\nNote: my_gms lists GMs where this wallet controls the payout address. It does NOT\n"
+            "necessarily represent GMs operated by this wallet — in the cold/hot operator pattern\n"
+            "the payout key can be on a different wallet from the operator/collateral keys.\n"
+            "For operational ownership, see protx_list wallet_only=true.\n"
+            "(KDD-035)\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"my_gms\": [               (array) GMs whose scriptPTXPayment this wallet controls\n"
+            "    {\n"
+            "      \"node_id\"    : \"str\",  compound label:suffix from ProRegPL v3\n"
+            "      \"address\"    : \"str\",  Base58Check of scriptPTXPayment\n"
+            "      \"tickets\"    : n,       current lottery_tickets in pose tracker\n"
+            "      \"eligible\"   : bool,    quorum_eligible from pose tracker\n"
+            "      \"pose_score\" : n        pose_score from pose tracker\n"
+            "    }, ...\n"
+            "  ],\n"
+            "  \"my_eligible_count\" : n    count of my_gms where eligible==true and tickets>0\n"
+            "}\n"
+            + HelpExampleCli("ptx_wallet_lottery_status", "")
+            + HelpExampleRpc("ptx_wallet_lottery_status", "")
+        );
+    }
+
+    CDeterministicGMList gmList = deterministicGMManager->GetListAtChainTip();
+
+    std::vector<WalletGMInfo> myGMs;
+    {
+        LOCK(pwallet->cs_wallet);
+        myGMs = PTX_FilterWalletGMs(*pwallet, gmList, g_ptx_pose_tracker);
+    }
+
+    UniValue gmsArr(UniValue::VARR);
+    int eligibleCount = 0;
+    for (const auto& info : myGMs) {
+        UniValue gobj(UniValue::VOBJ);
+        gobj.pushKV("node_id",    info.node_id);
+        CTxDestination dest;
+        if (ExtractDestination(info.payment_script, dest)) {
+            gobj.pushKV("address", EncodeDestination(dest));
+        }
+        gobj.pushKV("tickets",    info.tickets);
+        gobj.pushKV("eligible",   info.eligible);
+        gobj.pushKV("pose_score", info.pose_score);
+        if (info.eligible && info.tickets > 0) ++eligibleCount;
+        gmsArr.push_back(gobj);
+    }
+
+    UniValue ret(UniValue::VOBJ);
+    ret.pushKV("my_gms",           gmsArr);
+    ret.pushKV("my_eligible_count", eligibleCount);
+    return ret;
+}
+
+UniValue ptx_lottery_history(const JSONRPCRequest& request)
+{
+    CWallet* const pwallet = GetWalletForJSONRPCRequest(request);
+    if (!EnsureWalletIsAvailable(pwallet, request.fHelp))
+        return NullUniValue;
+
+    if (request.fHelp) {
+        throw std::runtime_error(
+            "ptx_lottery_history\n"
+            "\nReturn this wallet's recent PTX lottery winnings — the subset of the chain-side\n"
+            "settlement_history where the payout went to a key controlled by this wallet.\n"
+            "Results are newest first. Bounded by the chain-side history cap (max 20 entries).\n"
+            "For an audit-grade all-time history, scan wallet transaction history for PTXPAYOUT\n"
+            "receipts.\n"
+            "\nResult:\n"
+            "[                            (array) recent settlements won by this wallet, newest first\n"
+            "  {\n"
+            "    \"height\"       : n,\n"
+            "    \"gm\"           : \"str\",  Base58Check payment address (field absent if non-standard)\n"
+            "    \"winner_protx\" : \"hex\",\n"
+            "    \"amount\"       : \"str\",  HMS, 8 decimal places\n"
+            "    \"amount_sat\"   : n,\n"
+            "    \"txid\"         : \"hex\"\n"
+            "  }, ...\n"
+            "]\n"
+            + HelpExampleCli("ptx_lottery_history", "")
+            + HelpExampleRpc("ptx_lottery_history", "")
+        );
+    }
+
+    std::vector<LastSettlement> history;
+    {
+        LOCK(cs_main);
+        history = GetLotteryState().settlement_history;
+    }
+
+    std::vector<LastSettlement> mine;
+    {
+        LOCK(pwallet->cs_wallet);
+        mine = PTX_FilterWalletSettlements(*pwallet, history);
+    }
+
+    // mine is in ring-buffer order (oldest first); reverse to newest-first for output.
+    UniValue ret(UniValue::VARR);
+    for (int i = (int)mine.size() - 1; i >= 0; --i) {
+        ret.push_back(PTX_MakeSettlementJson(mine[i], /*include_amount_sat=*/true));
+    }
+    return ret;
+}
+#endif // ENABLE_WALLET
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -771,6 +898,10 @@ static const CRPCCommand commands[] = {
     { "ptx",  "ptx_getroundstatus",        &ptx_getroundstatus,         true,   {"round_id"} },
     { "ptx",  "ptx_pose_status",           &ptx_pose_status,            true,   {} },
     { "ptx",  "ptx_lottery_status",        &ptx_lottery_status,         true,   {} },
+#ifdef ENABLE_WALLET
+    { "ptx",  "ptx_wallet_lottery_status", &ptx_wallet_lottery_status,  true,   {} },
+    { "ptx",  "ptx_lottery_history",       &ptx_lottery_history,        true,   {} },
+#endif // ENABLE_WALLET
 };
 // clang-format on
 
