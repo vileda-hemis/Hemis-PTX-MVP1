@@ -51,3 +51,54 @@ std::vector<WalletGMInfo> PTX_FilterWalletGMs(
 
     return result;
 }
+
+bool PTX_GetGMPoseDetail(
+    const std::string&          node_id,
+    const CDeterministicGMList& gmList,
+    const PTXPoSeTracker&       tracker,
+    GMPoseDetail&               out)
+{
+    bool found = false;
+    gmList.ForEachGM(/*onlyValid=*/false, [&](const CDeterministicGMCPtr& dgm) {
+        if (dgm->pdgmState->node_id != node_id)
+            return;
+        found = true;
+        out.payment_configured = !dgm->pdgmState->scriptPTXPayment.empty();
+    });
+    if (!found)
+        return false;
+    out.pose = tracker.GetRecord(node_id);
+    return true;
+}
+
+std::vector<OperatedGMInfo> PTX_FilterOperatedGMs(
+    const CKeyStore&            ks,
+    const CDeterministicGMList& gmList,
+    const PTXPoSeTracker&       tracker)
+{
+    std::vector<OperatedGMInfo> result;
+
+    gmList.ForEachGM(/*onlyValid=*/false, [&](const CDeterministicGMCPtr& dgm) {
+        const auto& state = dgm->pdgmState;
+        if (!ks.HaveKey(state->keyIDOwner) && !ks.HaveKey(state->keyIDVoting))
+            return;
+
+        OperatedGMInfo info;
+        info.node_id             = state->node_id;
+        info.proTxHash           = dgm->proTxHash;
+        info.payment_script      = state->scriptPTXPayment;
+        info.has_payment_address = !state->scriptPTXPayment.empty();
+
+        if (!state->node_id.empty()) {
+            PTXNodeRecord rec        = tracker.GetRecord(state->node_id);
+            info.tickets             = rec.lottery_tickets;
+            info.eligible            = rec.quorum_eligible;
+            info.pose_score          = rec.pose_score;
+            info.penalized_this_window = rec.window_zeroed;
+        }
+
+        result.push_back(std::move(info));
+    });
+
+    return result;
+}

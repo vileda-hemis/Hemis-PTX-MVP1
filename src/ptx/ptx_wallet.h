@@ -53,8 +53,66 @@ std::vector<LastSettlement> PTX_FilterWalletSettlements(
  * See KDD-035 for the payout-ownership vs operational-ownership distinction.
  */
 std::vector<WalletGMInfo> PTX_FilterWalletGMs(
-    const CKeyStore&         ks,
+    const CKeyStore&            ks,
     const CDeterministicGMList& gmList,
-    const PTXPoSeTracker&    tracker);
+    const PTXPoSeTracker&       tracker);
+
+// ---------------------------------------------------------------------------
+// Step 13: pose tracker visibility helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-GM pose detail with DGM-list join.
+ * Used by ptx_gm_pose RPC.
+ */
+struct GMPoseDetail {
+    PTXNodeRecord pose;
+    bool          payment_configured{false};
+};
+
+/**
+ * Look up pose detail for a single GM by node_id.
+ *
+ * Returns true and fills `out` when node_id is found in gmList.
+ * Returns false when node_id is not registered in gmList — caller should
+ * throw RPC_INVALID_PARAMETER "GM not found: <node_id>".
+ *
+ * pose fields come from tracker.GetRecord(); payment_configured is true
+ * when the matching DGM has a non-empty scriptPTXPayment.
+ */
+bool PTX_GetGMPoseDetail(
+    const std::string&          node_id,
+    const CDeterministicGMList& gmList,
+    const PTXPoSeTracker&       tracker,
+    GMPoseDetail&               out);
+
+/**
+ * Result entry for ptx_wallet_operated_gms.
+ *
+ * KDD-036: predicate is ks.HaveKey(keyIDOwner) || ks.HaveKey(keyIDVoting).
+ * BLS operator key is not checked (CKeyStore is EC-only). See KDD-036.
+ */
+struct OperatedGMInfo {
+    std::string node_id;
+    uint256     proTxHash;
+    CScript     payment_script;        // scriptPTXPayment; may be empty
+    bool        has_payment_address{false};
+    int64_t     tickets{0};
+    bool        eligible{false};
+    int         pose_score{0};
+    bool        penalized_this_window{false};
+};
+
+/**
+ * Filter the DGM list to GMs where ks holds the owner or voting key,
+ * and annotate each with current pose-tracker data.
+ *
+ * See KDD-036 for the EC-only predicate rationale and BLS exclusion.
+ * Testable without CWallet: call with a CBasicKeyStore holding test keys.
+ */
+std::vector<OperatedGMInfo> PTX_FilterOperatedGMs(
+    const CKeyStore&            ks,
+    const CDeterministicGMList& gmList,
+    const PTXPoSeTracker&       tracker);
 
 #endif // Hemis_PTX_WALLET_H

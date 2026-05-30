@@ -25,8 +25,9 @@
 #include "utilstrencodings.h"
 #include "validation.h"
 
-#ifdef ENABLE_WALLET
 #include "ptx/ptx_wallet.h"
+
+#ifdef ENABLE_WALLET
 #include "wallet/rpcwallet.h"
 #include "wallet/wallet.h"
 #endif // ENABLE_WALLET
@@ -520,6 +521,9 @@ UniValue ptx_debug_setnodefailmode(const JSONRPCRequest& request)
     return ret;
 }
 
+// Forward declaration: defined after ptx_pose_status (Step 13).
+static UniValue PTX_BuildPoseJson(const PTXNodeRecord& rec);
+
 // ---------------------------------------------------------------------------
 // RPC: ptx_getroundstatus
 // ---------------------------------------------------------------------------
@@ -595,17 +599,30 @@ UniValue ptx_getroundstatus(const JSONRPCRequest& request)
     // PoSe records.
     UniValue pose_arr(UniValue::VARR);
     for (const auto& kv : g_ptx_pose_tracker.GetAllRecords()) {
-        const auto& rec = kv.second;
-        UniValue po(UniValue::VOBJ);
-        po.pushKV("node_id",    rec.node_id);
-        po.pushKV("pose_score", rec.pose_score);
-        po.pushKV("eligible",   rec.quorum_eligible);
-        po.pushKV("tickets",    rec.lottery_tickets);
-        pose_arr.push_back(po);
+        pose_arr.push_back(PTX_BuildPoseJson(kv.second));
     }
     ret.pushKV("pose_records", pose_arr);
 
     return ret;
+}
+
+// ---------------------------------------------------------------------------
+// Shared pose-record JSON builder (Step 13)
+// Used by ptx_pose_status, ptx_lottery_status.eligible_nodes,
+// ptx_gm_pose, and ptx_wallet_operated_gms.
+// Field order: node_id → pose_score → eligible → tickets → penalized_this_window
+// (penalized_this_window appended last to preserve stable ordering for existing consumers).
+// ---------------------------------------------------------------------------
+
+static UniValue PTX_BuildPoseJson(const PTXNodeRecord& rec)
+{
+    UniValue po(UniValue::VOBJ);
+    po.pushKV("node_id",               rec.node_id);
+    po.pushKV("pose_score",            rec.pose_score);
+    po.pushKV("eligible",              rec.quorum_eligible);
+    po.pushKV("tickets",               rec.lottery_tickets);
+    po.pushKV("penalized_this_window", rec.window_zeroed);
+    return po;
 }
 
 // ---------------------------------------------------------------------------
@@ -621,10 +638,11 @@ UniValue ptx_pose_status(const JSONRPCRequest& request)
             "\nResult:\n"
             "[\n"
             "  {\n"
-            "    \"node_id\"    : \"str\"\n"
-            "    \"pose_score\" : n\n"
-            "    \"eligible\"   : bool\n"
-            "    \"tickets\"    : n\n"
+            "    \"node_id\"               : \"str\",  compound label:suffix from ProRegPL v3\n"
+            "    \"pose_score\"            : n,        cumulative penalty score (0 = healthy)\n"
+            "    \"eligible\"              : bool,     false when pose_score >= 100\n"
+            "    \"tickets\"               : n,        honest-participation count this window\n"
+            "    \"penalized_this_window\" : bool      true if GM was penalized this window (tickets were reset)\n"
             "  }, ...\n"
             "]\n"
             + HelpExampleCli("ptx_pose_status", "")
@@ -634,15 +652,51 @@ UniValue ptx_pose_status(const JSONRPCRequest& request)
 
     UniValue arr(UniValue::VARR);
     for (const auto& kv : g_ptx_pose_tracker.GetAllRecords()) {
-        const auto& rec = kv.second;
-        UniValue po(UniValue::VOBJ);
-        po.pushKV("node_id",    rec.node_id);
-        po.pushKV("pose_score", rec.pose_score);
-        po.pushKV("eligible",   rec.quorum_eligible);
-        po.pushKV("tickets",    rec.lottery_tickets);
-        arr.push_back(po);
+        arr.push_back(PTX_BuildPoseJson(kv.second));
     }
     return arr;
+}
+
+// ---------------------------------------------------------------------------
+// RPC: ptx_gm_pose
+// ---------------------------------------------------------------------------
+
+UniValue ptx_gm_pose(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() != 1) {
+        throw std::runtime_error(
+            "ptx_gm_pose \"node_id\"\n"
+            "\nReturn pose-tracker detail for a single registered GM.\n"
+            "Errors with RPC_INVALID_PARAMETER if node_id is not found in the DGM list.\n"
+            "For GMs participating in rolls but not yet registered via protx_register*,\n"
+            "use ptx_pose_status instead.\n"
+            "\nArguments:\n"
+            "1. \"node_id\"  (string, required) compound label:suffix from protx_register* response\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"node_id\"               : \"str\",\n"
+            "  \"pose_score\"            : n,        cumulative penalty score (0 = healthy)\n"
+            "  \"eligible\"              : bool,     false when pose_score >= 100\n"
+            "  \"tickets\"               : n,        honest-participation count this window\n"
+            "  \"penalized_this_window\" : bool,     true if GM was penalized this window\n"
+            "  \"payment_configured\"    : bool      true if scriptPTXPayment is set (GM can win payouts)\n"
+            "}\n"
+            + HelpExampleCli("ptx_gm_pose", "\"gm01:aabbccdd\"")
+            + HelpExampleRpc("ptx_gm_pose", "\"gm01:aabbccdd\"")
+        );
+    }
+
+    const std::string node_id = request.params[0].get_str();
+    CDeterministicGMList gmList = deterministicGMManager->GetListAtChainTip();
+
+    GMPoseDetail detail;
+    if (!PTX_GetGMPoseDetail(node_id, gmList, g_ptx_pose_tracker, detail)) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "GM not found: " + node_id);
+    }
+
+    UniValue result = PTX_BuildPoseJson(detail.pose);
+    result.pushKV("payment_configured", detail.payment_configured);
+    return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -686,10 +740,11 @@ UniValue ptx_lottery_status(const JSONRPCRequest& request)
             "  \"total_rolls\"        : n,        (numeric) cumulative PTX sessions since genesis\n"
             "  \"eligible_nodes\"     : [         (array) all pose-tracker nodes\n"
             "    {\n"
-            "      \"node_id\"    : \"str\",\n"
-            "      \"tickets\"    : n,\n"
-            "      \"pose_score\" : n,\n"
-            "      \"eligible\"   : bool\n"
+            "      \"node_id\"               : \"str\",\n"
+            "      \"pose_score\"            : n,\n"
+            "      \"eligible\"              : bool,\n"
+            "      \"tickets\"               : n,\n"
+            "      \"penalized_this_window\" : bool\n"
             "    }, ...\n"
             "  ],\n"
             "  \"last_settle\"        : {         (object) most recent settlement;\n"
@@ -737,13 +792,7 @@ UniValue ptx_lottery_status(const JSONRPCRequest& request)
 
     UniValue nodes_arr(UniValue::VARR);
     for (const auto& kv : g_ptx_pose_tracker.GetAllRecords()) {
-        const auto& rec = kv.second;
-        UniValue no(UniValue::VOBJ);
-        no.pushKV("node_id",    rec.node_id);
-        no.pushKV("tickets",    rec.lottery_tickets);
-        no.pushKV("pose_score", rec.pose_score);
-        no.pushKV("eligible",   rec.quorum_eligible);
-        nodes_arr.push_back(no);
+        nodes_arr.push_back(PTX_BuildPoseJson(kv.second));
     }
     ret.pushKV("eligible_nodes", nodes_arr);
 
@@ -880,6 +929,70 @@ UniValue ptx_lottery_history(const JSONRPCRequest& request)
     }
     return ret;
 }
+
+UniValue ptx_wallet_operated_gms(const JSONRPCRequest& request)
+{
+    CWallet* const pwallet = GetWalletForJSONRPCRequest(request);
+    if (!EnsureWalletIsAvailable(pwallet, request.fHelp))
+        return NullUniValue;
+
+    if (request.fHelp) {
+        throw std::runtime_error(
+            "ptx_wallet_operated_gms\n"
+            "\nReturn GMs where this wallet holds the owner or voting key, annotated with\n"
+            "current pose-tracker state.\n"
+            "\nNote: predicate is ks.HaveKey(keyIDOwner) || ks.HaveKey(keyIDVoting). This covers\n"
+            "EC keys only. The BLS operator key (used for quorum signing on hot nodes) is NOT\n"
+            "checked — a hot node holding only the BLS operator key will see empty results.\n"
+            "For full GM association including collateral and BLS keys, use protx_list\n"
+            "wallet_only=true. For GMs paying to keys in this wallet, see\n"
+            "ptx_wallet_lottery_status. (KDD-036)\n"
+            "\nResult:\n"
+            "[                              (array) GMs where this wallet holds owner or voting key\n"
+            "  {\n"
+            "    \"node_id\"               : \"str\",  compound label:suffix from ProRegPL v3\n"
+            "    \"proTxHash\"             : \"hex\",\n"
+            "    \"payment_address\"       : \"str\",  Base58Check of scriptPTXPayment (field absent if not set)\n"
+            "    \"has_payment_address\"   : bool,    true if scriptPTXPayment is configured\n"
+            "    \"pose_score\"            : n,\n"
+            "    \"eligible\"              : bool,\n"
+            "    \"tickets\"               : n,\n"
+            "    \"penalized_this_window\" : bool\n"
+            "  }, ...\n"
+            "]\n"
+            + HelpExampleCli("ptx_wallet_operated_gms", "")
+            + HelpExampleRpc("ptx_wallet_operated_gms", "")
+        );
+    }
+
+    CDeterministicGMList gmList = deterministicGMManager->GetListAtChainTip();
+
+    std::vector<OperatedGMInfo> myGMs;
+    {
+        LOCK(pwallet->cs_wallet);
+        myGMs = PTX_FilterOperatedGMs(*pwallet, gmList, g_ptx_pose_tracker);
+    }
+
+    UniValue ret(UniValue::VARR);
+    for (const auto& info : myGMs) {
+        UniValue gobj(UniValue::VOBJ);
+        gobj.pushKV("node_id",    info.node_id);
+        gobj.pushKV("proTxHash",  info.proTxHash.GetHex());
+        if (!info.payment_script.empty()) {
+            CTxDestination dest;
+            if (ExtractDestination(info.payment_script, dest)) {
+                gobj.pushKV("payment_address", EncodeDestination(dest));
+            }
+        }
+        gobj.pushKV("has_payment_address",   info.has_payment_address);
+        gobj.pushKV("pose_score",            info.pose_score);
+        gobj.pushKV("eligible",              info.eligible);
+        gobj.pushKV("tickets",               info.tickets);
+        gobj.pushKV("penalized_this_window", info.penalized_this_window);
+        ret.push_back(gobj);
+    }
+    return ret;
+}
 #endif // ENABLE_WALLET
 
 // ---------------------------------------------------------------------------
@@ -897,10 +1010,12 @@ static const CRPCCommand commands[] = {
     { "ptx",  "ptx_debug_setnodefailmode", &ptx_debug_setnodefailmode,  true,   {"target_node_id","mode"} },
     { "ptx",  "ptx_getroundstatus",        &ptx_getroundstatus,         true,   {"round_id"} },
     { "ptx",  "ptx_pose_status",           &ptx_pose_status,            true,   {} },
+    { "ptx",  "ptx_gm_pose",               &ptx_gm_pose,                true,   {"node_id"} },
     { "ptx",  "ptx_lottery_status",        &ptx_lottery_status,         true,   {} },
 #ifdef ENABLE_WALLET
     { "ptx",  "ptx_wallet_lottery_status", &ptx_wallet_lottery_status,  true,   {} },
     { "ptx",  "ptx_lottery_history",       &ptx_lottery_history,        true,   {} },
+    { "ptx",  "ptx_wallet_operated_gms",   &ptx_wallet_operated_gms,    true,   {} },
 #endif // ENABLE_WALLET
 };
 // clang-format on

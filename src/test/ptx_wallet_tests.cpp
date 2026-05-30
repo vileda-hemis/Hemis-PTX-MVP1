@@ -225,4 +225,131 @@ BOOST_AUTO_TEST_CASE(WalletFilter_Settlements_PreservesHistoryOrder)
     BOOST_CHECK_EQUAL(result[2].height, 300);
 }
 
+// ---------------------------------------------------------------------------
+// PTX_FilterOperatedGMs — 5 tests (Step 13)
+// ---------------------------------------------------------------------------
+
+// Build a DGM with independently-specified owner and voting keys.
+static CDeterministicGMCPtr MakeOperatedDGM(const std::string& nodeId,
+                                             const CKeyID&      ownerKey,
+                                             const CKeyID&      votingKey,
+                                             const CScript&     payScript,
+                                             uint64_t           internalId)
+{
+    uint256 proTxHash = uint256S(strprintf("%064x", internalId + 100));
+    auto dgm   = std::make_shared<CDeterministicGM>(internalId);
+    dgm->proTxHash          = proTxHash;
+    dgm->collateralOutpoint = COutPoint(proTxHash, 0);
+
+    CBLSSecretKey sk; sk.MakeNewKey();
+
+    auto state = std::make_shared<CDeterministicGMState>();
+    state->node_id          = nodeId;
+    state->keyIDOwner       = ownerKey;
+    state->keyIDVoting      = votingKey;
+    state->scriptPTXPayment = payScript;
+    state->pubKeyOperator.Set(sk.GetPublicKey());
+    dgm->pdgmState = state;
+    return dgm;
+}
+
+// Empty DGM list → empty result.
+BOOST_AUTO_TEST_CASE(OperatedGMs_EmptyList)
+{
+    CBasicKeyStore ks;
+    CDeterministicGMList emptyList;
+    auto result = PTX_FilterOperatedGMs(ks, emptyList, g_ptx_pose_tracker);
+    BOOST_CHECK(result.empty());
+}
+
+// DGM where wallet holds the owner key → included.
+// Falsification target 3b: OR → AND makes this RED (voting key absent, AND fails).
+BOOST_AUTO_TEST_CASE(OperatedGMs_IncludesOwnerKey)
+{
+    auto [ownerKey, _os]  = MakeKeyAndScript();
+    auto [votingKey, _vs] = MakeKeyAndScript();  // different key, not in keystore
+    CBasicKeyStore ks;
+    ks.AddKey(ownerKey);  // only owner key
+
+    CDeterministicGMList list;
+    list.AddGM(MakeOperatedDGM("gm01:aabbccdd",
+                               ownerKey.GetPubKey().GetID(),
+                               votingKey.GetPubKey().GetID(),
+                               CScript(), 1));
+
+    auto result = PTX_FilterOperatedGMs(ks, list, g_ptx_pose_tracker);
+    BOOST_REQUIRE_EQUAL(result.size(), 1U);
+    BOOST_CHECK_EQUAL(result[0].node_id, "gm01:aabbccdd");
+}
+
+// DGM where wallet holds the voting key but NOT the owner key → included.
+// Falsification target 3b: OR → AND makes this RED (owner key absent, AND fails).
+BOOST_AUTO_TEST_CASE(OperatedGMs_IncludesVotingKey)
+{
+    auto [ownerKey, _os]  = MakeKeyAndScript();  // not in keystore
+    auto [votingKey, _vs] = MakeKeyAndScript();
+    CBasicKeyStore ks;
+    ks.AddKey(votingKey);  // only voting key
+
+    CDeterministicGMList list;
+    list.AddGM(MakeOperatedDGM("gm02:11223344",
+                               ownerKey.GetPubKey().GetID(),
+                               votingKey.GetPubKey().GetID(),
+                               CScript(), 2));
+
+    auto result = PTX_FilterOperatedGMs(ks, list, g_ptx_pose_tracker);
+    BOOST_REQUIRE_EQUAL(result.size(), 1U);
+    BOOST_CHECK_EQUAL(result[0].node_id, "gm02:11223344");
+}
+
+// Wallet holds no keys → result is empty.
+// Falsification target 3b: OR → AND still excludes (no keys → AND still false). GREEN.
+BOOST_AUTO_TEST_CASE(OperatedGMs_ExcludesNonOwned)
+{
+    CBasicKeyStore ks;  // empty — no keys
+
+    auto [ownerKey, _os]  = MakeKeyAndScript();
+    auto [votingKey, _vs] = MakeKeyAndScript();
+
+    CDeterministicGMList list;
+    list.AddGM(MakeOperatedDGM("gm01:aabbccdd",
+                               ownerKey.GetPubKey().GetID(),
+                               votingKey.GetPubKey().GetID(),
+                               CScript(), 1));
+
+    auto result = PTX_FilterOperatedGMs(ks, list, g_ptx_pose_tracker);
+    BOOST_CHECK(result.empty());
+}
+
+// PTX_FilterOperatedGMs populates all pose fields including penalized_this_window.
+// Falsification target 3a: PTX_BuildPoseJson tickets+1 makes this RED
+// (tickets==2 check catches the off-by-one, clean cross-surface isolation).
+BOOST_AUTO_TEST_CASE(OperatedGMs_PoseFieldsPopulated)
+{
+    auto [ownerKey, _os] = MakeKeyAndScript();
+    CBasicKeyStore ks;
+    ks.AddKey(ownerKey);
+
+    // Seed tracker: 2 honest participations, then a withhold.
+    g_ptx_pose_tracker.AdvanceLotteryWindow();
+    g_ptx_pose_tracker.RecordHonestParticipation("gm01:aabbccdd");
+    g_ptx_pose_tracker.RecordHonestParticipation("gm01:aabbccdd");
+    g_ptx_pose_tracker.RecordWithhold("gm01:aabbccdd");
+    // After withhold: tickets=0, window_zeroed=true, pose_score=5
+
+    CDeterministicGMList list;
+    list.AddGM(MakeOperatedDGM("gm01:aabbccdd",
+                               ownerKey.GetPubKey().GetID(),
+                               ownerKey.GetPubKey().GetID(),
+                               CScript(), 1));
+
+    auto result = PTX_FilterOperatedGMs(ks, list, g_ptx_pose_tracker);
+    BOOST_REQUIRE_EQUAL(result.size(), 1U);
+    BOOST_CHECK_EQUAL(result[0].tickets,               0);
+    BOOST_CHECK_EQUAL(result[0].pose_score,            5);
+    BOOST_CHECK_EQUAL(result[0].penalized_this_window, true);
+
+    g_ptx_pose_tracker.AdvanceLotteryWindow();  // clean up
+}
+
 BOOST_AUTO_TEST_SUITE_END()
