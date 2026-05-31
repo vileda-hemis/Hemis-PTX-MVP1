@@ -32,7 +32,7 @@ static bool CheckService(const CService& addr, CValidationState& state)
     if (!addr.IsValid()) {
         return state.DoS(10, false, REJECT_INVALID, "bad-protx-ipaddr");
     }
-    if (!Params().IsRegTestNet() && !addr.IsRoutable()) {
+    if (!Params().IsRegTestNet() && !Params().IsPTXBeaTestNet() && !addr.IsRoutable()) {
         return state.DoS(10, false, REJECT_INVALID, "bad-protx-ipaddr");
     }
 
