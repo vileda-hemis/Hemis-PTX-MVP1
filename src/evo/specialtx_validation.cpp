@@ -1051,6 +1051,25 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
         return false;
     }
 
+    // Update pose tracker from PTXSESS quorum_members in this block.
+    // ptx_roll (caller-side) calls RecordHonestParticipation for the nodes it observed
+    // sign, but that only updates the caller's g_ptx_pose_tracker. Validators (staking
+    // GMs) never run ptx_roll, so their pose trackers were always empty — causing P11
+    // to evaluate the eligible-winners check differently on caller vs staking nodes
+    // (consensus split at every settlement boundary). The fix: when a PTXSESS confirms
+    // in a block, all validators apply RecordHonestParticipation for its quorum_members,
+    // making the pose tracker consensus-derived from the chain.
+    if (!fJustCheck) {
+        for (const CTransactionRef& tx : block.vtx) {
+            if (!tx->IsProbabilisticTx()) continue;
+            CProbabilisticTxPayload payload;
+            if (!GetTxPayload(*tx, payload)) continue;
+            for (const std::string& nid : payload.quorum_members) {
+                g_ptx_pose_tracker.RecordHonestParticipation(nid);
+            }
+        }
+    }
+
     // Fetch DGM list and pose tracker once for both P10 and the state update.
     CDeterministicGMList gmList;
     if (pindex->pprev != nullptr) {
