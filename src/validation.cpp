@@ -1496,6 +1496,12 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
     if (block.GetHash() == consensus.hashGenesisBlock) {
         if (!fJustCheck) {
             view.SetBestBlock(pindex->GetBlockHash());
+            // When UPGRADE_V6_0 = ALWAYS_ACTIVE, block 1's ConnectBlock checks
+            // evoDb->VerifyBestBlock(genesis_hash) before processing. Without this
+            // write, the check fails for ptxbea ("EvoDB inconsistency"). Mirrors
+            // the view.SetBestBlock + evoDb->WriteBestBlock pair at the normal
+            // ConnectBlock exit path (lines 1730-1731).
+            evoDb->WriteBestBlock(pindex->GetBlockHash());
         }
         return true;
     }
