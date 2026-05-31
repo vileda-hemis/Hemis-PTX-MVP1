@@ -50,8 +50,8 @@ void PTX_LoadNodesFromArgs()
         ni.node_id = id;
         ni.host    = host;
         ni.port    = (uint16_t)port;
-        g_ptx_nodes.push_back(std::move(ni));
         LogPrintf("PTX: loaded node %s at %s:%d\n", ni.node_id, ni.host, (int)ni.port);
+        g_ptx_nodes.push_back(std::move(ni));
     }
     LogPrintf("PTX: %d node(s) loaded; my_node_id=%s\n",
               (int)g_ptx_nodes.size(),
