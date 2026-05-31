@@ -5,6 +5,7 @@
 #include "ptx/ptx_quorum.h"
 
 #include "logging.h"
+#include "netbase.h"
 #include "ptx/ptx_output_mapping.h"
 #include "ptx/ptx_pose.h"
 #include "util/system.h"
@@ -25,33 +26,32 @@ void PTX_LoadNodesFromArgs()
     g_ptx_my_node_id = gArgs.GetArg("-ptxnodeid", gArgs.GetArg("-ptxmynodeid", ""));
 
     for (const std::string& spec : gArgs.GetArgs("-ptxnode")) {
-        // Expected format: id:host:port:user:password (5 colon-separated fields)
-        std::vector<std::string> parts;
-        std::stringstream ss(spec);
-        std::string token;
-        while (std::getline(ss, token, ':')) parts.push_back(token);
-        if (parts.size() < 3) {
-            LogPrintf("PTX: invalid -ptxnode (expected id:host:port[:user:pass]): %s\n", spec);
+        // Format: id@host:port  (documented in ptx_quorum.h)
+        // id is a label or compound label:suffix (KDD-033); both are @-free.
+        // host:port is delegated to SplitHostPort, which handles IPv4 and bracketed IPv6
+        // ([fe80::1]:29903) identically to the rest of the codebase.
+        size_t at = spec.find('@');
+        if (at == std::string::npos || at == 0) {
+            LogPrintf("PTX: invalid -ptxnode (expected id@host:port): %s\n", spec);
             continue;
         }
-        int port = 0;
-        try {
-            port = std::stoi(parts[2]);
-        } catch (...) {
-            LogPrintf("PTX: invalid -ptxnode (bad port): %s\n", spec);
+        std::string id        = spec.substr(0, at);
+        std::string host_port = spec.substr(at + 1);
+
+        int         port = 0;
+        std::string host;
+        SplitHostPort(host_port, port, host);
+        if (host.empty() || port <= 0 || port > 65535) {
+            LogPrintf("PTX: invalid -ptxnode (bad host:port '%s'): %s\n", host_port, spec);
             continue;
         }
-        if (port <= 0 || port > 65535) {
-            LogPrintf("PTX: invalid -ptxnode (port out of range): %s\n", spec);
-            continue;
-        }
+
         PTXNodeInfo ni;
-        ni.node_id = parts[0];
-        ni.host    = parts[1];
+        ni.node_id = id;
+        ni.host    = host;
         ni.port    = (uint16_t)port;
         g_ptx_nodes.push_back(std::move(ni));
-        LogPrintf("PTX: loaded node %s at %s:%d\n", g_ptx_nodes.back().node_id,
-                  g_ptx_nodes.back().host, (int)g_ptx_nodes.back().port);
+        LogPrintf("PTX: loaded node %s at %s:%d\n", ni.node_id, ni.host, (int)ni.port);
     }
     LogPrintf("PTX: %d node(s) loaded; my_node_id=%s\n",
               (int)g_ptx_nodes.size(),

@@ -10,8 +10,10 @@
 #include "crypto/sha256.h"
 #include "evo/specialtx_validation.h"
 #include "primitives/transaction.h"
+#include "ptx/ptx_quorum.h"
 #include "serialize.h"
 #include "uint256.h"
+#include "util/system.h"
 #include "utilstrencodings.h"
 
 #include <boost/test/unit_test.hpp>
@@ -165,6 +167,59 @@ BOOST_AUTO_TEST_CASE(NodeId_LabelValidation)
     BOOST_CHECK_EQUAL(check("gm01"), "");
     BOOST_CHECK_EQUAL(check("my-node"), "");
     BOOST_CHECK_EQUAL(check("validator_1"), "");
+}
+
+// ---------------------------------------------------------------------------
+// -ptxnode parser tests (id@host:port format, KDD-033 compound ids)
+// ---------------------------------------------------------------------------
+
+// Helper: inject a single -ptxnode spec via gArgs, call PTX_LoadNodesFromArgs,
+// assert the first loaded node has the expected fields, then clear.
+static void RunParserCase(const std::string& spec,
+                          const std::string& expected_id,
+                          const std::string& expected_host,
+                          int                expected_port)
+{
+    // ForceSetArg sets m_override_args[key] = {spec} — sufficient for single-entry tests.
+    gArgs.ForceSetArg("-ptxnode", spec);
+    PTX_LoadNodesFromArgs();
+    BOOST_REQUIRE_EQUAL(g_ptx_nodes.size(), 1u);
+    BOOST_CHECK_EQUAL(g_ptx_nodes[0].node_id, expected_id);
+    BOOST_CHECK_EQUAL(g_ptx_nodes[0].host,    expected_host);
+    BOOST_CHECK_EQUAL((int)g_ptx_nodes[0].port, expected_port);
+    gArgs.ForceSetArg("-ptxnode", "");  // reset; PTX_LoadNodesFromArgs rejects "" (no @)
+    g_ptx_nodes.clear();
+}
+
+// label-only id + IPv4 host (backward-compat shape after @ migration)
+BOOST_AUTO_TEST_CASE(NodeParser_LabelOnly_IPv4)
+{
+    RunParserCase("gm01@172.30.0.11:29903", "gm01", "172.30.0.11", 29903);
+}
+
+// compound id (label:suffix) + IPv4 host
+BOOST_AUTO_TEST_CASE(NodeParser_Compound_IPv4)
+{
+    RunParserCase("gm01:3af7c2b1@172.30.0.11:29903", "gm01:3af7c2b1", "172.30.0.11", 29903);
+}
+
+// label-only id + bracketed IPv6 host (SplitHostPort handles the brackets)
+BOOST_AUTO_TEST_CASE(NodeParser_LabelOnly_IPv6Bracketed)
+{
+    RunParserCase("gm01@[fe80::1]:29903", "gm01", "fe80::1", 29903);
+}
+
+// compound id + bracketed IPv6 host
+BOOST_AUTO_TEST_CASE(NodeParser_Compound_IPv6Bracketed)
+{
+    RunParserCase("gm01:3af7c2b1@[fe80::1]:29903", "gm01:3af7c2b1", "fe80::1", 29903);
+}
+
+// compound id where suffix is 8 hex chars AND a plausible hostname string (deadbeef) —
+// the @ format is unambiguous where the old colon heuristic would have gambled.
+BOOST_AUTO_TEST_CASE(NodeParser_Compound_SuffixLooksLikeHostname)
+{
+    RunParserCase("gm01:deadbeef@172.30.0.11:29903", "gm01:deadbeef", "172.30.0.11", 29903);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
