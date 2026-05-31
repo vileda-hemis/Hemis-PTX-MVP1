@@ -882,9 +882,18 @@ CDeterministicGMList CDeterministicGMManager::GetListForBlock(const CBlockIndex*
 
         CDeterministicGMListDiff diff;
         if (!evoDb.Read(std::make_pair(DB_LIST_DIFF, pindex->GetBlockHash()), diff)) {
-            // no snapshot and no diff on disk means that it's initial snapshot (empty list)
-            // If we get here, then this must be the block before the enforcement of DIP3.
-            if (!IsActivationHeight(pindex->nHeight + 1, Params().GetConsensus(), Consensus::UPGRADE_V6_0)) {
+            // no snapshot and no diff on disk: this is the initial (empty) GM list state.
+            // Normally this block is the one just before DIP3 activation; but when
+            // UPGRADE_V6_0 = ALWAYS_ACTIVE (activation height 0), DIP3 is active from
+            // genesis and there is no pre-activation block — the genesis block itself
+            // carries an empty GM list. Allow both cases.
+            const bool isPreActivation = IsActivationHeight(
+                pindex->nHeight + 1, Params().GetConsensus(), Consensus::UPGRADE_V6_0);
+            const bool isGenesisAlwaysActive =
+                pindex->nHeight == 0 &&
+                Params().GetConsensus().vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight ==
+                    Consensus::NetworkUpgrade::ALWAYS_ACTIVE;
+            if (!isPreActivation && !isGenesisAlwaysActive) {
                 std::string err = strprintf("No gamemaster list data found for block %s at height %d. "
                                             "Possible corrupt database.", pindex->GetBlockHash().ToString(), pindex->nHeight);
                 throw std::runtime_error(err);
