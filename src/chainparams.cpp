@@ -871,7 +871,7 @@ public:
         consensus.nMaxMoneyOut = 30000000 * COIN;
         consensus.nGMCollateralAmt = 100 * COIN;
         consensus.nGMBlockReward = 3 * COIN;
-        consensus.nNewGMBlockReward = 6 * COIN;
+        consensus.nNewGMBlockReward = 2.674999995 * COIN;
         consensus.nGMCollateralMinConf = 1;
         consensus.nProposalEstablishmentTime = 60 * 5;
         consensus.nStakeMinAge = 0;
