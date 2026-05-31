@@ -266,9 +266,15 @@ UniValue ptx_roll(const JSONRPCRequest& request)
         round.state         = PTXRoundState::RESOLVED;
     }
 
-    // PoSe scoring.
-    for (const auto& nid : withheld)     g_ptx_pose_tracker.RecordWithhold(nid);
-    for (const auto& nid : signed_nodes) g_ptx_pose_tracker.RecordHonestParticipation(nid);
+    // PoSe scoring is now applied exclusively via ProcessSpecialTxsInBlock when
+    // PTXSESS transactions confirm in a block (specialtx_validation.cpp). Applying
+    // RecordHonestParticipation here (on the ptx_roll caller only) would double-count
+    // tickets when the PTXSESS confirms, causing the caller to have more tickets than
+    // validators, making PTX_SelectWinner return different winners on different nodes
+    // and causing P10 rejections at every settlement boundary. The block-processing
+    // path is the sole consensus-consistent update for pose tracker state.
+    // RecordWithhold is similarly deferred; proper withhold consensus handling via
+    // block processing is a future iteration item.
 
     std::set<int64_t> exclude_set = PTX_ResolveExclude(exc_arr);
     std::vector<int64_t> results  = PTX_MapBeacon(beacon, (uint32_t)count, low, high, unique, exclude_set);
