@@ -116,6 +116,31 @@ def run_happy_path(runner: ScenarioRunner) -> None:
     cluster.assert_old_fleet_untouched()
     runner.checkpoint("old fleet verified untouched")
 
+    # ── Step 1b: warm chain past UPGRADE_V4_0 (height 265) ────────────────
+    # Rolls must be submitted after V4_0 so the settlement boundary lands in
+    # the 60s-block zone (heights 265+).  Before V4_0, staking uses the free-
+    # time path — the chain races to ~200+ during bootstrap, difficulty
+    # overshoots, and the first ×60 boundary can fall pre-265.  A pre-265
+    # settlement proves lottery mechanics but not 60s timing, and the 4500s
+    # settlement timeout is never exercised.  Waiting for height 266 guarantees
+    # rolls are submitted post-V4_0 and the settlement (next ×60 ≥ 266 = 300)
+    # runs at 60s cadence — the actual Task 4 deliverable.
+    # Timeout: 40 blocks (conservative upper bound on blocks remaining to 266
+    # from typical post-bootstrap height ~230) × 300s worst-case pre-V4_0
+    # interval (empirical lower bound; true ceiling may be higher) = 12,000s.
+    # Soak asymmetry: over-waiting costs nothing; false-failing burns a ~75-min
+    # restart.  Size at the formula value, not below it.
+    V4_ACTIVATION_HEIGHT = 265
+    WARM_TARGET = V4_ACTIVATION_HEIGHT + 1  # 266
+    h_now = gm01.getblockcount()
+    if h_now < WARM_TARGET:
+        print(f"[scenario] === Step 1b: warming chain to height {WARM_TARGET} "
+              f"(current={h_now}, UPGRADE_V4_0={V4_ACTIVATION_HEIGHT}) ===")
+        gm01.wait_for_height(WARM_TARGET, timeout=12_000)
+    print(f"[scenario] chain at height {gm01.getblockcount()} — "
+          f"post-V4_0, 60s blocks enforced ✓")
+    runner.checkpoint(f"chain warmed past V4_0 (height {WARM_TARGET})")
+
     # ── Step 2: submit 5 PTXSESS rolls ───────────────────────────────────
     print(f"[scenario] === Step 2: submit {N_ROLLS} ptx_roll calls ===")
     tx_ids = []
