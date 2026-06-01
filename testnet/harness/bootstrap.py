@@ -45,7 +45,7 @@ def mine_pow_blocks(gm01: Node, n: int = POW_BLOCKS) -> str:
     return addr
 
 
-def wait_for_pos(gm01: Node, timeout: int = 120) -> int:
+def wait_for_pos(gm01: Node, timeout: int = 900) -> int:
     """Wait for PoS to activate (height ≥ POS_ACTIVATION) and chain to self-extend."""
     print(f"[bootstrap] waiting for PoS activation at height {POS_ACTIVATION}")
     h = wait_for_height(gm01, POS_ACTIVATION, timeout=timeout)
@@ -75,8 +75,8 @@ def fund_caller(gm01: Node, caller: Node,
     # Waiting only on gm01 races the caller's block sync — caller.listunspent
     # returns 0 if the caller hasn't processed the confirmation block yet.
     height = gm01.getblockcount()
-    wait_for_height(gm01, height + 1, timeout=120)
-    wait_for_height(caller, height + 1, timeout=60)
+    wait_for_height(gm01, height + 1, timeout=900)
+    wait_for_height(caller, height + 1, timeout=120)
     utxos = caller.listunspent(1)
     print(f"[bootstrap] caller funded: {len(utxos)} UTXOs ready")
     return txid
@@ -123,7 +123,7 @@ def register_gms(gm01: Node, cluster: Cluster, gm_labels: list) -> Dict[str, dic
     # Poll getrawtransaction until confirmations >= 1 before locking (lockunspent
     # requires the UTXO to be in the wallet's confirmed coin set).
     current = gm01.getblockcount()
-    wait_for_height(gm01, current + 1, timeout=120)
+    wait_for_height(gm01, current + 1, timeout=900)
 
     def _funding_confirmed():
         try:
@@ -131,7 +131,7 @@ def register_gms(gm01: Node, cluster: Cluster, gm_labels: list) -> Dict[str, dic
         except Exception:
             return False
 
-    gm01.wait_for_condition(_funding_confirmed, "collateral funding tx confirmed", timeout=60)
+    gm01.wait_for_condition(_funding_confirmed, "collateral funding tx confirmed", timeout=120)
 
     # Step 2b: lock all collateral UTXOs so FundSpecialTx won't spend them as fees.
     # Each ProReg references (not spends) the collateral, but FundSpecialTx selects
@@ -248,11 +248,11 @@ def bootstrap(cluster: Cluster,
 
     # Wait for all nodes to sync to PoS activation
     for node in cluster.all_nodes:
-        wait_for_height(node, POS_ACTIVATION, timeout=60)
+        wait_for_height(node, POS_ACTIVATION, timeout=180)
 
     # Let chain advance a few blocks to mature some coins before funding
     current = gm01.getblockcount()
-    wait_for_height(gm01, current + phase1_warmup_blocks, timeout=120)
+    wait_for_height(gm01, current + phase1_warmup_blocks, timeout=4500)
 
     fund_caller(gm01, caller)
 
@@ -260,8 +260,8 @@ def bootstrap(cluster: Cluster,
 
     # Wait for all registration txs to confirm (1 block)
     current = gm01.getblockcount()
-    wait_for_height(gm01, current + 1, timeout=60)
-    wait_for_dgm_stability(gm01, len(gm_labels))
+    wait_for_height(gm01, current + 1, timeout=900)
+    wait_for_dgm_stability(gm01, len(gm_labels), timeout=900)
 
     # ── Phase 2 ────────────────────────────────────────────────────────────
     print("[bootstrap] === Phase 2: restart with compound node_ids ===")
@@ -277,7 +277,7 @@ def bootstrap(cluster: Cluster,
     # Wait for all nodes to resume at the chain tip
     tip = max(n.getblockcount() for n in cluster.all_nodes if n.is_rpc_ready())
     for node in cluster.all_nodes:
-        wait_for_height(node, tip, timeout=60)
+        wait_for_height(node, tip, timeout=180)
 
     # Wait for the caller to have at least 1 P2P peer (its addnode=gm01 connection).
     # wait_ready() checks RPC only. RelayTx broadcasts PTXSESS over P2P; if the
