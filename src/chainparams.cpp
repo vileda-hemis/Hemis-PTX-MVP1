@@ -879,7 +879,7 @@ public:
         consensus.nTargetTimespan = 20 * 60;
         consensus.nTargetTimespanV2 = 20 * 60;
         consensus.nTargetSpacing = 1 * 60;
-        consensus.nTimeSlotLength = 1;
+        consensus.nTimeSlotLength = 60;   // 60-second blocks (mainnet-timing rehearsal)
         consensus.nMaxProposalPayments = 6;
 
         consensus.strSporkPubKey = "04BC0DB7CAE39D7D9B1ABA8CF1D98F5F6AE64D85F57192AD739E4C70F554FF110E2C81001C55BD61F95F7A95B4D1034CE27E44C13252D4E426AA4A90D11BC839A3";
@@ -961,7 +961,7 @@ public:
         // ptx-bea uses no lottery pool address — accumulation handled by LOTTERY_ACCUM_SCRIPT (ODC-022)
         strPTXLotteryPoolAddress = "";
         nPTXServiceFee = 1 * COIN;
-        nPTXSettlementWindow = 5;
+        nPTXSettlementWindow = 60;  // ~60-min settlement window (testnet middle ground)
         nPTXPayoutMinerFee = 10000; // 0.0001 HMS — miner incentive inside PTXPAYOUT
     }
 

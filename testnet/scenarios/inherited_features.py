@@ -391,7 +391,7 @@ def _section_d_lifecycle(runner: ScenarioRunner, cluster, registration: dict) ->
     print(f"[scenario]   ProUpServTx txid={upserv_txid[:16]}...")
 
     tip = gm01_node.getblockcount()
-    gm01_node.wait_for_height(tip + 1, timeout=90)
+    gm01_node.wait_for_height(tip + 1, timeout=180)
 
     entry = _dgm_by_protx(gm01_node, gm01_protx)
     runner.assert_true(entry is not None, "gm01 absent from DGM list after ProUpServTx")
@@ -414,9 +414,9 @@ def _section_d_lifecycle(runner: ScenarioRunner, cluster, registration: dict) ->
     # runner.run() wraps the scenario in try/finally → cluster.down(volumes=True)
     # so the PoSe-banned gm01 never persists to a re-run.
     tip = cluster.gms[1].getblockcount()
-    cluster.gms[1].wait_for_height(tip + 1, timeout=120)
+    cluster.gms[1].wait_for_height(tip + 1, timeout=240)
     try:
-        gm01_node.wait_for_height(tip + 1, timeout=30)
+        gm01_node.wait_for_height(tip + 1, timeout=120)
     except TimeoutError:
         pass  # gm01 may halt after revocation; query via gm02
 
@@ -510,12 +510,12 @@ def run_inherited_features(runner: ScenarioRunner) -> None:
     # Ensure we are well into the post-UPGRADE_V3_4 zone (height > 51) and
     # have a few post-registration PoS blocks available.
     wait_target = max(tip + 5, 55)
-    gm01.wait_for_height(wait_target, timeout=180)
+    gm01.wait_for_height(wait_target, timeout=600)
     caller.wait_for_height(wait_target, timeout=60)
     tip = caller.getblockcount()
 
     cal_height, cal_gm_sat, cal_staker_net_sat = _find_calibration_block(
-        caller, tip, timeout=180
+        caller, tip, timeout=240
     )
 
     block_value_sat = round(5.35 * COIN)   # GetBlockValue for heights > 51 on ptxbea
@@ -566,7 +566,7 @@ def run_inherited_features(runner: ScenarioRunner) -> None:
     print("[scenario] === waiting for 15-block scan window ===")
     scan_start = caller.getblockcount()
     scan_target = scan_start + 15
-    gm01.wait_for_height(scan_target, timeout=360)
+    gm01.wait_for_height(scan_target, timeout=1200)
     caller.wait_for_height(scan_target, timeout=60)
     scan_start = caller.getblockcount() - 15   # anchor to confirmed tip
     runner.checkpoint(f"scan window ready (tip={caller.getblockcount()})")

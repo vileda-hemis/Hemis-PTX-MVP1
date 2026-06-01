@@ -24,7 +24,7 @@ from testnet.harness.node import Node, RPCError
 
 # Chain parameters (must match CPTXBeaTestNetParams)
 PTX_SERVICE_FEE_SAT = 100_000_000   # 1 HMS in satoshi
-PTX_SETTLEMENT_WINDOW = 5            # nPTXSettlementWindow
+PTX_SETTLEMENT_WINDOW = 60           # nPTXSettlementWindow
 N_ROLLS = 5
 
 
@@ -63,7 +63,7 @@ def find_ptxcoalesce_in_block(caller: Node, height: int) -> dict | None:
 
 def wait_for_settlement(caller: Node, current_height: int,
                         window: int = PTX_SETTLEMENT_WINDOW,
-                        timeout: int = 180,
+                        timeout: int = 4500,
                         gm01: "Node | None" = None) -> int:
     """Wait until the chain reaches the next settlement boundary.
 
@@ -132,12 +132,13 @@ def run_happy_path(runner: ScenarioRunner) -> None:
 
     # ── Step 3: wait for PTXCOALESCE ─────────────────────────────────────
     # Previous gate polled pool_balance_sat >= N_ROLLS*fee. This is a transient
-    # peak: on fast chains (~3s/block, 5-block window) PTXCOALESCE and PTXPAYOUT
-    # can fire in consecutive blocks, resetting pool to 0 before the 3s poll
-    # observes the peak. Diagnosed: pool=0→500M→0 between polls at heights 223-225,
-    # daemon correct (PTXCOALESCE=5 HMS, PTXPAYOUT=5 HMS−fee, winner in DGM).
-    # Fix: scan blocks for PTXCOALESCE directly — stable (never removed by PTXPAYOUT).
-    # Amount assertion reads from the coalesce tx vout (durable), keeps 3a valid.
+    # peak: PTXCOALESCE and PTXPAYOUT can fire in consecutive blocks at a
+    # settlement boundary, resetting pool to 0 before the poll observes the peak.
+    # Diagnosed on the fast (3s/block, 5-block window) chain: pool=0→500M→0
+    # between polls at heights 223-225; daemon correct.
+    # At 60s/block the race does not occur (window=60 blocks), but the scan gate
+    # is retained — it is durable (PTXCOALESCE output is never removed) and keeps
+    # the 3a falsification target valid.
     print("[scenario] === Step 3: wait for PTXCOALESCE ===")
 
     # FALSIFICATION TARGET 3a: change N_ROLLS to N_ROLLS-1 at BOTH sites below
@@ -162,7 +163,7 @@ def run_happy_path(runner: ScenarioRunner) -> None:
             return False
 
     caller.wait_for_condition(
-        coalesce_appeared, "PTXCOALESCE appeared in chain", timeout=180
+        coalesce_appeared, "PTXCOALESCE appeared in chain", timeout=240
     )
 
     tip = caller.getblockcount()
