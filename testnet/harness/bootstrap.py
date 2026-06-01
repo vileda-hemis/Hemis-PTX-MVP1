@@ -193,6 +193,7 @@ def register_gms(gm01: Node, cluster: Cluster, gm_labels: list) -> Dict[str, dic
             "ptx_payment_addr": ptx_pay_addr,
             "protx_hash": protx_hash,
             "operator_pubkey": operator_pubkey,
+            "operator_secret": bls["secret"],
         }
         print(f"[bootstrap] {label} → compound_id={compound} protx={protx_hash[:16]}...")
 

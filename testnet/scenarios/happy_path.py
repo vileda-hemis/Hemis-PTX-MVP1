@@ -130,38 +130,45 @@ def run_happy_path(runner: ScenarioRunner) -> None:
         print(f"[scenario] roll {i+1}: tx_id={tx_id[:16]}... result={result['results']}")
     runner.checkpoint(f"{N_ROLLS} PTXSESS submitted")
 
-    # ── Step 3: wait for PTXCOALESCE via accumulator poll ────────────────
-    # Don't scan a fixed block range: fast-staking GMs may produce several
-    # blocks before PTXSESS txs propagate from caller via P2P. Instead, poll
-    # ptx_lottery_status.pool_balance_sat until the accumulator reflects the
-    # 5 rolls, then find the PTXCOALESCE block containing them.
+    # ── Step 3: wait for PTXCOALESCE ─────────────────────────────────────
+    # Previous gate polled pool_balance_sat >= N_ROLLS*fee. This is a transient
+    # peak: on fast chains (~3s/block, 5-block window) PTXCOALESCE and PTXPAYOUT
+    # can fire in consecutive blocks, resetting pool to 0 before the 3s poll
+    # observes the peak. Diagnosed: pool=0→500M→0 between polls at heights 223-225,
+    # daemon correct (PTXCOALESCE=5 HMS, PTXPAYOUT=5 HMS−fee, winner in DGM).
+    # Fix: scan blocks for PTXCOALESCE directly — stable (never removed by PTXPAYOUT).
+    # Amount assertion reads from the coalesce tx vout (durable), keeps 3a valid.
     print("[scenario] === Step 3: wait for PTXCOALESCE ===")
 
     # FALSIFICATION TARGET 3a: change N_ROLLS to N_ROLLS-1 at BOTH sites below
-    # (the wait condition AND the assertion). Changing only the assertion leaves the
-    # wait blocking on the full N_ROLLS amount and the failure is trivial/non-informative.
-    # Both must be changed together to prove the harness catches an undershoot.
-    roll_height = caller.getblockcount()  # snapshot before wait
+    # (the scan gate and the coalesce output assertion). Both must change together.
+    roll_height = caller.getblockcount()
+    pre_settle_count = len(
+        caller.ptx_lottery_status().get("settlement_history", [])
+    )
 
-    def accumulator_ready():
+    # Incremental scan: advance _scan_from so each poll only checks new blocks.
+    _scan_from = [roll_height]
+
+    def coalesce_appeared():
         try:
-            s = caller.ptx_lottery_status()
-            return s["pool_balance_sat"] >= N_ROLLS * PTX_SERVICE_FEE_SAT  # 3a site 1
+            current = caller.getblockcount()
+            for h in range(_scan_from[0], min(current + 1, roll_height + 50)):
+                if find_ptxcoalesce_in_block(caller, h):
+                    return True
+                _scan_from[0] = h + 1
+            return False
         except Exception:
             return False
 
-    caller.wait_for_condition(accumulator_ready, "accumulator reflects 5 rolls", timeout=180)
-    status = caller.ptx_lottery_status()
-    pool_sat = status["pool_balance_sat"]
+    caller.wait_for_condition(
+        coalesce_appeared, "PTXCOALESCE appeared in chain", timeout=180
+    )
 
-    # Find the PTXCOALESCE that captured the 5 rolls: scan forward from roll_height
-    # (not back from tip) to find the first coalesce at or after the rolls confirmed.
-    # Scanning back from tip risks landing on a later empty coalesce when settlement
-    # window=5 means multiple PTXCOALESCE blocks may exist in a 20-block window.
     tip = caller.getblockcount()
     coalesce_tx = None
     coalesce_height = None
-    for h in range(roll_height, min(tip + 1, roll_height + 30)):
+    for h in range(roll_height, min(tip + 1, roll_height + 50)):
         t = find_ptxcoalesce_in_block(caller, h)
         if t:
             coalesce_tx, coalesce_height = t, h
@@ -169,32 +176,53 @@ def run_happy_path(runner: ScenarioRunner) -> None:
 
     runner.assert_true(
         coalesce_tx is not None,
-        f"PTXCOALESCE not found in blocks {roll_height}..{roll_height+30}"
+        f"PTXCOALESCE not found in blocks {roll_height}..{roll_height+50}"
     )
     print(f"[scenario] PTXCOALESCE found at height {coalesce_height}: "
           f"txid={coalesce_tx['txid'][:16]}...")
 
-    # FALSIFICATION TARGET 3a: change N_ROLLS to N_ROLLS-1 here to verify
-    # the harness reads live chain state, not a hardcoded value.
-    runner.assert_equal(
-        pool_sat,
-        N_ROLLS * PTX_SERVICE_FEE_SAT,
-        f"pool_balance_sat after {N_ROLLS} rolls"
+    # FALSIFICATION TARGET 3a: change N_ROLLS to N_ROLLS-1 here.
+    # Reads coalesce tx vout — what the daemon swept into the accumulator.
+    # Stable even after PTXPAYOUT resets pool_balance_sat to 0.
+    coalesce_sat = round(
+        sum(v["value"] for v in coalesce_tx.get("vout", [])) * 100_000_000
     )
-    print(f"[scenario] accumulator = {pool_sat} sat = "
-          f"{pool_sat / 1e8:.2f} HMS ✓")
+    runner.assert_equal(
+        coalesce_sat,
+        N_ROLLS * PTX_SERVICE_FEE_SAT,  # 3a site 2
+        f"PTXCOALESCE output == {N_ROLLS} rolls × service fee"
+    )
+    print(f"[scenario] PTXCOALESCE output = {coalesce_sat} sat = "
+          f"{coalesce_sat / 1e8:.2f} HMS ✓")
     runner.checkpoint("PTXCOALESCE verified, accumulator correct")
 
-    # ── Step 4: wait for settlement boundary and verify PTXPAYOUT ────────
+    # ── Step 4: find or wait for PTXPAYOUT ───────────────────────────────
+    # On fast chains PTXPAYOUT may have fired before Step 4 runs.
+    # If so, scan the blocks that already contain it; otherwise wait for
+    # the next settlement boundary (3b applies to the pending path only).
     print("[scenario] === Step 4: wait for settlement + PTXPAYOUT ===")
-    current = caller.getblockcount()
 
-    # FALSIFICATION TARGET 3b: replacing this call with `pass` causes the
-    # PTXPAYOUT assertion below to fail — proves wait_for_settlement is not
-    # a no-op and the PTXPAYOUT check isn't trivially satisfied.
-    settlement_height = wait_for_settlement(caller, current, gm01=gm01)
+    already_settled = (
+        len(caller.ptx_lottery_status().get("settlement_history", []))
+        > pre_settle_count
+    )
 
-    payout_tx = find_ptxpayout_in_block(caller, settlement_height)
+    if already_settled:
+        print("[scenario] settlement already fired — scanning existing blocks")
+        payout_tx = None
+        settlement_height = None
+        for h in range(roll_height, min(tip + 1, roll_height + 50)):
+            t = find_ptxpayout_in_block(caller, h)
+            if t:
+                payout_tx, settlement_height = t, h
+                break
+    else:
+        current = caller.getblockcount()
+        # FALSIFICATION TARGET 3b: replacing this with `pass` causes the
+        # PTXPAYOUT assertion to fail — proves the wait is not a no-op.
+        settlement_height = wait_for_settlement(caller, current, gm01=gm01)
+        payout_tx = find_ptxpayout_in_block(caller, settlement_height)
+
     runner.assert_true(
         payout_tx is not None,
         f"PTXPAYOUT not found at settlement boundary height {settlement_height}"
