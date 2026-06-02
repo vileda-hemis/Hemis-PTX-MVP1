@@ -56,16 +56,28 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
     // Embed payload before FundTransaction so tx size (and thus fee) is accurate
     SetTxPayload(mtx, payload);
 
-    // Fund: adds UTXOs covering service fee + miner fee, plus change output
+    // Fund: adds UTXOs covering service fee + miner fee, plus change output.
+    // lockUnspents=true: FundTransaction locks each selected UTXO under its own
+    // LOCK2(cs_main, cs_wallet), so concurrent rolls cannot select the same UTXO
+    // (AvailableCoins skips locked coins). BUG-018 fix.
     {
         CAmount nFee;
         int nChangePos = -1;
         std::string strFailReason;
-        if (!pwallet->FundTransaction(mtx, nFee, false, CFeeRate(0), nChangePos, strFailReason, false, false, {})) {
+        if (!pwallet->FundTransaction(mtx, nFee, false, CFeeRate(0), nChangePos, strFailReason, false, true, {})) {
             LogPrintf("PTX: FundTransaction failed: %s\n", strFailReason);
             throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED, strFailReason);
         }
     }
+
+    // Release the coin locks set by FundTransaction on any error path below.
+    // On success, AddToSpends (triggered when the tx enters the wallet via
+    // TransactionAddedToMempool, which TryATMP waits for) clears them automatically.
+    auto unlockFundedInputs = [&]() {
+        LOCK(pwallet->cs_wallet);
+        for (const CTxIn& txin : mtx.vin)
+            pwallet->UnlockCoin(txin.prevout);
+    };
 
     // Sign all inputs added by FundTransaction
     {
@@ -75,6 +87,7 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
             const Coin& coin = pcoinsTip->AccessCoin(txin.prevout);
             if (coin.IsSpent()) {
                 LogPrintf("PTX: input %d already spent\n", i);
+                unlockFundedInputs();
                 throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED,
                                    "input " + std::to_string(i) + " already spent");
             }
@@ -84,6 +97,7 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
             if (!ProduceSignature(MutableTransactionSignatureCreator(pwallet, &mtx, i, coin.out.nValue, SIGHASH_ALL),
                                   coin.out.scriptPubKey, sigdata, sv, false)) {
                 LogPrintf("PTX: signing input %d failed\n", i);
+                unlockFundedInputs();
                 throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED,
                                    "signing input " + std::to_string(i) + " failed");
             }
@@ -99,10 +113,12 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
         return txid.GetHex();
     } catch (const UniValue& objError) {
         LogPrintf("PTX: mempool rejected: %s\n", objError["message"].getValStr());
+        unlockFundedInputs();
         throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED,
                            "mempool rejected: " + objError["message"].getValStr());
     } catch (const std::exception& e) {
         LogPrintf("PTX: error: %s\n", e.what());
+        unlockFundedInputs();
         throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED, e.what());
     }
 #endif
