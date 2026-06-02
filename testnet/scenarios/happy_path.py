@@ -61,6 +61,52 @@ def find_ptxcoalesce_in_block(caller: Node, height: int) -> dict | None:
     return _find_special_tx_in_block(caller, height, 9)
 
 
+def count_ptxsess_in_block(node: Node, height: int) -> int:
+    """Return the number of PTXSESS (nType=6) txs in the block at height.
+
+    Block-level fetch errors propagate — a read failure must not silently
+    return 0 and undercount confirmed_rolls in the reconciliation assertion.
+
+    Per-tx getrawtransaction errors retry once with 1s backoff then propagate;
+    a transient failure must not discard the rest of the block's count.
+
+    verbosity=1 always returns txid hex strings (blockToJSON blockchain.cpp:162
+    pushes GetHash().GetHex() when txDetails=false).  A non-string entry
+    indicates the verbosity contract is violated and raises rather than being
+    skipped silently.
+    """
+    bh = node.getblockhash(height)
+    block = node.getblock(bh, 1)
+    count = 0
+    for txid in block.get("tx", []):
+        if not isinstance(txid, str):
+            raise RuntimeError(
+                f"count_ptxsess_in_block h={height}: expected txid string in "
+                f"verbosity-1 block, got {type(txid).__name__} — "
+                f"getblock verbosity contract violated"
+            )
+        try:
+            raw = node.call("getrawtransaction", txid, True)
+        except Exception:
+            time.sleep(1)
+            raw = node.call("getrawtransaction", txid, True)  # propagates on second failure
+        if raw.get("type") == 6:
+            count += 1
+    return count
+
+
+def find_all_ptxcoalesce_in_window(
+    node: Node, start_height: int, end_height: int
+) -> list[tuple[int, dict]]:
+    """Return list of (height, tx) for every PTXCOALESCE (nType=9) in [start..end] inclusive."""
+    results = []
+    for h in range(start_height, end_height + 1):
+        tx = _find_special_tx_in_block(node, h, 9)
+        if tx is not None:
+            results.append((h, tx))
+    return results
+
+
 def wait_for_settlement(caller: Node, current_height: int,
                         window: int = PTX_SETTLEMENT_WINDOW,
                         timeout: int = 4500,
