@@ -72,7 +72,7 @@ Supplies the human-readable label component of the GM's compound `node_id`. The 
 `:suffix` derived from the collateral outpoint — for example:
 
 ```
-ptxNodeId = "gm01"  →  node_id = "gm01:a3f8c1d2"
+ptxNodeId = "gm01"  →  node_id = "gm01:a3f8c1d2"   # suffix is illustrative; real value from protx_list
 ```
 
 The label component must match the `-ptxnodeid=` daemon flag exactly, including case. The full
@@ -113,6 +113,7 @@ dnsseed=0
 ptxnodeid=caller
 
 # Registered GM fleet (RPC fanout targets, not P2P peers)
+# Suffixes are illustrative; real compound node_ids come from: hemis-cli -ptxbea protx_list valid true
 ptxnode=gm01:a3f8c1d2@172.30.0.11:29903
 ptxnode=gm02:b4e9d3f1@172.30.0.12:29903
 ptxnode=gm03:c5f0e4g2@172.30.0.13:29903
@@ -135,6 +136,7 @@ server=1
 listen=1
 
 # PTX identity — must match ptxNodeId supplied at ProRegPL registration
+# (suffix is illustrative; real value from protx_list after registration)
 ptxnodeid=gm01:a3f8c1d2
 ```
 
@@ -178,7 +180,8 @@ the updated status.
 ## 5. Bootstrap sequence
 
 The canonical bootstrap order is implemented in `testnet/harness/bootstrap.py`. The manual
-sequence is:
+sequence is (note: this order will be updated after the `fund_stakers` multi-staker seeding step
+lands in bootstrap.py — reconcile against the harness before use):
 
 1. Mine 49 PoW blocks to a known address on gm01
 2. Wait for PoS activation at block 50
@@ -238,7 +241,47 @@ After a successful settlement, `ptx_lottery_status` will show `last_settle.heigh
 
 ---
 
-## 8. Known limitations
+## 8. Coordinator recovery
+
+### 8.1 Crash recovery — 1-step
+
+If the coordinator (`ptx-bea-caller`) crashes or is restarted while GMs and the chain remain up,
+recovery is a single step: **restart the coordinator daemon.** PTX rolls resume automatically on
+the first `ptx_roll` call after restart via the lazy-init path:
+
+1. The coordinator detects `g_ptx_bls_state.initialized == false` and calls `PTX_BLS_Init`,
+   generating a fresh master polynomial and per-GM key shares.
+2. `PTX_FanOutKeySet` delivers the new shares to all 11 GMs via RPC. Each GM's `gm_bls_keyset`
+   handler unconditionally overwrites its stored share — there is no "already initialised" guard
+   on the GM side, no rejection path, no GM restart required.
+3. Signing resumes normally.
+
+The chain continues producing PoS blocks throughout coordinator downtime (GMs stake
+independently). LotteryState (accumulator, last settlement), ProRegPL registrations, and PoSe
+history (`ptx_pose.dat`) are all preserved and reload at startup. In-flight rolls at crash time
+are lost and must be re-issued by the caller.
+
+### 8.2 Crash recovery ≠ permanent coordinator loss (ODC-021)
+
+Restart recovery is fast and requires no fleet action. However, the PTX signing coordinator
+remains a single logical endpoint — if it is **permanently unavailable** (not just restarted),
+PTX rolls cannot proceed even though the chain and GMs are healthy. This is ODC-021 (coordinator
+SPOF), the same family as the single-staker liveness concern. It is deferred to Phase 3.
+
+Distributing stake across multiple GMs (see `ptxbea-known-limitations.md` §4) removes the
+chain-extension SPOF. It does not address ODC-021.
+
+### 8.3 Beacon chain break at restart boundary (ODC-023)
+
+`g_ptx_last_beacon` is in-memory and resets to all-zero on restart. The first post-restart roll's
+nonce is derived from the zero beacon rather than the last on-chain PTXSESS beacon, breaking
+nonce-chain continuity at the restart boundary. This is a known open design question, not an
+operational error — rolls function correctly and results are verifiable from the on-chain
+`quorum_sig`. See `ptxbea-known-limitations.md` §6 (ODC-023) for the full scope.
+
+---
+
+## 10. Known limitations
 
 See `ptxbea-known-limitations.md` for the full list. The items most relevant to operators:
 

@@ -16,7 +16,7 @@ hold sufficient UTXOs before any `ptx_roll` call.
 |---|---|---|
 | Service fee | 1 HMS (100,000,000 sat) per roll | `nPTXServiceFee = 1 * COIN` |
 | Payout miner fee | 10,000 sat deducted from PTXPAYOUT output | `nPTXPayoutMinerFee = 10000` |
-| `ptx_verify` fee | Zero — free read-only call | |
+| `ptx_verify` fee | Zero — free read-only call (planned; not yet implemented) | |
 | All other status RPCs | Zero | |
 
 The 1 HMS service fee is consumed by each `ptx_roll` call: the PTXSESS transaction routes it to

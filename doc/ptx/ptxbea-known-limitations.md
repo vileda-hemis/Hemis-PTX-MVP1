@@ -44,10 +44,10 @@ geographically distributed deployment; they do not apply to this fleet. The phas
 documents this explicitly: "Phase 3 moves PTX from a controlled single-host environment to 21+
 geographically distributed nodes run by independent operators."
 
-**`ptx_verify` Path A scope.** The `ptx_verify` RPC (when shipped) asserts that the published
-results follow deterministically from the published signature. It does **not** return
-`quorum_verified` — that field, specified in the design doc §11.1, requires `group_pk` on-chain and
-is a Phase 3 deliverable. The RPC help text states this explicitly.
+**`ptx_verify` Path A scope (planned, not yet shipped).** The planned `ptx_verify` RPC will
+assert that the published results follow deterministically from the published signature. It will
+**not** return `quorum_verified` — that field, specified in the design doc §11.1, requires
+`group_pk` on-chain and is a Phase 3 deliverable.
 
 **Phase 3 closure.** The design doc stages the fix as "Full Pedersen DKG with resharing" (§6.3
 table, Phase 3: "No single party holds the master secret at any point in the ceremony"). The
