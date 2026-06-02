@@ -136,14 +136,43 @@ UniValue ptx_roll(const JSONRPCRequest& request)
         throw JSONRPCError(RPC_INVALID_PARAMS, "count must be >= 1");
     if (low > high)
         throw JSONRPCError(RPC_INVALID_PARAMS, "low must be <= high");
+    // BUG-016: cast operands to uint64 BEFORE subtracting — signed (high-low) is UB and
+    // -O2 eliminates the ==0 branch after the low<=high check above.  Unsigned arithmetic
+    // wraps to 0 only at INT64_MIN..INT64_MAX, matching the crash site in PTX_SampleOne.
+    if ((uint64_t)high - (uint64_t)low + 1ULL == 0)
+        throw JSONRPCError(RPC_INVALID_PARAMS,
+            "invalid range: high - low + 1 overflows (pool size 0)");
     if (!exc_arr.isArray())
         throw JSONRPCError(RPC_INVALID_PARAMS, "exclude must be a JSON array");
+    size_t exc_int_count  = 0;
+    size_t exc_txid_count = 0;
     for (size_t i = 0; i < exc_arr.size(); i++) {
         const UniValue& v = exc_arr[i];
         if (!v.isNum() && !v.isStr())
             throw JSONRPCError(RPC_INVALID_PARAMS, "exclude elements must be integers or 64-char hex tx_id strings");
         if (v.isStr() && v.get_str().size() != 64)
             throw JSONRPCError(RPC_INVALID_PARAMS, "exclude string elements must be 64-char hex tx_id");
+        if (v.isStr()) ++exc_txid_count; else ++exc_int_count;
+    }
+    if (game_id.size() > 128)
+        throw JSONRPCError(RPC_INVALID_PARAMS, "game_id too long (max 128 bytes)");
+    if (count > 1000)
+        throw JSONRPCError(RPC_INVALID_PARAMS, strprintf("count %d exceeds maximum 1000", count));
+    // BUG-017: MAX_EXCLUDE_COUNT=512 (KDD design limit) was not enforced; up to 5000 accepted.
+    if (exc_int_count + exc_txid_count > 512)
+        throw JSONRPCError(RPC_INVALID_PARAMS,
+            strprintf("exclude list too long: %zu items exceeds maximum 512",
+                      exc_int_count + exc_txid_count));
+    {
+        // game_id + int-excludes (8b each) + txid-excludes (65b each) + results (8b each)
+        // compete for the 9,525b variable extraPayload budget; 9,000b margin below the hard limit.
+        size_t var_bytes = game_id.size() + exc_int_count * 8 + exc_txid_count * 65 + (size_t)count * 8;
+        if (var_bytes > 9000)
+            throw JSONRPCError(RPC_INVALID_PARAMS,
+                strprintf("payload budget exceeded: %zub of 9000b available "
+                          "(game_id=%zub + %zux8 int-excludes"
+                          " + %zux65 txid-excludes + %dx8 results)",
+                          var_bytes, game_id.size(), exc_int_count, exc_txid_count, count));
     }
     if (!caller_salt_hex.empty() && !IsHex(caller_salt_hex))
         throw JSONRPCError(RPC_INVALID_PARAMS, "caller_salt must be a hex string");
