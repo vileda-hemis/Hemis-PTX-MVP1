@@ -17,10 +17,12 @@ The current PTX implementation uses **trusted-dealer keying**: the originating o
 loss of that operator stops all PTX rolls. The coordinator is a single point of failure for the
 signing stack.
 
-**DKG (distributed key generation) replaces this.** With Pedersen VSS-based DKG, no single party
-ever holds `master_sk`. Each quorum of GMs collectively generates its own threshold keypair via
-a multi-round ceremony, producing a shared `group_pk` that is verifiably established. The operator
-becomes a stateless orchestrator, not a keyholder. The coordinator SPOF (ODC-021) is eliminated.
+**DKG (distributed key generation) replaces this.** With Feldman VSS + GJKR commit-then-reveal
+hardening (KDD-051), no single party ever holds `master_sk`. Each quorum of GMs collectively
+generates its own threshold keypair via a multi-round ceremony, producing a shared `group_pk`
+that is verifiably established. The operator becomes a stateless orchestrator, not a keyholder.
+The coordinator SPOF (ODC-021) is eliminated.
+*(Construction corrected from "Pedersen" to measured-Feldman+GJKR per KDD-051, 2026-06-03.)*
 
 ### §1.2 Scope
 
@@ -432,6 +434,11 @@ is implementation-dependent and requires a prototype ceremony benchmark. The reu
 
 **Future ODC:** ODC-025 tracks this as the open choice for rotation-N final value.
 
+> **[2026-06-03, KDD-051]** The ceremony-duration benchmark gating rotation-N MUST run on the
+> GJKR-hardened ceremony (commit phase + one added gossip round included), not plain Feldman.
+> Benchmarking the unhardened ceremony would measure rotation-N against a construction PTX will
+> not ship.
+
 ### §9.3 Multi-quorum membership (§4)
 
 Deferred as a future additive extension. It does not block DKG launch. It extends the DKG
@@ -533,6 +540,56 @@ At this scale:
 
 ---
 
+## §11 Decided: DKG Construction — Feldman VSS with GJKR Commit-Then-Reveal Hardening
+
+**KDD-051 (2026-06-03). Source measurement, not terminology.**
+
+**Measured finding.** The LLMQ reference (`src/llmq/quorums_dkgsession*`) implements plain
+Feldman VSS: `vvec[j] = G·a_j`, single generator, no blinding polynomial
+(`bls_worker.cpp:78–96`). The full verification vector — including `vvec[0] = g^{a_0}` — is
+broadcast in plaintext in Phase 1 (`quorums_dkgsession.cpp:176–177`), stored on receipt
+(`:300`), with no prior hiding commitment. The "Pedersen VSS" term in earlier documents was a
+misnomer; the construction is Feldman.
+
+**Vulnerability (GJKR rushing-bias).** Because `g^{a_0}` is visible before the complaint
+window closes, and a member can cause its own disqualification by withholding its contribution
+(`MarkBadMember`, `quorums_dkgsession.cpp:407–435`), a rushing member can observe other
+members' free-coefficient commitments, then decide whether to remain in the qualified set
+(QUAL) — biasing the final `group_pk`, which is summed over QUAL at Phase 4 (`:966–984`).
+Precondition: ≥1 valid member beyond `t`, so self-exclusion does not drop below threshold —
+realistic in a well-attended 6-of-11 ceremony. The adversary cannot learn `master_sk`, but
+can bias the distribution of `group_pk` by selecting among 2^k candidate keys for k
+controlled members.
+
+**Decision.** The PTX ceremony uses Feldman commitments hardened with a GJKR commit-then-reveal
+phase. The load-bearing security property is **QUAL-locks-before-reveal**:
+
+1. Each member broadcasts a binding hash commitment to its full contribution (verification
+   vector + encrypted shares) in a new commit phase, before any vvec is revealed.
+2. The qualified set QUAL is finalised — commitment presence/validity plus the complaint and
+   justification rounds — entirely within the committed-but-hidden phase, before any member
+   reveals its actual vvec.
+3. vvec reveal (the present Phase 1 behaviour) occurs only after QUAL is locked. A member
+   that committed cannot self-exclude based on observing others' revealed `g^{a_0}`, because
+   reveal has not happened when QUAL closes; a member that withholds its reveal after
+   committing is itself disqualified, which confers no advantage since it committed before
+   observing anything.
+
+This makes `group_pk` unbiasable by ceremony participants — load-bearing for PTX's
+provable-fairness claim, and the property most likely to be examined first by the W3.2 audit.
+
+**Cost.** One added gossip round on a per-formation / per-rotation ceremony (daily cadence
+per quorum, ~39-block rotation-spacing budget per ODC-025). Within tolerance; not in the
+per-roll signing path (signing unchanged). The added round must be included in the ODC-025
+ceremony-duration benchmark.
+
+**Status:** Decided. Construction confirmed by source measurement. Prerequisite for W1.2
+ceremony implementation.
+
+**KDD:** KDD-051
+
+---
+
 ## Appendix: Register cross-reference
 
 | KDD | Title | §| Status |
@@ -549,6 +606,7 @@ At this scale:
 | KDD-048 | Quorum params: t=6 decided; upgrade-gated consensus constant, not spork | §3, §9.1 | Decided |
 | KDD-049 | PTX_BLS_Verify explicit group_pk — pure function, no global state read | — | Decided — impl plan 2026-06-03; commit 66251c8 |
 | KDD-050 | Test extraction interface — in-daemon subset check; ENABLE_PTX_TEST_ACCESSORS compile gate, default off | — | Decided — impl plan 2026-06-03 |
+| KDD-051 | DKG construction — Feldman VSS + GJKR commit-then-reveal hardening; QUAL-locks-before-reveal | §11 | Decided — measured 2026-06-03 |
 | ODC-021 | Coordinator SPOF | §2 | Resolved by DKG |
 | ODC-024 | Multi-quorum membership — deferred future extension | §9.3 | Open |
 | ODC-025 | Rotation-N final value — pending ceremony duration | §9.2 | Open |

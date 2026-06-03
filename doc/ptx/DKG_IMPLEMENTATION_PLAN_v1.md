@@ -230,6 +230,9 @@ to a per-quorum registry.
 - Coordinator-replacement test passes.
 - W3.1-Test2 differential test passes (gate for W1.3).
 - Ceremony duration measured in wall-clock time and blocks per phase (ODC-025 input).
+  **[KDD-051]** Measurement must cover the GJKR-hardened ceremony (commit phase + one added
+  gossip round), not plain Feldman. Benchmarking the unhardened ceremony would measure
+  rotation-N against a construction PTX will not ship.
 
 ---
 
@@ -314,11 +317,17 @@ Only one quorum should be ROTATING at any time; collisions defer by a fixed incr
 block duration and validate `rotation_spacing ≈ N / quorum_count ≈ 39 blocks > ceremony_duration`.
 Confirm N=1440 or revise. Close ODC-025 with the measured value.
 
+> **[2026-06-03, KDD-051]** The ceremony-duration benchmark gating rotation-N MUST run on the
+> GJKR-hardened ceremony (commit phase + one added gossip round included), not plain Feldman.
+> Benchmarking the unhardened ceremony would measure rotation-N against a construction PTX will
+> not ship.
+
 **Validation gate (measured):**
 - In regtest with small N (e.g., 60 blocks): ACTIVE → ROTATING → ACTIVE with new `group_pk`.
 - Router skips ROTATING quorum during ceremony.
 - New `group_pk` differs from old and verifies correctly.
-- Ceremony block duration measured and reported to ODC-025.
+- Ceremony block duration measured and reported to ODC-025. **[KDD-051]** Measurement must
+  cover the GJKR-hardened ceremony — commit phase included.
 
 ---
 
@@ -358,9 +367,11 @@ with higher stakes here than anywhere else in the codebase.
   every possible subset of t from n).
 - Sign a known message with each share via `PTX_BLS_PartialSign`.
 - Recover via `PTX_BLS_Recover` → verify via `PTX_BLS_Verify`. PASS required.
-- Feed the same scalar shares and indices to chiabls `CBLSSecretKey::SecretKeyShare` +
-  `CBLSSignature::Recover` → compare recovered signatures byte-for-byte.
-- **Gate: byte-for-byte agreement across all subsets. Any disagreement halts W1.2.**
+- **[Superseded 2026-06-03 per IMP-D5 / KDD-050: chiabls oracle step removed. Test 1 is a
+  same-stack subset exhaustion — all C(n,t) subsets recover to byte-identical group signatures,
+  each passing PTX_BLS_Verify. chiabls rejected: RELIC unreviewed + DST mismatch.]**
+- **Gate: all C(n,t) subsets produce byte-identical recovered_sig, each passing PTX_BLS_Verify.
+  PASS confirmed: commit bcb4222 (2026-06-03).**
 
 **Test 2 — DKG-produced shares (immediately after W1.2 milestone):**
 - Extract `sk_share_i` values from a regtest ceremony (test-mode accessor).
@@ -397,7 +408,8 @@ ceremony that produces shares which verify locally but disagree with an honest r
 - PTXDKG special transaction validation (consensus-critical; chain-split risk if wrong).
 - The coordinator-role spec (W1.1 deliverable): confirm implementation matches the stated
   no-privilege, no-key-material spec.
-- Any deviation from standard Pedersen VSS.
+- Any deviation from the decided Feldman VSS + GJKR commit-then-reveal construction (KDD-051).
+  *(Corrected from "standard Pedersen VSS" per KDD-051, 2026-06-03.)*
 
 **Out of scope:** blst library (audited by supranational); chiabls (not modified); Lagrange
 recovery implementation (in production for trusted-dealer keying — treat as established).
@@ -438,9 +450,9 @@ with a concrete observable.
 ```
 IMMEDIATE PARALLEL — no code dependency:
   W3.2 audit inquiry  ─── start today
-  W3.1-Test1          ─── start today (known-polynomial differential test;
-                          uses existing PTX_BLS_Init + PTX_BLS_PartialSign +
-                          PTX_BLS_Recover + chiabls Recover; no ceremony code needed)
+  W3.1-Test1          ─── DONE — commit bcb4222 (same-stack subset exhaustion;
+                          PTX_BLS_Init + PTX_BLS_PartialSign + PTX_BLS_Recover +
+                          PTX_BLS_Verify; no chiabls oracle — IMP-D5)
 
 W1.1 ──────────────────────────────────────────────────────────────────────────────
   Deliverable: coordinator-role spec (written doc, one page, peer of this plan)
@@ -493,15 +505,18 @@ not depend on code — it starts today.
 ## §6 Highest-risk items
 
 **Risk 1 (highest): ceremony-orchestration correctness on the blst substrate.**
-Adapting Pedersen VSS from the LLMQ reference (chiabls) to blst without introducing a
-keying bug. The risk is not in the primitives (blst audited; `PTX_BLS_Recover` in
-production). The risk is in the orchestration: contribution aggregation, complaint and
-justification handling, final commitment computation. A bug here can produce a `group_pk` +
-`sk_share_i` set that signs correctly in isolation but violates the VSS property — meaning
-`master_sk` is implicitly reconstructable by a party who collected enough ceremony messages,
-with no observable signing failure.
+Implementing Feldman VSS + GJKR commit-then-reveal hardening (KDD-051) in blst without
+introducing a keying bug. The LLMQ reference is plain Feldman; PTX adds the GJKR
+commit-then-reveal phase. The risk is not in the primitives (blst audited; `PTX_BLS_Recover`
+in production). The risk is in the orchestration: the commit-then-reveal phase ordering,
+contribution aggregation, complaint and justification handling, final commitment computation.
+A bug here can produce a `group_pk` + `sk_share_i` set that signs correctly in isolation but
+violates the VSS property — meaning `master_sk` is implicitly reconstructable by a party who
+collected enough ceremony messages, with no observable signing failure.
+*(Corrected from "Pedersen VSS from the LLMQ reference" per KDD-051, 2026-06-03.)*
 
-Mitigation: W3.1-Test2 (differential test against chiabls Recover). This is why W3.1-Test2
+Mitigation: W3.1-Test2 — same-stack subset-exhaustion differential on ceremony-produced
+shares, no cross-stack oracle (IMP-D5; chiabls rejected as oracle). This is why W3.1-Test2
 is a hard gate before W1.3 — the test must pass before any code builds on the ceremony
 output.
 
@@ -527,7 +542,7 @@ specific and measurable.
 | **IMP-D5** | W3.1 differential oracle: same-stack subset exhaustion | **Decided: no cross-stack oracle** | chiabls rejected — RELIC unreviewed + DST mismatch; 2026-06-03 |
 | **KDD-049** | PTX_BLS_Verify explicit group_pk parameter | **Decided** | Pure function; caller extracts under cs_ptx_bls; commit 66251c8 |
 | **KDD-050** | Test extraction interface — ENABLE_PTX_TEST_ACCESSORS compile gate | **Decided** | New configure option, default off, modelled on ENABLE_WALLET; 2026-06-03 |
-| ODC-025 | Rotation-N final value | **Open — measured at W2.3** | Design doc §9.2 |
+| ODC-025 | Rotation-N final value | **Open — measured at W2.3** — [KDD-051] benchmark must run GJKR-hardened ceremony | Design doc §9.2 |
 | ODC-024 | Multi-quorum membership | Deferred | Design doc §9.3 |
 | Coordinator role | Residual coordinator spec | **Required W1.1 deliverable** | Written doc before W1.2 begins |
 
@@ -547,9 +562,9 @@ cautionary example).
    confirmed. This is the item most likely to extend the 12–18-month mainnet timeline if
    not started early.
 
-2. **W3.1-Test1.** Write the known-polynomial differential test now. Uses existing
-   `PTX_BLS_Init` + `PTX_BLS_PartialSign` + `PTX_BLS_Recover` + chiabls
-   `CBLSSecretKey::Recover`. Must pass before W1.2 begins.
+2. **W3.1-Test1.** ✅ DONE — commit bcb4222. Same-stack subset exhaustion using
+   `PTX_BLS_Init` + `PTX_BLS_PartialSign` + `PTX_BLS_Recover` + `PTX_BLS_Verify`.
+   No chiabls oracle (IMP-D5). W1.2 gate cleared on this item.
 
 3. **W1.1 coordinator-role spec.** Write the one-page coordinator-role definition (the
    no-key-material, no-trust-required, stateless-relay spec, with the coordinator-replacement
@@ -569,7 +584,8 @@ cautionary example).
 | KDD-047 | KDD | Disband — n_disband=30, dissolve-to-pool | Decided — design doc §7.3 |
 | KDD-048 | KDD | Quorum params: n=11, t=6 | Decided — design doc §3, §9.1 |
 | ODC-024 | ODC | Multi-quorum membership | Deferred — design doc §9.3 |
-| ODC-025 | ODC | Rotation-N final value | **Open** — measured at W2.3 |
+| ODC-025 | ODC | Rotation-N final value | **Open** — measured at W2.3; [KDD-051] benchmark must run GJKR-hardened ceremony |
+| KDD-051 | KDD | DKG construction — Feldman VSS + GJKR commit-then-reveal hardening | Decided — measured 2026-06-03; design doc §11 |
 | IMP-D1 | IMP | Ceremony BLS substrate | **Decided: blst** — this plan W1.1 |
 | IMP-D2 | IMP | Ceremony transport | **Decided: P2P** — this plan W1.1 |
 | IMP-D3 | IMP | On-chain ceremony record | **Decided: PTXDKG tx** — this plan W1.1 |
