@@ -209,6 +209,7 @@ endif
 # PTX consensus tests — minimal harness, no PIVX test debt, no wallet dependency.
 # Steps 6-12 add PTX-specific tests here. Full make check is deferred (see standup).
 PTX_TESTS = \
+  ptx/test/ptx_bls_subset_test.cpp \
   test/ptx_lottery_state_tests.cpp \
   test/ptx_sess_tests.cpp \
   test/ptx_coalesce_tests.cpp \
