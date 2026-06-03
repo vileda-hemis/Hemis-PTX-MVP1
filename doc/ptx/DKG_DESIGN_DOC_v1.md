@@ -446,6 +446,11 @@ architecture after single-quorum behaviour is proven at scale.
 
 **Future ODC:** ODC-024 tracks this as the open design choice.
 
+> **[Partially resolved 2026-06-03 per KDD-053]** Roll-selection input (Option D,
+> ungrindable block-hash-based) and failover model (verifiable re-route vs. re-roll) are
+> decided. Multi-quorum membership and scaling (quorum-count targets) remain open under
+> ODC-024.
+
 ### §9.4 The reuse question — RESOLVED 2026-06-03
 
 **Resolution:** 2026-06-03. Read-only source investigation of hemis-ptx (file:line evidence).
@@ -644,6 +649,84 @@ share-index assignment).
 
 ---
 
+## §13 Decided: Multi-Quorum Roll Selection and Failover
+
+**KDD-053 (2026-06-03). Partially resolves ODC-024 (selection + failover decided;
+membership/scaling remain open).**
+
+**Scope.** Applies when N > 1 active quorums exist (ODC-024 era). Single-quorum (W1.2, N=1)
+has no selection — there is one quorum — and this KDD does not affect it. The rules are
+decided now to close the design hole; the code is ODC-024-era.
+
+**Selection (deterministic, ungrindable — "Option D").** For each roll, the serving quorum
+is computed, never chosen:
+
+```
+ordering = deterministic_shuffle(active_set,
+               H(anchor_block_hash ‖ game_id ‖ roll_index_in_block))
+primary  = ordering[0]
+```
+
+The selection input uses only chain/protocol-determined fields. Caller-controlled fields
+(caller pubkey, salt) are excluded — even though they appear in the roll seed — so the
+caller cannot grind selection. `roll_index_in_block` = the roll's PTXSESS position in the
+block's tx ordering (chain-determined). Rejected alternatives: roll-seed input
+(caller-grindable via salt — a steering vector); block-height-alone (ungrindable but
+long-range predictable, enables pre-positioning). Block-hash-based input is ungrindable and
+unpredictable; including roll-distinguishing bits spreads within-block load across quorums.
+Caller and verifier compute the same ordering from the same on-chain inputs.
+
+**Active set and N.** The active-quorum set — and thus N — is evaluated as of the roll's
+anchor block height from on-chain quorum state: a quorum is in the set if ACTIVE at that
+height (formation height ≤ anchor height, not DISBANDED at anchor height). Caller (at roll
+time) and verifier (later) read the same set at the same fixed height, so N and membership
+are identical for both. The absolute count of quorums is an emergent operational property
+(scales with GM population at n=11 per quorum, KDD-048), not a set parameter.
+
+**Failover.** The governing rule: failure-triggering must never enable outcome selection.
+
+1. **Verifiable re-route (same seed, deterministic fallback):** fires if and only if the
+   primary's unavailability is chain-evident — DISBANDED or inquorate in on-chain state at
+   the anchor height. The roll falls to the next quorum in `ordering`. A verifier confirms
+   both the primary's dead state and the fallback's correctness from chain alone. The caller
+   cannot fake the trigger (can't mark a quorum disbanded — that's KDD-047's 30-block
+   consensus-observed inquorum) nor choose the destination (next-in-ordering is
+   predetermined).
+
+2. **Re-roll (new seed, fresh selection):** the recovery for all caller-observed,
+   non-chain-evident failures (timeout, partial non-response, mid-roll threshold miss). A new
+   seed re-runs selection over the current active set — a fresh draw, not a re-route of the
+   fixed seed, conferring no outcome selection. Caller-side timeouts never trigger a
+   same-seed re-route.
+
+**Why the asymmetry closes steering:** the verifiable path (re-route) is the one the caller
+can't abuse (can't fake trigger, can't pick destination); the abusable path
+(caller-triggered) is forced onto re-roll, which is a fresh random draw, not selection
+between existing outcomes. Malicious-member-induced failure (a caller who is also a
+primary-quorum member withholding to force re-roll) is priced by existing PoSe/ejection
+(KDD-046): withholding costs a missed signing and yields only an unaimed fresh draw.
+
+**Disband-window coverage.** A quorum can be unresponsive up to 30 blocks before formal
+disband (KDD-047). During that window the fallback chain (chain-evident cases) and re-roll
+(caller-observed cases) keep rolls flowing without waiting for formal disband; once
+disbanded, the quorum leaves the active set and subsequent selection routes around it
+automatically.
+
+**Implementation note (not over-specified).** `deterministic_shuffle` may be a seeded
+Fisher-Yates over the active set or an ordering by `H(input ‖ quorum_id)` — both satisfy
+determinism with identical security properties; the choice is deferred to implementation.
+New pure function `PTX_SelectQuorum(anchor, game_id, roll_index, active_set)` → `ordering`,
+testable in isolation. Rides on the W2.1 per-quorum registry (which multi-quorum requires
+regardless).
+
+**Status:** Decided (rules). Partially resolves ODC-024 — selection and failover settled;
+multi-quorum membership and scaling (quorum-count targets) remain open under ODC-024. Code
+is ODC-024-era; not W1.2 scope.
+
+**KDD:** KDD-053
+
+---
+
 ## Appendix: Register cross-reference
 
 | KDD | Title | §| Status |
@@ -662,6 +745,7 @@ share-index assignment).
 | KDD-050 | Test extraction interface — in-daemon subset check; ENABLE_PTX_TEST_ACCESSORS compile gate, default off | — | Decided — impl plan 2026-06-03 |
 | KDD-051 | DKG construction — Feldman VSS + GJKR commit-then-reveal hardening; QUAL-locks-before-reveal | §11 | Decided — measured 2026-06-03 |
 | KDD-052 | PTXDKG member set — committed node_id list, chain-determined (score) order; resolves OPEN-2 | §12 | Decided 2026-06-03 |
+| KDD-053 | Multi-quorum roll selection (Option D, ungrindable) + failover (verifiable re-route / re-roll asymmetry); partially resolves ODC-024 | §13 | Decided 2026-06-03 |
 | ODC-021 | Coordinator SPOF | §2 | Resolved by DKG |
-| ODC-024 | Multi-quorum membership — deferred future extension | §9.3 | Open |
+| ODC-024 | Multi-quorum membership — deferred future extension | §9.3 | Open (partially resolved per KDD-053: selection + failover decided) |
 | ODC-025 | Rotation-N final value — pending ceremony duration | §9.2 | Open |

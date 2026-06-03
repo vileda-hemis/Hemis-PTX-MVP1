@@ -562,7 +562,8 @@ specific and measurable.
 | **KDD-050** | Test extraction interface — ENABLE_PTX_TEST_ACCESSORS compile gate | **Decided** | New configure option, default off, modelled on ENABLE_WALLET; 2026-06-03 |
 | **KDD-052** | PTXDKG member set — committed node_id list, chain-determined score order; resolves OPEN-2 | **Decided** | Design doc §12; 2026-06-03 |
 | ODC-025 | Rotation-N final value | **Open — measured at W2.3** — [KDD-051] benchmark must run GJKR-hardened ceremony | Design doc §9.2 |
-| ODC-024 | Multi-quorum membership | Deferred | Design doc §9.3 |
+| ODC-024 | Multi-quorum membership | Deferred (partially resolved per KDD-053: selection + failover decided) | Design doc §9.3 |
+| **KDD-053** | Multi-quorum roll selection (Option D) + failover asymmetry; partially resolves ODC-024 | **Decided** | Design doc §13; 2026-06-03 |
 | Coordinator role | Residual coordinator spec | **Required W1.1 deliverable** | Written doc before W1.2 begins |
 
 **IMP- series note:** IMP-D1 through IMP-D4 are implementation-decisions — a new series,
@@ -602,7 +603,8 @@ cautionary example).
 | KDD-046 | KDD | Ejection — 15-of-60 | Decided — design doc §8 |
 | KDD-047 | KDD | Disband — n_disband=30, dissolve-to-pool | Decided — design doc §7.3 |
 | KDD-048 | KDD | Quorum params: n=11, t=6 | Decided — design doc §3, §9.1 |
-| ODC-024 | ODC | Multi-quorum membership | Deferred — design doc §9.3 |
+| ODC-024 | ODC | Multi-quorum membership | Deferred — design doc §9.3 (partially resolved per KDD-053) |
+| KDD-053 | KDD | Multi-quorum roll selection + failover | Decided — 2026-06-03; design doc §13 |
 | ODC-025 | ODC | Rotation-N final value | **Open** — measured at W2.3; [KDD-051] benchmark must run GJKR-hardened ceremony |
 | KDD-051 | KDD | DKG construction — Feldman VSS + GJKR commit-then-reveal hardening | Decided — measured 2026-06-03; design doc §11 |
 | KDD-052 | KDD | PTXDKG member set — committed node_id list, chain-determined score order | Decided — 2026-06-03; design doc §12 |
