@@ -278,7 +278,13 @@ UniValue ptx_roll(const JSONRPCRequest& request)
     if (!PTX_BLS_Recover(thresh_indices, thresh_sigs, combined_sig))
         throw JSONRPCError(RPC_MISC_ERROR, "PTX: BLS threshold signature recovery failed");
 
-    if (!PTX_BLS_Verify(round_seed, combined_sig))
+    // Extract group_pk under cs_ptx_bls, release before verify (pure, KDD-049).
+    uint8_t group_pk_bytes[48];
+    {
+        LOCK(cs_ptx_bls);
+        blst_p1_affine_compress(group_pk_bytes, &g_ptx_bls_state.group_pk);
+    }
+    if (!PTX_BLS_Verify(group_pk_bytes, round_seed, combined_sig))
         throw JSONRPCError(RPC_MISC_ERROR, "PTX: BLS threshold signature verification failed");
 
     std::vector<uint8_t> threshold_sig_bytes(combined_sig, combined_sig + PTX_SIG_BYTES);

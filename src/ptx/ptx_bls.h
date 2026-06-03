@@ -84,8 +84,12 @@ bool PTX_BLS_Recover(
 // Compute beacon = SHA256(96-byte threshold sig). Unchanged from chiabls era.
 uint256 PTX_BLS_SigToBeacon(const uint8_t sig[PTX_SIG_BYTES]);
 
-// Verify the combined signature against group_pk.
-// Used by ptx_roll() after recovery, and available to ptx_verify() RPC.
-bool PTX_BLS_Verify(const uint256& msg, const uint8_t sig[PTX_SIG_BYTES]);
+// Verify the combined signature against an explicit group public key.
+// group_pk_bytes: 48-byte compressed G1 (caller extracts from
+//   PTXBLSState.group_pk under cs_ptx_bls lock, releases before calling).
+// Pure function — reads no global state (KDD-049, 2026-06-03).
+bool PTX_BLS_Verify(const uint8_t group_pk_bytes[48],
+                    const uint256& msg,
+                    const uint8_t sig[PTX_SIG_BYTES]);
 
 #endif // HEMIS_PTX_BLS_H

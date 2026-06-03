@@ -221,19 +221,21 @@ uint256 PTX_BLS_SigToBeacon(const uint8_t sig[PTX_SIG_BYTES])
 }
 
 // ---------------------------------------------------------------------------
-// PTX_BLS_Verify — pairing check against group_pk
+// PTX_BLS_Verify — pairing check against explicit group_pk (KDD-049)
 // ---------------------------------------------------------------------------
 
-bool PTX_BLS_Verify(const uint256& msg, const uint8_t sig[PTX_SIG_BYTES])
+bool PTX_BLS_Verify(const uint8_t group_pk_bytes[48],
+                    const uint256& msg,
+                    const uint8_t sig[PTX_SIG_BYTES])
 {
-    LOCK(cs_ptx_bls);
-    if (!g_ptx_bls_state.initialized) return false;
+    blst_p1_affine group_pk;
+    if (blst_p1_uncompress(&group_pk, group_pk_bytes) != BLST_SUCCESS) return false;
 
     blst_p2_affine sig_affine;
     if (blst_p2_uncompress(&sig_affine, sig) != BLST_SUCCESS) return false;
 
     BLST_ERROR err = blst_core_verify_pk_in_g1(
-        &g_ptx_bls_state.group_pk,
+        &group_pk,
         &sig_affine,
         true,
         msg.begin(), 32,
