@@ -413,6 +413,7 @@ libbitcoin_server_a_SOURCES = \
   ptx/ptx_mempool.cpp \
   ptx/ptx_exclude.cpp \
   ptx/ptx_bls.cpp \
+  ptx/ptx_dkg.cpp \
   ptx/ptx_accum_script.cpp \
   ptx/ptx_coalesce.cpp \
   ptx/ptx_lottery_state.cpp \
