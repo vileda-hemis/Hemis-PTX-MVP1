@@ -36,8 +36,10 @@ This document covers the design decisions for:
 
 - **The RNG/lottery protocol itself** — already designed and built; see `ODC_022_DESIGN_DOC_v3.md`
   for PTXCOALESCE/PTXPAYOUT and the accumulator model.
-- **Implementation plan** — deferred pending resolution of the reuse question (§9.4). No
-  implementation plan will be written until that question is resolved.
+- **Implementation plan** — unblocked as of 2026-06-03 (§9.4 resolved; see §9.4 for detail).
+  Scoped to three build items: (a) distributed DKG ceremony + PTX-key bridge, (b) rotation and
+  lifecycle machinery, (c) ceremony-orchestration correctness validation (differential testing +
+  audit). Implementation plan is the next design artifact.
 - **Claims reconciliation** — the pass over present-tense "trustless / verifiable" claims in
   existing docs is a separate deliverable (see `PTX_LE_STANDUP.md §E3`).
 
@@ -425,8 +427,8 @@ rotation_spacing (≈ interval / quorum_count ≈ 1440/37 ≈ 39 blocks)
 If a DKG ceremony takes longer than the rotation spacing, two quorums could be simultaneously
 mid-ceremony, degrading availability below the ~97% target. The 1440-block starting value must
 be validated against actual measured ceremony duration before being locked. The ceremony duration
-is implementation-dependent and cannot be confirmed until the reuse question (§9.4) is resolved
-and a prototype ceremony is benchmarked.
+is implementation-dependent and requires a prototype ceremony benchmark. The reuse question
+(§9.4) is now resolved; the benchmark remains outstanding (ODC-025 still open).
 
 **Future ODC:** ODC-025 tracks this as the open choice for rotation-N final value.
 
@@ -437,28 +439,81 @@ architecture after single-quorum behaviour is proven at scale.
 
 **Future ODC:** ODC-024 tracks this as the open design choice.
 
-### §9.4 The reuse question (gating open question — do not answer here)
+### §9.4 The reuse question — RESOLVED 2026-06-03
 
-**This is the single most important open question for DKG implementation timeline.**
+**Resolution:** 2026-06-03. Read-only source investigation of hemis-ptx (file:line evidence).
+Outcome: **MIXED** — neither "integrate existing DKG" nor "build threshold crypto from scratch."
 
-Hemis PTX inherits from PIVX/Dash. Dash LLMQ (Long-Living Masternode Quorums) has a complete
-production DKG implementation — VSS commitment broadcast, key share distribution, complaint
-handling, justification, and final key publication — built on the same Chia BLS stack that
-ptx-bea uses.
+---
 
-**The unresolved question:** is the LLMQ DKG infrastructure reusable for PTX quorums, or does
-PTX's architecture (specifically the synchronous `ptx_fanout` bypass, the caller-driven signing
-round, and the per-roll BLS ceremony) diverge sufficiently from LLMQ's assumptions that DKG would
-need to be built from a lower-level base?
+#### Present and reusable
 
-**This question gates the entire implementation timeline.** If LLMQ is reusable: DKG implementation
-is primarily integration and adaptation work (weeks to months). If LLMQ is not reusable: DKG
-requires building a ceremony from BLS primitives against the existing quorum infrastructure (months
-to significant months).
+**Threshold BLS primitives — done and exercised.** Both chiabls (LLMQ layer) and blst (PTX layer)
+threshold stacks are compiled, linked, and exercised in the running binary. PTX already has working
+Shamir share generation, partial signing, and Lagrange recovery in G2:
+- `ptx_bls.cpp:22` — `PTX_BLS_Init()`: master polynomial + per-GM share evaluation
+- `ptx_bls.cpp:121` — `PTX_BLS_PartialSign()`: partial signature with a key share
+- `ptx_bls.cpp:146` — `PTX_BLS_Recover()`: Lagrange interpolation in G2 over BLS12-381
 
-**Resolution:** a separate read-only source investigation of the Dash LLMQ DKG codebase will
-answer this before any implementation plan is written. Do not estimate or plan DKG implementation
-until this question is answered.
+The hard, dangerous cryptography is **not** being built from scratch — it exists and runs. This
+is the critical de-risker: the catastrophic-uncertainty case (primitive-from-scratch) is ruled out.
+
+**A complete reference DKG implementation exists in-tree.** `src/llmq/quorums_dkgsession*` is
+present, compiled, active, threaded, and P2P-wired. All four DKG messages are dispatched:
+QCONTRIB, QCOMPLAINT, QJUSTIFICATION, QPCOMMITMENT (`quorums_dkgsessionhandler.cpp:131–142`).
+Phase advancement fires on `UpdatedBlockTip()`. It runs live for ChainLocks. This is a studyable,
+adaptable reference for multi-party DKG over gossip in our own lineage, language, and BLS
+substrate — and the live recovery path (`quorums_signing_shares.cpp:603–662`,
+`recoveredSig.Recover()`) gives an in-tree target for differential-testing PTX's Lagrange
+recovery against.
+
+**Quorum params are parameterized.** `n=11, t=6` is a new entry in `Consensus::LLMQParams`
+(`chainparams.cpp`) — no hardcoded size constraints to fight.
+
+---
+
+#### Not present — the build work
+
+**No wire from DKG output to PTX keys.** PTX built a parallel, trusted-dealer key stack
+(`PTXBLSState`, coordinator holds the master polynomial — `ptx_bls.h:27`) that is
+namespace-isolated from LLMQ (zero `llmq::` dependencies in `src/ptx/`). LLMQ DKG produces
+keys consumed only by ChainLocks; nothing feeds into the PTX signing path. The bridge must be
+built.
+
+**No rotation machinery in the lineage.** No DIP-0024, no rotating-quorum support anywhere in
+`src/llmq/`. Same-set re-DKG rotation + interval+drift trigger are net-new.
+
+**Trigger model mismatch.** LLMQ DKG is height-deterministic: triggers at `height % dkgInterval`
+(`quorums_dkgsessionhandler.cpp:107–129`). PTX needs pool-availability-triggered formation and
+interval+drift rotation — this must be built.
+
+---
+
+#### Resolution framing
+
+This is **neither** "integrate existing DKG" (the wire to PTX doesn't exist) **nor** "build
+threshold crypto from scratch" (the threshold primitives are done and exercised — worst-case is
+ruled out). It is: **build the distributed DKG ceremony + the PTX-key bridge + the
+rotation/trigger lifecycle**, adapting the in-tree LLMQ DKG as reference, on top of working
+blst threshold primitives.
+
+Dominant remaining risks: (a) **ceremony-orchestration correctness** — adapting the pattern without
+introducing a keying bug → differential testing against the in-tree LLMQ recovery path + external
+cryptographic audit are non-negotiable; audit has months of lead time, engage early.
+(b) **The net-new rotation/lifecycle machinery.** Both tractable.
+
+Feasibility note: the threshold-primitives-present finding rules out the catastrophic-uncertainty
+case. A 12–18-month mainnet timeline is achievable given the build (not configure, not from-scratch)
+scope, **provided the validation discipline holds** (differential testing + audit).
+
+---
+
+#### Gate lifted
+
+§9.4 is resolved. The **implementation plan is now unblocked** and is the next design artifact.
+Scope: the three build items above — (a) ceremony + PTX-key bridge, (b) rotation/lifecycle
+machinery, (c) correctness validation discipline (differential testing + audit). No implementation
+plan was written prior to this resolution, per the standup gate in §1.3.
 
 ---
 
