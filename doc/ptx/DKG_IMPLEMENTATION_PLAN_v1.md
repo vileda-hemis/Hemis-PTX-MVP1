@@ -367,6 +367,13 @@ with higher stakes here than anywhere else in the codebase.
 - Differential verification: PTX Lagrange vs chiabls Recover across all 462 possible
   6-of-11 subsets.
 - **Gate: zero discrepancies. This is the hard gate blocking W1.3.**
+- **[Superseded 2026-06-03 per IMP-D5 / KDD-050: chiabls removed as oracle. Test 2 is
+  the same-stack subset check as Test 1, differing only in share provenance —
+  ceremony-produced shares via the KDD-050 compile-gated accessor (ENABLE_PTX_TEST_ACCESSORS).
+  chiabls rejected: RELIC backend carrying upstream "NOT YET FORMALLY REVIEWED FOR SECURITY"
+  disclaimer; DST mismatch (BLS_SIG_HEMIS_PTX_... vs BLS_SIG_BLS12381G2_...) makes
+  byte comparison non-viable regardless. Gate criterion unchanged: all C(n,t) subsets
+  recover to byte-identical group signatures, each passing PTX_BLS_Verify.]**
 
 **Test 3 — Corpus (throughout W2 and into the audit window):**
 - 10,000 randomly-generated ceremonies (random polynomials, random valid/invalid member sets).
@@ -517,6 +524,9 @@ specific and measurable.
 | **IMP-D2** | Ceremony transport | **Decided: P2P** | This plan §2 W1.1 — 2026-06-03 |
 | **IMP-D3** | On-chain ceremony record | **Decided: PTXDKG special tx** | This plan §2 W1.1 — 2026-06-03 |
 | **IMP-D4** | Drift collision strategy | **Decided at implementation** | Retry-with-increment; not security-critical |
+| **IMP-D5** | W3.1 differential oracle: same-stack subset exhaustion | **Decided: no cross-stack oracle** | chiabls rejected — RELIC unreviewed + DST mismatch; 2026-06-03 |
+| **KDD-049** | PTX_BLS_Verify explicit group_pk parameter | **Decided** | Pure function; caller extracts under cs_ptx_bls; commit 66251c8 |
+| **KDD-050** | Test extraction interface — ENABLE_PTX_TEST_ACCESSORS compile gate | **Decided** | New configure option, default off, modelled on ENABLE_WALLET; 2026-06-03 |
 | ODC-025 | Rotation-N final value | **Open — measured at W2.3** | Design doc §9.2 |
 | ODC-024 | Multi-quorum membership | Deferred | Design doc §9.3 |
 | Coordinator role | Residual coordinator spec | **Required W1.1 deliverable** | Written doc before W1.2 begins |
@@ -564,3 +574,6 @@ cautionary example).
 | IMP-D2 | IMP | Ceremony transport | **Decided: P2P** — this plan W1.1 |
 | IMP-D3 | IMP | On-chain ceremony record | **Decided: PTXDKG tx** — this plan W1.1 |
 | IMP-D4 | IMP | Drift collision strategy | **Decided at implementation** — this plan W2.2 |
+| IMP-D5 | IMP | W3.1 differential oracle: same-stack subset exhaustion (chiabls rejected) | **Decided** — 2026-06-03 |
+| KDD-049 | KDD | PTX_BLS_Verify explicit group_pk — pure function | Decided — commit 66251c8 |
+| KDD-050 | KDD | Test extraction interface; ENABLE_PTX_TEST_ACCESSORS compile gate (default off) | Decided — 2026-06-03 |

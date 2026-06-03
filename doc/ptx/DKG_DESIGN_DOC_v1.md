@@ -547,6 +547,8 @@ At this scale:
 | KDD-046 | Ejection/PoSe discipline — 15-of-60, 120-ban | §8 | Decided |
 | KDD-047 | Disband — inquorate → pool, tickets carry; n_disband=30; dissolve-to-pool | §7.3 | Decided |
 | KDD-048 | Quorum params: t=6 decided; upgrade-gated consensus constant, not spork | §3, §9.1 | Decided |
+| KDD-049 | PTX_BLS_Verify explicit group_pk — pure function, no global state read | — | Decided — impl plan 2026-06-03; commit 66251c8 |
+| KDD-050 | Test extraction interface — in-daemon subset check; ENABLE_PTX_TEST_ACCESSORS compile gate, default off | — | Decided — impl plan 2026-06-03 |
 | ODC-021 | Coordinator SPOF | §2 | Resolved by DKG |
 | ODC-024 | Multi-quorum membership — deferred future extension | §9.3 | Open |
 | ODC-025 | Rotation-N final value — pending ceremony duration | §9.2 | Open |
