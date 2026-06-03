@@ -187,12 +187,20 @@ retained a keying SPOF and W1.2 is not done.
 **Deliverable:** a one-page written coordinator-role spec (peer of this document, in
 `doc/ptx/`) before any W1.2 ceremony code is written.
 
+**[COMPLETE 2026-06-03]** Delivered as `doc/ptx/COORDINATOR_ROLE_SPEC_v1.md`. Defines "no
+coordinator as a protocol entity" via two invariants — I1 (no SPOF) and I2 (no
+protocol-privileged party). I2 resolved descriptive against source: `gm_bls_sign`
+(`rpc/ptx.cpp:484–529`) has no requester authentication, only transport-level HTTP Basic —
+the property holds structurally today, no handler change required for W1.2. All four W1.1
+gates now closed (IMP-D1/D2/D3 decided; W3.1-Test1 PASS; coordinator-role spec written) →
+**W1.2 is unblocked.**
+
 ---
 
 ### W1.2 — Ceremony implementation (single quorum, static fleet, no rotation)
 
 **BLOCKED on: W1.1 all four items complete (IMP-D1/D2/D3 recorded; coordinator-role spec
-written; W3.1-Test1 PASS).**
+written; W3.1-Test1 PASS). ✅ ALL FOUR GATES CLOSED 2026-06-03 — W1.2 UNBLOCKED.**
 
 **Scope:** a single quorum of 11 GMs runs the DKG ceremony and produces the artefacts the
 existing signing path consumes. The trusted-dealer `PTX_BLS_Init` and `PTX_FanOutKeySet` are
@@ -564,7 +572,7 @@ specific and measurable.
 | ODC-025 | Rotation-N final value | **Open — measured at W2.3** — [KDD-051] benchmark must run GJKR-hardened ceremony | Design doc §9.2 |
 | ODC-024 | Multi-quorum membership | Deferred (partially resolved per KDD-053: selection + failover decided) | Design doc §9.3 |
 | **KDD-053** | Multi-quorum roll selection (Option D) + failover asymmetry; partially resolves ODC-024 | **Decided** | Design doc §13; 2026-06-03 |
-| Coordinator role | Residual coordinator spec | **Required W1.1 deliverable** | Written doc before W1.2 begins |
+| Coordinator role | Residual coordinator spec | **✅ COMPLETE 2026-06-03** — `doc/ptx/COORDINATOR_ROLE_SPEC_v1.md` | W1.1 gate closed; W1.2 unblocked |
 
 **IMP- series note:** IMP-D1 through IMP-D4 are implementation-decisions — a new series,
 distinct from KDD (design-decisions) and ODC (open-design-choices). The series was
@@ -586,10 +594,9 @@ cautionary example).
    `PTX_BLS_Init` + `PTX_BLS_PartialSign` + `PTX_BLS_Recover` + `PTX_BLS_Verify`.
    No chiabls oracle (IMP-D5). W1.2 gate cleared on this item.
 
-3. **W1.1 coordinator-role spec.** Write the one-page coordinator-role definition (the
-   no-key-material, no-trust-required, stateless-relay spec, with the coordinator-replacement
-   falsifiable test written out). Writing task, not a coding task. Must exist before ceremony
-   design decisions crystallise in code.
+3. **W1.1 coordinator-role spec.** ✅ DONE — `doc/ptx/COORDINATOR_ROLE_SPEC_v1.md`
+   (2026-06-03). Two-invariant framing (I1: no SPOF; I2: no protocol-privileged party). I2
+   resolved descriptive. Falsifiable cold-caller test written. W1.2 unblocked.
 
 ---
 
