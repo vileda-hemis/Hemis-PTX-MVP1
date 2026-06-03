@@ -590,6 +590,60 @@ ceremony implementation.
 
 ---
 
+## §12 Decided: PTXDKG Member Set — Committed node_id List, Chain-Determined Order
+
+**KDD-052 (2026-06-03). Resolves OPEN-2 (proTxHash vs node_id).**
+
+**Decision.** The PTXDKG transaction commits the ordered member set as `node_id` (compound
+label:suffix per KDD-033). `node_id` is the committed identity because it is consistent with
+all existing PTX consensus identity — pose tracker, `PTX_SelectWinner`, PTXPAYOUT validation
+all key on `node_id` (`ptx_winner_selection.cpp:47,50,54`; `ptx_pose.*`; `ptx_payout.cpp:31`)
+— and is human-readable for explorers and auditors where a raw `proTxHash` is opaque.
+
+**Ordering basis (ungrindable).** Members are committed in the order given by
+`SHA256(SHA256(proTxHash, confirmedHash), formation_block_hash)` descending — the LLMQ
+`CalculateQuorum` basis (`deterministicgms.cpp` scoring; precedent: `quorums_commitment` /
+`specialtx_validation.cpp:575–579`), keyed to the record's committed formation height.
+Share-index `i` = 1-indexed position in this committed order. The ordering inputs
+(`proTxHash`, `confirmedHash`, formation block hash) are all chain-fixed and none
+operator-choosable — an operator cannot influence its share index via label choice. This
+preserves the GJKR-aligned posture (KDD-051): no participant influence over
+ceremony-determined parameters.
+
+**Why not alphabetical node_id sort.** The current trusted-dealer share-index assignment
+(`ptx_bls.cpp:32–35`) sorts `node_id`s alphabetically. The label half of `node_id` is
+operator-chosen, making alphabetical position operator-influenceable. For a randomness
+beacon, ceremony parameters must not be operator-grindable; the chain-determined score basis
+is used instead.
+
+**Order correctness is a formation-time consensus property.** The committed order is
+validated when the PTXDKG tx is mined — the DGM list at formation height is available then,
+so `node_id`→`proTxHash` resolution for the score recomputation is done at validation. The
+order is not re-verified at read time: a later beacon verifier checks the threshold signature
+against the committed `group_pk`, which is what the beacon's validity rests on; it does not
+re-derive the quorum's share-index ordering. The committed `node_id` list therefore gives
+durable, human-readable membership without a read-time dependency on retained historical DGM
+state.
+
+**Identity model.** The DGM list is the canonical join table carrying both `proTxHash` and
+`node_id` (KDD-033). The PTXDKG record commits `node_id`; `proTxHash` is used only as the
+internal, formation-time ordering key, resolved via the DGM list at validation.
+
+**W1.2 carry-forwards:**
+1. Share-index assignment changes: `PTX_BLS_Init` (`ptx_bls.cpp:32–35`) currently assigns
+   share index by alphabetical `node_id` sort. W1.2 replaces this with chain-determined
+   score order.
+2. `confirmedHash` precondition: the ordering score uses `confirmedHash`; a member must be
+   confirmed at formation height. PTX quorum formation inherits the LLMQ "members must be
+   confirmed" eligibility rule — must be enforced in W1.2.
+
+**Status:** Decided. Resolves OPEN-2. Prerequisite for W1.2 (PTXDKG tx format + ceremony
+share-index assignment).
+
+**KDD:** KDD-052
+
+---
+
 ## Appendix: Register cross-reference
 
 | KDD | Title | §| Status |
@@ -607,6 +661,7 @@ ceremony implementation.
 | KDD-049 | PTX_BLS_Verify explicit group_pk — pure function, no global state read | — | Decided — impl plan 2026-06-03; commit 66251c8 |
 | KDD-050 | Test extraction interface — in-daemon subset check; ENABLE_PTX_TEST_ACCESSORS compile gate, default off | — | Decided — impl plan 2026-06-03 |
 | KDD-051 | DKG construction — Feldman VSS + GJKR commit-then-reveal hardening; QUAL-locks-before-reveal | §11 | Decided — measured 2026-06-03 |
+| KDD-052 | PTXDKG member set — committed node_id list, chain-determined (score) order; resolves OPEN-2 | §12 | Decided 2026-06-03 |
 | ODC-021 | Coordinator SPOF | §2 | Resolved by DKG |
 | ODC-024 | Multi-quorum membership — deferred future extension | §9.3 | Open |
 | ODC-025 | Rotation-N final value — pending ceremony duration | §9.2 | Open |

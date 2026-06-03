@@ -132,6 +132,11 @@ commits: the quorum's `group_pk` (blst_p1_affine, 48 bytes compressed G1), the v
 the member set (proTxHash list), and the formation height. Validity requires ≥ t valid
 signed premature commitments from the named members.
 
+> **[Reconciled 2026-06-03 per KDD-052]** The PTXDKG record commits the `node_id` member set
+> (not a `proTxHash` list). The DGM list carries both identities; `proTxHash` is used only as
+> the internal ordering key (chain-determined score), resolved at validation. "proTxHash list"
+> in the original IMP-D3 text is superseded by `node_id`.
+
 **Rationale:** an off-chain `group_pk` reintroduces coordinator trust — any observer that
 did not witness the ceremony must trust the coordinator's announcement of `group_pk`. This
 directly contradicts KDD-039 (no operator-trusted network). On-chain is required.
@@ -234,6 +239,19 @@ to a per-quorum registry.
   gossip round), not plain Feldman. Benchmarking the unhardened ceremony would measure
   rotation-N against a construction PTX will not ship.
 
+**[KDD-052, W1.2 carry-forwards]**
+
+1. **Share-index assignment changes.** `PTX_BLS_Init` currently assigns share index by
+   alphabetical `node_id` sort (`ptx_bls.cpp:32–35`). W1.2 replaces this with
+   chain-determined score order (`SHA256(SHA256(proTxHash, confirmedHash), formation_block_hash)`
+   descending, 1-indexed). The W3.1-Test1 subset-exhaustion test is unaffected by the basis
+   (it tests subset-consistency for a given assignment) but should be re-run after the change
+   to confirm.
+2. **`confirmedHash` precondition.** The ordering score uses `confirmedHash`; a member must
+   be confirmed at formation height or the score input is null and ordering is undefined. PTX
+   quorum formation inherits the LLMQ "members must be confirmed" eligibility rule. Confirm
+   enforced in W1.2.
+
 ---
 
 ### W1.3 — Bridge hardening and abort handling
@@ -271,7 +289,7 @@ router. All net-new — no lineage machinery exists.
 **`PTXQuorumRecord`** — persistent per-quorum state:
 ```
 quorum_id                    : uint256 (hash of PTXDKG commitment)
-members                      : vector<string> (11 node_ids)
+members                      : vector<string> (11 node_ids)  // KDD-052: on-chain PTXDKG record commits this node_id set, ordered by chain-determined score (not alphabetical)
 group_pk                     : blst_p1_affine
 formation_height             : int
 drift_offset                 : int (unique per quorum)
@@ -542,6 +560,7 @@ specific and measurable.
 | **IMP-D5** | W3.1 differential oracle: same-stack subset exhaustion | **Decided: no cross-stack oracle** | chiabls rejected — RELIC unreviewed + DST mismatch; 2026-06-03 |
 | **KDD-049** | PTX_BLS_Verify explicit group_pk parameter | **Decided** | Pure function; caller extracts under cs_ptx_bls; commit 66251c8 |
 | **KDD-050** | Test extraction interface — ENABLE_PTX_TEST_ACCESSORS compile gate | **Decided** | New configure option, default off, modelled on ENABLE_WALLET; 2026-06-03 |
+| **KDD-052** | PTXDKG member set — committed node_id list, chain-determined score order; resolves OPEN-2 | **Decided** | Design doc §12; 2026-06-03 |
 | ODC-025 | Rotation-N final value | **Open — measured at W2.3** — [KDD-051] benchmark must run GJKR-hardened ceremony | Design doc §9.2 |
 | ODC-024 | Multi-quorum membership | Deferred | Design doc §9.3 |
 | Coordinator role | Residual coordinator spec | **Required W1.1 deliverable** | Written doc before W1.2 begins |
@@ -586,6 +605,7 @@ cautionary example).
 | ODC-024 | ODC | Multi-quorum membership | Deferred — design doc §9.3 |
 | ODC-025 | ODC | Rotation-N final value | **Open** — measured at W2.3; [KDD-051] benchmark must run GJKR-hardened ceremony |
 | KDD-051 | KDD | DKG construction — Feldman VSS + GJKR commit-then-reveal hardening | Decided — measured 2026-06-03; design doc §11 |
+| KDD-052 | KDD | PTXDKG member set — committed node_id list, chain-determined score order | Decided — 2026-06-03; design doc §12 |
 | IMP-D1 | IMP | Ceremony BLS substrate | **Decided: blst** — this plan W1.1 |
 | IMP-D2 | IMP | Ceremony transport | **Decided: P2P** — this plan W1.1 |
 | IMP-D3 | IMP | On-chain ceremony record | **Decided: PTXDKG tx** — this plan W1.1 |
