@@ -19,6 +19,12 @@
 
 #include "blst.h"
 #include "bls/bls_wrapper.h"
+// bls_ies.h is included for transport-encryption of ceremony shares only (Phase 1).
+// No llmq:: namespace dependency: bls_ies.h lives in src/bls/ and its transitive
+// includes contain no llmq headers.  The share bytes are blst arithmetic throughout;
+// IES carries 32 opaque bytes (blst_bendian_from_scalar in, blst_scalar_from_bendian
+// out) — the IMP-D1 scalar-representation seam is never crossed.
+#include "bls/bls_ies.h"
 #include "uint256.h"
 
 #include <map>
@@ -97,6 +103,35 @@ struct PTXDKGPhase0Msg {
 };
 
 // ---------------------------------------------------------------------------
+// PTXDKGPhase1Msg — the CONTRIB P2P message.
+// Reveals the sender's vvec and carries per-QUAL-member encrypted evaluations.
+//
+// Transport confidentiality: CBLSIESMultiRecipientBlobs (ECIES, one blob per
+// members[] slot; non-QUAL slots are empty).
+//
+// In-flight integrity: the sig covers quorum_hash || proTxHash || compressed-vvec
+// || ephemeralPubKey || ivSeed || all blob bytes (length-prefixed).  A tampered
+// blob therefore fails the sig check and the whole message is rejected — the
+// receiver never sees a garbage scalar from an in-transit blob swap.
+//
+// Share validity is NOT established here.  The Phase 2 Feldman check
+// (g^{share} == Π vvec[k]^{j^k}) is the correctness gate.
+// ---------------------------------------------------------------------------
+struct PTXDKGPhase1Msg {
+    uint256                         quorum_hash;
+    uint256                         proTxHash;
+    std::vector<blst_p1_affine>     vvec;              // t=6 G1 points (compressed 48B each on wire)
+    CBLSIESMultiRecipientBlobs      encrypted_shares;  // one blob per members[] slot
+    CBLSSignature                   sig;               // operator key sig over GetSignHash()
+
+    // Covers quorum_hash || proTxHash || compressed-vvec-bytes ||
+    //         ephemeralPubKey(48B) || ivSeed(32B) || len-prefixed blob bytes.
+    // Identical compressed-G1 primitive (blst_p1_affine_compress) as
+    // ComputeVvecCommitment so both notions of "the vvec" are the same bytes.
+    uint256 GetSignHash() const;
+};
+
+// ---------------------------------------------------------------------------
 // PTXDKGSession — ceremony state machine.
 // Phase 0 state only; later phases extend this.
 //
@@ -120,6 +155,24 @@ struct PTXDKGSession {
     // Locked by PTX_DKG_ClosePhase0() before any Phase 1 reveal begins
     // (the QUAL-locks-before-reveal invariant from KDD-051).
     std::set<uint256>          qual;
+
+    // Phase 1 revealed vvecs: proTxHash → vvec (t G1 points).
+    // Populated by PTX_DKG_ReceivePhase1Msg on acceptance.
+    std::map<uint256, std::vector<blst_p1_affine>>  phase1_vvecs;
+
+    // Phase 1 encrypted share blobs: proTxHash → blob set.
+    // Held between PTX_DKG_ReceivePhase1Msg and PTX_DKG_DecryptMyShare.
+    std::map<uint256, CBLSIESMultiRecipientBlobs>   phase1_encrypted_shares;
+
+    // Decrypted shares: proTxHash_of_sender → f_sender(my share_index).
+    // Populated by PTX_DKG_DecryptMyShare.  Values are NOT validated here;
+    // share validity is established by the Phase 2 Feldman check.
+    std::map<uint256, blst_scalar>                  received_shares;
+
+    // Bad members, accumulated across phases: proTxHash set.
+    // Phase 1 adds: commitment-mismatch revealers + non-revealers (at ClosePhase1).
+    // Phase 2 adds: Feldman-VSS failures.  Phase 3 adds: unjustified accusations.
+    std::set<uint256>                               bad_members;
 };
 
 // ---------------------------------------------------------------------------
@@ -189,6 +242,55 @@ bool PTX_DKG_IsPhase0Complete(const PTXDKGSession& session);
 // Must be called before any Phase 1 processing; this is the
 // QUAL-locks-before-reveal gate (KDD-051).
 bool PTX_DKG_ClosePhase0(PTXDKGSession& session);
+
+// ---------------------------------------------------------------------------
+// Phase 1 — contribution reveal (CONTRIB phase)
+// ---------------------------------------------------------------------------
+
+// Build the Phase 1 P2P message (vvec reveal + per-QUAL-member encrypted evals).
+// Session must be in CONTRIB phase with my_idx >= 0.
+// operator_sk: signs the message; never stored (key-separation invariant, impl plan §6).
+//
+// Index basis: evals[k] = f(members[k].share_index), slot k = position in sorted
+// members[].  Encrypt(k, ...) so Decrypt(my_idx, ...) on the receiver reaches the
+// right blob without any index translation.
+PTXDKGPhase1Msg PTX_DKG_BuildPhase1Msg(const PTXDKGSession& session,
+                                        const CBLSSecretKey& operator_sk);
+
+// Receive and validate a Phase 1 message.
+// Check order: phase==CONTRIB → quorum_hash match → sender in QUAL → no duplicate
+//              → sig VerifyInsecure → commitment match.
+//
+// Commitment match: recomputes SHA256(quorum_hash||proTxHash||compressed-vvec-bytes)
+// from msg.vvec and compares to phase0_commits[proTxHash].  This is the GJKR
+// redemption check — mismatch means the sender revealed a different polynomial
+// than it committed; sender is inserted into bad_members, false returned.
+//
+// On acceptance: stores vvec in phase1_vvecs and blob set in phase1_encrypted_shares.
+// Does NOT decrypt — call PTX_DKG_DecryptMyShare separately.
+bool PTX_DKG_ReceivePhase1Msg(PTXDKGSession& session, const PTXDKGPhase1Msg& msg);
+
+// Decrypt this node's share from sender_proTxHash's Phase 1 message.
+// Requires phase1_encrypted_shares to contain sender_proTxHash.
+// operator_sk: this node's operator secret key; never stored.
+// On success: stores the decoded blst_scalar in received_shares[sender_proTxHash].
+//
+// IMPORTANT: Decrypt success and blob.size()==32 do NOT establish share validity.
+// A wrong-key or wrong-routed decrypt yields a well-formed but incorrect scalar
+// (AES-CBC without padding always "succeeds" and always returns 32 bytes regardless
+// of whether the key is right).  Share validity is established only by the Phase 2
+// Feldman check (g^{share} == Π vvec[k]^{j^k}).  The size==32 guard is a
+// structural/encoding guard, not a correctness guarantee.
+bool PTX_DKG_DecryptMyShare(PTXDKGSession& session,
+                             const uint256& sender_proTxHash,
+                             const CBLSSecretKey& operator_sk);
+
+// True when every QUAL member has sent a valid (accepted) Phase 1 message.
+bool PTX_DKG_IsPhase1Complete(const PTXDKGSession& session);
+
+// Close Phase 1: mark non-revealing QUAL members bad, advance to COMPLAINT.
+// Returns false and sets phase = ABORTED if revealed set (qual − bad_members) < t=6.
+bool PTX_DKG_ClosePhase1(PTXDKGSession& session);
 
 // Accessor for the global BLS state singleton.
 // All ceremony code uses this instead of g_ptx_bls_state directly, preparing
