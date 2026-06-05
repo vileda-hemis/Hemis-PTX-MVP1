@@ -8,9 +8,11 @@
 #include "arith_uint256.h"
 #include "crypto/sha256.h"
 #include "random.h"
+#include "compat/endian.h"
 
 #include <algorithm>
 #include <cassert>
+#include <cstring>
 
 // ---------------------------------------------------------------------------
 // PTXDKGPhase0Msg::GetSignHash
@@ -542,5 +544,424 @@ bool PTX_DKG_ClosePhase1(PTXDKGSession& session)
     }
 
     session.phase = PTXDKGPhase::COMPLAINT;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// PTXDKGPhase2Msg::GetSignHash
+//
+// SHA256( quorum_hash[32] || complainant_proTxHash[32] ||
+//         dealer_proTxHash[32] || htole32(share_index_j)[4] )
+//
+// j is written with explicit htole32 (fixed-size scalar — not a length prefix,
+// not reinterpret_cast).  Carry-forward D does not apply here: P2/P3 messages
+// carry no variable-length fields, so there is no new reinterpret_cast site.
+// ---------------------------------------------------------------------------
+
+uint256 PTXDKGPhase2Msg::GetSignHash() const
+{
+    uint256 result;
+    CSHA256 h;
+    h.Write(quorum_hash.begin(), quorum_hash.size());
+    h.Write(complainant_proTxHash.begin(), complainant_proTxHash.size());
+    h.Write(dealer_proTxHash.begin(), dealer_proTxHash.size());
+    uint32_t j_le = htole32((uint32_t)share_index_j);
+    // htole32 normalizes byte order; the reinterpret_cast reads the 4
+    // already-little-endian bytes — NOT a carry-forward-D host-endian site.
+    h.Write(reinterpret_cast<const uint8_t*>(&j_le), sizeof(j_le));
+    h.Finalize(result.begin());
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// PTXDKGPhase3Msg::GetSignHash
+//
+// SHA256( quorum_hash[32] || dealer_proTxHash[32] ||
+//         complainant_proTxHash[32] || blst_bendian(revealed_share)[32] )
+//
+// The revealed scalar is bound in the hash so a tampered scalar fails the
+// signature check before the Feldman check runs.  This is the T2-23 invariant:
+// a 1-byte flip in revealed_share without re-signing causes sig rejection and
+// neither party gets marked bad — the falsifier guard for this binding.
+// ---------------------------------------------------------------------------
+
+uint256 PTXDKGPhase3Msg::GetSignHash() const
+{
+    uint256 result;
+    CSHA256 h;
+    h.Write(quorum_hash.begin(), quorum_hash.size());
+    h.Write(dealer_proTxHash.begin(), dealer_proTxHash.size());
+    h.Write(complainant_proTxHash.begin(), complainant_proTxHash.size());
+    uint8_t share_be[32];
+    blst_bendian_from_scalar(share_be, &revealed_share);
+    h.Write(share_be, 32);
+    h.Finalize(result.begin());
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// PTX_DKG_FeldmanCheck
+//
+// Verify that share = f_D(j) against D's committed vvec.
+// LHS: g^{share}  (same generator as vvec generation, ptx_dkg.cpp:201-207).
+// RHS: Π_{k=0}^{t-1} vvec[k]^{j^k}  (naive per-term accumulate; t=6).
+//
+// j must be session.members[session.my_idx].share_index (1-indexed per KDD-052),
+// NOT my_idx (0-indexed slot).  Passing my_idx instead of share_index is the
+// index-basis trap explicitly guarded by T2-index.
+//
+// KDD-054 boundary: pure blst — no src/bls/, no chiabls.
+// ---------------------------------------------------------------------------
+
+bool PTX_DKG_FeldmanCheck(const blst_scalar& share,
+                           const std::vector<blst_p1_affine>& vvec,
+                           int j)
+{
+    const int t = (int)vvec.size();
+
+    // LHS: g^{share}
+    blst_p1 lhs;
+    blst_sk_to_pk_in_g1(&lhs, &share); // generator = BLS12-381 G1 (implicit)
+
+    // RHS: Π vvec[k]^{j^k}
+    blst_fr j_fr;
+    {
+        uint64_t v[4] = {(uint64_t)j, 0, 0, 0};
+        blst_fr_from_uint64(&j_fr, v);
+    }
+
+    blst_p1 acc;
+    bool acc_set = false;
+
+    blst_fr jpow;
+    {
+        const uint64_t one[4] = {1, 0, 0, 0};
+        blst_fr_from_uint64(&jpow, one); // j^0 = 1
+    }
+
+    for (int k = 0; k < t; k++) {
+        blst_scalar jpow_s;
+        blst_scalar_from_fr(&jpow_s, &jpow);
+        uint8_t jpow_le[32];
+        blst_lendian_from_scalar(jpow_le, &jpow_s); // blst_p1_mult expects LE
+        blst_p1 base;
+        blst_p1_from_affine(&base, &vvec[k]);
+        blst_p1 term;
+        blst_p1_mult(&term, &base, jpow_le, 256);
+        if (!acc_set) {
+            acc = term;
+            acc_set = true;
+        } else {
+            blst_p1_add_or_double(&acc, &acc, &term);
+        }
+        blst_fr_mul(&jpow, &jpow, &j_fr); // j^k → j^{k+1}
+    }
+
+    // Compare in affine coordinates
+    blst_p1_affine lhs_affine, rhs_affine;
+    blst_p1_to_affine(&lhs_affine, &lhs);
+    blst_p1_to_affine(&rhs_affine, &acc);
+    return blst_p1_affine_is_equal(&lhs_affine, &rhs_affine);
+}
+
+// ---------------------------------------------------------------------------
+// PTX_DKG_BuildPhase2Msg
+// ---------------------------------------------------------------------------
+
+PTXDKGPhase2Msg PTX_DKG_BuildPhase2Msg(const PTXDKGSession& session,
+                                        const uint256& dealer_proTxHash,
+                                        const CBLSSecretKey& operator_sk)
+{
+    assert(session.phase == PTXDKGPhase::COMPLAINT);
+    assert(session.my_idx >= 0);
+
+    const PTXDKGMember& me = session.members[session.my_idx];
+
+    PTXDKGPhase2Msg msg;
+    msg.quorum_hash           = session.quorum_hash;
+    msg.complainant_proTxHash = me.proTxHash;
+    msg.dealer_proTxHash      = dealer_proTxHash;
+    msg.share_index_j         = me.share_index;
+    msg.sig                   = operator_sk.Sign(msg.GetSignHash());
+    return msg;
+}
+
+// ---------------------------------------------------------------------------
+// PTX_DKG_ReceivePhase2Msg
+//
+// Check order (11 steps, report §4):
+//  1. phase == COMPLAINT
+//  2. quorum_hash match
+//  3. complainant found in session.members
+//  4. dealer found in session.members
+//  5. complainant in qual
+//  6. complainant not in bad_members (FIX-1: already-bad cannot file)
+//  7. dealer in qual
+//  8. dealer not in bad_members (moot complaint against already-bad dealer)
+//  9. no duplicate: complainant not already in complaints_against[dealer]
+// 10. sig VerifyInsecure(complainant.pubKeyOperator, GetSignHash())
+// 11. share_index_j == session.members[complainant_slot].share_index (reject forged j)
+// ---------------------------------------------------------------------------
+
+bool PTX_DKG_ReceivePhase2Msg(PTXDKGSession& session, const PTXDKGPhase2Msg& msg)
+{
+    // 1
+    if (session.phase != PTXDKGPhase::COMPLAINT)
+        return false;
+    // 2
+    if (msg.quorum_hash != session.quorum_hash)
+        return false;
+
+    // 3 — find complainant
+    const PTXDKGMember* complainant = nullptr;
+    for (const auto& m : session.members) {
+        if (m.proTxHash == msg.complainant_proTxHash) { complainant = &m; break; }
+    }
+    if (!complainant)
+        return false;
+
+    // 4 — find dealer
+    const PTXDKGMember* dealer = nullptr;
+    for (const auto& m : session.members) {
+        if (m.proTxHash == msg.dealer_proTxHash) { dealer = &m; break; }
+    }
+    if (!dealer)
+        return false;
+
+    // 5
+    if (!session.qual.count(msg.complainant_proTxHash))
+        return false;
+    // 6
+    if (session.bad_members.count(msg.complainant_proTxHash))
+        return false;
+    // 7
+    if (!session.qual.count(msg.dealer_proTxHash))
+        return false;
+    // 8
+    if (session.bad_members.count(msg.dealer_proTxHash))
+        return false;
+    // 9
+    {
+        auto it = session.complaints_against.find(msg.dealer_proTxHash);
+        if (it != session.complaints_against.end() &&
+            it->second.count(msg.complainant_proTxHash))
+            return false;
+    }
+    // 10
+    if (!msg.sig.VerifyInsecure(complainant->pubKeyOperator, msg.GetSignHash()))
+        return false;
+    // 11
+    if (msg.share_index_j != complainant->share_index)
+        return false;
+
+    session.complaints_against[msg.dealer_proTxHash].insert(msg.complainant_proTxHash);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// PTX_DKG_ClosePhase2
+// Advances COMPLAINT → JUSTIFY.  No threshold check; P3 markings haven't
+// happened and a premature abort would be wrong.  Threshold is at ClosePhase3.
+// ---------------------------------------------------------------------------
+
+bool PTX_DKG_ClosePhase2(PTXDKGSession& session)
+{
+    if (session.phase != PTXDKGPhase::COMPLAINT)
+        return false;
+    session.phase = PTXDKGPhase::JUSTIFY;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// PTX_DKG_BuildPhase3Msg
+//
+// Correction B: complainant_slot is derived as the index of
+// complainant_proTxHash within session.members[] — the same sorted array and
+// derivation that the receive path uses for j.
+// revealed_share = session.local_contrib.evals[complainant_slot], slot-indexed
+// (evals[k] = f(members[k].share_index), confirmed P1).
+// ---------------------------------------------------------------------------
+
+PTXDKGPhase3Msg PTX_DKG_BuildPhase3Msg(const PTXDKGSession& session,
+                                        const uint256& complainant_proTxHash,
+                                        const CBLSSecretKey& operator_sk)
+{
+    assert(session.phase == PTXDKGPhase::JUSTIFY);
+    assert(session.my_idx >= 0);
+
+    const PTXDKGMember& me = session.members[session.my_idx];
+
+    // Derive complainant_slot from members[] — not a passed-in index.
+    int complainant_slot = -1;
+    for (int i = 0; i < (int)session.members.size(); i++) {
+        if (session.members[i].proTxHash == complainant_proTxHash) {
+            complainant_slot = i;
+            break;
+        }
+    }
+    assert(complainant_slot >= 0);
+
+    PTXDKGPhase3Msg msg;
+    msg.quorum_hash           = session.quorum_hash;
+    msg.dealer_proTxHash      = me.proTxHash;
+    msg.complainant_proTxHash = complainant_proTxHash;
+    msg.revealed_share        = session.local_contrib.evals[complainant_slot];
+
+    msg.sig = operator_sk.Sign(msg.GetSignHash());
+    return msg;
+}
+
+// ---------------------------------------------------------------------------
+// PTX_DKG_ReceivePhase3Msg
+//
+// Check order (report §4), then Feldman, then §15 branch mark:
+//  1.  phase == JUSTIFY
+//  2.  quorum_hash match
+//  3.  dealer in session.members
+//  4.  complainant in session.members
+//  5.  dealer in qual, dealer not in bad_members (already-bad cannot justify)
+//  6.  complainant in qual
+//  7.  complaint outstanding: complainant in complaints_against[dealer]
+//  8.  no duplicate: complainant not in justified_for[dealer]
+//  9.  sig VerifyInsecure(dealer.pubKeyOperator, GetSignHash())
+// 10.  revealed_share is a valid field element (blst_scalar_fr_check)
+// 11.  derive j = session.members[complainant_slot].share_index (from session, NOT wire)
+// 12.  PTX_DKG_FeldmanCheck:
+//        passes → §15 Branch 2: complainant → bad_members; justified_for[D] updated
+//        fails  → §15 Branch 3a: dealer → bad_members;    justified_for[D] updated
+// ---------------------------------------------------------------------------
+
+bool PTX_DKG_ReceivePhase3Msg(PTXDKGSession& session, const PTXDKGPhase3Msg& msg)
+{
+    // 1
+    if (session.phase != PTXDKGPhase::JUSTIFY)
+        return false;
+    // 2
+    if (msg.quorum_hash != session.quorum_hash)
+        return false;
+
+    // 3 — find dealer
+    const PTXDKGMember* dealer = nullptr;
+    for (const auto& m : session.members) {
+        if (m.proTxHash == msg.dealer_proTxHash) { dealer = &m; break; }
+    }
+    if (!dealer)
+        return false;
+
+    // 4 — find complainant and record its slot (needed for j derivation at step 11)
+    const PTXDKGMember* complainant = nullptr;
+    int complainant_slot = -1;
+    for (int i = 0; i < (int)session.members.size(); i++) {
+        if (session.members[i].proTxHash == msg.complainant_proTxHash) {
+            complainant = &session.members[i];
+            complainant_slot = i;
+            break;
+        }
+    }
+    if (!complainant)
+        return false;
+
+    // 5
+    if (!session.qual.count(msg.dealer_proTxHash))
+        return false;
+    if (session.bad_members.count(msg.dealer_proTxHash))
+        return false;
+    // 6
+    if (!session.qual.count(msg.complainant_proTxHash))
+        return false;
+    // 7
+    {
+        auto it = session.complaints_against.find(msg.dealer_proTxHash);
+        if (it == session.complaints_against.end() ||
+            !it->second.count(msg.complainant_proTxHash))
+            return false;
+    }
+    // 8
+    {
+        auto it = session.justified_for.find(msg.dealer_proTxHash);
+        if (it != session.justified_for.end() &&
+            it->second.count(msg.complainant_proTxHash))
+            return false;
+    }
+    // 9
+    if (!msg.sig.VerifyInsecure(dealer->pubKeyOperator, msg.GetSignHash()))
+        return false;
+    // 10
+    if (!blst_scalar_fr_check(&msg.revealed_share))
+        return false;
+    // 11 — j derived from session state, NOT from wire
+    int j = session.members[complainant_slot].share_index;
+
+    // 12 — Feldman check → §15 branch dispatch
+    auto vvec_it = session.phase1_vvecs.find(msg.dealer_proTxHash);
+    // Soft reject: vvec must be present if dealer is in qual and not bad (check 5
+    // passed), but an assert on a message-handling path is a DoS surface if the
+    // reasoning is ever wrong.  Return false to safely reject.
+    if (vvec_it == session.phase1_vvecs.end())
+        return false;
+
+    if (PTX_DKG_FeldmanCheck(msg.revealed_share, vvec_it->second, j)) {
+        // §15 Branch 2: justify passes → complainant was wrong, complainant bad
+        session.bad_members.insert(msg.complainant_proTxHash);
+    } else {
+        // §15 Branch 3a: justify fails → dealer's share invalid, dealer bad
+        session.bad_members.insert(msg.dealer_proTxHash);
+    }
+    session.justified_for[msg.dealer_proTxHash].insert(msg.complainant_proTxHash);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// PTX_DKG_ClosePhase3
+//
+// Branch 3b sweep: for each D in qual not already bad, any unresolved complaint
+// (complaints_against[D] − justified_for[D] non-empty) marks D bad.
+// Then threshold check: effective = |qual| − |bad_members|.
+// < t=6 → ABORTED; ≥ t → PREMIT.
+// ---------------------------------------------------------------------------
+
+bool PTX_DKG_ClosePhase3(PTXDKGSession& session)
+{
+    const int t = 6; // KDD-048
+
+    if (session.phase != PTXDKGPhase::JUSTIFY)
+        return false;
+
+    // Branch 3b sweep
+    for (const auto& d_ptx : session.qual) {
+        if (session.bad_members.count(d_ptx))
+            continue;
+
+        auto cit = session.complaints_against.find(d_ptx);
+        if (cit == session.complaints_against.end())
+            continue; // no complaints filed against this dealer
+
+        const std::set<uint256>& complained = cit->second;
+
+        // justified_for[d] may be absent if no justifications were received
+        const std::set<uint256>* justified = nullptr;
+        auto jit = session.justified_for.find(d_ptx);
+        if (jit != session.justified_for.end())
+            justified = &jit->second;
+
+        // Check whether any complaint is unresolved
+        bool has_unresolved = false;
+        for (const auto& c_ptx : complained) {
+            if (!justified || !justified->count(c_ptx)) {
+                has_unresolved = true;
+                break;
+            }
+        }
+        if (has_unresolved)
+            session.bad_members.insert(d_ptx);
+    }
+
+    int effective = (int)session.qual.size() - (int)session.bad_members.size();
+    if (effective < t) {
+        session.phase = PTXDKGPhase::ABORTED;
+        return false;
+    }
+
+    session.phase = PTXDKGPhase::PREMIT;
     return true;
 }

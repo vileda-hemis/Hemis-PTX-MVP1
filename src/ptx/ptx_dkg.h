@@ -132,6 +132,47 @@ struct PTXDKGPhase1Msg {
 };
 
 // ---------------------------------------------------------------------------
+// PTXDKGPhase2Msg — complaint (COMPLAINT phase, KDD-055 §15).
+// Filed by complainant C against dealer D when C's Feldman check on D's share
+// fails.  Identifies the specific evaluation point j under dispute.
+// All fields are fixed-size; j is written with explicit htole32 in GetSignHash
+// (not reinterpret_cast — carry-forward D does not apply to P2/P3 messages).
+// ---------------------------------------------------------------------------
+struct PTXDKGPhase2Msg {
+    uint256       quorum_hash;             // ceremony identity
+    uint256       complainant_proTxHash;   // C's identity (filer)
+    uint256       dealer_proTxHash;        // D's identity (accused)
+    int           share_index_j{0};        // C's share_index — evaluation point under dispute (1-indexed)
+    CBLSSignature sig;                     // operator-key sig over GetSignHash()
+
+    // SHA256( quorum_hash[32] || complainant_proTxHash[32] ||
+    //         dealer_proTxHash[32] || htole32(share_index_j)[4] )
+    uint256 GetSignHash() const;
+};
+
+// ---------------------------------------------------------------------------
+// PTXDKGPhase3Msg — justification (JUSTIFY phase, KDD-055 §15).
+// Filed by dealer D to answer a specific complaint from complainant C.
+// Reveals the share in clear as a raw blst_scalar (big-endian, 32 bytes) —
+// no ECIES (KDD-054 boundary: justify reveals the share in clear).
+// j is NOT a wire field: ReceivePhase3Msg derives it from
+// session.members[complainant_slot].share_index — never trusted from the wire.
+// ---------------------------------------------------------------------------
+struct PTXDKGPhase3Msg {
+    uint256       quorum_hash;             // ceremony identity
+    uint256       dealer_proTxHash;        // D's identity
+    uint256       complainant_proTxHash;   // identifies the (D,C) complaint being answered
+    blst_scalar   revealed_share;          // s = f_D(j), big-endian on wire (blst_bendian_from_scalar)
+    CBLSSignature sig;                     // operator-key sig over GetSignHash()
+
+    // SHA256( quorum_hash[32] || dealer_proTxHash[32] ||
+    //         complainant_proTxHash[32] || blst_bendian(revealed_share)[32] )
+    // The revealed scalar IS bound in the sign hash; a tampered scalar fails
+    // the sig check before the Feldman check runs (regression-guarded by T2-23).
+    uint256 GetSignHash() const;
+};
+
+// ---------------------------------------------------------------------------
 // PTXDKGSession — ceremony state machine.
 // Phase 0 state only; later phases extend this.
 //
@@ -173,6 +214,17 @@ struct PTXDKGSession {
     // Phase 1 adds: commitment-mismatch revealers + non-revealers (at ClosePhase1).
     // Phase 2 adds: Feldman-VSS failures.  Phase 3 adds: unjustified accusations.
     std::set<uint256>                               bad_members;
+
+    // Phase 2 — complaints received.
+    // complaints_against[dealer] = set of complainant proTxHashes with
+    // outstanding complaints against that dealer.
+    std::map<uint256, std::set<uint256>>            complaints_against;
+
+    // Phase 3 — resolution tracking.
+    // justified_for[dealer] = set of complainant proTxHashes whose (D,C) pair
+    // has been resolved (Branch 2 or 3a); removes the pair from the
+    // ClosePhase3 unresolved sweep (Branch 3b).
+    std::map<uint256, std::set<uint256>>            justified_for;
 };
 
 // ---------------------------------------------------------------------------
@@ -291,6 +343,73 @@ bool PTX_DKG_IsPhase1Complete(const PTXDKGSession& session);
 // Close Phase 1: mark non-revealing QUAL members bad, advance to COMPLAINT.
 // Returns false and sets phase = ABORTED if revealed set (qual − bad_members) < t=6.
 bool PTX_DKG_ClosePhase1(PTXDKGSession& session);
+
+// ---------------------------------------------------------------------------
+// Phase 2 — complaint (COMPLAINT phase)
+// ---------------------------------------------------------------------------
+
+// Feldman VSS check: verify share == f_D(j) against D's committed vvec.
+// share = decrypted value from received_shares[dealer]; vvec = phase1_vvecs[dealer];
+// j = session.members[session.my_idx].share_index (1-indexed, NOT my_idx).
+// Returns true iff g^{share} == Π_{k=0}^{t-1} vvec[k]^{j^k}.
+bool PTX_DKG_FeldmanCheck(const blst_scalar& share,
+                           const std::vector<blst_p1_affine>& vvec,
+                           int j);
+
+// Build a Phase 2 complaint message against dealer_proTxHash.
+// Pre: phase == COMPLAINT, my_idx >= 0, dealer_proTxHash in effective-QUAL,
+//      received_shares contains dealer_proTxHash.
+PTXDKGPhase2Msg PTX_DKG_BuildPhase2Msg(const PTXDKGSession& session,
+                                        const uint256& dealer_proTxHash,
+                                        const CBLSSecretKey& operator_sk);
+
+// Receive and validate a Phase 2 complaint message.
+// Check order: phase==COMPLAINT → quorum_hash → complainant in members →
+//   dealer in members → complainant in qual → complainant not in bad_members →
+//   dealer in qual → dealer not in bad_members → no duplicate →
+//   sig VerifyInsecure → share_index_j matches complainant's share_index.
+// On acceptance: complaints_against[dealer].insert(complainant); return true.
+bool PTX_DKG_ReceivePhase2Msg(PTXDKGSession& session, const PTXDKGPhase2Msg& msg);
+
+// Close Phase 2: advance COMPLAINT → JUSTIFY.
+// No threshold check here — P3 markings haven't happened; premature abort
+// would be wrong.  Threshold is enforced at ClosePhase3.
+// Returns false only if phase != COMPLAINT (programmer error).
+bool PTX_DKG_ClosePhase2(PTXDKGSession& session);
+
+// ---------------------------------------------------------------------------
+// Phase 3 — justification (JUSTIFY phase)
+// ---------------------------------------------------------------------------
+
+// Build a Phase 3 justification message answering complainant_proTxHash's complaint.
+// Pre: phase == JUSTIFY, my_idx >= 0,
+//      complainant_proTxHash in complaints_against[my_proTxHash].
+// complainant_slot derived from session.members[] (correction B);
+// revealed_share = session.local_contrib.evals[complainant_slot] (slot-indexed).
+PTXDKGPhase3Msg PTX_DKG_BuildPhase3Msg(const PTXDKGSession& session,
+                                        const uint256& complainant_proTxHash,
+                                        const CBLSSecretKey& operator_sk);
+
+// Receive and validate a Phase 3 justification message.
+// Check order: phase==JUSTIFY → quorum_hash → dealer in members →
+//   complainant in members → dealer in qual → dealer not in bad_members →
+//   complainant in qual → complaint outstanding → no duplicate resolution →
+//   sig VerifyInsecure → revealed_share is valid field element (blst_scalar_fr_check) →
+//   derive j from session.members[complainant_slot].share_index →
+//   PTX_DKG_FeldmanCheck(revealed_share, phase1_vvecs[dealer], j):
+//     passes → §15 Branch 2: bad_members.insert(complainant); justified_for[dealer].insert(complainant)
+//     fails  → §15 Branch 3a: bad_members.insert(dealer);     justified_for[dealer].insert(complainant)
+// Returns true on acceptance (both branches); false on any pre-Feldman rejection.
+bool PTX_DKG_ReceivePhase3Msg(PTXDKGSession& session, const PTXDKGPhase3Msg& msg);
+
+// Close Phase 3: Branch 3b sweep + threshold check.
+// For each D in qual not already in bad_members: if any complaint against D
+// remains unresolved (complaints_against[D] − justified_for[D] non-empty),
+// bad_members.insert(D).
+// Then: effective = |qual| − |bad_members|.
+// If effective < t=6: session.phase = ABORTED; return false.
+// Otherwise: session.phase = PREMIT; return true.
+bool PTX_DKG_ClosePhase3(PTXDKGSession& session);
 
 // Accessor for the global BLS state singleton.
 // All ceremony code uses this instead of g_ptx_bls_state directly, preparing
