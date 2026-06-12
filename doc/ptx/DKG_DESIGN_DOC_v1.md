@@ -661,6 +661,22 @@ as construct-only in commit bae1dcf (W1.2 P5).
 
 ---
 
+### §9.9 PTXDKG acceptance window and per-formation uniqueness (ODC-030)
+
+**Open.** Two lifecycle-bound acceptance rules deliberately deferred to W2.
+
+1. **Staleness bound:** LLMQ enforces max-age via `cacheDkgInterval` (specialtx_validation.cpp:565–567); PTX has no interval analog and no formation cadence yet. Inventing a consensus constant before W2 defines rotation cadence is guessing. W1.3 ships V1–V3 (existence, height-consistency, ancestor) with **no max-age bound**.
+
+2. **Cross-block per-formation uniqueness:** "one accepted PTXDKG per formation absent rotation/disband" needs a chain-state index (quorum_hash → accepted txid) maintained in Connect/DisconnectBlock, and its legality condition is exactly W2's rotation semantics. Interim risk is bounded: a *conflicting* second group_pk for the same formation requires ≥ t members signing both — outside the KDD-059 trust boundary; a *duplicate* identical PTXDKG is chain bloat, mitigated by the one-per-block rule (W1.3_VALIDATION_SPEC_v1 §4.4) and the §C1 node-side guard (W1.3_VALIDATION_SPEC_v1 §5.5).
+
+**Resolve with:** W2 lifecycle design. The two clauses may split into separate ODCs if W2 resolves them on different timelines.
+
+**Raised:** 2026-06-13. Registered from W1.3_VALIDATION_SPEC_v1 §6.
+
+**ODC:** ODC-030
+
+---
+
 ## §10 Scale Context
 
 **Day-1 mainnet target:** 35–40 quorums, approximately 385–440 GMs (all registered GMs
@@ -1207,6 +1223,56 @@ the W1.2 structural checks but NOT for the W1.3 sig verification.
 
 **KDD:** KDD-059
 
+> **Addendum (2026-06-13):** Membership predicate amended by KDD-060 (§20): committer must be ∈ CalculateQuorum(11, quorum_hash) at the formation block, not merely DGM-registered.
+
+---
+
+## §20 Decided: Canonical Quorum Selection and Membership Predicate
+
+**KDD-060 (2026-06-13). The PTXDKG quorum at a formation is exactly
+`GetListForBlock(formation block).CalculateQuorum(11, quorum_hash)` — one
+function, raw modifier, for both formation and validation. CheckPTXDKGTx
+verifies committer membership in THIS set, not mere DGM registration.
+Amends KDD-059.**
+
+### 20.1 The gap being closed
+
+KDD-059's predicate "each committer was a registered GM at formation_height" is strictly weaker than quorum membership. The DGM registry at a height is a superset of the score-selected top-11 (`CalculateQuorum`, deterministicgms.cpp:224–243, scores ALL valid confirmed GMs via `ForEachGM(true, …)` then truncates to `maxSize`). Under the bare-registration predicate, any ≥ t registered-but-unselected GMs (rank 12+) could co-sign mutually-agreeing premit attestations and inject a PTXDKG that passes every check — enshrining an attacker-chosen group_pk for a formation they were never part of. This breaks the KDD-058 determinism coupling directly: block-inject is I2-safe only because `CheckPTXDKGTx` rejects wrong results.
+
+### 20.2 The canonical-selection contract
+
+For formation anchor block B (identified by `quorum_hash = B.GetBlockHash()`):
+
+```
+quorum(B) := deterministicGMManager->GetListForBlock(pindex_B)
+                 .CalculateQuorum(11, B.GetBlockHash())
+```
+
+- **One implementation.** Both ceremony formation (W2) and consensus validation (W1.3) call this function. No reimplementation, no "equivalent" scorer, ever.
+- **Raw modifier.** `quorum_hash` is consumed as the raw 32-byte uint256 modifier. PTX MUST NOT use `GetAllQuorumMembers` (deterministicgms.cpp:991–997), which wraps the modifier as `SerializeHash(pair(llmqType, blockHash))` — a different value producing a different quorum.
+- **Ordering and share_index.** `CalculateQuorum` output is descending by score with a deterministic `collateralOutpoint <` tie-break under `std::sort` (deterministicgms.cpp:224–244; collaterals are unique, so total order). This descending order IS the KDD-052 score order. `share_index := position + 1` in this output (position 0 → share_index 1).
+- **Score formula (inherited, now sole):** per-GM score = `SHA256( confirmedHashWithProRegTxHash[32] || modifier[32] )` where `confirmedHashWithProRegTxHash = SHA256(proTxHash[32] || confirmedHash[32])` (deterministicgms.cpp:260–266; deterministicgms.h:113–120). Null-confirmedHash GMs are excluded by `CalculateScores` itself (deterministicgms.cpp:250).
+
+### 20.3 Scorer retirement (consequence, not optional cleanup)
+
+`PTX_DKG_ComputeMemberScore` (ptx_dkg.cpp:107–118) and `PTX_DKG_SortMembers` (ptx_dkg.cpp:121–145) are RETIRED — removed, not quarantined. Recon proof this is required for correctness, not just hygiene:
+
+- `SortMembers` uses `std::stable_sort` with **no tie-break**; `CalculateQuorum` uses `std::sort` with the `collateralOutpoint` tie-break. The two are byte-equivalent **only on tie-free inputs** — under a score tie at the 11/12 boundary they select different quorums and assign different share_index values.
+- Score-formula parity (`ComputeMemberScore` ≡ `CalculateScores` inner loop) holds iff fed the cached `confirmedHashWithProRegTxHash` — so existing phase0 determinism/sensitivity tests can migrate to `CalculateQuorum`/`CalculateScores`-derived expectations rather than being deleted blind.
+- Retirement inventory: production callers = exactly one (`InitSession` ptx_dkg.cpp:156), which is itself production-uncalled. Test callers: ptx_dkg_phase0_tests.cpp T0-1/2/4/5/6 (lines 163–164, 183–184, 217–245, 262). Comments naming SortMembers: ptx_dkg.h:75, ptx_dkg.h:310 — updated with the rebase.
+
+### 20.4 Distinctness and the key↔inner binding (new finding)
+
+The serializer's `std::map` deserialization hint-inserts and silently drops duplicate keys (serialize.h:1222–1240); the post-insert map size is what the ≥ t check counts — so duplicate *keys* cannot inflate the count. **But map-key distinctness alone is insufficient**: `PTXDKGPhase4Msg` carries its own `proTxHash` field (it is in the sign-hash preimage, ptx_dkg.cpp:972–986). Without V7a (check sequence: doc/ptx/W1.3_VALIDATION_SPEC_v1.md §3.2), one member's valid premit could be inserted under several different map keys — distinct keys, identical inner attestation — and each copy's signature verifies (the sig covers the *inner* proTxHash, not the key). V7a (`key == p4.proTxHash`) pins key == attested identity; with it, ≥ t distinct keys ⇒ ≥ t distinct attesting members. This sharpens KDD-059's "distinct" clause: distinctness is key-enforced **conditional on V7a**, which the W1.2 structural path does not perform.
+
+### 20.5 KDD-059 relationship
+
+KDD-059's verified-list clause "Each committer was a registered GM at formation_height" is **superseded** by "Each committer ∈ quorum(B)". All other KDD-059 content stands (attestation-counting semantics, accountability boundary, ODC-027/028 deferrals, member_node_ids cosmetic, bifurcation/cs_main consequence). §19 addendum points here; no in-place §19 edit.
+
+**Status:** Decided 2026-06-13 (implementation pending W1.3). Amends KDD-059 (§19).
+
+**KDD:** KDD-060
+
 ---
 
 ## Appendix: Register cross-reference
@@ -1226,7 +1292,7 @@ the W1.2 structural checks but NOT for the W1.3 sig verification.
 | KDD-049 | PTX_BLS_Verify explicit group_pk — pure function, no global state read | — | Decided — impl plan 2026-06-03; commit 66251c8 |
 | KDD-050 | Test extraction interface — in-daemon subset check; ENABLE_PTX_TEST_ACCESSORS compile gate, default off | — | Decided — impl plan 2026-06-03 |
 | KDD-051 | DKG construction — Feldman VSS + GJKR commit-then-reveal hardening; QUAL-locks-before-reveal | §11 | Decided — measured 2026-06-03 |
-| KDD-052 | PTXDKG member set — committed node_id list, chain-determined (score) order; resolves OPEN-2 | §12 | Decided 2026-06-03 |
+| KDD-052 | PTXDKG member set — committed node_id list, chain-determined (score) order; resolves OPEN-2. Selection/ordering contract concretized by KDD-060 (§20); score-order principle unchanged. | §12 | Decided 2026-06-03 |
 | KDD-053 | Multi-quorum roll selection (Option D, ungrindable) + failover (verifiable re-route / re-roll asymmetry); partially resolves ODC-024 | §13 | Decided 2026-06-03 |
 | KDD-054 | DKG ceremony crypto-stack boundary: arithmetic vs transport — blst-only arithmetic; chiabls permitted for auth/transport; IES outer-sig invariant | §14 | Decided 2026-06-04 |
 | KDD-055 | DKG P2/P3 complaint–justify resolution — bad-member marking rules; false-accuser penalty; vvec-ground-truth invariant; PoSe bridge deferred | §15 | Decided 2026-06-04 |
@@ -1234,6 +1300,7 @@ the W1.2 structural checks but NOT for the W1.3 sig verification.
 | KDD-057 | P5 sk_share_i write path Option A — shared g_ptx_my_bls_sk_bytes store; W1.3 replay guard must cover both write sites | §17 | Decided 2026-06-12 |
 | KDD-058 | PTXDKG submission model — direct block-inject (LLMQCOMM precedent); resolves ODC-029; coupled to KDD-059 | §18 | Decided (impl pending W1.3) |
 | KDD-059 | PTXDKG validation semantics — attestation-counting; accountability not correctness; share-correctness/recovery deferred to ODC-027/028 | §19 | Decided (impl pending W1.3) |
+| KDD-060 | Canonical quorum selection: `GetListForBlock(B).CalculateQuorum(11, quorum_hash)` — one function, raw modifier, formation + validation; membership predicate fix; scorer retirement; V7a distinctness sharpening. Amends KDD-059. | §20 | Decided 2026-06-13 (impl pending W1.3) |
 | ODC-021 | Coordinator SPOF | §2 | Resolved by DKG |
 | ODC-024 | Multi-quorum membership — deferred future extension | §9.3 | Open (partially resolved per KDD-053: selection + failover decided) |
 | ODC-025 | Rotation-N final value — pending ceremony duration | §9.2 | Open |
@@ -1241,3 +1308,4 @@ the W1.2 structural checks but NOT for the W1.3 sig verification.
 | ODC-027 | vvec_hash scope in PTXDKGPayload — vvec[0]-only for W1.2 (S4 approved); full-vvec scope deferred to W3.2 audit input | §9.6 | Open |
 | ODC-028 | sk_share commitment in PTXDKGPhase4Msg — g^{sk_share_i} G1 proof-of-share; not required for W1.2; deferred to W3.2 audit input | §9.7 | Open |
 | ODC-029 | PTXDKG submission model — direct-block-inject decided (KDD-058, 2026-06-12); block-inject wiring pending W1.3 | §9.8, §18 | Closed |
+| ODC-030 | PTXDKG acceptance window (no max-age in W1.3) + cross-block per-formation uniqueness — both deferred to W2 lifecycle | §9.9 | Open |

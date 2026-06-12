@@ -266,9 +266,9 @@ to a per-quorum registry.
 
 **BLOCKED on: W3.1-Test2 PASS gate.**
 
-**Status (2026-06-12): Design complete (KDD-058, KDD-059). Implementation pending.**
+**Status (2026-06-13): Spec approved — doc/ptx/W1.3_VALIDATION_SPEC_v1.md (KDD-060, ODC-030). Implementation pending.**
 
-#### Validation design (KDD-058 + KDD-059, decided 2026-06-12)
+#### Validation design (KDD-058 + KDD-059, decided 2026-06-12; membership predicate amended by KDD-060, 2026-06-13 — see W1.3_VALIDATION_SPEC_v1.md §2)
 
 ODC-029 RESOLVED → KDD-058: direct block-inject (LLMQCOMM precedent). Wiring
 (tx_verify vin/vout exemption for IsPTXDKGTx, mempool rejection, blockassembler
@@ -308,6 +308,35 @@ implementation, §C1 replay guard (both write sites).
   explicit rotation or disband trigger. This permanently closes the silent-overwrite
   vulnerability noted in `PTX_LE_STANDUP.md §C1` (`gm_bls_keyset` unconditional overwrite).
   BOTH write sites must be covered: `gm_bls_keyset` RPC AND `PTX_DKG_StoreSkShare` (KDD-057).
+- **Ceremony-side KDD-060 rebase (spec §5):** `PTX_DKG_InitSession` contract change —
+  caller supplies members in `CalculateQuorum` output order; InitSession removes the
+  `SortMembers` call (line 156) and never re-sorts. Retire `PTX_DKG_ComputeMemberScore`
+  (ptx_dkg.cpp:107–118) and `PTX_DKG_SortMembers` (ptx_dkg.cpp:121–145) entirely —
+  removed, not quarantined: `stable_sort`/no-tiebreak vs `std::sort`/collateral-tiebreak
+  diverge under score ties, making quarantine wrong, not just untidy (KDD-060 §20.3).
+- **`PTX_DKG_BuildMemberVector` helper (spec §5.2):** thin wrapper:
+  `GetListForBlock(pindexQuorum)` + `CalculateQuorum(11, pindexQuorum->GetBlockHash())`,
+  maps each `CDeterministicGMCPtr` → `PTXDKGMember`. The only new selection code; lands
+  in W1.3 so the canonical-ordering contract is executable and testable. W2 formation
+  calls it; the validator does not (validator needs only the proTxHash set).
+- **Phase0 test migration (spec §5.4):** T0-1/2/4/5/6 migrate to `CalculateQuorum`/
+  `CalculateScores`-derived expectations; T0-6 (null-confirmedHash rejection) migrates
+  to the InitSession precondition assert. slot+1 assertions (phase0:225–227,
+  phase2:278–285) remain valid — assignment formula `members[i].share_index = i + 1`
+  is unchanged. Migration lands in the W1.3 implementation commits, not a separate
+  cleanup commit.
+- **§C1 interim guard shape (spec §5.5):** both write sites of `g_ptx_my_bls_sk_bytes`
+  gain refuse-silent-overwrite guards — `PTX_DKG_StoreSkShare` refuses if a key is set
+  and the session's quorum_hash matches stored provenance (quorum_hash stored alongside
+  the key bytes as provenance at write time); `gm_bls_keyset` RPC gains an
+  explicit `force` flag. W2 trigger semantics are deferred; the guard exists in W1.3.
+- **Block-inject wiring sequencing (spec §4):** the wiring commit (`IsPTXDKGTx()` vin/vout
+  exemption, mempool rejection, `GetMinablePTXDKGTx` hook) lands in the SAME commit as
+  or AFTER the validation commit — never before. KDD-058/059 coupling: injection is
+  I2-safe only once `CheckPTXDKGTx` rejects wrong results.
+- **One-PTXDKG-per-block rule (spec §4.4):** block-level structural check — at most one
+  PTXDKG tx per block (cheap check in the block special-tx processing path). Cross-block
+  per-formation uniqueness is ODC-030 (DKG_DESIGN_DOC_v1 §9.9), deferred to W2.
 
 **Validation gate (measured):**
 - Regtest: inject a bad member (invalid contribution). Quorum completes with member excluded;
