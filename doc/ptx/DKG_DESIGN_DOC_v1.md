@@ -527,6 +527,40 @@ Scope: the three build items above — (a) ceremony + PTX-key bridge, (b) rotati
 machinery, (c) correctness validation discipline (differential testing + audit). No implementation
 plan was written prior to this resolution, per the standup gate in §1.3.
 
+### §9.5 Complaint/justify timing window — P2 and P3 phase duration (ODC-026)
+
+**Open design choice. Resolution is DOWNSTREAM of and must be consistent with the
+wall-clock/block-time timing audit (Carry-forwards D and E, grouped with ODC-025).**
+
+The P2 (Complaint) and P3 (Justify) phases each require a duration long enough that all
+well-behaved QUAL members can complete their processing and broadcast their messages
+before the phase closes, under realistic P2P propagation conditions. Setting the window
+too short risks honest members missing the deadline; too long stalls the ceremony.
+
+The duration may be specified in blocks (deterministic, consensus-derivable, but couples
+ceremony progress to block production rate) or wall-clock seconds (decoupled from block
+rate, but introduces a non-deterministic element that complicates replay and unit testing).
+This choice is the same wall-clock-vs-block trade-off that the timing audit must resolve.
+Choosing the P2/P3 window duration before the audit concludes would prejudge the audit's
+core question; ODC-026 is therefore intentionally downstream of the audit, not parallel to
+it. Once the audit establishes the timing model, ODC-026 closes immediately by applying
+that model to the P2/P3 window lengths.
+
+**What is not open:** the marking rules that apply when a phase closes are decided
+(KDD-055). What is open is only the duration of the window before `ClosePhase2()` /
+`ClosePhase3()` is called.
+
+**Implementation posture during W1.2:** `ClosePhase2()` and `ClosePhase3()` are called
+explicitly by the session driver. No internal timer or block-height gate is compiled into
+the P2/P3 functions. The duration parameter is a deployment configuration, not a protocol
+constant, until this ODC is resolved.
+
+**Dependency:** wall-clock/block-time timing audit (Carry-forward D), grouped with
+ODC-025 (rotation-N / ceremony duration benchmark) and Carry-forward E (W3.2 audit scope).
+ODC-026 resolves last, after the timing model is established.
+
+**ODC:** ODC-026
+
 ---
 
 ## §10 Scale Context
@@ -727,6 +761,198 @@ is ODC-024-era; not W1.2 scope.
 
 ---
 
+## §14 Decided: DKG Ceremony Crypto-Stack Boundary — Arithmetic vs. Transport
+
+**KDD-054 (2026-06-04). Narrows and formalises IMP-D1.**
+
+**Boundary rule.** IMP-D1 mandates blst as the DKG ceremony BLS substrate. That constraint
+applies to **ceremony arithmetic** only. Transport and authentication may use the inherited
+`src/bls/` (chiabls/RELIC) layer where the blst scalar never enters chiabls as a field element.
+
+**Ceremony ARITHMETIC (blst-only):** polynomial evaluation, verification vector computation
+(`vvec[k] = g^{coeffs[k]}`), share encryption input (`f_i(j)`), Feldman VSS check
+(`g^{share} == Π vvec[k]^{j^k}`), share aggregation, group key computation, threshold
+recovery. Every scalar in this path is a `blst_scalar` or `blst_fr`; no chiabls type touches it.
+
+**Ceremony MESSAGE AUTH and SHARE TRANSPORT (chiabls permitted):** operator-key signing of
+P2P messages (all phases, P0 through P5) uses `CBLSSecretKey::Sign` / `CBLSPublicKey::VerifyInsecure`
+— chiabls, as established in P0 and P1. Share transport uses `CBLSIESMultiRecipientBlobs`
+(`bls_ies.h`, chiabls/RELIC stack). The IMP-D1 scalar-representation seam is not crossed
+because the share crosses the boundary as 32 opaque bytes only:
+`blst_bendian_from_scalar` (out of blst) → IES encrypt → IES decrypt → `blst_scalar_from_bendian`
+(back into blst). The chiabls/RELIC layer operates on opaque bytes; it never treats the value
+as a BLS12-381 field element.
+
+This narrows the standup's prior "no `src/bls/` in PTX code" rule to its actual intent:
+**no chiabls in the arithmetic path**. The message-authentication and transport paths are
+explicitly permitted.
+
+**Load-bearing invariant — IES authentication gap.**
+`CBLSIESMultiRecipientBlobs` is unauthenticated AES-256-CBC. The KDF is non-standard: the
+first 32 bytes of the 48-byte compressed G1 ECDH output are used directly as the AES-256 key
+(no HKDF, no MAC). Therefore:
+
+> **Any PTX use of `CBLSIESMultiRecipientBlobs` MUST bind the ciphertext bytes in an outer
+> signature.** P1 satisfies this: `PTXDKGPhase1Msg::GetSignHash` (`ptx_dkg.cpp:358–363`)
+> covers the length-prefixed blob bytes, and the operator-key sig over that hash is verified
+> before any blob is accepted. The IES provides confidentiality only; integrity is the outer
+> sig's responsibility. A future reuse of this transport without an outer sig silently inherits
+> a malleability gap.
+
+**Audit note (W3.2 scope).** The inherited chiabls/RELIC stack carries two disclaimers:
+(1) `src/chiabls/README.md:13` — "NOTE: THIS LIBRARY IS NOT YET FORMALLY REVIEWED FOR
+SECURITY"; (2) `relic.h` — "RELIC is at most alpha-quality software. Implementations may not
+be correct or secure... There are many configuration options which make the library horribly
+insecure." Both apply equally to all chiabls consumers (LLMQ, ProTx, deterministicGMManager,
+V6_0 pipeline, `quorums_dkgsession.h` which already includes `bls_ies.h`). No incremental
+exposure from P1's reuse. The build configuration (`relic_conf.h`: BLS12-381, `ARITH GMP`,
+`SEED UDEV`, `RAND HASHD`) is the standard production subset, not a "horribly insecure"
+configuration. One flag for auditors: `ARITH GMP` not `ARITH GMP_SEC` — chiabls scalar
+arithmetic is not constant-time (applies to the whole inherited stack, not P1 specifically).
+The disclaimers are the kind a Trail-of-Bits/NCC engagement is designed to formally close.
+
+**Status:** Decided. Formalises what P0 and P1 already implement. Governs P2–P5 and any
+future PTX transport reuse.
+
+**KDD:** KDD-054
+
+---
+
+## §15 Decided: DKG P2/P3 Complaint–Justify Resolution — Bad-Member Marking Rules
+
+**KDD-055 (2026-06-04). Decides the three P2/P3 resolution branches and the bad-member
+marking rule for each.**
+
+**Background.** Phase 2 (Complaint) is where the Feldman per-share check first runs.
+Each QUAL member (complainant C) verifies that dealer D's decrypted share satisfies
+`g^{share} == Π vvec_D[k]^{j^k}`, where `j` = C's `share_index` (1-indexed per KDD-052)
+and `vvec_D` is the already-commitment-checked P1 vvec in `phase1_vvecs[D]`. A failure
+triggers a complaint; Phase 3 (Justify) is D's opportunity to resolve it. The three
+branches below, together with the effective-QUAL constraint, constitute the complete
+resolution rule.
+
+**Branch 1 — Complaint (P2): signed assertion, not verified evidence.**
+
+A QUAL member C whose Feldman check on dealer D's share fails broadcasts a signed complaint
+identifying D and the specific share index `j` (C's own `share_index` — the evaluation
+point under dispute).
+
+A complaint is a SIGNED ASSERTION, not independently verifiable evidence. The share was
+encrypted to C's key; no third party holds C's decrypted value and no third party can
+confirm C's check failed. The protocol therefore trusts the signed complaint to trigger a
+justify round, and relies on Branch 2's false-accuser penalty as the economic deterrent
+against frivolous accusations. This is deliberate design, not a gap. An auditor reading a
+complaint-without-proof should find this rationale here, not treat it as a hole.
+
+**Branch 2 — Justify received, check passes (P3): complainant C → bad_members.**
+
+D reveals the disputed plaintext share `s = f_D(j)` as a raw `blst_scalar` (big-endian
+wire encoding, 32 bytes — the same encoding as P1 shares; no encryption, revealed in
+clear). The network recomputes the Feldman check against `phase1_vvecs[D]` (the vvec D
+revealed in P1, already commitment-checked against D's Phase 0 hash — D cannot present a
+new vvec):
+
+```
+g^s == Π_{k=0}^{t-1} vvec_D[k]^{j^k}
+```
+
+If the check passes: a passing justify proves D's share at `j` is valid. C's complaint was
+therefore unfounded, and C is marked bad regardless of whether C was malicious or merely
+wrong (e.g. C's own decryption was corrupted). The false-accuser penalty applies to
+unfounded complaints; the protocol does not distinguish malice from error because it cannot.
+
+```
+C → bad_members.  D stays in effective-QUAL.
+```
+
+A dealer cannot escape a valid complaint by revealing a different on-curve scalar. The
+vvec IS D's polynomial commitment (revealed in P1, commitment-checked against D's Phase 0
+hash). Any scalar `s` satisfying `g^s == Π vvec_D[k]^{j^k}` is BY DEFINITION the correct
+share at `j` — there is exactly one such value. If D's P1-transmitted blob decrypted to
+something other than `f_D(j)`, that is a transport/encryption fault, not a polynomial
+fault, and is unprovable (only C could decrypt the blob — the same unverifiability as the
+complaint). The protocol's position: the vvec is ground truth, justify resolves against
+the vvec, and a P1-blob-vs-justify-value mismatch is not adjudicable. This is consistent
+with treating the vvec as the binding commitment throughout.
+
+**Branch 3a — Justify received, check fails (P3): D → bad_members.**
+
+If the Feldman check on D's revealed share fails: D's polynomial at index `j` does not
+match D's committed vvec. D's share was invalid.
+
+```
+D → bad_members.  C stays in effective-QUAL.
+```
+
+**Branch 3b — No valid justify by ClosePhase3: D → bad_members.**
+
+If D fails to provide a valid justification by `ClosePhase3` — no message, a malformed
+message, or a message rejected for any of the following reasons — the complaint is
+unresolved:
+
+- bad signature;
+- wrong `quorum_hash`;
+- `j` does not match any outstanding complaint against D from a QUAL member (`j`
+  unparseable/out-of-range, or `j` in range but no complaint on record for that `j`);
+- a justify naming a `(D, C, j)` triple for which no complaint against D is outstanding
+  (D justifying something nobody complained about);
+- revealed scalar is not a valid `blst_scalar`.
+
+At `ClosePhase3`, any QUAL member with at least one unresolved complaint outstanding is
+swept into `bad_members`:
+
+```
+D → bad_members.  C stays in effective-QUAL.
+```
+
+(LLMQ analog: `VerifyAndCommit`'s final sweep marks any member with
+`complaintsFromOthers` non-empty after the justify round closes.)
+
+**Effective-QUAL invariant.**
+
+All P2/P3 logic operates over effective-QUAL = `qual − bad_members` at the time of each
+operation. A member already in `bad_members` (from Phase 1 commitment-mismatch, a
+non-reveal, or an earlier P2/P3 resolution) is:
+
+- not Feldman-checked by any peer (no complaint will be filed against it);
+- not able to file a complaint (its complaint message is rejected);
+- not able to justify (its justify message is rejected).
+
+This builds directly on the Phase 1 `bad_members` monotonicity invariant (FIX-1, P1):
+once bad, always bad for the remainder of the ceremony.
+
+**Per-`j` disambiguation (multiple complaints against the same dealer).**
+
+A dealer D facing multiple complaints (from different QUAL members C1, C2, … each with a
+distinct `share_index` j1, j2, …) must justify each disputed share separately. Each
+complaint names a specific `j`; each justification answers a specific `j`. The justify
+message identifies the disputed share by dealer, complainant, and `share_index j`, plus
+the revealed scalar; the exact message structure is specified in the P2/P3 implementation
+report.
+
+**Non-scope — PoSe bridge (deferred).**
+
+This KDD decides ceremony-local `bad_members` only. Whether a P2/P3 complaint resolution
+ALSO emits a PoSe penalty event (via `ptx_pose.h`, per the KDD-046 recoverable-penalty
+regime) is a SEPARATE, DEFERRED decision. A DKG complaint is the first
+consensus-derivable misbehaviour evidence with a named accused — the natural future bridge
+to the PoSe tracker that KDD-038 identified as missing. That bridge is explicitly NOT
+decided or implemented here. Park for post-W1.2 design; do not assume it in P2/P3 code.
+
+**Non-scope — Complaint/justify timing window (ODC-026).**
+
+The block-height or wall-clock duration of the P2 and P3 windows is NOT decided here. See
+ODC-026 (§9.5). The P2/P3 implementation uses explicit `ClosePhase2()`/`ClosePhase3()`
+calls; no internal timing gate is compiled in. The duration question is a deployment
+parameter resolved downstream of the wall-clock/block-time timing audit.
+
+**Status:** Decided. Governs P2/P3 implementation and all future ceremony code that touches
+complaint or justification processing.
+
+**KDD:** KDD-055
+
+---
+
 ## Appendix: Register cross-reference
 
 | KDD | Title | §| Status |
@@ -746,6 +972,9 @@ is ODC-024-era; not W1.2 scope.
 | KDD-051 | DKG construction — Feldman VSS + GJKR commit-then-reveal hardening; QUAL-locks-before-reveal | §11 | Decided — measured 2026-06-03 |
 | KDD-052 | PTXDKG member set — committed node_id list, chain-determined (score) order; resolves OPEN-2 | §12 | Decided 2026-06-03 |
 | KDD-053 | Multi-quorum roll selection (Option D, ungrindable) + failover (verifiable re-route / re-roll asymmetry); partially resolves ODC-024 | §13 | Decided 2026-06-03 |
+| KDD-054 | DKG ceremony crypto-stack boundary: arithmetic vs transport — blst-only arithmetic; chiabls permitted for auth/transport; IES outer-sig invariant | §14 | Decided 2026-06-04 |
+| KDD-055 | DKG P2/P3 complaint–justify resolution — bad-member marking rules; false-accuser penalty; vvec-ground-truth invariant; PoSe bridge deferred | §15 | Decided 2026-06-04 |
 | ODC-021 | Coordinator SPOF | §2 | Resolved by DKG |
 | ODC-024 | Multi-quorum membership — deferred future extension | §9.3 | Open (partially resolved per KDD-053: selection + failover decided) |
 | ODC-025 | Rotation-N final value — pending ceremony duration | §9.2 | Open |
+| ODC-026 | Complaint/justify timing window — P2/P3 phase duration; downstream of wall-clock/block-time audit | §9.5 | Open |
