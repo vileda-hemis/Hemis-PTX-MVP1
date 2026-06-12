@@ -586,6 +586,13 @@ full-vvec is the right default; if audit is off-chain, vvec[0]-only suffices.
 **Raised:** 2026-06-12. Registered from P4P5_PREIMPL_APPROVED.md S4 / GF5 finding.
 W1.2 default (vvec[0]-only) decided as S4 (approved).
 
+**Update (2026-06-12, W1.3 recon):** Confirmed the per-member vvecs are NOT in
+PTXDKGPayload — only vvec_hash (irreversible digest) and each member's vvec[0] via
+group_pk_bytes. Consequence: Feldman VSS share-correctness is not on-chain verifiable.
+W1.3 validation (KDD-059) therefore adopts attestation-counting, not share-correctness
+verification. Resolving ODC-027 toward full-vvec-on-chain would upgrade the on-chain
+guarantee from attestation to share-correctness. Remains OPEN, deferred to W3.2 audit.
+
 **ODC:** ODC-027
 
 ---
@@ -1115,6 +1122,93 @@ include. This relocation is a deliberate refactor called out explicitly in commi
 
 ---
 
+## §18 Decided: PTXDKG Submission Model (resolves ODC-029)
+
+**KDD-058 (2026-06-12). PTXDKG is submitted by DIRECT BLOCK INJECTION,
+following the LLMQCOMM precedent. NOT mempool-relayed.**
+
+LLMQCOMM is the exact structural analogue — ceremony-result tx, populated
+extraPayload, no vin, no vout — and is block-injected via GetMinableCommitmentTx
+in CreateNewBlock(). PTXDKG fits the same pattern.
+
+Mechanism (W1.3 implementation, pending):
+(a) Exempt IsPTXDKGTx() from the empty-vin/vout checks in consensus/tx_verify.cpp
+    (parallel to the existing IsQuorumCommitmentTx() exemption at tx_verify.cpp:59,63).
+    Without this, PTXDKG fails bad-txns-vin-empty BEFORE CheckSpecialTx runs.
+(b) Reject PTXDKG from the mempool (parallel to the llmqcomm/ptxcoalesce/ptxpayout
+    rejections at validation.cpp:386-395).
+(c) Inject via a GetMinablePTXDKGTx-style hook in CreateNewBlock() (blockassembler.cpp),
+    in the existing post-mempool injection block alongside LLMQCOMM/PTXCOALESCE/PTXPAYOUT
+    (blockassembler.cpp:200-273).
+
+Rejected alternative — mempool-relay: would require either changing the tx schema
+to add real vin/vout (alters the payload hash) or a mempool-acceptance exemption
+with no precedent for any PTX special tx. Direct-inject is the path of least
+structural change and the only model with a working in-codebase template.
+
+I1/I2 compliance — coupling to KDD-059: block-producer injection is MECHANISM,
+not privilege — because the PTXDKG result is deterministic and CheckPTXDKGTx
+rejects any incorrect injection, any honest producer injects identical bytes and
+a producer cannot get a wrong result accepted. This DEPENDS ON CheckPTXDKGTx
+verifying ceremony correctness (the threshold-sig validation, KDD-059): the
+structural-only check shipped in bae1dcf is necessary but not sufficient for the
+determinism guarantee. ODC-029's I2-compliance and the threshold validation are
+coupled — the submission mechanism is the reason the validation is
+security-critical rather than completeness-only.
+
+**Status:** Decided. Implementation pending (W1.3). Construct-only path
+(PTX_DKG_BuildPTXDKGTx) shipped bae1dcf.
+
+**KDD:** KDD-058
+
+---
+
+## §19 Decided: PTXDKG On-Chain Validation Semantics — Attestation-Counting
+
+**KDD-059 (2026-06-12). W1.3 CheckPTXDKGTx contextual validation verifies
+ATTESTATION, not ceremony-correctness.**
+
+On-chain guarantee: "≥ t registered quorum members each signed, with their
+DGM-registered operator key, agreement that this group_pk is the ceremony result."
+
+Verified (contextual path, pindexPrev != nullptr):
+- Each premit_commitments entry's sig verifies against the signer's pubKeyOperator,
+  resolved from the DGM registry at formation_height by the entry's proTxHash key.
+- Each committer was a registered GM at formation_height.
+- ≥ t distinct valid attestations from distinct registered members.
+- All premit group_pk_bytes agree with each other and with payload.group_pk_bytes.
+- group_pk_bytes decompresses to a valid G1 point (existing structural check).
+
+NOT verified (stated security boundary):
+- Share-correctness / honest Feldman VSS — NOT on-chain verifiable: the per-member
+  vvecs are not in the payload (only vvec_hash, an irreversible digest; see ODC-027).
+- Threshold-recoverability — the payload carries no recovered threshold signature
+  (unlike LLMQ's quorumSig). The premit commitments ARE the threshold evidence.
+
+Security boundary: the on-chain proof is ACCOUNTABILITY-grade (named, non-repudiable,
+authorized attestations from ≥ t members), not CRYPTOGRAPHIC-CORRECTNESS-grade. This
+matches the system's existing t-of-n trust assumption — a threshold scheme already
+trusts that fewer than t members collude; attestation-counting does not weaken it,
+but the chain record does not independently catch ≥ t-member collusion. Stronger
+on-chain proofs are deferred: share-correctness → ODC-027 (full vvecs on-chain);
+threshold-recoverability → ODC-028 (recovered-threshold artifact). Both W3.2 audit scope.
+
+Member identity is keyed off proTxHash (premit map key) + DGM lookup. member_node_ids
+is informational/cosmetic for consensus — NOT validated (ordering and string content
+ignored; the W1.2 count check is the only consensus use).
+
+Structural consequence: CheckPTXDKGTx bifurcates on pindexPrev (null → structural-only,
+unchanged; non-null → structural + contextual sig/registry checks), gains a cs_main
+requirement, and performs a DGM-registry lookup — the pattern used in CheckProRegTx /
+CheckProUpServTx / VerifyLLMQCommitment. The "artifact-only" characterization holds for
+the W1.2 structural checks but NOT for the W1.3 sig verification.
+
+**Status:** Decided. Implementation pending (W1.3 validation design spec).
+
+**KDD:** KDD-059
+
+---
+
 ## Appendix: Register cross-reference
 
 | KDD | Title | §| Status |
@@ -1138,10 +1232,12 @@ include. This relocation is a deliberate refactor called out explicitly in commi
 | KDD-055 | DKG P2/P3 complaint–justify resolution — bad-member marking rules; false-accuser penalty; vvec-ground-truth invariant; PoSe bridge deferred | §15 | Decided 2026-06-04 |
 | KDD-056 | PTXDKG nType=11 assignment; nTypes 7/8 deliberately left as gaps — abandoned PTXSETTLE/PTXCONSOLIDATE semantics must not be resurrected | §16 | Decided 2026-06-12 |
 | KDD-057 | P5 sk_share_i write path Option A — shared g_ptx_my_bls_sk_bytes store; W1.3 replay guard must cover both write sites | §17 | Decided 2026-06-12 |
+| KDD-058 | PTXDKG submission model — direct block-inject (LLMQCOMM precedent); resolves ODC-029; coupled to KDD-059 | §18 | Decided (impl pending W1.3) |
+| KDD-059 | PTXDKG validation semantics — attestation-counting; accountability not correctness; share-correctness/recovery deferred to ODC-027/028 | §19 | Decided (impl pending W1.3) |
 | ODC-021 | Coordinator SPOF | §2 | Resolved by DKG |
 | ODC-024 | Multi-quorum membership — deferred future extension | §9.3 | Open (partially resolved per KDD-053: selection + failover decided) |
 | ODC-025 | Rotation-N final value — pending ceremony duration | §9.2 | Open |
 | ODC-026 | Complaint/justify timing window — P2/P3 phase duration; downstream of wall-clock/block-time audit | §9.5 | Open |
 | ODC-027 | vvec_hash scope in PTXDKGPayload — vvec[0]-only for W1.2 (S4 approved); full-vvec scope deferred to W3.2 audit input | §9.6 | Open |
 | ODC-028 | sk_share commitment in PTXDKGPhase4Msg — g^{sk_share_i} G1 proof-of-share; not required for W1.2; deferred to W3.2 audit input | §9.7 | Open |
-| ODC-029 | PTXDKG submission model — mempool-relay vs direct-block-inject; construct-only in W1.2 (bae1dcf); resolve before W1.3 | §9.8 | Open |
+| ODC-029 | PTXDKG submission model — direct-block-inject decided (KDD-058, 2026-06-12); block-inject wiring pending W1.3 | §9.8, §18 | Closed |

@@ -262,9 +262,42 @@ to a per-quorum registry.
 
 ---
 
-### W1.3 — Bridge hardening and abort handling
+### W1.3 — PTXDKG consensus validation + bridge hardening + abort handling
 
 **BLOCKED on: W3.1-Test2 PASS gate.**
+
+**Status (2026-06-12): Design complete (KDD-058, KDD-059). Implementation pending.**
+
+#### Validation design (KDD-058 + KDD-059, decided 2026-06-12)
+
+ODC-029 RESOLVED → KDD-058: direct block-inject (LLMQCOMM precedent). Wiring
+(tx_verify vin/vout exemption for IsPTXDKGTx, mempool rejection, blockassembler
+GetMinablePTXDKGTx hook) is W1.3, sequenced AFTER the validation design.
+
+Validation semantics → KDD-059: attestation-counting (≥ t registered members signed
+agreement on group_pk). NOT artifact-only — needs DGM-registry lookup for member
+pubkeys; CheckPTXDKGTx bifurcates on pindexPrev, gains cs_main. Boundary: accountability
+not correctness; share-correctness (ODC-027) and threshold-recovery (ODC-028) deferred
+to W3.2 audit.
+
+Recon findings (a9a4ab7):
+- member_node_ids is cosmetic for consensus — identity keys off proTxHash + DGM lookup.
+  node_id is registration data (label:8hex, suffix=SHA256(collateralOutpoint)[0:4]),
+  recoverable from DGM state but redundant given proTxHash+sig.
+- INTEGRATION SEAM (latent bug, flag for integration arc): rpc/ptx.cpp Lagrange recovery
+  resolves indices from g_ptx_bls_state.node_index, built by PTX_BLS_Init via ALPHABETICAL
+  node_id sort (trusted-dealer path). DKG assigns share_index by SCORE order (SortMembers,
+  KDD-052). Two different index spaces. When DKG replaces the trusted dealer, the recovery
+  path's index source MUST switch from alphabetical-node_id to score-order share_index, or
+  partial sigs recover under wrong evaluation points. P5 end-to-end passes because the
+  ceremony's indices are internally self-consistent; the seam is the rpc recovery path's
+  use of g_ptx_bls_state.
+
+Open items: ODC-029 resolved (KDD-058). Still open: ODC-027 (full-vvec, W3.2),
+ODC-028 (recovery artifact, W3.2), the index seam (integration), W1.3 validation
+implementation, §C1 replay guard (both write sites).
+
+#### Remaining W1.3 scope
 
 - Wire `PTX_BLS_Verify` to use the on-chain `group_pk` from the PTXDKG record, not only
   in-memory state (required for nodes that did not observe the ceremony directly).
@@ -274,6 +307,7 @@ to a per-quorum registry.
 - Replay protection: a quorum that has completed a ceremony cannot be re-keyed without an
   explicit rotation or disband trigger. This permanently closes the silent-overwrite
   vulnerability noted in `PTX_LE_STANDUP.md §C1` (`gm_bls_keyset` unconditional overwrite).
+  BOTH write sites must be covered: `gm_bls_keyset` RPC AND `PTX_DKG_StoreSkShare` (KDD-057).
 
 **Validation gate (measured):**
 - Regtest: inject a bad member (invalid contribution). Quorum completes with member excluded;
