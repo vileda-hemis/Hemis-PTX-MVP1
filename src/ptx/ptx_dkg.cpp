@@ -965,3 +965,250 @@ bool PTX_DKG_ClosePhase3(PTXDKGSession& session)
     session.phase = PTXDKGPhase::PREMIT;
     return true;
 }
+
+// ---------------------------------------------------------------------------
+// PTXDKGPhase4Msg::GetSignHash
+// SHA256( quorum_hash[32] || proTxHash[32] || group_pk_bytes[48] || vvec_hash[32] )
+// ---------------------------------------------------------------------------
+
+uint256 PTXDKGPhase4Msg::GetSignHash() const
+{
+    uint256 result;
+    CSHA256 h;
+    h.Write(quorum_hash.begin(), quorum_hash.size());
+    h.Write(proTxHash.begin(), proTxHash.size());
+    h.Write(group_pk_bytes, 48);
+    h.Write(vvec_hash.begin(), vvec_hash.size());
+    h.Finalize(result.begin());
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// PTX_DKG_ComputeSkShare — §5.1
+//
+// Completeness invariant (C6): a missing effective-QUAL entry in received_shares
+// means DecryptMyShare was not called — a local session error.  ABORT (return false).
+// Silently skipping the dealer produces a wrong sk_share_i with no failure signal;
+// fail loud so the session can be repaired.
+// ---------------------------------------------------------------------------
+
+bool PTX_DKG_ComputeSkShare(PTXDKGSession& session)
+{
+    if (session.phase != PTXDKGPhase::PREMIT || session.my_idx < 0)
+        return false;
+
+    // Completeness check: abort if any effective-QUAL dealer has no received share.
+    for (const auto& ptx : session.qual) {
+        if (session.bad_members.count(ptx))
+            continue;
+        if (!session.received_shares.count(ptx))
+            return false;
+    }
+
+    blst_fr acc;
+    { const uint64_t zero[4] = {0, 0, 0, 0}; blst_fr_from_uint64(&acc, zero); }
+
+    for (const auto& ptx : session.qual) {
+        if (session.bad_members.count(ptx))
+            continue;
+        blst_fr share_fr;
+        blst_fr_from_scalar(&share_fr, &session.received_shares.at(ptx));
+        blst_fr_add(&acc, &acc, &share_fr);
+    }
+
+    blst_scalar_from_fr(&session.sk_share_i, &acc);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// PTX_DKG_ComputeGroupPk — §5.2
+//
+// Own-vvec[0] inclusion invariant (GF2): phase1_vvecs does NOT contain this
+// node's own entry.  Source own vvec[0] from local_contrib.vvec[0] explicitly.
+// Iterating only phase1_vvecs silently misses this node's contribution.
+// ---------------------------------------------------------------------------
+
+bool PTX_DKG_ComputeGroupPk(PTXDKGSession& session)
+{
+    if (session.phase != PTXDKGPhase::PREMIT || session.my_idx < 0)
+        return false;
+
+    const uint256& my_proTxHash = session.members[session.my_idx].proTxHash;
+
+    blst_p1 acc;
+    bool acc_set = false;
+
+    for (const auto& ptx : session.qual) {
+        if (session.bad_members.count(ptx))
+            continue;
+
+        const blst_p1_affine* vvec0 = nullptr;
+        blst_p1_affine own_vvec0_copy;
+        if (ptx == my_proTxHash) {
+            // Own vvec[0] — never in phase1_vvecs (own Phase 1 msg not processed there).
+            own_vvec0_copy = session.local_contrib.vvec[0];
+            vvec0 = &own_vvec0_copy;
+        } else {
+            vvec0 = &session.phase1_vvecs.at(ptx)[0];
+        }
+
+        if (!acc_set) {
+            blst_p1_from_affine(&acc, vvec0);
+            acc_set = true;
+        } else {
+            blst_p1_add_or_double_affine(&acc, &acc, vvec0);
+        }
+    }
+
+    if (!acc_set)
+        return false; // empty effective-QUAL — should not reach post-ClosePhase3
+
+    blst_p1_to_affine(&session.group_pk, &acc);
+    session.phase4_computed = true;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// PTX_DKG_BuildPhase4Msg
+// ---------------------------------------------------------------------------
+
+PTXDKGPhase4Msg PTX_DKG_BuildPhase4Msg(const PTXDKGSession& session,
+                                        const CBLSSecretKey& operator_sk)
+{
+    assert(session.phase == PTXDKGPhase::PREMIT);
+    assert(session.my_idx >= 0);
+    assert(session.phase4_computed);
+
+    const uint256& my_proTxHash = session.members[session.my_idx].proTxHash;
+
+    PTXDKGPhase4Msg msg;
+    msg.quorum_hash = session.quorum_hash;
+    msg.proTxHash   = my_proTxHash;
+
+    // Compress this node's group_pk.
+    blst_p1_affine_compress(msg.group_pk_bytes, &session.group_pk);
+
+    // vvec_hash: SHA256 over effective-QUAL vvec[0] compressed bytes.
+    // qual is std::set<uint256> — iterates in ascending order for determinism.
+    CSHA256 vh;
+    for (const auto& ptx : session.qual) {
+        if (session.bad_members.count(ptx))
+            continue;
+        uint8_t buf[48];
+        if (ptx == my_proTxHash) {
+            blst_p1_affine_compress(buf, &session.local_contrib.vvec[0]);
+        } else {
+            blst_p1_affine_compress(buf, &session.phase1_vvecs.at(ptx)[0]);
+        }
+        vh.Write(buf, 48);
+    }
+    vh.Finalize(msg.vvec_hash.begin());
+
+    msg.sig = operator_sk.Sign(msg.GetSignHash());
+    return msg;
+}
+
+// ---------------------------------------------------------------------------
+// PTX_DKG_ReceivePhase4Msg
+//
+// Check order (§4):
+//  1. phase == PREMIT
+//  2. quorum_hash match
+//  3. sender found in session.members
+//  4. sender in qual
+//  5. sender not in bad_members
+//  6. no duplicate (not already in phase4_premit_msgs)
+//  7. sig VerifyInsecure(sender.pubKeyOperator, GetSignHash())
+//  8. group_pk_bytes decompresses (blst_p1_uncompress == BLST_SUCCESS)
+// ---------------------------------------------------------------------------
+
+bool PTX_DKG_ReceivePhase4Msg(PTXDKGSession& session, const PTXDKGPhase4Msg& msg)
+{
+    // 1
+    if (session.phase != PTXDKGPhase::PREMIT)
+        return false;
+    // 2
+    if (msg.quorum_hash != session.quorum_hash)
+        return false;
+    // 3 — find sender
+    const PTXDKGMember* sender = nullptr;
+    for (const auto& m : session.members)
+        if (m.proTxHash == msg.proTxHash) { sender = &m; break; }
+    if (!sender)
+        return false;
+    // 4
+    if (!session.qual.count(msg.proTxHash))
+        return false;
+    // 5
+    if (session.bad_members.count(msg.proTxHash))
+        return false;
+    // 6
+    if (session.phase4_premit_msgs.count(msg.proTxHash))
+        return false;
+    // 7
+    if (!msg.sig.VerifyInsecure(sender->pubKeyOperator, msg.GetSignHash()))
+        return false;
+    // 8
+    blst_p1_affine tmp;
+    if (blst_p1_uncompress(&tmp, msg.group_pk_bytes) != BLST_SUCCESS)
+        return false;
+
+    session.phase4_premit_msgs[msg.proTxHash] = msg;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// PTX_DKG_IsPhase4Complete
+// ---------------------------------------------------------------------------
+
+bool PTX_DKG_IsPhase4Complete(const PTXDKGSession& session)
+{
+    const int t = 6;
+    if (!session.phase4_computed)
+        return false;
+
+    uint8_t my_bytes[48];
+    blst_p1_affine_compress(my_bytes, &session.group_pk);
+
+    int consistent = 0;
+    for (const auto& kv : session.phase4_premit_msgs) {
+        if (std::memcmp(kv.second.group_pk_bytes, my_bytes, 48) == 0)
+            consistent++;
+    }
+    return consistent >= t;
+}
+
+// ---------------------------------------------------------------------------
+// PTX_DKG_ClosePhase4
+//
+// Count accepted Phase 4 msgs whose group_pk_bytes are bytewise equal to this
+// node's computed group_pk.  Honest nodes compute identical group_pk given the
+// same effective-QUAL and vvec data.
+// < t consistent → ABORTED.  ≥ t consistent → FINALIZE.
+// ---------------------------------------------------------------------------
+
+bool PTX_DKG_ClosePhase4(PTXDKGSession& session)
+{
+    const int t = 6;
+    if (session.phase != PTXDKGPhase::PREMIT)
+        return false;
+    if (!session.phase4_computed)
+        return false;
+
+    uint8_t my_bytes[48];
+    blst_p1_affine_compress(my_bytes, &session.group_pk);
+
+    int consistent = 0;
+    for (const auto& kv : session.phase4_premit_msgs) {
+        if (std::memcmp(kv.second.group_pk_bytes, my_bytes, 48) == 0)
+            consistent++;
+    }
+
+    if (consistent < t) {
+        session.phase = PTXDKGPhase::ABORTED;
+        return false;
+    }
+
+    session.phase = PTXDKGPhase::FINALIZE;
+    return true;
+}

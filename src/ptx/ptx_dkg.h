@@ -173,6 +173,22 @@ struct PTXDKGPhase3Msg {
 };
 
 // ---------------------------------------------------------------------------
+// PTXDKGPhase4Msg — premature commitment (PREMIT phase).
+// Each GM broadcasts this after computing sk_share_i and group_pk.
+// Binds the sender's computed group_pk and vvec_hash; signed by operator key.
+// ---------------------------------------------------------------------------
+struct PTXDKGPhase4Msg {
+    uint256       quorum_hash;
+    uint256       proTxHash;
+    uint8_t       group_pk_bytes[48]; // blst_p1_affine_compress output
+    uint256       vvec_hash;          // SHA256 over effective-QUAL vvec[0] compressed bytes
+    CBLSSignature sig;                // operator key sig over GetSignHash()
+
+    // SHA256( quorum_hash[32] || proTxHash[32] || group_pk_bytes[48] || vvec_hash[32] )
+    uint256 GetSignHash() const;
+};
+
+// ---------------------------------------------------------------------------
 // PTXDKGSession — ceremony state machine.
 // Phase 0 state only; later phases extend this.
 //
@@ -225,6 +241,14 @@ struct PTXDKGSession {
     // has been resolved (Branch 2 or 3a); removes the pair from the
     // ClosePhase3 unresolved sweep (Branch 3b).
     std::map<uint256, std::set<uint256>>            justified_for;
+
+    // Phase 4 — premature commitments received: proTxHash → PTXDKGPhase4Msg.
+    std::map<uint256, PTXDKGPhase4Msg>              phase4_premit_msgs;
+
+    // Phase 4 — this member's computed aggregates (set by ComputeSkShare + ComputeGroupPk).
+    blst_scalar    sk_share_i;
+    blst_p1_affine group_pk;
+    bool           phase4_computed{false}; // guard: prevents double-compute
 };
 
 // ---------------------------------------------------------------------------
@@ -411,6 +435,48 @@ bool PTX_DKG_ReceivePhase3Msg(PTXDKGSession& session, const PTXDKGPhase3Msg& msg
 // Otherwise: session.phase = PREMIT; return true.
 bool PTX_DKG_ClosePhase3(PTXDKGSession& session);
 
+// ---------------------------------------------------------------------------
+// Phase 4 — premature commitment (PREMIT phase)
+// ---------------------------------------------------------------------------
+
+// Aggregate valid contributions at my share_index across effective-QUAL dealers.
+// Pre: phase == PREMIT, my_idx >= 0.
+// ABORT (return false) if any effective-QUAL dealer is missing from received_shares
+// (local session error — missing DecryptMyShare call). NEVER skip and continue:
+// a missing dealer omitted silently produces a wrong sk_share_i with no failure signal.
+// Stores result in session.sk_share_i.
+bool PTX_DKG_ComputeSkShare(PTXDKGSession& session);
+
+// Compute group_pk = Σ vvec[0] over effective-QUAL.
+// Pre: phase == PREMIT.
+// Uses local_contrib.vvec[0] for this node's own vvec[0] (NOT from phase1_vvecs —
+// own Phase 1 message is never stored there). See GF2 trap.
+// Uses blst_p1_add_or_double_affine for accumulation (blst.h:176).
+// Stores result in session.group_pk; sets phase4_computed = true.
+bool PTX_DKG_ComputeGroupPk(PTXDKGSession& session);
+
+// Build Phase 4 premature commitment message.
+// Pre: phase == PREMIT, my_idx >= 0, phase4_computed == true.
+// operator_sk never stored (key-separation invariant, impl plan §6).
+PTXDKGPhase4Msg PTX_DKG_BuildPhase4Msg(const PTXDKGSession& session,
+                                        const CBLSSecretKey& operator_sk);
+
+// Receive and validate a Phase 4 message.
+// Check order: phase==PREMIT → quorum_hash → sender in members → sender in qual →
+//   sender not in bad_members → no duplicate → sig VerifyInsecure →
+//   group_pk_bytes decompresses (blst_p1_uncompress == BLST_SUCCESS).
+// On acceptance: stores msg in phase4_premit_msgs[proTxHash].
+bool PTX_DKG_ReceivePhase4Msg(PTXDKGSession& session, const PTXDKGPhase4Msg& msg);
+
+// True when ≥ t accepted Phase 4 messages agree on group_pk_bytes with this node's.
+bool PTX_DKG_IsPhase4Complete(const PTXDKGSession& session);
+
+// Close Phase 4: count consistent premature commitments (group_pk_bytes bytewise equal
+// to this node's computed group_pk). < t consistent → phase = ABORTED, return false.
+// ≥ t consistent → phase = FINALIZE, return true.
+bool PTX_DKG_ClosePhase4(PTXDKGSession& session);
+
+// ---------------------------------------------------------------------------
 // Accessor for the global BLS state singleton.
 // All ceremony code uses this instead of g_ptx_bls_state directly, preparing
 // for the W2.1 per-quorum registry refactor.

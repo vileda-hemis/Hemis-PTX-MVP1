@@ -213,6 +213,7 @@ PTX_TESTS = \
   ptx/test/ptx_dkg_phase0_tests.cpp \
   ptx/test/ptx_dkg_phase1_tests.cpp \
   ptx/test/ptx_dkg_phase2_tests.cpp \
+  ptx/test/ptx_dkg_phase4_tests.cpp \
   test/ptx_lottery_state_tests.cpp \
   test/ptx_sess_tests.cpp \
   test/ptx_coalesce_tests.cpp \
