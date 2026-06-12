@@ -563,6 +563,97 @@ ODC-026 resolves last, after the timing model is established.
 
 ---
 
+### §9.6 vvec_hash scope in PTXDKGPayload premature commitment (ODC-027)
+
+**Open design choice. W1.2 uses vvec[0]-only; full-vvec scope deferred to post-audit
+W3.2 input.**
+
+`PTXDKGPayload.vvec_hash` is a `uint256` computed as SHA256 over the concatenated
+compressed G1 bytes of each effective-QUAL member's `vvec[0]` — only the degree-zero
+coefficient, which is the DKG share of the group public key. This commits only the G1
+points that were summed to produce `group_pk_bytes`.
+
+The open question is whether `vvec_hash` should instead commit the **full** vvec
+(all `t` coefficients per member), covering the Feldman VSS verification points used
+during P2 complaint/justify. A full-vvec hash would allow independent on-chain
+auditors to reconstruct the VSS check without replaying P2/P3 messages, at the cost
+of a larger hash preimage and a more complex `CheckPTXDKGTx` deserialisation path.
+
+This extension is not required for W1.2 functional correctness. Resolution depends on
+audit scope decisions (W3.2 input): if an on-chain VSS-replay audit is planned,
+full-vvec is the right default; if audit is off-chain, vvec[0]-only suffices.
+
+**Raised:** 2026-06-12. Registered from P4P5_PREIMPL_APPROVED.md S4 / GF5 finding.
+W1.2 default (vvec[0]-only) decided as S4 (approved).
+
+**ODC:** ODC-027
+
+---
+
+### §9.7 sk_share commitment in PTXDKGPhase4Msg (ODC-028)
+
+**Open design choice. Not required for W1.2; deferred to W3.2 audit input.**
+
+Whether `PTXDKGPhase4Msg` (the premature commitment message embedded in
+`PTXDKGPayload.premit_commitments`) should include a 48-byte G1 element
+`g^{sk_share_i}` — a proof-of-knowledge of the member's DKG secret share — is
+undecided.
+
+Including `g^{sk_share_i}` would allow any node with access to the PTXDKG transaction
+to verify that a premature-commitment signer knows a share consistent with the group
+public key, without knowing the share itself (a discrete-log proof). This strengthens
+the accountability model and is a standard inclusion in GJKR-style DKG audit trails.
+
+The cost is 48 bytes per commitment in the PTXDKG payload (~288 bytes at t=6) and
+requires `CheckPTXDKGTx` to verify the G1 element compresses cleanly. Full
+proof-of-knowledge (Schnorr-on-G1) is heavier and is a separate question.
+
+Resolution depends on W3.2 audit requirements. Not required for W1.2 threshold signing
+to function correctly.
+
+**Raised:** 2026-06-12. Registered from P4P5_PREIMPL_APPROVED.md GF5 finding.
+
+**ODC:** ODC-028
+
+---
+
+### §9.8 PTXDKG submission model (ODC-029)
+
+**Open design choice. Source is silent; resolve before W1.3.**
+
+Whether PTXDKG transits the mempool as a relayed transaction, or is constructed and
+included directly by a ceremony coordinator who is also a block-builder, is undecided.
+`DKG_IMPLEMENTATION_PLAN_v1.md` IMP-D3 says "mined" — model-neutral, consistent with
+either mechanism. The coordinator role spec §6 establishes "any node can submit" as a
+principle but describes the roll-settlement function, not PTXDKG specifically, and does
+not choose between relay and direct-injection.
+
+**Candidate decisions:**
+
+(a) **Mempool-relay:** PTXDKG broadcasts to the P2P network; any GM or ceremony observer
+submits; miners include from their mempool. Requires `AcceptToMemoryPool` to accept PTXDKG.
+Anti-spam and relay DoS rules are consensus-adjacent (a W1.3/hardening item if this model
+is chosen).
+
+(b) **Direct-block-inject:** the ceremony coordinator who is also a block-builder includes
+PTXDKG directly in the next block it produces, bypassing the mempool (analogous to
+PTXCOALESCE/PTXPAYOUT). Requires `blockassembler.cpp` machinery and explicit mempool
+rejection.
+
+**W1.2 scope boundary:** `PTX_DKG_BuildPTXDKGTx` is CONSTRUCT-ONLY — it returns a
+`CMutableTransaction` but does not submit. The submission call site is gated on this ODC.
+
+**Entanglement with W1.3 validation:** the relay/DoS rules and the deferred PTXDKG
+threshold-signature consensus validation (second-highest chain-split risk, §8 of the P5
+pre-impl report) co-depend — choose the model before writing W1.3 validation rules.
+
+**Raised:** 2026-06-12. Registered from P4P5_PREIMPL_APPROVED.md C1 finding. Implemented
+as construct-only in commit bae1dcf (W1.2 P5).
+
+**ODC:** ODC-029
+
+---
+
 ## §10 Scale Context
 
 **Day-1 mainnet target:** 35–40 quorums, approximately 385–440 GMs (all registered GMs
@@ -953,6 +1044,77 @@ complaint or justification processing.
 
 ---
 
+## §16 Decided: PTXDKG Transaction nType Assignment
+
+**KDD-056 (2026-06-12). Assigns nType=11 to the PTXDKG special transaction; nTypes 7 and
+8 are deliberately left as gaps — PTXSETTLE/PTXCONSOLIDATE semantics must not be
+resurrected.**
+
+PTXDKG is an entirely net-new nType. The current `transaction.h` `TxType` enum ends at
+`PTXPAYOUT=10`; nTypes 7 and 8 are **absent** from the active codebase. They were
+`PTXSETTLE=7` and `PTXCONSOLIDATE=8` on the abandoned `feature/ptx-phase2-bls` branch
+(commits f45bbcf, 737214d), dropped after the Phase 0 incident on 2026-05-26 (see
+standup §history lines 5, 367, 689; project_ptxsettle.md). No dispatch code for 7 or 8
+exists in `specialtx_validation.cpp` — the `default: DoS(10, "bad-tx-type")` path
+rejects them cleanly.
+
+nType=11 is chosen to deliberately leave 7 and 8 as gaps. They are not reused so that the
+abandoned PTXSETTLE/PTXCONSOLIDATE semantics are never resurrected into the active enum.
+The name "PTXSETTLE" is a particular hazard: it overlaps conceptually with the live
+codebase's "settlement window" and "PTXPAYOUT settlement" (entirely different concept,
+different code path). Gaps are harmless; semantic resurrection is not.
+
+The enum comment in `transaction.h` records this explicitly:
+
+```cpp
+PTXDKG = 11,       // DKG ceremony result: group_pk + vvec_hash + signed premature commitments
+                   // nTypes 7 (PTXSETTLE) and 8 (PTXCONSOLIDATE) deliberately left as gaps —
+                   // do not reuse; see KDD-056.
+```
+
+`IsPTXDKGTx()` is defined as `IsSpecialTx() && nType == TxType::PTXDKG` (the
+`IsSpecialTx()` form because PTXDKG carries a populated `extraPayload`). Next free nType
+from 12 onward.
+
+**Status:** Decided. Implemented in commit bae1dcf (W1.2 Phase 5). No rollback path —
+re-numbering nTypes is a consensus-breaking hard fork.
+
+**KDD:** KDD-056
+
+---
+
+## §17 Decided: P5 sk_share_i Write Path — Option A (Shared Store)
+
+**KDD-057 (2026-06-12). PTX_DKG_StoreSkShare writes the DKG-produced share to
+g_ptx_my_bls_sk_bytes — the same global as the gm_bls_keyset RPC — so the existing
+PTX_BLS_PartialSign path works unchanged.**
+
+Two candidate paths existed:
+
+- **Option A (chosen):** DKG share → `g_ptx_my_bls_sk_bytes` (same store as
+  `gm_bls_keyset`). No new signing path needed; `PTX_BLS_PartialSign` uses the global
+  as-is; end-to-end test `P5_EndToEnd_SigningPathWorks` validates the round-trip.
+- **Option B (rejected):** DKG share → a dedicated `g_ptx_my_dkg_sk_bytes` global;
+  signing path would need a selector to choose between RPC-provisioned and DKG-provisioned
+  key. Additional complexity with no benefit at W1.2 scope.
+
+Option A is simpler and avoids a signing-path fork. The critical consequence is that
+`g_ptx_my_bls_sk_bytes` now has **two write sites**: (1) the `gm_bls_keyset` RPC handler
+(original) and (2) `PTX_DKG_StoreSkShare` (added in P5). The W1.3 replay-protection guard
+(standup §C1) MUST cover **both** write sites — not only the RPC path. The required
+commit-time scope note (C5 deliverable) is present verbatim in the `StoreSkShare`
+implementation comment in `ptx_dkg.cpp`.
+
+The globals were relocated from `static` in `rpc/ptx.cpp` to defined in `ptx_bls.cpp` /
+extern-declared in `ptx_bls.h` to make the second write site accessible without a circular
+include. This relocation is a deliberate refactor called out explicitly in commit bae1dcf.
+
+**Status:** Decided. Implemented in commit bae1dcf (W1.2 Phase 5).
+
+**KDD:** KDD-057
+
+---
+
 ## Appendix: Register cross-reference
 
 | KDD | Title | §| Status |
@@ -974,7 +1136,12 @@ complaint or justification processing.
 | KDD-053 | Multi-quorum roll selection (Option D, ungrindable) + failover (verifiable re-route / re-roll asymmetry); partially resolves ODC-024 | §13 | Decided 2026-06-03 |
 | KDD-054 | DKG ceremony crypto-stack boundary: arithmetic vs transport — blst-only arithmetic; chiabls permitted for auth/transport; IES outer-sig invariant | §14 | Decided 2026-06-04 |
 | KDD-055 | DKG P2/P3 complaint–justify resolution — bad-member marking rules; false-accuser penalty; vvec-ground-truth invariant; PoSe bridge deferred | §15 | Decided 2026-06-04 |
+| KDD-056 | PTXDKG nType=11 assignment; nTypes 7/8 deliberately left as gaps — abandoned PTXSETTLE/PTXCONSOLIDATE semantics must not be resurrected | §16 | Decided 2026-06-12 |
+| KDD-057 | P5 sk_share_i write path Option A — shared g_ptx_my_bls_sk_bytes store; W1.3 replay guard must cover both write sites | §17 | Decided 2026-06-12 |
 | ODC-021 | Coordinator SPOF | §2 | Resolved by DKG |
 | ODC-024 | Multi-quorum membership — deferred future extension | §9.3 | Open (partially resolved per KDD-053: selection + failover decided) |
 | ODC-025 | Rotation-N final value — pending ceremony duration | §9.2 | Open |
 | ODC-026 | Complaint/justify timing window — P2/P3 phase duration; downstream of wall-clock/block-time audit | §9.5 | Open |
+| ODC-027 | vvec_hash scope in PTXDKGPayload — vvec[0]-only for W1.2 (S4 approved); full-vvec scope deferred to W3.2 audit input | §9.6 | Open |
+| ODC-028 | sk_share commitment in PTXDKGPhase4Msg — g^{sk_share_i} G1 proof-of-share; not required for W1.2; deferred to W3.2 audit input | §9.7 | Open |
+| ODC-029 | PTXDKG submission model — mempool-relay vs direct-block-inject; construct-only in W1.2 (bae1dcf); resolve before W1.3 | §9.8 | Open |
