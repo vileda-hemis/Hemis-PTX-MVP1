@@ -19,6 +19,7 @@
 #include "script/standard.h"
 #include "ptx/ptx_accum_script.h"
 #include "ptx/ptx_coalesce.h"
+#include "ptx/ptx_dkg.h"
 #include "ptx/ptx_lottery_state.h"
 #include "ptx/ptx_winner_selection.h"
 #include "spork.h"
@@ -605,6 +606,51 @@ static bool CheckLLMQCommitmentTx(const CTransaction& tx, const CBlockIndex* pin
     return VerifyLLMQCommitment(pl.commitment, pindexPrev, state);
 }
 
+// ---------------------------------------------------------------------------
+// CheckPTXDKGTx — W1.2 structural validation (§8)
+// ---------------------------------------------------------------------------
+
+bool CheckPTXDKGTx(const CTransaction& tx, const CBlockIndex* pindexPrev,
+                   CValidationState& state)
+{
+    LogPrintf("PTXDKG structural check only — premature-commitment sig verification "
+              "NOT implemented; W1.3/audit scope.\n");
+
+    PTXDKGPayload payload;
+    if (!GetTxPayload(tx, payload))
+        return state.DoS(100, error("%s: PTXDKG payload failed to deserialize", __func__),
+                         REJECT_INVALID, "ptxdkg-bad-payload");
+
+    // group_pk_bytes must decompress to a valid G1 point.
+    blst_p1_affine group_pk;
+    if (blst_p1_uncompress(&group_pk, payload.group_pk_bytes) != BLST_SUCCESS)
+        return state.DoS(100, error("%s: PTXDKG group_pk_bytes failed to decompress", __func__),
+                         REJECT_INVALID, "ptxdkg-bad-grouppk");
+
+    // Member list non-empty and count ≤ 11.
+    if (payload.member_node_ids.empty() || payload.member_node_ids.size() > 11)
+        return state.DoS(100, error("%s: PTXDKG member count invalid (%d)", __func__,
+                                    (int)payload.member_node_ids.size()),
+                         REJECT_INVALID, "ptxdkg-bad-member-count");
+
+    // ≥ t=6 premature commitments required.
+    const int t = 6;
+    if ((int)payload.premit_commitments.size() < t)
+        return state.DoS(100, error("%s: PTXDKG premit count %d < t=%d", __func__,
+                                    (int)payload.premit_commitments.size(), t),
+                         REJECT_INVALID, "ptxdkg-insufficient-premits");
+
+    // Sig fields present (non-null check only — no threshold-sig verification; W1.3/audit scope).
+    for (const auto& kv : payload.premit_commitments) {
+        if (!kv.second.sig.IsValid())
+            return state.DoS(100, error("%s: PTXDKG premit from %s has null/invalid sig",
+                                        __func__, kv.first.ToString()),
+                             REJECT_INVALID, "ptxdkg-null-sig");
+    }
+
+    return true;
+}
+
 // Basic non-contextual checks for all tx types
 static bool CheckSpecialTxBasic(const CTransaction& tx, CValidationState& state)
 {
@@ -850,6 +896,9 @@ bool CheckSpecialTx(const CTransaction& tx, const CBlockIndex* pindexPrev, const
             }
 
             return true;
+        }
+        case CTransaction::TxType::PTXDKG: {
+            return CheckPTXDKGTx(tx, pindexPrev, state);
         }
     }
 

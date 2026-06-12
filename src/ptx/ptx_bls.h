@@ -41,6 +41,13 @@ struct PTXBLSState {
 extern PTXBLSState     g_ptx_bls_state;
 extern RecursiveMutex  cs_ptx_bls;
 
+// GM-side BLS key share storage. Defined in ptx_bls.cpp; written by gm_bls_keyset
+// (rpc/ptx.cpp) and by PTX_DKG_StoreSkShare (ptx_dkg.cpp). Both sites under
+// cs_ptx_my_bls_sk. W1.3 replay-protection guard (standup §C1) must cover both.
+extern uint8_t        g_ptx_my_bls_sk_bytes[32];
+extern bool           g_ptx_my_bls_sk_set;
+extern RecursiveMutex cs_ptx_my_bls_sk;
+
 // blst has no global init requirement — no BLS::Init() needed.
 
 // ---------------------------------------------------------------------------

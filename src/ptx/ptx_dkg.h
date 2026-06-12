@@ -25,6 +25,7 @@
 // IES carries 32 opaque bytes (blst_bendian_from_scalar in, blst_scalar_from_bendian
 // out) — the IMP-D1 scalar-representation seam is never crossed.
 #include "bls/bls_ies.h"
+#include "primitives/transaction.h"  // CMutableTransaction, SetTxPayload, SERIALIZE_METHODS
 #include "uint256.h"
 
 #include <map>
@@ -186,6 +187,39 @@ struct PTXDKGPhase4Msg {
 
     // SHA256( quorum_hash[32] || proTxHash[32] || group_pk_bytes[48] || vvec_hash[32] )
     uint256 GetSignHash() const;
+
+    SERIALIZE_METHODS(PTXDKGPhase4Msg, obj)
+    {
+        READWRITE(obj.quorum_hash, obj.proTxHash);
+        // group_pk_bytes: fixed 48 bytes, no size prefix (SER_WRITE/SER_READ for C-array)
+        SER_WRITE(obj, s.write(reinterpret_cast<const char*>(obj.group_pk_bytes), 48));
+        SER_READ(obj,  s.read(reinterpret_cast<char*>(obj.group_pk_bytes), 48));
+        READWRITE(obj.vvec_hash, obj.sig);
+    }
+};
+
+// ---------------------------------------------------------------------------
+// PTXDKGPayload — extraPayload for a PTXDKG special transaction (nType=11).
+// Carries the DKG ceremony result: group public key, vvec hash, effective-QUAL
+// member list, and ≥ t signed premature commitments from Phase 4.
+// Estimated wire size at t=6: ~1,580 bytes; MAX_SPECIALTX_EXTRAPAYLOAD = 10,000.
+// ---------------------------------------------------------------------------
+struct PTXDKGPayload {
+    uint256                            quorum_hash;
+    uint8_t                            group_pk_bytes[48]; // blst_p1_affine_compress
+    uint256                            vvec_hash;
+    std::vector<std::string>           member_node_ids;    // effective-QUAL, share_index order
+    int                                formation_height{0};
+    std::map<uint256, PTXDKGPhase4Msg> premit_commitments; // ≥ t entries (W1.2: structural only)
+
+    SERIALIZE_METHODS(PTXDKGPayload, obj)
+    {
+        READWRITE(obj.quorum_hash);
+        SER_WRITE(obj, s.write(reinterpret_cast<const char*>(obj.group_pk_bytes), 48));
+        SER_READ(obj,  s.read(reinterpret_cast<char*>(obj.group_pk_bytes), 48));
+        READWRITE(obj.vvec_hash, obj.member_node_ids,
+                  obj.formation_height, obj.premit_commitments);
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -475,6 +509,36 @@ bool PTX_DKG_IsPhase4Complete(const PTXDKGSession& session);
 // to this node's computed group_pk). < t consistent → phase = ABORTED, return false.
 // ≥ t consistent → phase = FINALIZE, return true.
 bool PTX_DKG_ClosePhase4(PTXDKGSession& session);
+
+// ---------------------------------------------------------------------------
+// Phase 5 — finalize
+// ---------------------------------------------------------------------------
+
+// Write sk_share_i to g_ptx_my_bls_sk_bytes (Option A, KDD-057).
+// Serializes session.sk_share_i with blst_bendian_from_scalar → 32 bytes.
+// Writes under cs_ptx_my_bls_sk lock.
+//
+// New write site to g_ptx_my_bls_sk_bytes (DKG-produced share).
+// Unconditional overwrite; W1.3 replay-protection guard (standup §C1)
+// MUST cover this site, not only the gm_bls_keyset RPC path.
+//
+// Pre: phase == FINALIZE, sk_share_i computed.
+bool PTX_DKG_StoreSkShare(const PTXDKGSession& session);
+
+// Construct the PTXDKG special transaction.
+// Sets nType = PTXDKG (11), nVersion = SAPLING.
+// Populates PTXDKGPayload and serializes to extraPayload.
+// Does NOT submit — submission model TBD per ODC-029.
+// Pre: phase == FINALIZE, phase4_computed == true.
+CMutableTransaction PTX_DKG_BuildPTXDKGTx(const PTXDKGSession& session,
+                                            int formation_height);
+
+// Phase 5 close: StoreSkShare → BuildPTXDKGTx → phase = DONE.
+// Returns false (phase = ABORTED) if StoreSkShare fails.
+// ptxdkg_tx_out receives the constructed transaction.
+bool PTX_DKG_ClosePhase5(PTXDKGSession& session,
+                           int formation_height,
+                           CMutableTransaction& ptxdkg_tx_out);
 
 // ---------------------------------------------------------------------------
 // Accessor for the global BLS state singleton.

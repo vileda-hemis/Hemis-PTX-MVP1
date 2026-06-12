@@ -43,11 +43,8 @@
 RecursiveMutex cs_ptx_secrets;
 std::map<std::string, std::map<std::string, uint256>> g_ptx_local_secrets;
 
-// GM-side BLS key share (received via gm_bls_keyset, used in gm_bls_sign).
-// Stored as 32-byte big-endian blst scalar.
-static uint8_t g_ptx_my_bls_sk_bytes[32] = {};
-static bool    g_ptx_my_bls_sk_set = false;
-static RecursiveMutex cs_ptx_my_bls_sk;
+// GM-side BLS key share — defined in ptx_bls.cpp (extern declared in ptx_bls.h).
+// Accessible here via the ptx_bls.h include above. No local definition needed.
 
 // BLS threshold: t-of-n. KDD-TBD; using simple majority floor(n/2)+1.
 static int PTX_BLS_Threshold(int n) { return n / 2 + 1; }

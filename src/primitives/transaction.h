@@ -262,6 +262,9 @@ public:
         PTX = 6,
         PTXCOALESCE = 9,   // ODC-022: lottery accumulator coalesce (block-only, empty extraPayload)
         PTXPAYOUT = 10,    // ODC-022: lottery payout to winner  (block-only, empty extraPayload)
+        PTXDKG = 11,       // DKG ceremony result: group_pk + vvec_hash + signed premature commitments
+                           // nTypes 7 (PTXSETTLE) and 8 (PTXCONSOLIDATE) deliberately left as gaps —
+                           // do not reuse; see KDD-056.
     };
 
     static const int16_t CURRENT_VERSION = TxVersion::LEGACY;
@@ -357,6 +360,8 @@ public:
     // returns false for them; predicates must stand alone.
     bool IsPTXCoalesceTx() const { return isSaplingVersion() && nType == TxType::PTXCOALESCE; }
     bool IsPTXPayoutTx()   const { return isSaplingVersion() && nType == TxType::PTXPAYOUT; }
+    // PTXDKG carries populated extraPayload so IsSpecialTx() is true; use IsSpecialTx()-based form.
+    bool IsPTXDKGTx()      const { return IsSpecialTx() && nType == TxType::PTXDKG; }
 
     // Ensure that special and sapling fields are signed
     SigVersion GetRequiredSigVersion() const

@@ -15,6 +15,13 @@ PTXBLSState    g_ptx_bls_state;
 RecursiveMutex cs_ptx_bls;
 const char*    PTX_BLS_DST = "BLS_SIG_HEMIS_PTX_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
 
+// GM-side BLS key share (written by gm_bls_keyset RPC and by PTX_DKG_StoreSkShare).
+// Stored as 32-byte big-endian blst scalar. Defined here so both write sites (RPC
+// and DKG) share one storage location guarded by cs_ptx_my_bls_sk.
+uint8_t        g_ptx_my_bls_sk_bytes[32] = {};
+bool           g_ptx_my_bls_sk_set       = false;
+RecursiveMutex cs_ptx_my_bls_sk;
+
 // ---------------------------------------------------------------------------
 // PTX_BLS_Init — trusted-dealer DKG
 // ---------------------------------------------------------------------------

@@ -95,4 +95,12 @@ bool VerifyLLMQCommitment(const llmq::CFinalCommitment& qfc, const CBlockIndex* 
 
 uint256 CalcTxInputsHash(const CTransaction& tx);
 
+// W1.2 structural validation for PTXDKG transactions (nType=11).
+// Checks: payload deserializes; group_pk_bytes decompresses; member list non-empty
+// and count ≤ 11; premit_commitments.size() >= t=6; sig fields non-null.
+// Full threshold-signature verification is deferred — W1.3/audit scope.
+// No cs_main requirement — pure structural check, no global state access.
+bool CheckPTXDKGTx(const CTransaction& tx, const CBlockIndex* pindexPrev,
+                   CValidationState& state);
+
 #endif // Hemis_SPECIALTX_H

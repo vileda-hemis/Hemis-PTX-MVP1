@@ -7,6 +7,8 @@
 
 #include "arith_uint256.h"
 #include "crypto/sha256.h"
+#include "logging.h"
+#include "primitives/transaction.h"
 #include "random.h"
 #include "compat/endian.h"
 
@@ -1210,5 +1212,123 @@ bool PTX_DKG_ClosePhase4(PTXDKGSession& session)
     }
 
     session.phase = PTXDKGPhase::FINALIZE;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// PTX_DKG_StoreSkShare — Phase 5 (Option A, KDD-057)
+//
+// New write site to g_ptx_my_bls_sk_bytes (DKG-produced share).
+// Unconditional overwrite; W1.3 replay-protection guard (standup §C1)
+// MUST cover this site, not only the gm_bls_keyset RPC path.
+// ---------------------------------------------------------------------------
+
+bool PTX_DKG_StoreSkShare(const PTXDKGSession& session)
+{
+    if (session.phase != PTXDKGPhase::FINALIZE)
+        return false;
+
+    uint8_t sk_bytes[32];
+    blst_bendian_from_scalar(sk_bytes, &session.sk_share_i);
+
+    {
+        LOCK(cs_ptx_my_bls_sk);
+        std::memcpy(g_ptx_my_bls_sk_bytes, sk_bytes, 32);
+        g_ptx_my_bls_sk_set = true;
+    }
+    LogPrintf("PTX DKG: StoreSkShare: sk_share written for ceremony quorum_hash=%s\n",
+              session.quorum_hash.ToString());
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// PTX_DKG_BuildPTXDKGTx — Phase 5
+//
+// Construct the PTXDKG special transaction.  Does NOT submit (ODC-029 open).
+// ---------------------------------------------------------------------------
+
+CMutableTransaction PTX_DKG_BuildPTXDKGTx(const PTXDKGSession& session,
+                                            int formation_height)
+{
+    assert(session.phase == PTXDKGPhase::FINALIZE);
+    assert(session.phase4_computed);
+
+    const uint256& my_proTxHash = session.members[session.my_idx].proTxHash;
+
+    PTXDKGPayload payload;
+    payload.quorum_hash      = session.quorum_hash;
+    payload.formation_height = formation_height;
+
+    // group_pk_bytes: compress this node's computed group_pk.
+    blst_p1_affine_compress(payload.group_pk_bytes, &session.group_pk);
+
+    // vvec_hash: SHA256 over effective-QUAL vvec[0] compressed bytes.
+    // qual is std::set<uint256> — iterates in ascending order for determinism.
+    {
+        CSHA256 vh;
+        for (const auto& ptx : session.qual) {
+            if (session.bad_members.count(ptx))
+                continue;
+            uint8_t buf[48];
+            if (ptx == my_proTxHash) {
+                blst_p1_affine_compress(buf, &session.local_contrib.vvec[0]);
+            } else {
+                blst_p1_affine_compress(buf, &session.phase1_vvecs.at(ptx)[0]);
+            }
+            vh.Write(buf, 48);
+        }
+        vh.Finalize(payload.vvec_hash.begin());
+    }
+
+    // member_node_ids: effective-QUAL in share_index order.
+    {
+        struct EffMember { int share_index; std::string node_id; };
+        std::vector<EffMember> eff;
+        for (const auto& ptx : session.qual) {
+            if (session.bad_members.count(ptx))
+                continue;
+            for (const auto& m : session.members) {
+                if (m.proTxHash == ptx) {
+                    eff.push_back({m.share_index, m.node_id});
+                    break;
+                }
+            }
+        }
+        std::sort(eff.begin(), eff.end(),
+                  [](const EffMember& a, const EffMember& b) {
+                      return a.share_index < b.share_index;
+                  });
+        for (const auto& em : eff)
+            payload.member_node_ids.push_back(em.node_id);
+    }
+
+    // premit_commitments: all accepted Phase 4 messages.
+    payload.premit_commitments = session.phase4_premit_msgs;
+
+    CMutableTransaction tx;
+    tx.nVersion = CTransaction::TxVersion::SAPLING;
+    tx.nType    = CTransaction::TxType::PTXDKG;
+    SetTxPayload(tx, payload);
+    return tx;
+}
+
+// ---------------------------------------------------------------------------
+// PTX_DKG_ClosePhase5
+// ---------------------------------------------------------------------------
+
+bool PTX_DKG_ClosePhase5(PTXDKGSession& session,
+                           int formation_height,
+                           CMutableTransaction& ptxdkg_tx_out)
+{
+    if (session.phase != PTXDKGPhase::FINALIZE)
+        return false;
+
+    if (!PTX_DKG_StoreSkShare(session)) {
+        session.phase = PTXDKGPhase::ABORTED;
+        return false;
+    }
+
+    ptxdkg_tx_out = PTX_DKG_BuildPTXDKGTx(session, formation_height);
+    session.phase = PTXDKGPhase::DONE;
     return true;
 }
