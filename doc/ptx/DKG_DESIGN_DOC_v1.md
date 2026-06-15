@@ -1273,6 +1273,127 @@ KDD-059's verified-list clause "Each committer was a registered GM at formation_
 
 **KDD:** KDD-060
 
+### 20.6 W1.3 Package 1 addendum — eligibility predicate, node_id boundary, snapshot-anchoring invariant (2026-06-15)
+
+**Implemented at:** `a9191d0` (`feature/ptx-dkg`). Governs
+`PTX_DKG_IsGMPTXEligible`, `PTX_DKG_BuildMemberVectorFromList`, and the
+`PTX_DKG_InitSession` new contract.
+
+#### 20.6.1 PTX eligibility predicate
+
+`PTX_DKG_IsGMPTXEligible(dgm)` ≡ `!dgm->pdgmState->node_id.empty()`
+(`ptx_dkg.cpp:109`). Exported (not static, declared in `ptx_dkg.h`) so the
+Package 2 validator calls the same function; never re-inlined.
+
+**node_id-only by design.** The predicate answers "can this GM run the ceremony"
+(sign P0–P4 messages, contribute BLS shares). It is deliberately NOT the
+winner-selection predicate, which additionally requires non-empty `scriptPTXPayment`
+(`ptx_winner_selection.cpp` Amendment 2). A GM without a payout script is a valid
+ceremony participant.
+
+**Filter placement.** `PTX_DKG_BuildMemberVectorFromList` applies the filter
+**before** `CalculateQuorum` (`ptx_dkg.cpp:120–128`): `ForEachGM(eligible)` →
+`AddGM` into a fresh `CDeterministicGMList` → `CalculateQuorum(11, quorum_hash)`.
+Post-filter-drop (score all, then remove ineligible entries) is rejected: it alters
+the candidate set that scores compete within, changing which GMs occupy quorum
+positions and breaking agreement between formation and validation.
+
+#### 20.6.2 node_id containment proof — cosmetic for consensus
+
+`node_id` is cosmetic for quorum selection and ordering. Three properties establish
+the boundary:
+
+**(a) Score isolation.** `CalculateScores` (`deterministicgms.cpp:246–270`) reads
+only `confirmedHashWithProRegTxHash` and the `quorum_hash` modifier. `node_id` is
+absent from the score preimage. Format variation, collision, and post-registration
+mutation cannot change quorum selection or share_index ordering.
+
+**(b) Presence-only gate.** `PTX_DKG_IsGMPTXEligible` is a boolean gate on
+emptiness; the value beyond empty is irrelevant to membership. Selection, ordering,
+and validation key off `proTxHash` (globally unique by collateral construction),
+never off node_id value.
+
+**(c) node_id boundary established at registration.** Format, uniqueness, and
+mutability are all enforced by the registration layer; PTX presence-only is the
+correct consumer boundary.
+
+- **Format:** `ValidateProRegNodeId` (`specialtx_validation.cpp:118–172`) runs when
+  `nVersion >= 3 && !node_id.empty()` (line 243). Enforces: exactly-one-colon
+  `label:suffix`; label 3–24 bytes, charset `[a-zA-Z0-9_-]`, no leading/trailing
+  edge chars, no all-numeric label, reserved-word blocklist; suffix =
+  `hex_lower(SHA256(serialize(collateral))[0:4])` — chain-derived, operator cannot
+  forge. PTX does **not** re-validate format — re-asserting it in the validator is
+  consensus-critical split risk with no security benefit.
+
+- **Uniqueness:** enforced at ProRegTx time by case-insensitive linear scan
+  (`specialtx_validation.cpp:310–322`): `ToLower(node_id)` compared across all live
+  GMs → `REJECT_DUPLICATE "bad-protx-dup-node-id"`. NOT in the `AddUniqueProperty`
+  set (`deterministicgms.cpp:403–408`); the linear scan is O(N_GMs) and sufficient
+  because node_id is write-once. Two live GMs with the same node_id cannot coexist on
+  a valid chain.
+
+- **Mutability:** node_id is **write-once**. Set in `CDeterministicGMState(const
+  ProRegPL&)` (`deterministicgms.h:66`). `ProUpServTx` writes only `addr` and
+  `scriptOperatorPayout` (`deterministicgms.cpp:690–691`); `ProUpRegTx` writes only
+  `pubKeyOperator`, `keyIDVoting`, `scriptPayout` (`deterministicgms.cpp:732–734`).
+  No rotation path exists. The pose-layer `records_` keying on `node_id` is
+  therefore stable: tickets bound at registration cannot be orphaned.
+
+#### 20.6.3 member_node_ids empty-entry concern — CLOSED
+
+**Concern:** could `payload.member_node_ids` contain an empty string, passing the
+W1.2 structural count check (`specialtx_validation.cpp:631–634`) while encoding an
+invalid member identity?
+
+**Closed by the eligibility filter.** `PTX_DKG_IsGMPTXEligible` gates
+`BuildMemberVectorFromList`; no GM with an empty node_id can enter the quorum
+(`ptx_dkg.cpp:120–128`). `session.members[]` is populated from the filtered vector
+via `InitSession`; all members carry a non-empty node_id. `BuildPTXDKGTx` copies
+`m.node_id` from `session.members` for QUAL members only (`ptx_dkg.cpp:1305, 1315`).
+No path from formation to payload produces an empty entry. **No ODC raised** — the
+concern cannot arise with the filter in place; the structural count check is
+sufficient.
+
+#### 20.6.4 Snapshot-anchoring invariant — binds both validator and W2 formation
+
+**Invariant:** both the W1.3 consensus validator and the W2 ceremony formation MUST
+source the GM list from `GetListForBlock(pindexQuorum)`, where `pindexQuorum` is the
+block identified by `payload.quorum_hash`. Neither may read from live DGM state, the
+tip, or any block other than the formation anchor.
+
+**Validator half (W1.3 Package 2, in scope).** Encoded in the V1–V5 sequence
+(`W1.3_VALIDATION_SPEC_v1.md §3.2`):
+- V1: `pindexQuorum = LookupBlockIndex(payload.quorum_hash)` — anchor block resolved
+  from the payload, not from pindexPrev.
+- V2: `pindexQuorum->nHeight == payload.formation_height` — redundancy/consistency
+  check (hash is the real anchor; height is a sanity cross-check).
+- V3: `pindexPrev->GetAncestor(pindexQuorum->nHeight) == pindexQuorum` — reorg
+  safety; only blocks on the chain being validated are accepted.
+- V4: `dgmList = deterministicGMManager->GetListForBlock(pindexQuorum)` — reads the
+  formation-block snapshot. **Not from pindexPrev.**
+- V5: `quorum11 = dgmList.CalculateQuorum(11, payload.quorum_hash)` — consumes the
+  formation-block snapshot to reconstruct the canonical quorum. The validator does NOT
+  call `BuildMemberVectorFromList`; it checks proTxHash membership against the V5 set
+  via V6/V7b.
+
+Reading from pindexPrev or live state instead of pindexQuorum is incorrect: it
+evaluates a potentially different GM list and would reject a valid ceremony or accept
+a post-formation-changed one.
+
+**Formation half (W2, out of W1.3 scope).** `PTX_DKG_BuildMemberVectorFromList` takes
+a caller-supplied `CDeterministicGMList` (`ptx_dkg.cpp:118`). The W2 ceremony
+formation entry point MUST supply the result of `GetListForBlock(pindexQuorum)` — the
+snapshot at the formation anchor block — not a live list at ceremony-run time. If the
+ceremony reads live state and any mutable DGM field (addr via ProUpServ, pubKeyOperator
+via ProUpReg) changed between formation and confirmation, formation and validation see
+different candidate sets. node_id is write-once and cannot cause this drift
+specifically; the general anchoring constraint binds the entire formation path
+regardless.
+
+`PTX_DKG_BuildMemberVectorFromList` has no production caller as of `a9191d0`. This
+constraint is registered here so W2 formation (W2.2, `DKG_IMPLEMENTATION_PLAN_v1.md
+§3`) anchors to `pindexQuorum`, not tip state.
+
 ---
 
 ## Appendix: Register cross-reference
