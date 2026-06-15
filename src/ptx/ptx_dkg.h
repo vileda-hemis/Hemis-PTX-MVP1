@@ -29,9 +29,15 @@
 #include "uint256.h"
 
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
+
+// Forward declarations: full definitions in evo/deterministicgms.h, included by ptx_dkg.cpp.
+// Kept out of this header to avoid dragging evo/chain transitive deps into every TU.
+class CDeterministicGM;
+class CDeterministicGMList;
 
 // ---------------------------------------------------------------------------
 // PTXDKGPhase
@@ -72,7 +78,7 @@ struct PTXDKGMember {
     std::string   node_id;
     uint256       confirmedHash;                  // must not be null (KDD-052 precondition)
     uint256       confirmedHashWithProRegTxHash;  // SHA256(proTxHash||confirmedHash); copy from DGM state
-    int           share_index{0};                 // 1-indexed; assigned by PTX_DKG_SortMembers (KDD-052)
+    int           share_index{0};                 // 1-indexed; CalculateQuorum position (KDD-060)
     CBLSPublicKey pubKeyOperator;                 // chiabls; verifies ceremony message signatures only
 };
 
@@ -295,21 +301,31 @@ struct PTXDKGSession {
 // build PTXDKGMember without instantiating CDGMState.
 uint256 PTX_DKG_ComputeInnerHash(const uint256& proTxHash, const uint256& confirmedHash);
 
-// Score for one member at formation.
-// confirmedHashWithProRegTxHash = PTX_DKG_ComputeInnerHash(proTxHash, confirmedHash).
-// Matches deterministicgms.cpp CalculateScores (single SHA256, raw byte writes).
-uint256 PTX_DKG_ComputeMemberScore(const uint256& confirmedHashWithProRegTxHash,
-                                   const uint256& formation_block_hash);
+// PTX quorum eligibility predicate (KDD-060).
+// A GM is eligible for PTX ceremony formation iff it has a non-empty node_id
+// (requires v3+ ProRegPL; v1/v2 and v3-with-empty-id are excluded).
+// node_id-ONLY by design: answers "can this GM run the ceremony" (sign messages,
+// contribute BLS shares).  scriptPTXPayment is NOT required here — a GM without
+// a payout script is a valid ceremony participant; the payout script is only
+// required for winner-selection eligibility (ptx_winner_selection.cpp Amendment 2).
+// Exported (not static) because the Package 2 validator in specialtx_validation.cpp
+// must call the same function; the predicate is never re-inlined.
+bool PTX_DKG_IsGMPTXEligible(const std::shared_ptr<const CDeterministicGM>& dgm);
 
-// Sort members by score descending, assign share_index 1..n (KDD-052).
-// Returns false if any member has a null confirmedHash.
-bool PTX_DKG_SortMembers(std::vector<PTXDKGMember>& members,
-                          const uint256& formation_block_hash);
+// Build the ordered PTXDKGMember vector from an on-chain GM list (KDD-060).
+// Applies PTX_DKG_IsGMPTXEligible filter before CalculateQuorum so quorum is
+// selected from the eligible candidate set only.
+// share_index fields are NOT assigned here — PTX_DKG_InitSession assigns them.
+std::vector<PTXDKGMember> PTX_DKG_BuildMemberVectorFromList(
+        const CDeterministicGMList& list,
+        const uint256& formation_block_hash);
 
-// Initialise session from a caller-supplied member list.
-// Applies SortMembers, requires exactly 11 members, finds my_idx.
-// Returns false on: null confirmedHash, n != 11.
-// my_idx == -1 after success means this node is not in the session (valid for
+// Initialise session from a caller-supplied, already-ordered member list (KDD-060).
+// Caller is responsible for supplying members in CalculateQuorum output order
+// (e.g. via PTX_DKG_BuildMemberVectorFromList). InitSession preserves that order
+// and never re-sorts. Assigns share_index 1..n in the order received.
+// Returns false on: n != 11, null confirmedHash in any member, duplicate proTxHash.
+// my_idx == -1 after success means this node is not a session member (valid for
 // a non-member observer); caller decides whether that is an error.
 bool PTX_DKG_InitSession(PTXDKGSession& session,
                           std::vector<PTXDKGMember> members,

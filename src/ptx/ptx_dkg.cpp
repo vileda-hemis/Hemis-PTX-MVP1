@@ -5,6 +5,8 @@
 #include "ptx/ptx_dkg.h"
 #include "ptx/ptx_bls.h"
 
+#include "evo/deterministicgms.h"  // CDeterministicGMList, CDeterministicGMCPtr (KDD-060)
+
 #include "arith_uint256.h"
 #include "crypto/sha256.h"
 #include "logging.h"
@@ -94,58 +96,55 @@ uint256 PTX_DKG_ComputeInnerHash(const uint256& proTxHash, const uint256& confir
 }
 
 // ---------------------------------------------------------------------------
-// PTX_DKG_ComputeMemberScore
-// Single SHA256(confirmedHashWithProRegTxHash || formation_block_hash).
-// Matches deterministicgms.cpp CalculateScores exactly (single SHA256, raw
-// byte writes, not double-hashing).
-//
-// KDD-052 describes the formula as SHA256(SHA256(proTxHash, confirmedHash), fbh)
-// which is consistent: confirmedHashWithProRegTxHash = SHA256(proTxHash||confirmedHash),
-// so this is SHA256(that_result || fbh) — two sequential single-SHA256 steps,
-// not SHA256(SHA256(x)) over the same input.  Wording clarification deferred
-// to W1.2-integration per PTX_LE_STANDUP.md note.
+// PTX_DKG_IsGMPTXEligible (KDD-060)
+// node_id-only predicate: answers "can this GM run the ceremony."
+// scriptPTXPayment is NOT required for ceremony participation (only for
+// winner-selection eligibility; see ptx_winner_selection.cpp Amendment 2).
+// Exported so the Package 2 validator in specialtx_validation.cpp calls the
+// same function — the predicate is never re-inlined elsewhere.
 // ---------------------------------------------------------------------------
 
-uint256 PTX_DKG_ComputeMemberScore(const uint256& confirmedHashWithProRegTxHash,
-                                   const uint256& formation_block_hash)
+bool PTX_DKG_IsGMPTXEligible(const CDeterministicGMCPtr& dgm)
 {
-    uint256 score;
-    CSHA256 h;
-    h.Write(confirmedHashWithProRegTxHash.begin(), confirmedHashWithProRegTxHash.size());
-    h.Write(formation_block_hash.begin(), formation_block_hash.size());
-    h.Finalize(score.begin());
-    return score;
+    return !dgm->pdgmState->node_id.empty();
 }
 
 // ---------------------------------------------------------------------------
-// PTX_DKG_SortMembers
+// PTX_DKG_BuildMemberVectorFromList (KDD-060)
+// Filter-then-CalculateQuorum: build the eligible sublist first, then score
+// and rank.  Post-filter drop is unsafe (changes the scoring competition).
 // ---------------------------------------------------------------------------
 
-bool PTX_DKG_SortMembers(std::vector<PTXDKGMember>& members,
-                          const uint256& formation_block_hash)
+std::vector<PTXDKGMember> PTX_DKG_BuildMemberVectorFromList(
+        const CDeterministicGMList& list,
+        const uint256& formation_block_hash)
 {
-    for (const auto& m : members) {
-        if (m.confirmedHash.IsNull())
-            return false;
+    CDeterministicGMList eligible;
+    list.ForEachGM(true, [&](const CDeterministicGMCPtr& dgm) {
+        if (PTX_DKG_IsGMPTXEligible(dgm))
+            eligible.AddGM(dgm);
+    });
+
+    auto quorum = eligible.CalculateQuorum(11, formation_block_hash);
+    std::vector<PTXDKGMember> result;
+    result.reserve(quorum.size());
+    for (const auto& dgm : quorum) {
+        PTXDKGMember m;
+        m.proTxHash                     = dgm->proTxHash;
+        m.confirmedHash                 = dgm->pdgmState->confirmedHash;
+        m.confirmedHashWithProRegTxHash = dgm->pdgmState->confirmedHashWithProRegTxHash;
+        m.node_id                       = dgm->pdgmState->node_id;
+        m.pubKeyOperator                = dgm->pdgmState->pubKeyOperator.Get();
+        result.push_back(std::move(m));
     }
-
-    std::stable_sort(members.begin(), members.end(),
-        [&](const PTXDKGMember& a, const PTXDKGMember& b) {
-            arith_uint256 sa = UintToArith256(PTX_DKG_ComputeMemberScore(
-                a.confirmedHashWithProRegTxHash, formation_block_hash));
-            arith_uint256 sb = UintToArith256(PTX_DKG_ComputeMemberScore(
-                b.confirmedHashWithProRegTxHash, formation_block_hash));
-            return sa > sb; // descending: highest score → share_index 1
-        });
-
-    for (int i = 0; i < (int)members.size(); i++)
-        members[i].share_index = i + 1;
-
-    return true;
+    return result;
 }
 
 // ---------------------------------------------------------------------------
-// PTX_DKG_InitSession
+// PTX_DKG_InitSession (KDD-060)
+// Caller supplies members in CalculateQuorum output order; InitSession
+// preserves that order, never re-sorts.  Assigns share_index 1..n in the
+// order received.
 // ---------------------------------------------------------------------------
 
 bool PTX_DKG_InitSession(PTXDKGSession& session,
@@ -153,11 +152,25 @@ bool PTX_DKG_InitSession(PTXDKGSession& session,
                           const uint256& formation_block_hash,
                           const uint256& my_proTxHash)
 {
-    if (!PTX_DKG_SortMembers(members, formation_block_hash))
-        return false;
-
     if ((int)members.size() != 11)
         return false;
+
+    // KDD-060 precondition: every member must have a non-null confirmedHash.
+    for (const auto& m : members) {
+        if (m.confirmedHash.IsNull())
+            return false;
+    }
+
+    // Dup-proTxHash guard: a duplicate causes share_index collisions and index
+    // mapping ambiguity throughout the ceremony.
+    std::set<uint256> seen;
+    for (const auto& m : members) {
+        if (!seen.insert(m.proTxHash).second)
+            return false;
+    }
+
+    for (int i = 0; i < (int)members.size(); i++)
+        members[i].share_index = i + 1;
 
     session.quorum_hash = formation_block_hash;
     session.members     = std::move(members);
