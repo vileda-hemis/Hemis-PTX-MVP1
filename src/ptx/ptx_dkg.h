@@ -312,9 +312,21 @@ uint256 PTX_DKG_ComputeInnerHash(const uint256& proTxHash, const uint256& confir
 // must call the same function; the predicate is never re-inlined.
 bool PTX_DKG_IsGMPTXEligible(const std::shared_ptr<const CDeterministicGM>& dgm);
 
+// Canonical quorum selection core (KDD-060): filter the list by
+// PTX_DKG_IsGMPTXEligible into a fresh CDeterministicGMList, then
+// CalculateQuorum(11, formation_block_hash).  This is the SINGLE selection
+// implementation shared by ceremony formation (via
+// PTX_DKG_BuildMemberVectorFromList, which wraps it) and the Package 2
+// consensus validator (which calls it directly for the proTxHash set), so both
+// reconstruct byte-identical membership.  GetListForBlock is intentionally NOT
+// performed here — the caller supplies the formation-block snapshot.
+std::vector<std::shared_ptr<const CDeterministicGM>> PTX_DKG_SelectQuorumFromList(
+        const CDeterministicGMList& list,
+        const uint256& formation_block_hash);
+
 // Build the ordered PTXDKGMember vector from an on-chain GM list (KDD-060).
-// Applies PTX_DKG_IsGMPTXEligible filter before CalculateQuorum so quorum is
-// selected from the eligible candidate set only.
+// Thin wrapper over PTX_DKG_SelectQuorumFromList that maps each selected GM to a
+// PTXDKGMember.  Quorum is selected from the eligible candidate set only.
 // share_index fields are NOT assigned here — PTX_DKG_InitSession assigns them.
 std::vector<PTXDKGMember> PTX_DKG_BuildMemberVectorFromList(
         const CDeterministicGMList& list,

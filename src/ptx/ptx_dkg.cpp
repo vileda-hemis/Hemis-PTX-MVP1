@@ -110,12 +110,15 @@ bool PTX_DKG_IsGMPTXEligible(const CDeterministicGMCPtr& dgm)
 }
 
 // ---------------------------------------------------------------------------
-// PTX_DKG_BuildMemberVectorFromList (KDD-060)
-// Filter-then-CalculateQuorum: build the eligible sublist first, then score
-// and rank.  Post-filter drop is unsafe (changes the scoring competition).
+// PTX_DKG_SelectQuorumFromList (KDD-060)
+// The single canonical quorum-selection core.  Filter-then-CalculateQuorum:
+// build the eligible sublist first, then score and rank.  Post-filter drop is
+// unsafe (changes the scoring competition).  Both ceremony formation (via
+// PTX_DKG_BuildMemberVectorFromList) and the Package 2 validator call this, so
+// formation and validation reconstruct byte-identical membership.
 // ---------------------------------------------------------------------------
 
-std::vector<PTXDKGMember> PTX_DKG_BuildMemberVectorFromList(
+std::vector<CDeterministicGMCPtr> PTX_DKG_SelectQuorumFromList(
         const CDeterministicGMList& list,
         const uint256& formation_block_hash)
 {
@@ -125,7 +128,20 @@ std::vector<PTXDKGMember> PTX_DKG_BuildMemberVectorFromList(
             eligible.AddGM(dgm);
     });
 
-    auto quorum = eligible.CalculateQuorum(11, formation_block_hash);
+    return eligible.CalculateQuorum(11, formation_block_hash);
+}
+
+// ---------------------------------------------------------------------------
+// PTX_DKG_BuildMemberVectorFromList (KDD-060)
+// Thin wrapper over the selection core that maps each selected GM to a
+// PTXDKGMember.
+// ---------------------------------------------------------------------------
+
+std::vector<PTXDKGMember> PTX_DKG_BuildMemberVectorFromList(
+        const CDeterministicGMList& list,
+        const uint256& formation_block_hash)
+{
+    auto quorum = PTX_DKG_SelectQuorumFromList(list, formation_block_hash);
     std::vector<PTXDKGMember> result;
     result.reserve(quorum.size());
     for (const auto& dgm : quorum) {
