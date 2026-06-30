@@ -613,8 +613,7 @@ static bool CheckLLMQCommitmentTx(const CTransaction& tx, const CBlockIndex* pin
 bool CheckPTXDKGTx(const CTransaction& tx, const CBlockIndex* pindexPrev,
                    CValidationState& state)
 {
-    LogPrintf("PTXDKG structural check only — premature-commitment sig verification "
-              "NOT implemented; W1.3/audit scope.\n");
+    AssertLockHeld(cs_main);
 
     PTXDKGPayload payload;
     if (!GetTxPayload(tx, payload))
@@ -640,12 +639,64 @@ bool CheckPTXDKGTx(const CTransaction& tx, const CBlockIndex* pindexPrev,
                                     (int)payload.premit_commitments.size(), t),
                          REJECT_INVALID, "ptxdkg-insufficient-premits");
 
-    // Sig fields present (non-null check only — no threshold-sig verification; W1.3/audit scope).
+    // Sig fields present (non-null check only — structural; contextual sig
+    // verification is below, only when chain context is available).
     for (const auto& kv : payload.premit_commitments) {
         if (!kv.second.sig.IsValid())
             return state.DoS(100, error("%s: PTXDKG premit from %s has null/invalid sig",
                                         __func__, kv.first.ToString()),
                              REJECT_INVALID, "ptxdkg-null-sig");
+    }
+
+    // ---- Contextual attestation checks (KDD-059/060; V1–V8) ----
+    // Only runnable with chain context (block-connect / mempool).  The null path
+    // (pindexPrev == nullptr; CheckBlock) stays structural-only above.
+    // ACCOUNTABILITY, not correctness: this proves >= t members of the
+    // canonically-selected quorum each signed agreement on (group_pk, vvec_hash)
+    // with their DGM-registered operator key.  It does NOT prove group_pk is the
+    // correct DKG output.  All rejects DoS 100, mirroring CheckLLMQCommitmentTx.
+    if (pindexPrev != nullptr) {
+        // V1: the formation anchor block must exist.
+        const CBlockIndex* pindexQuorum = LookupBlockIndex(payload.quorum_hash);
+        if (pindexQuorum == nullptr)
+            return state.DoS(100, error("%s: PTXDKG quorum_hash %s not found", __func__,
+                                        payload.quorum_hash.ToString()),
+                             REJECT_INVALID, "ptxdkg-quorum-hash-not-found");
+
+        // V2: payload height must match the anchor (the hash is the real anchor;
+        // height is a redundant cross-check).
+        if (pindexQuorum->nHeight != payload.formation_height)
+            return state.DoS(100, error("%s: PTXDKG formation_height %d != anchor height %d",
+                                        __func__, payload.formation_height, pindexQuorum->nHeight),
+                             REJECT_INVALID, "ptxdkg-formation-height-mismatch");
+
+        // V3: the anchor must be on the chain being validated (reorg safety;
+        // anchored to pindexPrev's chain, NOT chainActive.Tip).
+        if (pindexQuorum != pindexPrev->GetAncestor(pindexQuorum->nHeight))
+            return state.DoS(100, error("%s: PTXDKG quorum_hash %s not on active chain", __func__,
+                                        payload.quorum_hash.ToString()),
+                             REJECT_INVALID, "ptxdkg-quorum-hash-not-active-chain");
+
+        // V4: snapshot the GM list at the formation block.  A missing snapshot
+        // post-activation is local DB corruption — GetListForBlock throws and the
+        // throw PROPAGATES (no try/catch; converting it to a reject would be wrong
+        // in both directions).
+        CDeterministicGMList dgmList = deterministicGMManager->GetListForBlock(pindexQuorum);
+
+        // V5: reconstruct the canonical quorum through the shared selection core
+        // (eligibility filter then CalculateQuorum) — never bare CalculateQuorum
+        // on the unfiltered dgmList, which would score empty-node_id GMs that
+        // formation excludes and split the chain.
+        std::vector<CDeterministicGMCPtr> quorum11 =
+            PTX_DKG_SelectQuorumFromList(dgmList, payload.quorum_hash);
+        if (quorum11.size() != 11)
+            return state.DoS(100, error("%s: PTXDKG quorum underfull (%d of 11) at anchor",
+                                        __func__, (int)quorum11.size()),
+                             REJECT_INVALID, "ptxdkg-quorum-underfull");
+
+        // V6–V8: per-premit operator-key signature agreement against the quorum.
+        if (!PTX_DKG_VerifyPremits(quorum11, payload, state))
+            return false;
     }
 
     return true;

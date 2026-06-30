@@ -38,6 +38,7 @@
 // Kept out of this header to avoid dragging evo/chain transitive deps into every TU.
 class CDeterministicGM;
 class CDeterministicGMList;
+class CValidationState;
 
 // ---------------------------------------------------------------------------
 // PTXDKGPhase
@@ -331,6 +332,18 @@ std::vector<std::shared_ptr<const CDeterministicGM>> PTX_DKG_SelectQuorumFromLis
 std::vector<PTXDKGMember> PTX_DKG_BuildMemberVectorFromList(
         const CDeterministicGMList& list,
         const uint256& formation_block_hash);
+
+// Contextual premit verification — V6–V8 of CheckPTXDKGTx (KDD-059/060, Package 2).
+// ACCOUNTABILITY, not correctness: confirms that >= t members of the
+// canonically-selected quorum each signed AGREEMENT on (group_pk, vvec_hash) with
+// their DGM-registered operator key.  It does NOT prove group_pk is the correct
+// DKG output (vvec_hash is checked for agreement, never against a real vvec; the
+// group key is never verified as an aggregate).  quorum11 is the V5 output of
+// PTX_DKG_SelectQuorumFromList.  First failing premit rejects with DoS 100.
+bool PTX_DKG_VerifyPremits(
+        const std::vector<std::shared_ptr<const CDeterministicGM>>& quorum11,
+        const PTXDKGPayload& payload,
+        CValidationState& state);
 
 // Initialise session from a caller-supplied, already-ordered member list (KDD-060).
 // Caller is responsible for supplying members in CalculateQuorum output order

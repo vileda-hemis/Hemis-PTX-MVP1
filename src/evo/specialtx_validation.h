@@ -95,12 +95,17 @@ bool VerifyLLMQCommitment(const llmq::CFinalCommitment& qfc, const CBlockIndex* 
 
 uint256 CalcTxInputsHash(const CTransaction& tx);
 
-// W1.2 structural validation for PTXDKG transactions (nType=11).
-// Checks: payload deserializes; group_pk_bytes decompresses; member list non-empty
-// and count ≤ 11; premit_commitments.size() >= t=6; sig fields non-null.
-// Full threshold-signature verification is deferred — W1.3/audit scope.
-// No cs_main requirement — pure structural check, no global state access.
+// Validation for PTXDKG transactions (nType=11).
+// Structural (both paths): payload deserializes; group_pk_bytes decompresses;
+// member list non-empty and count ≤ 11; premit_commitments.size() >= t=6; sig
+// fields non-null.
+// Contextual (pindexPrev != nullptr): V1–V8 attestation checks (KDD-059/060) —
+// quorum anchoring (LookupBlockIndex / height / GetAncestor reorg-safety /
+// GetListForBlock) and per-premit operator-key signature AGREEMENT against the
+// canonically-selected quorum.  Accountability, not correctness.  Requires
+// cs_main for chain access; the null (pindexPrev == nullptr) path is
+// structural-only.
 bool CheckPTXDKGTx(const CTransaction& tx, const CBlockIndex* pindexPrev,
-                   CValidationState& state);
+                   CValidationState& state) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
 #endif // Hemis_SPECIALTX_H

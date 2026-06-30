@@ -6,6 +6,7 @@
 #include "ptx/ptx_bls.h"
 
 #include "evo/deterministicgms.h"  // CDeterministicGMList, CDeterministicGMCPtr (KDD-060)
+#include "consensus/validation.h"  // CValidationState, REJECT_INVALID (Package 2 validator)
 
 #include "arith_uint256.h"
 #include "crypto/sha256.h"
@@ -154,6 +155,76 @@ std::vector<PTXDKGMember> PTX_DKG_BuildMemberVectorFromList(
         result.push_back(std::move(m));
     }
     return result;
+}
+
+// ---------------------------------------------------------------------------
+// PTX_DKG_VerifyPremits (KDD-059/060, Package 2) — V6–V8 of CheckPTXDKGTx.
+// Per-premit operator-key signature AGREEMENT against the canonically-selected
+// quorum.  Accountability, not correctness: proves >= t quorum members each
+// attested (group_pk, vvec_hash) with their DGM-registered operator key; it does
+// NOT prove group_pk is the correct DKG output.  First failing entry rejects;
+// DoS 100 throughout, matching the LLMQ commitment template severity.
+// ---------------------------------------------------------------------------
+
+bool PTX_DKG_VerifyPremits(const std::vector<CDeterministicGMCPtr>& quorum11,
+                           const PTXDKGPayload& payload,
+                           CValidationState& state)
+{
+    // V6: proTxHash -> GM map over the canonical quorum.  V7f reads the operator
+    // key off this map (the selected CDeterministicGMCPtr), so no second registry
+    // lookup is needed.
+    std::map<uint256, CDeterministicGMCPtr> quorum_map;
+    for (const auto& dgm : quorum11)
+        quorum_map.emplace(dgm->proTxHash, dgm);
+
+    // V7: per premit entry, first failure rejects.  V8 strictness is exactly
+    // "every entry must pass" — there is no count-the-survivors path.  The
+    // >= t=6 entry count is enforced structurally in the null-path body before
+    // this runs.
+    for (const auto& kv : payload.premit_commitments) {
+        const uint256& key        = kv.first;
+        const PTXDKGPhase4Msg& p4 = kv.second;
+
+        // V7a: map key must equal the attested inner identity, so distinct map
+        // keys imply distinct attesting members (the sig covers the inner
+        // proTxHash, not the key).
+        if (key != p4.proTxHash)
+            return state.DoS(100, false, REJECT_INVALID, "ptxdkg-premit-key-mismatch");
+
+        // V7b: committer must be in the canonically-selected quorum (KDD-060),
+        // not merely DGM-registered.
+        auto it = quorum_map.find(key);
+        if (it == quorum_map.end())
+            return state.DoS(100, false, REJECT_INVALID, "ptxdkg-committer-not-in-quorum");
+
+        // V7c: premit must reference this ceremony.
+        if (p4.quorum_hash != payload.quorum_hash)
+            return state.DoS(100, false, REJECT_INVALID, "ptxdkg-premit-quorum-mismatch");
+
+        // V7d: each premit's group_pk must agree with the payload's (each-equals
+        // -payload gives pairwise agreement, the KDD-059 clause).
+        if (memcmp(p4.group_pk_bytes, payload.group_pk_bytes, 48) != 0)
+            return state.DoS(100, false, REJECT_INVALID, "ptxdkg-premit-grouppk-mismatch");
+
+        // V7e: each premit's vvec_hash must agree with the payload's, else the
+        // payload vvec_hash is unattested data.
+        if (p4.vvec_hash != payload.vvec_hash)
+            return state.DoS(100, false, REJECT_INVALID, "ptxdkg-premit-vvechash-mismatch");
+
+        // V7f: operator key off the V6 map.  Lazy .Get() returns a static invalid
+        // object on bad bytes and never throws, so fail fast on !IsValid().
+        CBLSPublicKey pk = it->second->pdgmState->pubKeyOperator.Get();
+        if (!pk.IsValid())
+            return state.DoS(100, false, REJECT_INVALID, "ptxdkg-bad-operator-key");
+
+        // V7g: chiabls BasicSchemeMPL basic verify over the premit sign-hash — the
+        // exact path the ceremony sign/receive use (NOT VerifySecureAggregated;
+        // PTX has no aggregate sig).
+        if (!p4.sig.VerifyInsecure(pk, p4.GetSignHash()))
+            return state.DoS(100, false, REJECT_INVALID, "ptxdkg-bad-premit-sig");
+    }
+
+    return true;
 }
 
 // ---------------------------------------------------------------------------

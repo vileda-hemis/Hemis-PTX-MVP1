@@ -360,6 +360,7 @@ BOOST_AUTO_TEST_CASE(P5_CheckPTXDKGTx_AcceptValidPayload)
 
     CTransaction tx(mtx_out);
     CValidationState state;
+    LOCK(cs_main); // CheckPTXDKGTx now requires cs_main (EXCLUSIVE_LOCKS_REQUIRED); null path is structural-only
     BOOST_CHECK(CheckPTXDKGTx(tx, nullptr, state));
 }
 
@@ -385,6 +386,7 @@ BOOST_AUTO_TEST_CASE(P5_CheckPTXDKGTx_RejectBadGroupPk)
 
     CTransaction tx(mtx);
     CValidationState state;
+    LOCK(cs_main); // CheckPTXDKGTx now requires cs_main (EXCLUSIVE_LOCKS_REQUIRED); null path is structural-only
     BOOST_CHECK(!CheckPTXDKGTx(tx, nullptr, state));
 }
 
@@ -412,6 +414,7 @@ BOOST_AUTO_TEST_CASE(P5_CheckPTXDKGTx_RejectInsufficientPremits)
 
     CTransaction tx(mtx);
     CValidationState state;
+    LOCK(cs_main); // CheckPTXDKGTx now requires cs_main (EXCLUSIVE_LOCKS_REQUIRED); null path is structural-only
     BOOST_CHECK(!CheckPTXDKGTx(tx, nullptr, state));
 }
 
