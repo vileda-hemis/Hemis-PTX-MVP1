@@ -675,6 +675,43 @@ as construct-only in commit bae1dcf (W1.2 P5).
 
 **ODC:** ODC-030
 
+### §9.10 V1–V4 anchoring-chain coverage bound to Package 3 (ODC-031)
+
+**Open (binding active).** `CheckPTXDKGTx`'s contextual anchoring checks — V1
+`LookupBlockIndex`, V2 height, V3 `pindexPrev->GetAncestor` reorg-safety, V4
+`GetListForBlock` — cannot be exercised by unit tests in the test_ptx-linked context:
+they need a real `CBlockIndex` at a formation height with a populated DGM snapshot, and
+the `TestChainSetup` chain-fixture layer does not RUN in test_ptx (C-3 spike finding;
+the runtime face of the documented umbrella rot). The only path that exercises V1–V4 is
+driving a real PTXDKG through the acceptance path, which requires Package 3's tx_verify
+exemption + block-inject wiring (`W1.3_VALIDATION_SPEC_v1 §4`).
+
+**Decision.** C-2 ships the validator with V1–V4 reachable but **unexercised**, and
+V5–V8/structural unit-tested. V1–V4 falsification — V1 unknown-quorum_hash, V2
+height-mismatch, V3 fork/reorg, V4 throw-propagation — is **bound to Package 3 and
+BLOCKS its completion**: Package 3 is not "done" until the V1–V4 stub→RED cycle is
+green, **V3 reorg-safety included**. The coverage **mechanism is left open** (functional
+on a V6_0-active fleet vs. making a chain fixture run in test_ptx, see ODC-032) and is
+decided at the next gate — this ODC asserts only the binding, not the mechanism.
+
+**Raised:** 2026-06-30 (architecture-chat). Registered from PTX_LE_STANDUP C-2 close-out.
+
+**ODC:** ODC-031
+
+### §9.11 Can `TestChainSetup` run in test_ptx? (ODC-032)
+
+**Open (deferred).** The C-3 spike found that any `TestChainSetup`-derived chain fixture
+hangs in the test_ptx binary at fixture block-mining (the `test/test_Hemis.cpp` genesis
+`ActivateBestChain` → first `CreateAndProcessBlock` path), before any registration code
+runs — the runtime face of the documented umbrella rot (test_ptx links the fixtures but
+they were never exercised in it). Whether the chain-fixture layer can be made to run in
+test_ptx is a separate, scoped question. If resolved, V1–V4 could move to unit coverage;
+but the ODC-031 Package-3 binding stands regardless.
+
+**Raised:** 2026-06-30 (architecture-chat). Candidate/deferred.
+
+**ODC:** ODC-032
+
 ---
 
 ## §10 Scale Context
@@ -1265,6 +1302,8 @@ quorum(B) := deterministicGMManager->GetListForBlock(pindex_B)
 
 The serializer's `std::map` deserialization hint-inserts and silently drops duplicate keys (serialize.h:1222–1240); the post-insert map size is what the ≥ t check counts — so duplicate *keys* cannot inflate the count. **But map-key distinctness alone is insufficient**: `PTXDKGPhase4Msg` carries its own `proTxHash` field (it is in the sign-hash preimage, ptx_dkg.cpp:972–986). Without V7a (check sequence: doc/ptx/W1.3_VALIDATION_SPEC_v1.md §3.2), one member's valid premit could be inserted under several different map keys — distinct keys, identical inner attestation — and each copy's signature verifies (the sig covers the *inner* proTxHash, not the key). V7a (`key == p4.proTxHash`) pins key == attested identity; with it, ≥ t distinct keys ⇒ ≥ t distinct attesting members. This sharpens KDD-059's "distinct" clause: distinctness is key-enforced **conditional on V7a**, which the W1.2 structural path does not perform.
 
+> **Correction (2026-07-01, C-4 — reconciles to the shipped V7f design).** The paragraph above assumed V7f resolves the operator key from the *inner* proTxHash. The shipped validator (decision-4) reads the operator key off the **map key** — the V6 quorum map, `ptx_dkg.cpp` `PTX_DKG_VerifyPremits` — and the C-2 falsification cycle (Stub-2) proved the consequence: the "one premit duplicated under N distinct keys" inflation is **NOT caught by V7a** under this design. **V7g backstops it** — the duplicated signature does not verify under another member's operator key (reject `ptxdkg-bad-premit-sig`). So ≥ t-distinct-attestation soundness rests on **map-key dedup + V7b (quorum membership) + V7g (sig verifies under the map-key's operator key) + V7d/e (field agreement)**. V7a's isolating role is the **inner-mislabel case** ("member K signs with inner P ≠ K"): V7a is the *sole* catcher of that (Stub-2: that test accepts with V7a removed). V7a is **kept** — cheap, spec-mandated, binds the signed inner identity to the map key (defense-in-depth). No implemented behaviour changes; this corrects the "load-bearing for the inflation attack" framing only. The earlier framing held only if V7f keyed on the inner proTxHash.
+
 ### 20.5 KDD-059 relationship
 
 KDD-059's verified-list clause "Each committer was a registered GM at formation_height" is **superseded** by "Each committer ∈ quorum(B)". All other KDD-059 content stands (attestation-counting semantics, accountability boundary, ODC-027/028 deferrals, member_node_ids cosmetic, bifurcation/cs_main consequence). §19 addendum points here; no in-place §19 edit.
@@ -1371,10 +1410,24 @@ tip, or any block other than the formation anchor.
   safety; only blocks on the chain being validated are accepted.
 - V4: `dgmList = deterministicGMManager->GetListForBlock(pindexQuorum)` — reads the
   formation-block snapshot. **Not from pindexPrev.**
-- V5: `quorum11 = dgmList.CalculateQuorum(11, payload.quorum_hash)` — consumes the
-  formation-block snapshot to reconstruct the canonical quorum. The validator does NOT
-  call `BuildMemberVectorFromList`; it checks proTxHash membership against the V5 set
-  via V6/V7b.
+- V5: `quorum11 = PTX_DKG_SelectQuorumFromList(dgmList, payload.quorum_hash)` —
+  reconstructs the canonical quorum via the **shared selection core** (filter the
+  snapshot by `PTX_DKG_IsGMPTXEligible`, then `CalculateQuorum(11, quorum_hash)`), the
+  SAME core formation uses through `PTX_DKG_BuildMemberVectorFromList` (which wraps it),
+  so formation and validation reconstruct **byte-identical membership**. The validator
+  calls the core directly (not the `PTXDKGMember`-mapping wrapper) and checks proTxHash
+  membership against this set via V6/V7b. **Never bare `CalculateQuorum` on the
+  unfiltered `dgmList`** — that would score empty-node_id GMs formation excludes and
+  split the chain. The candidate-set predicate is **non-PoSe-banned ∧
+  non-null-confirmedHash ∧ node_id-non-empty**; only node_id-non-empty is contributed by
+  the PTX filter (PoSe and confirmedHash are inherited from `CalculateScores`).
+
+  > **Corrected 2026-07-01 (C-4).** The prior V5 wording — bare
+  > `dgmList.CalculateQuorum(11, …)` and "the validator does NOT call
+  > BuildMemberVectorFromList" — was the pre-Package-1 encoding and a chain-split bug;
+  > **retracted**. Shipped at C-1 (`d52106b`, `PTX_DKG_SelectQuorumFromList` extracted)
+  > and C-2 (`5134955`, the validator calls it). The validator still does not call the
+  > `PTXDKGMember`-mapping wrapper, but it shares the same selection core.
 
 Reading from pindexPrev or live state instead of pindexQuorum is incorrect: it
 evaluates a potentially different GM list and would reject a valid ceremony or accept
@@ -1430,3 +1483,5 @@ constraint is registered here so W2 formation (W2.2, `DKG_IMPLEMENTATION_PLAN_v1
 | ODC-028 | sk_share commitment in PTXDKGPhase4Msg — g^{sk_share_i} G1 proof-of-share; not required for W1.2; deferred to W3.2 audit input | §9.7 | Open |
 | ODC-029 | PTXDKG submission model — direct-block-inject decided (KDD-058, 2026-06-12); block-inject wiring pending W1.3 | §9.8, §18 | Closed |
 | ODC-030 | PTXDKG acceptance window (no max-age in W1.3) + cross-block per-formation uniqueness — both deferred to W2 lifecycle | §9.9 | Open |
+| ODC-031 | V1–V4 anchoring-chain coverage not unit-testable in test_ptx; bound to Package 3 (tx_verify exemption + block-inject) and BLOCKS its completion (V3 reorg incl.); coverage mechanism left open | §9.10 | Open (binding active) |
+| ODC-032 | Can TestChainSetup run in test_ptx (the fixture block-mining hang; runtime face of umbrella rot); if resolved V1–V4 could move to unit coverage, but ODC-031 binding stands | §9.11 | Open (deferred) |
