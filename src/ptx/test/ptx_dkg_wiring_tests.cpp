@@ -13,11 +13,16 @@
 //                                                       exempted (IsPTXDKGTx requires
 //                                                       IsSpecialTx) → bad-txns-vin-empty
 //   W3_CheckTransaction_RejectsOrdinaryEmptyVin  Green  guard not weakened for normal txs
+//   W4_BlockRules_RejectsTwoPTXDKG               Green  two PTXDKG in a block → ptxdkg-duplicate
+//   W5_BlockRules_AcceptsOnePTXDKG               Green  one PTXDKG in a block passes
+//   W6_BlockRules_AcceptsZeroPTXDKG              Green  PTXDKG-free block passes
 
 #include "test/test_Hemis.h"
 #include "ptx/ptx_dkg.h"
 #include "consensus/tx_verify.h"
 #include "consensus/validation.h"
+#include "evo/specialtx_validation.h"
+#include "primitives/block.h"
 #include "primitives/transaction.h"
 
 #include "bls/bls_wrapper.h"
@@ -247,6 +252,62 @@ BOOST_AUTO_TEST_CASE(W3_CheckTransaction_RejectsOrdinaryEmptyVin)
     CValidationState state;
     BOOST_CHECK(!CheckTransaction(tx, state, true));
     BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-txns-vin-empty");
+}
+
+// ---------------------------------------------------------------------------
+// W4/W5/W6 — CheckPTXDKGBlockRules (W1.3 spec §4.4, one PTXDKG per block)
+//
+// The block-rule scan keys on IsPTXDKGTx() only (type + populated payload);
+// it never parses the payload, so a type-only tx with a one-byte payload is
+// the honest minimal fixture — same direct-call pattern the C7/P8 coalesce
+// and payout block-rule tests use.
+// ---------------------------------------------------------------------------
+
+static CMutableTransaction MakeTypeOnlyPTXDKGTx()
+{
+    CMutableTransaction mtx;
+    mtx.nVersion     = CTransaction::TxVersion::SAPLING;
+    mtx.nType        = CTransaction::TxType::PTXDKG;
+    mtx.extraPayload = std::vector<uint8_t>{0x01}; // populated => IsSpecialTx()
+    return mtx;
+}
+
+BOOST_AUTO_TEST_CASE(W4_BlockRules_RejectsTwoPTXDKG)
+{
+    CBlock block;
+    block.vtx.push_back(MakeTransactionRef(MakeTypeOnlyPTXDKGTx()));
+    block.vtx.push_back(MakeTransactionRef(MakeTypeOnlyPTXDKGTx()));
+    BOOST_REQUIRE(block.vtx[0]->IsPTXDKGTx() && block.vtx[1]->IsPTXDKGTx());
+
+    LOCK(cs_main); // CheckPTXDKGBlockRules asserts cs_main (block-connect contract)
+    CValidationState state;
+    BOOST_CHECK(!CheckPTXDKGBlockRules(block, state));
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "ptxdkg-duplicate");
+}
+
+BOOST_AUTO_TEST_CASE(W5_BlockRules_AcceptsOnePTXDKG)
+{
+    CBlock block;
+    block.vtx.push_back(MakeTransactionRef(MakeTypeOnlyPTXDKGTx()));
+
+    LOCK(cs_main);
+    CValidationState state;
+    BOOST_CHECK(CheckPTXDKGBlockRules(block, state));
+    BOOST_CHECK(state.IsValid());
+}
+
+BOOST_AUTO_TEST_CASE(W6_BlockRules_AcceptsZeroPTXDKG)
+{
+    CBlock block;
+    CMutableTransaction normal;
+    normal.nVersion = CTransaction::TxVersion::SAPLING;
+    normal.vout.emplace_back(1 * COIN, CScript() << OP_TRUE);
+    block.vtx.push_back(MakeTransactionRef(normal));
+
+    LOCK(cs_main);
+    CValidationState state;
+    BOOST_CHECK(CheckPTXDKGBlockRules(block, state));
+    BOOST_CHECK(state.IsValid());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

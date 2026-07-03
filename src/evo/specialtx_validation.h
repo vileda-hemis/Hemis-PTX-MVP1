@@ -108,4 +108,11 @@ uint256 CalcTxInputsHash(const CTransaction& tx);
 bool CheckPTXDKGTx(const CTransaction& tx, const CBlockIndex* pindexPrev,
                    CValidationState& state) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
+// W1.3 spec §4.4 (KDD-058): block-level PTXDKG count rule — at most one
+// PTXDKG per block, mirroring the C7/P8 pattern.  Cross-block per-formation
+// uniqueness is ODC-030, resolved with W2 lifecycle — NOT here.
+// Called from ProcessSpecialTxsInBlock; exposed separately for unit tests.
+bool CheckPTXDKGBlockRules(const CBlock& block,
+                           CValidationState& state) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
 #endif // Hemis_SPECIALTX_H

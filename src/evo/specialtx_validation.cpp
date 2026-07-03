@@ -1012,6 +1012,22 @@ bool CheckPTXPayoutBlockRules(const CBlock& block, const CBlockIndex* pindex, CV
     return true;
 }
 
+bool CheckPTXDKGBlockRules(const CBlock& block, CValidationState& state)
+{
+    AssertLockHeld(cs_main);
+    int dkgCount = 0;
+    for (const CTransactionRef& tx : block.vtx) {
+        if (tx->IsPTXDKGTx()) ++dkgCount;
+    }
+    // W1.3 spec §4.4 (KDD-058): at most one PTXDKG per block.  Cross-block
+    // per-formation uniqueness is ODC-030, resolved with W2 lifecycle.
+    if (dkgCount > 1) {
+        return state.DoS(100, error("%s: block contains %d PTXDKG txs, max 1", __func__, dkgCount),
+                         REJECT_INVALID, "ptxdkg-duplicate");
+    }
+    return true;
+}
+
 bool CheckAndApplyPTXPayout(const CBlock& block,
                              const CBlockIndex* pindex,
                              const CDeterministicGMList& gmList,
@@ -1148,6 +1164,10 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
     }
 
     if (!CheckPTXPayoutBlockRules(block, pindex, state)) {
+        return false;
+    }
+
+    if (!CheckPTXDKGBlockRules(block, state)) {
         return false;
     }
 
