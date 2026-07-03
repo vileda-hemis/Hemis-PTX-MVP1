@@ -4,6 +4,8 @@
 
 #include "ptx/ptx_bls.h"
 #include "ptx/ptx_commit_reveal.h"
+#include "ptx/ptx_dkg.h"
+#include "ptx/ptx_dkg_pending.h"
 #include "ptx/ptx_fanout.h"
 #include "ptx/ptx_lottery_state.h"
 #include "ptx/ptx_mempool.h"
@@ -559,6 +561,172 @@ UniValue ptx_debug_setnodefailmode(const JSONRPCRequest& request)
     return ret;
 }
 
+// ---------------------------------------------------------------------------
+// RPC: ptx_debug_ptxdkgpopulate (W1.3 Package 3 C5 — test-gated injection driver)
+// ---------------------------------------------------------------------------
+
+// Server-side PTXDKG builder for the debug RPC.  Premit sigs are REAL BLS
+// signatures from THROWAWAY keys: CBLSSignature must hold a valid G2 element
+// to survive (de)serialisation and the structural null-sig check, so "dummy"
+// cannot mean junk bytes.  Structurally valid, never operator-key valid —
+// sufficient for every bad-anchor battery row, because V1/V2/V3 fire in
+// CheckPTXDKGTx before the V6–V8 premit-sig checks.  The real-operator-key
+// mode (accept path) lands at C6.
+static CMutableTransaction PTX_Debug_BuildPTXDKGTxFromSpec(const uint256& quorum_hash,
+                                                           int formation_height,
+                                                           const uint8_t group_pk[48],
+                                                           const uint256& vvec_hash,
+                                                           int n_members,
+                                                           int n_premits)
+{
+    PTXDKGPayload pl;
+    pl.quorum_hash      = quorum_hash;
+    memcpy(pl.group_pk_bytes, group_pk, 48);
+    pl.vvec_hash        = vvec_hash;
+    pl.formation_height = formation_height;
+    for (int i = 0; i < n_members; i++) {
+        pl.member_node_ids.push_back(strprintf("dbggm%d:8080", i));
+    }
+    for (int i = 0; i < n_premits; i++) {
+        PTXDKGPhase4Msg p;
+        p.quorum_hash = quorum_hash;
+        std::vector<unsigned char> pb(32, 0);
+        pb[0] = (unsigned char)(i + 1);
+        pb[1] = 0xDB;
+        p.proTxHash = uint256(pb);
+        memcpy(p.group_pk_bytes, group_pk, 48);
+        p.vvec_hash = vvec_hash;
+        CBLSSecretKey throwaway;
+        throwaway.MakeNewKey();
+        p.sig = throwaway.Sign(p.GetSignHash());
+        pl.premit_commitments[p.proTxHash] = p;
+    }
+    CMutableTransaction tx;
+    tx.nVersion = CTransaction::TxVersion::SAPLING;
+    tx.nType    = CTransaction::TxType::PTXDKG;
+    SetTxPayload(tx, pl);
+    return tx;
+}
+
+UniValue ptx_debug_ptxdkgpopulate(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() < 1 || request.params.size() > 2) {
+        throw std::runtime_error(
+            "ptx_debug_ptxdkgpopulate payload ( force )\n"
+            "\nTEST-GATED: regtest and ptxbea ONLY — hard error on every other network.\n"
+            "Build a PTXDKG special transaction server-side from an explicit payload\n"
+            "description and populate the pending block-inject slot (W1.3 P3 C5 driver).\n"
+            "Premit signatures are throwaway-key BLS sigs: structurally valid, never\n"
+            "operator-key valid. Real-operator-key premits land at C6 (operator_keys).\n"
+            "\nArguments:\n"
+            "1. payload   (object, required)\n"
+            "     {\n"
+            "       \"quorum_hash\": \"hex\",       (string, required) formation anchor block hash\n"
+            "       \"formation_height\": n,      (numeric, required) anchor height cross-check\n"
+            "       \"group_pk\": \"hex|generate\", (string, optional, default \"generate\") 48-byte\n"
+            "                                     compressed G1, or generate a throwaway key\n"
+            "       \"vvec_hash\": \"hex\",         (string, optional, default 5e..5e) 32-byte hash\n"
+            "       \"premits\": n,               (numeric, optional, default 6) premit count\n"
+            "       \"members\": n,               (numeric, optional, default 11) member count\n"
+            "       \"operator_keys\": [..]       (array, optional) C6 stub — errors if present\n"
+            "     }\n"
+            "2. force     (boolean, optional, default false) E-1: bypass BOTH populate-time\n"
+            "             guards (refuse-while-set + validate-before-inject) and seat the tx\n"
+            "             directly, so a bad payload reaches the assembler and the\n"
+            "             generate-time reject is observable. The production populate path\n"
+            "             stays unconditionally guarded.\n"
+            "\nResult:\n"
+            "{ \"txid\": \"hex\", \"force\": bool, \"populated\": true }\n"
+            + HelpExampleRpc("ptx_debug_ptxdkgpopulate",
+                             "{\"quorum_hash\":\"00..\",\"formation_height\":100}, false")
+        );
+    }
+
+    // NET-GATE — the load-bearing safety property, checked before any
+    // parameter read or state touch.  This RPC feeds BLOCK PRODUCTION (the
+    // pending slot is read by CreateNewBlock), so it must be impossible to
+    // run on a network whose blocks matter.  HARD allowlist on the chainparams
+    // predicate — fails CLOSED for main, public testnet, ptxtestnet and any
+    // future network.  Deliberately stronger than the ptx_debug_setnodefailmode
+    // precedent (which has no gate at all): failmode only perturbs ceremony
+    // messaging; this touches consensus-facing block assembly.
+    if (!Params().IsRegTestNet() && !Params().IsPTXBeaTestNet()) {
+        throw JSONRPCError(RPC_METHOD_NOT_FOUND,
+            "ptx_debug_ptxdkgpopulate is only available on regtest or the ptxbea test network");
+    }
+
+    const UniValue& spec = request.params[0].get_obj();
+    const bool fForce = request.params.size() > 1 && !request.params[1].isNull()
+                        && request.params[1].get_bool();
+
+    // C6 stub: the real-operator-key premit mode is not implemented yet.
+    if (!find_value(spec, "operator_keys").isNull()) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER,
+            "operator_keys (real-operator-key premit mode) lands at C6");
+    }
+
+    const UniValue& v_qh = find_value(spec, "quorum_hash");
+    const UniValue& v_fh = find_value(spec, "formation_height");
+    if (v_qh.isNull() || v_fh.isNull()) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER,
+            "payload requires quorum_hash and formation_height");
+    }
+    const uint256 quorum_hash = uint256S(v_qh.get_str());
+    const int formation_height = v_fh.get_int();
+
+    // vvec_hash: explicit hex or the fixed default.
+    uint256 vvec_hash = uint256S("5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e");
+    const UniValue& v_vh = find_value(spec, "vvec_hash");
+    if (!v_vh.isNull()) vvec_hash = uint256S(v_vh.get_str());
+
+    // group_pk: "generate" (throwaway key — a valid compressed G1, which the
+    // structural decompress check requires) or explicit 96-hex-char bytes.
+    uint8_t group_pk[48];
+    std::string strGpk = "generate";
+    const UniValue& v_gpk = find_value(spec, "group_pk");
+    if (!v_gpk.isNull()) strGpk = v_gpk.get_str();
+    if (strGpk == "generate") {
+        CBLSSecretKey throwaway;
+        throwaway.MakeNewKey();
+        const std::vector<uint8_t> pk = throwaway.GetPublicKey().ToByteVector();
+        if (pk.size() != 48) {
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "generated group_pk is not 48 bytes");
+        }
+        memcpy(group_pk, pk.data(), 48);
+    } else {
+        if (!IsHex(strGpk) || strGpk.size() != 96) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "group_pk must be \"generate\" or 96 hex chars");
+        }
+        const std::vector<unsigned char> raw = ParseHex(strGpk);
+        memcpy(group_pk, raw.data(), 48);
+    }
+
+    const UniValue& v_pre = find_value(spec, "premits");
+    const UniValue& v_mem = find_value(spec, "members");
+    const int n_premits = v_pre.isNull() ? 6 : v_pre.get_int();
+    const int n_members = v_mem.isNull() ? 11 : v_mem.get_int();
+
+    const CMutableTransaction mtx = PTX_Debug_BuildPTXDKGTxFromSpec(
+        quorum_hash, formation_height, group_pk, vvec_hash, n_members, n_premits);
+    const CTransactionRef tx = MakeTransactionRef(mtx);
+
+    if (fForce) {
+        PTX_DKG_ForceSetPendingTx(tx);
+    } else {
+        CValidationState state;
+        if (!PTX_DKG_SetPendingTx(tx, state)) {
+            throw JSONRPCError(RPC_VERIFY_REJECTED,
+                strprintf("populate refused: %s", state.GetRejectReason()));
+        }
+    }
+
+    UniValue ret(UniValue::VOBJ);
+    ret.pushKV("txid", tx->GetHash().GetHex());
+    ret.pushKV("force", fForce);
+    ret.pushKV("populated", true);
+    return ret;
+}
+
 // Forward declaration: defined after ptx_pose_status (Step 13).
 static UniValue PTX_BuildPoseJson(const PTXNodeRecord& rec);
 
@@ -1046,6 +1214,7 @@ static const CRPCCommand commands[] = {
     { "ptx",  "gm_bls_keyset",             &gm_bls_keyset,              true,   {"sk_share_hex"} },
     { "ptx",  "gm_bls_sign",               &gm_bls_sign,                true,   {"round_seed_hex"} },
     { "ptx",  "ptx_debug_setnodefailmode", &ptx_debug_setnodefailmode,  true,   {"target_node_id","mode"} },
+    { "ptx",  "ptx_debug_ptxdkgpopulate",  &ptx_debug_ptxdkgpopulate,   true,   {"payload","force"} },
     { "ptx",  "ptx_getroundstatus",        &ptx_getroundstatus,         true,   {"round_id"} },
     { "ptx",  "ptx_pose_status",           &ptx_pose_status,            true,   {} },
     { "ptx",  "ptx_gm_pose",               &ptx_gm_pose,                true,   {"node_id"} },

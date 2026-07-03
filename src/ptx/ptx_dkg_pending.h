@@ -52,6 +52,14 @@ bool PTX_DKG_SetPendingTx(const CTransactionRef& tx, CValidationState& state);
 bool PTX_DKG_GetMinablePTXDKGTx(const CBlockIndex* pindexPrev,
                                 CTransactionRef& ret) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
+// DEBUG-ONLY direct populate (C5 debug RPC force path, E-1): seats the tx
+// with BOTH populate-time guards bypassed — no refuse-while-set (overwrites an
+// occupied slot) and no validate-before-inject.  The generate-time
+// re-validation half of the pair still runs untouched; exposing that reject to
+// observation is the reason this exists.  Production code must never call
+// this; the only caller is the net-gated ptx_debug_ptxdkgpopulate RPC.
+void PTX_DKG_ForceSetPendingTx(const CTransactionRef& tx);
+
 // Explicit clear (debug RPC / tests).
 void PTX_DKG_ClearPendingTx();
 

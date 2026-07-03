@@ -71,6 +71,15 @@ bool PTX_DKG_GetMinablePTXDKGTx(const CBlockIndex* pindexPrev, CTransactionRef& 
     return true;
 }
 
+void PTX_DKG_ForceSetPendingTx(const CTransactionRef& tx)
+{
+    LOCK(g_ptx_dkg_pending_cs);
+    LogPrintf("PTX DKG: %s: FORCE-populating pending PTXDKG slot with %s (populate guards bypassed)%s\n",
+              __func__, tx->GetHash().ToString(),
+              g_ptx_dkg_pending_tx ? " — overwriting occupied slot" : "");
+    g_ptx_dkg_pending_tx = tx;
+}
+
 void PTX_DKG_ClearPendingTx()
 {
     LOCK(g_ptx_dkg_pending_cs);

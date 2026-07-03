@@ -187,6 +187,8 @@ static const CRPCConvertParam vRPCConvertParams[] = {
     { "walletpassphrase", 2, "staking_only" },
     { "gmconnect", 1, "gm_list" },
     { "gmconnect", 2, "llmq_type" },
+    { "ptx_debug_ptxdkgpopulate", 0, "payload" },
+    { "ptx_debug_ptxdkgpopulate", 1, "force" },
     // Echo with conversion (For testing only)
     { "echojson", 0, "arg0" },
     { "echojson", 1, "arg1" },

@@ -20,6 +20,12 @@
 //   P2_Pending_RefuseWhileSet                    Green  second Set refused while occupied (E-4)
 //   P3_Pending_ValidateBeforeInject              Green  structurally-invalid tx refused at populate
 //   P4_Pending_ClearOnInclusion                  Green  clear keys on txid match, not any PTXDKG
+//   R1_NetGate_RefusesNonPermittedNets           Green  RPC hard-errors on main/testnet/ptxtestnet
+//                                                       (C5 net-gate — the safety property)
+//   R2_Populate_SmokeValidRegtest                Green  RPC populates on regtest; occupied on 2nd
+//   R3_NetGate_AdmitsPtxBea                      Green  RPC populates on ptxbea (allowlist arm 2)
+//   R4_Force_BypassesPopulateGuard               Green  force seats a bad tx over an occupied slot
+//                                                       (E-1); generate-half still rejects it
 //
 // The P-cases cover the STRUCTURAL half of the C4 pending slot only: with no
 // chain in test_ptx (null tip / null pindexPrev) CheckPTXDKGTx runs its
@@ -37,14 +43,24 @@
 #include "primitives/transaction.h"
 
 #include "bls/bls_wrapper.h"
+#include "chainparamsbase.h"
+#include "rpc/protocol.h"
+#include "rpc/server.h"
 #include "sync.h"
 #include "uint256.h"
+
+#include <univalue.h>
 
 #include <boost/test/unit_test.hpp>
 
 #include <map>
 #include <string>
 #include <vector>
+
+// Forward-declare the C5 debug RPC — external linkage in rpc/ptx.cpp; must be
+// declared at file scope, BEFORE the suite macro opens its namespace
+// (ptx_explorer_rpc_tests precedent).
+UniValue ptx_debug_ptxdkgpopulate(const JSONRPCRequest& request);
 
 BOOST_FIXTURE_TEST_SUITE(ptx_dkg_wiring_tests, BasicTestingSetup)
 
@@ -445,6 +461,151 @@ BOOST_AUTO_TEST_CASE(P4_Pending_ClearOnInclusion)
     incl.vtx.push_back(tx);
     PTX_DKG_ClearPendingIfIncluded(incl);
     BOOST_CHECK(!PTX_DKG_HasPendingTx());
+
+    PTX_DKG_ClearPendingTx();
+}
+
+// ---------------------------------------------------------------------------
+// R-cases — C5 debug injection RPC (ptx_debug_ptxdkgpopulate).
+//
+// The RPC is called DIRECTLY (extern decl; ptx_explorer_rpc_tests precedent —
+// test_ptx links LIBBITCOIN_SERVER).  The NET-GATE is the load-bearing safety
+// property: the RPC feeds block production, so it must hard-error on every
+// network except regtest and ptxbea.  JSONRPCError throws UniValue.
+//
+// Fixture note: BasicTestingSetup defaults to MAIN; RegtestSetup/PtxBeaSetup
+// re-run it with the permitted networks.  Each case constructs a fresh
+// fixture, so in-case SelectParams switches (R1) cannot leak forward.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct RegtestSetup : public BasicTestingSetup {
+    RegtestSetup() : BasicTestingSetup(CBaseChainParams::REGTEST) {}
+};
+
+struct PtxBeaSetup : public BasicTestingSetup {
+    PtxBeaSetup() : BasicTestingSetup(CBaseChainParams::PTXBEATESTNET) {}
+};
+
+// A populate request with a spec the structural body accepts (premits=6,
+// members=11) or rejects (premits<6), per the premits argument.
+JSONRPCRequest MakePopulateRequest(int premits, bool force)
+{
+    UniValue payload(UniValue::VOBJ);
+    payload.pushKV("quorum_hash",
+                   "ab01ab01ab01ab01ab01ab01ab01ab01ab01ab01ab01ab01ab01ab01ab01ab01");
+    payload.pushKV("formation_height", 100);
+    payload.pushKV("group_pk", "generate");
+    payload.pushKV("premits", premits);
+    payload.pushKV("members", 11);
+    JSONRPCRequest req;
+    req.fHelp = false;
+    req.params = UniValue(UniValue::VARR);
+    req.params.push_back(payload);
+    req.params.push_back(UniValue(force));
+    return req;
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(R1_NetGate_RefusesNonPermittedNets)
+{
+    PTX_DKG_ClearPendingTx();
+
+    // Fixture selected MAIN.  A fully-valid request must die at the gate —
+    // before any state touch — on main, public testnet and ptxtestnet.  The
+    // slot is cleared between sub-checks so each one tests the gate alone:
+    // with the gate stubbed, every throw-assert fails on its own (no
+    // accidental pass via ptxdkg-pending-occupied from the previous call).
+    const JSONRPCRequest req = MakePopulateRequest(6, false);
+    BOOST_CHECK_THROW(ptx_debug_ptxdkgpopulate(req), UniValue);
+    PTX_DKG_ClearPendingTx();
+
+    SelectParams(CBaseChainParams::TESTNET);
+    BOOST_CHECK_THROW(ptx_debug_ptxdkgpopulate(req), UniValue);
+    PTX_DKG_ClearPendingTx();
+
+    SelectParams(CBaseChainParams::PTXTESTNET);
+    BOOST_CHECK_THROW(ptx_debug_ptxdkgpopulate(req), UniValue);
+
+    // The gate fired before the slot was touched.
+    BOOST_CHECK(!PTX_DKG_HasPendingTx());
+}
+
+BOOST_FIXTURE_TEST_CASE(R2_Populate_SmokeValidRegtest, RegtestSetup)
+{
+    PTX_DKG_ClearPendingTx();
+
+    // Valid spec through the RPC path → guarded populate succeeds.
+    const UniValue ret = ptx_debug_ptxdkgpopulate(MakePopulateRequest(6, false));
+    BOOST_CHECK(find_value(ret, "populated").get_bool());
+    BOOST_CHECK(!find_value(ret, "force").get_bool());
+    BOOST_REQUIRE(PTX_DKG_HasPendingTx());
+
+    // The slot holds the returned txid (structural GetMinable, null tip).
+    {
+        LOCK(cs_main);
+        CTransactionRef out;
+        BOOST_REQUIRE(PTX_DKG_GetMinablePTXDKGTx(nullptr, out));
+        BOOST_CHECK_EQUAL(out->GetHash().GetHex(), find_value(ret, "txid").get_str());
+    }
+
+    // Second unforced populate → the RPC surfaces E-4 as a JSONRPCError.
+    BOOST_CHECK_THROW(ptx_debug_ptxdkgpopulate(MakePopulateRequest(6, false)), UniValue);
+
+    PTX_DKG_ClearPendingTx();
+}
+
+BOOST_FIXTURE_TEST_CASE(R3_NetGate_AdmitsPtxBea, PtxBeaSetup)
+{
+    PTX_DKG_ClearPendingTx();
+
+    // The second allowlist arm: the RPC runs on ptxbea params.
+    const UniValue ret = ptx_debug_ptxdkgpopulate(MakePopulateRequest(6, false));
+    BOOST_CHECK(find_value(ret, "populated").get_bool());
+    BOOST_CHECK(PTX_DKG_HasPendingTx());
+
+    PTX_DKG_ClearPendingTx();
+}
+
+BOOST_FIXTURE_TEST_CASE(R4_Force_BypassesPopulateGuard, RegtestSetup)
+{
+    PTX_DKG_ClearPendingTx();
+
+    // Seat a valid tx first — minable at the structural level.
+    const UniValue ok = ptx_debug_ptxdkgpopulate(MakePopulateRequest(6, false));
+    const std::string validTxid = find_value(ok, "txid").get_str();
+    {
+        LOCK(cs_main);
+        CTransactionRef out;
+        BOOST_REQUIRE(PTX_DKG_GetMinablePTXDKGTx(nullptr, out));
+        BOOST_CHECK_EQUAL(out->GetHash().GetHex(), validTxid);
+    }
+
+    // Bad spec (premits=3 < t=6) WITHOUT force → refused twice over (occupied
+    // AND structurally invalid); the valid occupant is untouched.
+    BOOST_CHECK_THROW(ptx_debug_ptxdkgpopulate(MakePopulateRequest(3, false)), UniValue);
+    {
+        LOCK(cs_main);
+        CTransactionRef out;
+        BOOST_REQUIRE(PTX_DKG_GetMinablePTXDKGTx(nullptr, out));
+        BOOST_CHECK_EQUAL(out->GetHash().GetHex(), validTxid);
+    }
+
+    // Bad spec WITH force (E-1) → seated directly over the occupied slot.
+    // The slot is occupied by the BAD tx: HasPendingTx true, but the
+    // generate-time structural re-validation now rejects it (keep-but-skip),
+    // proving force bypassed only the populate half of the pair.
+    const UniValue forced = ptx_debug_ptxdkgpopulate(MakePopulateRequest(3, true));
+    const std::string badTxid = find_value(forced, "txid").get_str();
+    BOOST_CHECK(badTxid != validTxid);
+    BOOST_REQUIRE(PTX_DKG_HasPendingTx());
+    {
+        LOCK(cs_main);
+        CTransactionRef out;
+        BOOST_CHECK(!PTX_DKG_GetMinablePTXDKGTx(nullptr, out));
+    }
 
     PTX_DKG_ClearPendingTx();
 }
