@@ -17,6 +17,7 @@
 #include "llmq/quorums_blockprocessor.h"
 #include "evo/deterministicgms.h"
 #include "ptx/ptx_coalesce.h"
+#include "ptx/ptx_dkg_pending.h"
 #include "ptx/ptx_lottery_state.h"
 #include "ptx/ptx_payout.h"
 #include "ptx/ptx_pose.h"
@@ -267,6 +268,24 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
                 pblocktemplate->vTxFees.emplace_back(Params().PTXPayoutMinerFee());
                 pblocktemplate->vTxSigOps.emplace_back(0);
                 nBlockSize += (*payoutTx)->GetTotalSize();
+                ++nBlockTx;
+            }
+        }
+
+        // PTXDKG: inject the pending ceremony-result tx, if any (KDD-058
+        // direct-block-inject, LLMQCOMM precedent; W1.3 spec §4).  Own V6_0
+        // gate, deliberately independent of fIncludeQfc — that flag scopes
+        // LLMQ commitments only.  GetMinablePTXDKGTx re-validates against
+        // pindexPrev (the anchor this template is built on, not a fresh tip
+        // read) and skips on reject, so a reorg since populate time cannot
+        // put a rejecting tx into the template.
+        if (consensus.NetworkUpgradeActive(nHeight, Consensus::UPGRADE_V6_0)) {
+            CTransactionRef dkgTx;
+            if (PTX_DKG_GetMinablePTXDKGTx(pindexPrev, dkgTx)) {
+                pblock->vtx.emplace_back(dkgTx);
+                pblocktemplate->vTxFees.emplace_back(0);
+                pblocktemplate->vTxSigOps.emplace_back(0);
+                nBlockSize += dkgTx->GetTotalSize();
                 ++nBlockTx;
             }
         }

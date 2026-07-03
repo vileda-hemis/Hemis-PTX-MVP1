@@ -20,6 +20,7 @@
 #include "ptx/ptx_accum_script.h"
 #include "ptx/ptx_coalesce.h"
 #include "ptx/ptx_dkg.h"
+#include "ptx/ptx_dkg_pending.h"
 #include "ptx/ptx_lottery_state.h"
 #include "ptx/ptx_winner_selection.h"
 #include "spork.h"
@@ -1169,6 +1170,14 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
 
     if (!CheckPTXDKGBlockRules(block, state)) {
         return false;
+    }
+
+    // W1.3 C4: a connecting block that includes the pending PTXDKG clears the
+    // slot (LLMQ ProcessCommitment precedent; !fJustCheck only).  Clear-on-
+    // inclusion only — disconnect does NOT re-pend in W1.3 (E-5); W2 owns
+    // re-submission.
+    if (!fJustCheck) {
+        PTX_DKG_ClearPendingIfIncluded(block);
     }
 
     // Update pose tracker from PTXSESS quorum_members in this block.

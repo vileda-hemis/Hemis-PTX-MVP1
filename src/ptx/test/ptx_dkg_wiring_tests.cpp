@@ -16,9 +16,20 @@
 //   W4_BlockRules_RejectsTwoPTXDKG               Green  two PTXDKG in a block → ptxdkg-duplicate
 //   W5_BlockRules_AcceptsOnePTXDKG               Green  one PTXDKG in a block passes
 //   W6_BlockRules_AcceptsZeroPTXDKG              Green  PTXDKG-free block passes
+//   P1_Pending_SetGetClear                       Green  slot set → get returns it; clear → empty
+//   P2_Pending_RefuseWhileSet                    Green  second Set refused while occupied (E-4)
+//   P3_Pending_ValidateBeforeInject              Green  structurally-invalid tx refused at populate
+//   P4_Pending_ClearOnInclusion                  Green  clear keys on txid match, not any PTXDKG
+//
+// The P-cases cover the STRUCTURAL half of the C4 pending slot only: with no
+// chain in test_ptx (null tip / null pindexPrev) CheckPTXDKGTx runs its
+// structural body alone.  The CONTEXTUAL behaviour — populate-refusal against
+// a real chain, and the generate-time reorg skip (F-9) — is functional-owed
+// at the C6 phase.
 
 #include "test/test_Hemis.h"
 #include "ptx/ptx_dkg.h"
+#include "ptx/ptx_dkg_pending.h"
 #include "consensus/tx_verify.h"
 #include "consensus/validation.h"
 #include "evo/specialtx_validation.h"
@@ -308,6 +319,134 @@ BOOST_AUTO_TEST_CASE(W6_BlockRules_AcceptsZeroPTXDKG)
     CValidationState state;
     BOOST_CHECK(CheckPTXDKGBlockRules(block, state));
     BOOST_CHECK(state.IsValid());
+}
+
+// ---------------------------------------------------------------------------
+// P1–P4 — the C4 pending-injection slot (KDD-058; W1.3 spec §4).
+//
+// Structural level only (see the inventory note above).  Each case clears
+// the slot at entry AND exit: the slot is process-global, and the phase5 TU
+// runs earlier in this binary — its ClosePhase5 calls populate the slot via
+// the (dormant) C4 wiring, so entry state is not empty by default.
+// ---------------------------------------------------------------------------
+
+// Build a structurally-VALID PTXDKG through the real ceremony (the honest
+// fixture: with null tip, SetPendingTx's CheckPTXDKGTx runs its structural
+// body, which a BuildPTXDKGTx output passes).
+static CTransactionRef MakeRealPTXDKGTxRef(int formation_height, int session_idx = 0)
+{
+    std::map<uint256, CBLSSecretKey> key_map;
+    std::vector<PTXDKGSession> sessions;
+    AdvanceToFinalize(key_map, sessions);
+    return MakeTransactionRef(PTX_DKG_BuildPTXDKGTx(sessions[session_idx], formation_height));
+}
+
+BOOST_AUTO_TEST_CASE(P1_Pending_SetGetClear)
+{
+    PTX_DKG_ClearPendingTx();
+    BOOST_REQUIRE(!PTX_DKG_HasPendingTx());
+    {
+        LOCK(cs_main);
+        CTransactionRef out;
+        BOOST_CHECK(!PTX_DKG_GetMinablePTXDKGTx(nullptr, out)); // empty slot → false
+    }
+
+    CTransactionRef tx = MakeRealPTXDKGTxRef(1000);
+    CValidationState state;
+    BOOST_CHECK(PTX_DKG_SetPendingTx(tx, state));
+    BOOST_CHECK(state.IsValid());
+    BOOST_CHECK(PTX_DKG_HasPendingTx());
+
+    // Structural GetMinable: null pindexPrev (no chain) → structural
+    // re-validation passes → the slot tx comes back.
+    {
+        LOCK(cs_main);
+        CTransactionRef out;
+        BOOST_REQUIRE(PTX_DKG_GetMinablePTXDKGTx(nullptr, out));
+        BOOST_CHECK(out->GetHash() == tx->GetHash());
+    }
+
+    PTX_DKG_ClearPendingTx();
+    BOOST_CHECK(!PTX_DKG_HasPendingTx());
+    {
+        LOCK(cs_main);
+        CTransactionRef out;
+        BOOST_CHECK(!PTX_DKG_GetMinablePTXDKGTx(nullptr, out));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(P2_Pending_RefuseWhileSet)
+{
+    PTX_DKG_ClearPendingTx();
+
+    CTransactionRef tx0 = MakeRealPTXDKGTxRef(1000);
+    CTransactionRef tx1 = MakeRealPTXDKGTxRef(2000);
+    BOOST_REQUIRE(tx0->GetHash() != tx1->GetHash());
+
+    CValidationState state0;
+    BOOST_REQUIRE(PTX_DKG_SetPendingTx(tx0, state0));
+
+    // E-4: REFUSE-WHILE-SET — no last-wins; explicit clear required.
+    CValidationState state1;
+    BOOST_CHECK(!PTX_DKG_SetPendingTx(tx1, state1));
+    BOOST_CHECK_EQUAL(state1.GetRejectReason(), "ptxdkg-pending-occupied");
+
+    // The first tx is still the occupant.
+    {
+        LOCK(cs_main);
+        CTransactionRef out;
+        BOOST_REQUIRE(PTX_DKG_GetMinablePTXDKGTx(nullptr, out));
+        BOOST_CHECK(out->GetHash() == tx0->GetHash());
+    }
+
+    PTX_DKG_ClearPendingTx();
+}
+
+BOOST_AUTO_TEST_CASE(P3_Pending_ValidateBeforeInject)
+{
+    PTX_DKG_ClearPendingTx();
+
+    // Type-only PTXDKG: payload {0x01} fails GetTxPayload → the structural
+    // body's first reject.  VALIDATE-BEFORE-INJECT must refuse it at
+    // populate time and leave the slot empty.
+    CTransactionRef bad = MakeTransactionRef(MakeTypeOnlyPTXDKGTx());
+    BOOST_REQUIRE(bad->IsPTXDKGTx());
+
+    CValidationState state;
+    BOOST_CHECK(!PTX_DKG_SetPendingTx(bad, state));
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "ptxdkg-bad-payload");
+    BOOST_CHECK(!PTX_DKG_HasPendingTx());
+
+    PTX_DKG_ClearPendingTx();
+}
+
+BOOST_AUTO_TEST_CASE(P4_Pending_ClearOnInclusion)
+{
+    PTX_DKG_ClearPendingTx();
+
+    CTransactionRef tx = MakeRealPTXDKGTxRef(1000);
+    CValidationState state;
+    BOOST_REQUIRE(PTX_DKG_SetPendingTx(tx, state));
+
+    // A block with a DIFFERENT PTXDKG does not clear — match is by txid.
+    CBlock other;
+    other.vtx.push_back(MakeTransactionRef(MakeTypeOnlyPTXDKGTx()));
+    BOOST_REQUIRE(other.vtx[0]->IsPTXDKGTx());
+    PTX_DKG_ClearPendingIfIncluded(other);
+    BOOST_CHECK(PTX_DKG_HasPendingTx());
+
+    // A PTXDKG-free block does not clear.
+    CBlock empty;
+    PTX_DKG_ClearPendingIfIncluded(empty);
+    BOOST_CHECK(PTX_DKG_HasPendingTx());
+
+    // The block that includes the slot tx clears it.
+    CBlock incl;
+    incl.vtx.push_back(tx);
+    PTX_DKG_ClearPendingIfIncluded(incl);
+    BOOST_CHECK(!PTX_DKG_HasPendingTx());
+
+    PTX_DKG_ClearPendingTx();
 }
 
 BOOST_AUTO_TEST_SUITE_END()
