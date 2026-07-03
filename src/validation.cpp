@@ -394,6 +394,11 @@ static bool AcceptToMemoryPoolWorker(CTxMemPool& pool, CValidationState &state, 
     if (tx.IsPTXPayoutTx())
         return state.DoS(100, false, REJECT_INVALID, "ptxpayout-mempool-rejected");
 
+    // KDD-058: PTXDKG is submitted by direct block injection (LLMQCOMM
+    // precedent), never relayed; it must never enter the mempool.
+    if (tx.IsPTXDKGTx())
+        return state.DoS(100, false, REJECT_INVALID, "ptxdkg-mempool-rejected");
+
     if (pfMissingInputs)
         *pfMissingInputs = false;
 
