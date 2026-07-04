@@ -677,24 +677,43 @@ as construct-only in commit bae1dcf (W1.2 P5).
 
 ### §9.10 V1–V4 anchoring-chain coverage bound to Package 3 (ODC-031)
 
-**Open (binding active).** `CheckPTXDKGTx`'s contextual anchoring checks — V1
+**PARTIALLY CLOSED (C6/C7, 2026-07-04).** `CheckPTXDKGTx`'s contextual anchoring checks — V1
 `LookupBlockIndex`, V2 height, V3 `pindexPrev->GetAncestor` reorg-safety, V4
 `GetListForBlock` — cannot be exercised by unit tests in the test_ptx-linked context:
 they need a real `CBlockIndex` at a formation height with a populated DGM snapshot, and
 the `TestChainSetup` chain-fixture layer does not RUN in test_ptx (C-3 spike finding;
-the runtime face of the documented umbrella rot). The only path that exercises V1–V4 is
+the runtime face of the documented umbrella rot). The only path that exercises them is
 driving a real PTXDKG through the acceptance path, which requires Package 3's tx_verify
 exemption + block-inject wiring (`W1.3_VALIDATION_SPEC_v1 §4`).
 
-**Decision.** C-2 ships the validator with V1–V4 reachable but **unexercised**, and
-V5–V8/structural unit-tested. V1–V4 falsification — V1 unknown-quorum_hash, V2
-height-mismatch, V3 fork/reorg, V4 throw-propagation — is **bound to Package 3 and
-BLOCKS its completion**: Package 3 is not "done" until the V1–V4 stub→RED cycle is
-green, **V3 reorg-safety included**. The coverage **mechanism is left open** (functional
-on a V6_0-active fleet vs. making a chain fixture run in test_ptx, see ODC-032) and is
-decided at the next gate — this ODC asserts only the binding, not the mechanism.
+**Decision (historical, C-2).** C-2 shipped the validator with V1–V4 reachable but
+**unexercised**, and V5–V8/structural unit-tested — the anchoring falsification bound to
+Package 3.
+
+**Closure (C6/C7).** The falsification was discharged on a real regtest chain (the h126
+banked workbench; Python-over-RPC harness + per-check stub→RED via rebuild). ODC-031 is now
+**PARTIALLY CLOSED** — the reachable checks are proven; the remainder is bound to W2.2 by a
+hard dependency (a connect-valid payload = datadir-v2, which needs W2 formation
+orchestration). Deferred-not-dropped. It is not "closed" and not "open".
+
+- **COMPLETE (falsification-proven, C6/C7):** V1 (unknown quorum_hash), V2 (formation-height
+  mismatch), **V3-PREDICATE** (non-ancestor anchor — the *static* half only), **V4**
+  (corruption-only guard — source-trace both paths + confirmatory smoke + stub→RED;
+  `W1.3_C7_V4_PROPAGATION_PROOF_v1`; PROVEN COMPLETE, NOT deferred), F-5 (mempool rejection),
+  populate-refusal (contextual validate-before-inject).
+- **BOUND TO W2.2 (hard dependency = datadir-v2; deferred-not-dropped):**
+  **V3-REORG-TRANSITION** (anchor was active, orphaned mid-flight, still correctly rejected —
+  the chain-split-critical half of V3, NOT covered by V3-PREDICATE), **C3-INVOCATION** (two
+  valid PTXDKGs → `ptxdkg-duplicate` through the real `ProcessSpecialTxsInBlock`; explicitly
+  NOT unit-covered — FA-2b proved the unit gate is blind to the invocation; exercised at W2.2
+  via F-6 accept-path + the datadir-v2 duplicate case), **F-6** (accept path), **F-9**
+  (stale-slot skip).
+
+There is no flat "V1–V4 complete": V3's reorg-transition half and V4 are distinct — V4 is
+COMPLETE, V3-REORG-TRANSITION is bound to W2.2.
 
 **Raised:** 2026-06-30 (architecture-chat). Registered from PTX_LE_STANDUP C-2 close-out.
+Partially closed 2026-07-04 (C6/C7 close-out).
 
 **ODC:** ODC-031
 
@@ -705,8 +724,9 @@ hangs in the test_ptx binary at fixture block-mining (the `test/test_Hemis.cpp` 
 `ActivateBestChain` → first `CreateAndProcessBlock` path), before any registration code
 runs — the runtime face of the documented umbrella rot (test_ptx links the fixtures but
 they were never exercised in it). Whether the chain-fixture layer can be made to run in
-test_ptx is a separate, scoped question. If resolved, V1–V4 could move to unit coverage;
-but the ODC-031 Package-3 binding stands regardless.
+test_ptx is a separate, scoped question. If resolved, the anchoring checks could move to
+unit coverage; but the ODC-031 W2.2 remainder binding (V3-REORG-TRANSITION / C3-INVOCATION /
+F-6 / F-9, all datadir-v2-bound) stands regardless — ODC-031 is partially closed, not open.
 
 **Raised:** 2026-06-30 (architecture-chat). Candidate/deferred.
 
@@ -1483,5 +1503,5 @@ constraint is registered here so W2 formation (W2.2, `DKG_IMPLEMENTATION_PLAN_v1
 | ODC-028 | sk_share commitment in PTXDKGPhase4Msg — g^{sk_share_i} G1 proof-of-share; not required for W1.2; deferred to W3.2 audit input | §9.7 | Open |
 | ODC-029 | PTXDKG submission model — direct-block-inject decided (KDD-058, 2026-06-12); block-inject wiring pending W1.3 | §9.8, §18 | Closed |
 | ODC-030 | PTXDKG acceptance window (no max-age in W1.3) + cross-block per-formation uniqueness — both deferred to W2 lifecycle | §9.9 | Open |
-| ODC-031 | V1–V4 anchoring-chain coverage not unit-testable in test_ptx; bound to Package 3 (tx_verify exemption + block-inject) and BLOCKS its completion (V3 reorg incl.); coverage mechanism left open | §9.10 | Open (binding active) |
-| ODC-032 | Can TestChainSetup run in test_ptx (the fixture block-mining hang; runtime face of umbrella rot); if resolved V1–V4 could move to unit coverage, but ODC-031 binding stands | §9.11 | Open (deferred) |
+| ODC-031 | V1–V4 anchoring-chain coverage not unit-testable in test_ptx; exercised via Package 3 wiring on a real chain. COMPLETE (C6/C7): V1, V2, V3-PREDICATE, V4, F-5, populate-refusal. BOUND TO W2.2 (datadir-v2): V3-REORG-TRANSITION, C3-INVOCATION, F-6, F-9. C3-INVOCATION not unit-covered (FA-2b) | §9.10 | Partially closed (C6/C7, 2026-07-04) |
+| ODC-032 | Can TestChainSetup run in test_ptx (the fixture block-mining hang; runtime face of umbrella rot); if resolved the anchoring checks could move to unit coverage, but the ODC-031 W2.2 remainder binding stands (ODC-031 partially closed) | §9.11 | Open (deferred) |
