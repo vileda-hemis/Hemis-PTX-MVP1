@@ -1191,6 +1191,31 @@ include. This relocation is a deliberate refactor called out explicitly in commi
 
 **Status:** Decided. Implemented in commit bae1dcf (W1.2 Phase 5).
 
+**§C1 replay guard landed (W1.3, append-only update).** Both write sites now route through
+a single guarded setter `PTX_BLS_SetSkShare` (`ptx_bls.cpp`, under `cs_ptx_my_bls_sk`):
+`gm_bls_keyset` (`rpc/ptx.cpp`) and `PTX_DKG_StoreSkShare` (`ptx_dkg.cpp`). Behaviour is
+**refuse-unless-empty** — a first-set (empty slot) stores; overwrite of an already-set share
+is REFUSED (silent replay / second-coordinator takeover defense). No site writes
+`g_ptx_my_bls_sk_bytes/_set` directly (grep-verified zero bypass). Count **reaffirmed as TWO**
+(KDD-057's "two write sites" was always correct — no correction); `ptx_fanout.cpp:291` is the
+RPC's fan-out *driver*, not a third write site.
+
+*Why safe at W1.3:* the share is written only on local ceremony COMPLETION (`StoreSkShare`
+fires at `phase==FINALIZE`; `gm_bls_keyset` is a single atomic RPC), and a failed/aborted
+formation leaves the slot clean — so there is no wedged state and no fail-after-set attack
+surface now (recon-confirmed).
+
+*W2 forward-coupling (the failure path this guard is currently safe FROM, which W2 opens):*
+once rotation/disband/re-formation can run with a share already set, a formation that fails
+*after* a share is set wedges the node, and a malicious participant could grief formation to
+wedge honest members. **W2 MUST provide BOTH:** (a) an explicit **authorized-overwrite** path
+for legitimate replacement (clear-then-set / triggered bypass) — a plain overwrite is refused
+by this guard; and (b) an **abort-clears-slot / recovery** mechanism so a failed rotation
+self-cleans. **No runtime clear path exists today** — `g_ptx_my_bls_sk_set` is cleared only at
+static init (`ptx_bls.cpp:22`), i.e. by daemon restart; **W2 must BUILD a clear path**, not
+wire an existing one. The forming-vs-active discriminant is W2-bound (the committed/active
+mark does not exist at HEAD).
+
 **KDD:** KDD-057
 
 ---

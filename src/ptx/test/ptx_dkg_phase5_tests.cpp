@@ -182,6 +182,16 @@ static void AdvanceToFinalize(
     }
 }
 
+// §C1 (KDD-057): the sk-share slot is a process-global guarded by
+// refuse-unless-empty (PTX_BLS_SetSkShare). Tests that store a share must start
+// from an EMPTY slot — a prior test in the shared test binary may have left it
+// set, which the guard would now (correctly) refuse. Reset before each store.
+static void PTX_TEST_ClearSkShareSlot()
+{
+    LOCK(cs_ptx_my_bls_sk);
+    g_ptx_my_bls_sk_set = false;
+}
+
 // ---------------------------------------------------------------------------
 // P5_StoreSkShare_WritesCorrectBytes
 //
@@ -194,6 +204,7 @@ BOOST_AUTO_TEST_CASE(P5_StoreSkShare_WritesCorrectBytes)
     std::vector<PTXDKGSession> sessions;
     AdvanceToFinalize(key_map, sessions);
 
+    PTX_TEST_ClearSkShareSlot();
     BOOST_REQUIRE(PTX_DKG_StoreSkShare(sessions[0]));
 
     // Read back bytes under the lock.
@@ -276,6 +287,7 @@ BOOST_AUTO_TEST_CASE(P5_ClosePhase5_PhaseBecomesDone)
     std::vector<PTXDKGSession> sessions;
     AdvanceToFinalize(key_map, sessions);
 
+    PTX_TEST_ClearSkShareSlot();
     CMutableTransaction tx_out;
     BOOST_CHECK(PTX_DKG_ClosePhase5(sessions[0], 1000, tx_out));
     BOOST_CHECK(sessions[0].phase == PTXDKGPhase::DONE);
@@ -302,6 +314,7 @@ BOOST_AUTO_TEST_CASE(P5_EndToEnd_SigningPathWorks)
     AdvanceToFinalize(key_map, sessions);
 
     // Close Phase 5 for session[0] (writes sk_share to global storage).
+    PTX_TEST_ClearSkShareSlot();
     CMutableTransaction tx_out;
     BOOST_REQUIRE(PTX_DKG_ClosePhase5(sessions[0], 1000, tx_out));
     BOOST_REQUIRE(sessions[0].phase == PTXDKGPhase::DONE);
@@ -355,6 +368,7 @@ BOOST_AUTO_TEST_CASE(P5_CheckPTXDKGTx_AcceptValidPayload)
     std::vector<PTXDKGSession> sessions;
     AdvanceToFinalize(key_map, sessions);
 
+    PTX_TEST_ClearSkShareSlot();
     CMutableTransaction mtx_out;
     BOOST_REQUIRE(PTX_DKG_ClosePhase5(sessions[0], 1000, mtx_out));
 
@@ -416,6 +430,52 @@ BOOST_AUTO_TEST_CASE(P5_CheckPTXDKGTx_RejectInsufficientPremits)
     CValidationState state;
     LOCK(cs_main); // CheckPTXDKGTx now requires cs_main (EXCLUSIVE_LOCKS_REQUIRED); null path is structural-only
     BOOST_CHECK(!CheckPTXDKGTx(tx, nullptr, state));
+}
+
+// ---------------------------------------------------------------------------
+// C1_ReplayGuard_RefusesOverwriteOfSetShare  — §C1 replay guard (KDD-057)
+//
+// The load-bearing property: PTX_BLS_SetSkShare stores a first-set (empty slot)
+// but REFUSES to overwrite an already-set share (silent replay / second-
+// coordinator takeover defense). Falsification: with the guard removed (setter
+// made unconditional), the second set clobbers the live share — the
+// "bytes unchanged after refusal" assertion goes RED.
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(C1_ReplayGuard_RefusesOverwriteOfSetShare)
+{
+    PTX_TEST_ClearSkShareSlot();
+
+    // First set into an empty slot: accepted, bytes stored.
+    uint8_t first[32];
+    std::memset(first, 0x11, 32);
+    std::string err1;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(first, err1));
+    BOOST_CHECK(err1.empty());
+    {
+        LOCK(cs_ptx_my_bls_sk);
+        BOOST_REQUIRE(g_ptx_my_bls_sk_set);
+        BOOST_CHECK_EQUAL_COLLECTIONS(g_ptx_my_bls_sk_bytes, g_ptx_my_bls_sk_bytes + 32,
+                                      first, first + 32);
+    }
+
+    // Second set into the now-SET slot with DIFFERENT bytes: REFUSED, err set,
+    // and the live share is UNCHANGED. (Guard stubbed → this set succeeds and
+    // clobbers → the collection assertion below flips RED.)
+    uint8_t second[32];
+    std::memset(second, 0x22, 32);
+    std::string err2;
+    BOOST_CHECK(!PTX_BLS_SetSkShare(second, err2));
+    BOOST_CHECK(!err2.empty());
+    {
+        LOCK(cs_ptx_my_bls_sk);
+        BOOST_CHECK(g_ptx_my_bls_sk_set);
+        // Load-bearing: the original share survived the refused overwrite.
+        BOOST_CHECK_EQUAL_COLLECTIONS(g_ptx_my_bls_sk_bytes, g_ptx_my_bls_sk_bytes + 32,
+                                      first, first + 32);
+    }
+
+    PTX_TEST_ClearSkShareSlot(); // leave the process-global clean for later tests
 }
 
 BOOST_AUTO_TEST_SUITE_END()

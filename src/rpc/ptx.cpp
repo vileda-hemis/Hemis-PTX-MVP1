@@ -468,11 +468,11 @@ UniValue gm_bls_keyset(const JSONRPCRequest& request)
     if ((int)sk_bytes.size() != 32)
         throw JSONRPCError(RPC_INVALID_PARAMS, "sk_share_hex must be 32 bytes");
 
-    {
-        LOCK(cs_ptx_my_bls_sk);
-        memcpy(g_ptx_my_bls_sk_bytes, sk_bytes.data(), 32);
-        g_ptx_my_bls_sk_set = true;
-    }
+    // §C1 replay guard (KDD-057): route through the single guarded setter —
+    // refuse a silent overwrite of an already-set share.
+    std::string set_err;
+    if (!PTX_BLS_SetSkShare(sk_bytes.data(), set_err))
+        throw JSONRPCError(RPC_MISC_ERROR, set_err);
     LogPrintf("PTX: gm_bls_keyset: key share stored for node=%s\n", g_ptx_my_node_id);
 
     UniValue ret(UniValue::VOBJ);

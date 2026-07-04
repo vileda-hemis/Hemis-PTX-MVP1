@@ -23,6 +23,38 @@ bool           g_ptx_my_bls_sk_set       = false;
 RecursiveMutex cs_ptx_my_bls_sk;
 
 // ---------------------------------------------------------------------------
+// PTX_BLS_SetSkShare — §C1 replay guard (KDD-057)
+//
+// The SINGLE guarded write path for the GM-side sk-share.  Both write sites —
+// gm_bls_keyset (rpc/ptx.cpp) and PTX_DKG_StoreSkShare (ptx_dkg.cpp) — route
+// through here; no site writes g_ptx_my_bls_sk_bytes/_set directly (a direct
+// write would bypass the guard — that is the hole this closes).
+//
+// refuse-unless-empty: a first-set (empty slot) stores the share; any overwrite
+// of an already-set share is REFUSED (silent replay / second-coordinator
+// takeover defense, standup §C1).  SAFE AT W1.3 — the share is written only on
+// local ceremony COMPLETION (StoreSkShare fires at phase==FINALIZE, gm_bls_keyset
+// is a single atomic RPC) and a failed/aborted formation leaves the slot clean,
+// so no legitimate write hits a set slot now.  W2 rotation/disband/re-formation
+// MUST add (a) an explicit authorized-overwrite path and (b) an abort-clears-slot
+// / clear mechanism; a plain overwrite is refused here and no runtime clear
+// exists today (clear == daemon restart).
+// ---------------------------------------------------------------------------
+
+bool PTX_BLS_SetSkShare(const uint8_t sk_bytes[32], std::string& err)
+{
+    LOCK(cs_ptx_my_bls_sk);
+    if (g_ptx_my_bls_sk_set) {
+        err = "sk-share already set; refusing silent overwrite (C1 replay guard: "
+              "rotation/disband/re-formation must use an authorized-overwrite path)";
+        return false;
+    }
+    std::memcpy(g_ptx_my_bls_sk_bytes, sk_bytes, 32);
+    g_ptx_my_bls_sk_set = true;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // PTX_BLS_Init — trusted-dealer DKG
 // ---------------------------------------------------------------------------
 

@@ -41,9 +41,10 @@ struct PTXBLSState {
 extern PTXBLSState     g_ptx_bls_state;
 extern RecursiveMutex  cs_ptx_bls;
 
-// GM-side BLS key share storage. Defined in ptx_bls.cpp; written by gm_bls_keyset
-// (rpc/ptx.cpp) and by PTX_DKG_StoreSkShare (ptx_dkg.cpp). Both sites under
-// cs_ptx_my_bls_sk. W1.3 replay-protection guard (standup §C1) must cover both.
+// GM-side BLS key share storage. Defined in ptx_bls.cpp; written ONLY through
+// PTX_BLS_SetSkShare (the §C1 guarded setter) from its two write sites:
+// gm_bls_keyset (rpc/ptx.cpp) and PTX_DKG_StoreSkShare (ptx_dkg.cpp). Both under
+// cs_ptx_my_bls_sk. No site writes these directly (that would bypass the guard).
 extern uint8_t        g_ptx_my_bls_sk_bytes[32];
 extern bool           g_ptx_my_bls_sk_set;
 extern RecursiveMutex cs_ptx_my_bls_sk;
@@ -69,6 +70,13 @@ int PTX_BLS_GetNodeIndex(const std::string& node_id);
 // ---------------------------------------------------------------------------
 // GM-side API
 // ---------------------------------------------------------------------------
+
+// §C1 replay guard (KDD-057): the SINGLE guarded write path for the GM-side
+// sk-share. Both write sites (gm_bls_keyset RPC, PTX_DKG_StoreSkShare) route
+// through here. refuse-unless-empty: first-set stores; overwrite of an already-
+// set share is REFUSED and err is set. No site may write g_ptx_my_bls_sk_bytes/
+// _set directly. Returns true on store, false (with err) on refusal.
+bool PTX_BLS_SetSkShare(const uint8_t sk_bytes[32], std::string& err);
 
 // Sign msg with a raw 32-byte blst scalar (the GM's stored share).
 // Called by gm_bls_sign RPC handler on GM nodes.
