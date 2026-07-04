@@ -6,6 +6,7 @@
 #include "ptx/ptx_commit_reveal.h"
 #include "ptx/ptx_dkg.h"
 #include "ptx/ptx_dkg_pending.h"
+#include "core_io.h" // EncodeHexTx (C6 build_only mode)
 #include "ptx/ptx_fanout.h"
 #include "ptx/ptx_lottery_state.h"
 #include "ptx/ptx_mempool.h"
@@ -629,6 +630,7 @@ UniValue ptx_debug_ptxdkgpopulate(const JSONRPCRequest& request)
             "       \"premits\": n,               (numeric, optional, default 6) premit count\n"
             "       \"members\": n,               (numeric, optional, default 11) member count\n"
             "       \"operator_keys\": [..]       (array, optional) C6 stub — errors if present\n"
+            "       \"build_only\": bool          (optional) build + return tx_hex, do NOT touch the slot\n"
             "     }\n"
             "2. force     (boolean, optional, default false) E-1: bypass BOTH populate-time\n"
             "             guards (refuse-while-set + validate-before-inject) and seat the tx\n"
@@ -636,7 +638,7 @@ UniValue ptx_debug_ptxdkgpopulate(const JSONRPCRequest& request)
             "             generate-time reject is observable. The production populate path\n"
             "             stays unconditionally guarded.\n"
             "\nResult:\n"
-            "{ \"txid\": \"hex\", \"force\": bool, \"populated\": true }\n"
+            "{ \"txid\": \"hex\", \"tx_hex\": \"hex\", \"force\": bool, \"populated\": true }\n"
             + HelpExampleRpc("ptx_debug_ptxdkgpopulate",
                              "{\"quorum_hash\":\"00..\",\"formation_height\":100}, false")
         );
@@ -710,6 +712,21 @@ UniValue ptx_debug_ptxdkgpopulate(const JSONRPCRequest& request)
         quorum_hash, formation_height, group_pk, vvec_hash, n_members, n_premits);
     const CTransactionRef tx = MakeTransactionRef(mtx);
 
+    UniValue ret(UniValue::VOBJ);
+    ret.pushKV("txid",   tx->GetHash().GetHex());
+    ret.pushKV("tx_hex", EncodeHexTx(*tx));
+
+    // BUILD_ONLY (C6): return the serialized tx WITHOUT touching the pending
+    // slot — the mempool-rejection (F-5) and two-per-block (C3-invocation) rows
+    // need a raw PTXDKG to feed sendrawtransaction / a crafted block, not a
+    // populated slot.
+    const UniValue& v_bo = find_value(spec, "build_only");
+    if (!v_bo.isNull() && v_bo.get_bool()) {
+        ret.pushKV("build_only", true);
+        ret.pushKV("populated",  false);
+        return ret;
+    }
+
     if (fForce) {
         PTX_DKG_ForceSetPendingTx(tx);
     } else {
@@ -720,9 +737,7 @@ UniValue ptx_debug_ptxdkgpopulate(const JSONRPCRequest& request)
         }
     }
 
-    UniValue ret(UniValue::VOBJ);
-    ret.pushKV("txid", tx->GetHash().GetHex());
-    ret.pushKV("force", fForce);
+    ret.pushKV("force",     fForce);
     ret.pushKV("populated", true);
     return ret;
 }
