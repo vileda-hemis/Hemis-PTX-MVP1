@@ -1494,6 +1494,80 @@ constraint is registered here so W2 formation (W2.2, `DKG_IMPLEMENTATION_PLAN_v1
 
 ---
 
+## §21 Decided: Lagrange Index-Space Reconciliation — recovery-x = committed formation share_index (fix bound to DKG-go-live)
+
+**KDD-061 (2026-07-06). Threshold recovery MUST evaluate each partial signature's
+Lagrange point at that signer's COMMITTED FORMATION share_index — the score-order
+CalculateQuorum rank (KDD-052/KDD-060) — NOT at list position and NOT at alphabetical
+rank. The recovery-x for a signer must equal the formation-x for that signer, always.
+This is a RECORD entry: the seam is real but latent; the cryptographic fix binds to
+DKG-go-live (W2), not W1.3.**
+
+**The seam (recon-confirmed at `b62d11d`).** Two index spaces exist for the same signer:
+
+- *Trusted dealer* (`PTX_BLS_Init`, `ptx_bls.cpp:70-74, 95-115`): shares created at
+  x = 1-indexed **alphabetical** node_id rank; recovery (`rpc/ptx.cpp:255`,
+  `PTX_BLS_GetNodeIndex`) looks up the same alphabetical map. Self-consistent —
+  today's live path is index-correct for the shares it consumes.
+- *DKG* (`ptx_dkg.cpp:314-318`; `PTX_DKG_ComputeSkShare`): shares created and
+  aggregated at x = **score-order share_index** (`members[i].share_index = i + 1` in
+  CalculateQuorum output order, `ptx_dkg.cpp:261` — the single assignment site).
+
+Alphabetical rank ≠ score rank in general. A DKG-produced share recovered via the
+dealer-alphabetical lookup interpolates at wrong evaluation points and produces a
+structurally-valid-but-wrong group signature — caught only by the generic
+`PTX_BLS_Verify` failure, with nothing pointing at the index mismatch.
+
+**Reachability: LATENT at HEAD.** No live flow pairs the two spaces: `ClosePhase5`
+has no production caller (debug RPC + tests only); DKG never writes `g_ptx_bls_state`
+(`PTX_GetBLSState` has zero call sites); the GM signs with whatever occupies the
+sk-share slot and never reports its own index — the coordinator alone derives it.
+The seam opens exactly when DKG output replaces the trusted dealer as recovery's
+source. **The fix lands with that transition; W1.3 records the mapping (this entry).**
+
+**Preserve-gaps under QUAL exclusion (source-confirmed).** share_index is assigned
+once at `PTX_DKG_InitSession` (`ptx_dkg.cpp:261`) and never rewritten; exclusion
+marks members via `qual`/`bad_members` sets only — `session.members` is never
+mutated or re-sorted, and `PTX_DKG_ComputeSkShare` aggregates every survivor at its
+ORIGINAL share_index across effective-QUAL dealers. Survivors therefore keep
+**gapped** indices (e.g. {1,2,4,5,…}). Gaps are harmless to Lagrange — interpolation
+needs *correct* x, not *contiguous* x. Below-threshold (survivors < t=6) →
+`ABORTED` and re-form (`ptx_dkg.cpp:1062-1066`) — the only case that forces a new
+formation; at/above t=6 the quorum completes under-strength and is threshold-secure.
+(Renumbering survivors contiguously would be a correctness hazard — already-dealt
+shares would no longer match their evaluation points without a full re-deal. The
+code does not renumber; any future change that does MUST re-deal.)
+
+**HARD W2 CONSTRAINT — the payload MUST materialize share_index per member.**
+Today `PTXDKGPayload.member_node_ids` is committed in share_index ORDER but does not
+materialize the index VALUES (`ptx_dkg.h:214-231`; built `ptx_dkg.cpp:1387-1408`),
+and `PTXDKGPhase4Msg` carries none. Under exclusion, list position ≠ share_index − 1
+(e.g. surviving indices {1,2,4,…} collapse to positions {0,1,2,…}), so recovery
+CANNOT reconstruct the evaluation points from the payload alone. W2 MUST either
+commit explicit **(node_id, share_index) pairs** or make share_index re-derivable
+from `quorum_hash` + the committed exclusion record. This makes every evaluation
+point AUDITABLE from committed data — the "verifiable" in the verifiable beacon.
+A W2 payload format without materialized indices makes correct recovery impossible
+under exclusion; this constraint is the reason this entry exists at W1.3.
+
+**Testability requirement (binds to the DKG-go-live fix).** The reconciled recovery
+path must surface an index mismatch DIAGNOSTICALLY — an explicit index-consistency
+check (recovery-x vs committed formation share_index per signer) — not as the
+generic `PTX_BLS_Verify` "verification failed". Otherwise a future index bug is
+undiagnosable: silent-wrong, caught only by verify.
+
+**W2 lifecycle note (falls out of preserve-gaps).** A quorum may COMPLETE
+UNDER-STRENGTH — formed-11, completed-9 after exclusions, still ≥ t=6. The W2
+registry MUST be able to represent a born-under-strength quorum and decide its
+lifecycle: topped-up, or run under-strength to rotation (KDD-045). Recorded here
+alongside the seam because both fall out of the same preserve-gaps fact.
+
+**Status:** Decided 2026-07-06. RECORD-only at W1.3 (no cryptographic change —
+correctly, since the seam cannot be exercised until DKG-go-live). Fix + diagnostic
+check bind to W2 DKG-go-live; payload materialization is a hard W2 format constraint.
+
+---
+
 ## Appendix: Register cross-reference
 
 | KDD | Title | §| Status |
@@ -1520,6 +1594,7 @@ constraint is registered here so W2 formation (W2.2, `DKG_IMPLEMENTATION_PLAN_v1
 | KDD-058 | PTXDKG submission model — direct block-inject (LLMQCOMM precedent); resolves ODC-029; coupled to KDD-059 | §18 | Decided (impl pending W1.3) |
 | KDD-059 | PTXDKG validation semantics — attestation-counting; accountability not correctness; share-correctness/recovery deferred to ODC-027/028 | §19 | Decided (impl pending W1.3) |
 | KDD-060 | Canonical quorum selection: `GetListForBlock(B).CalculateQuorum(11, quorum_hash)` — one function, raw modifier, formation + validation; membership predicate fix; scorer retirement; V7a distinctness sharpening. Amends KDD-059. | §20 | Decided 2026-06-13 (impl pending W1.3) |
+| KDD-061 | Lagrange index-space reconciliation — recovery-x = committed formation share_index (score-order, KDD-052/060); preserve-gaps under QUAL exclusion (<t=6 → abort/re-form); HARD W2 constraint: payload materializes per-member share_index (list order alone is lossy under exclusion); index mismatch must fail diagnostically, not via generic verify | §21 | Decided 2026-07-06 (RECORD at W1.3; fix bound to DKG-go-live) |
 | ODC-021 | Coordinator SPOF | §2 | Resolved by DKG |
 | ODC-024 | Multi-quorum membership — deferred future extension | §9.3 | Open (partially resolved per KDD-053: selection + failover decided) |
 | ODC-025 | Rotation-N final value — pending ceremony duration | §9.2 | Open |

@@ -9,8 +9,9 @@
 //   CBLSSecretKey (operator key, chiabls) — signs ceremony P2P messages;
 //     NEVER stored in PTXDKGSession; passed as a parameter at signing time.
 //   blst_scalar sk_share_i (ceremony arithmetic, blst) — the output of
-//     Phase 4/5 aggregation; held in PTXDKGLocalContrib during the ceremony,
-//     then written to g_ptx_bls_state via PTX_GetBLSState() in Phase 5.
+//     Phase 4/5 aggregation; held in PTXDKGSession during the ceremony, then
+//     written to g_ptx_my_bls_sk_bytes via the guarded setter PTX_BLS_SetSkShare
+//     in Phase 5 (PTX_DKG_StoreSkShare; KDD-057 Option A, §C1 replay guard).
 //   These two key types serve different purposes with different lifetimes;
 //   conflating them is the silent-keying-bug risk from the impl plan's §6.
 
