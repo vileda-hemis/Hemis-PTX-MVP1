@@ -65,6 +65,11 @@ const char* QGETSIGSHARES = "qgetsigs";
 const char* QBSIGSHARES = "qbsigs";
 const char* QSIGREC = "qsigrec";
 const char* CLSIG = "clsig";
+const char* PTXQHASHCOMMIT = "ptxqhcommit";
+const char* PTXQCONTRIB = "ptxqcontrib";
+const char* PTXQCOMPLAINT = "ptxqcomplaint";
+const char* PTXQJUSTIFICATION = "ptxqjustify";
+const char* PTXQPCOMMITMENT = "ptxqpcommit";
 }; // namespace NetMsgType
 
 
@@ -127,6 +132,11 @@ const static std::string allNetMessageTypes[] = {
     NetMsgType::QBSIGSHARES,
     NetMsgType::QSIGREC,
     NetMsgType::CLSIG,
+    NetMsgType::PTXQHASHCOMMIT,
+    NetMsgType::PTXQCONTRIB,
+    NetMsgType::PTXQCOMPLAINT,
+    NetMsgType::PTXQJUSTIFICATION,
+    NetMsgType::PTXQPCOMMITMENT,
 };
 const static std::vector<std::string> allNetMessageTypesVec(allNetMessageTypes, allNetMessageTypes + ARRAYLEN(allNetMessageTypes));
 const static std::vector<std::string> tiertwoNetMessageTypesVec(std::find(allNetMessageTypesVec.begin(), allNetMessageTypesVec.end(), NetMsgType::SPORK), allNetMessageTypesVec.end());
@@ -232,6 +242,11 @@ std::string CInv::GetCommand() const
         case MSG_QUORUM_PREMATURE_COMMITMENT: return cmd.append(NetMsgType::QPCOMMITMENT);
         case MSG_QUORUM_RECOVERED_SIG: return cmd.append(NetMsgType::QSIGREC);
         case MSG_CLSIG: return cmd.append(NetMsgType::CLSIG);
+        case MSG_PTX_QUORUM_HASH_COMMIT: return cmd.append(NetMsgType::PTXQHASHCOMMIT);
+        case MSG_PTX_QUORUM_CONTRIB: return cmd.append(NetMsgType::PTXQCONTRIB);
+        case MSG_PTX_QUORUM_COMPLAINT: return cmd.append(NetMsgType::PTXQCOMPLAINT);
+        case MSG_PTX_QUORUM_JUSTIFICATION: return cmd.append(NetMsgType::PTXQJUSTIFICATION);
+        case MSG_PTX_QUORUM_PREMATURE_COMMITMENT: return cmd.append(NetMsgType::PTXQPCOMMITMENT);
         default:
             throw std::out_of_range(strprintf("%s: type=%d unknown type", __func__, type));
     }

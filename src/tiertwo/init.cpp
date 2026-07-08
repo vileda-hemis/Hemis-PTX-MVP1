@@ -14,6 +14,7 @@
 #include "gamemaster-payments.h"
 #include "gamemasterconfig.h"
 #include "llmq/quorums_init.h"
+#include "ptx/ptx_dkg_net.h"
 #include "ptx/ptx_quorum_store.h"
 #include "scheduler.h"
 #include "tiertwo/gamemaster_meta_manager.h"
@@ -78,6 +79,8 @@ void InitTierTwoPostCoinsCacheLoad(CScheduler* scheduler)
 {
     // Initialize LLMQ system
     llmq::InitLLMQSystem(*evoDb, scheduler, false);
+    // W2.0b: PTX ceremony transport (enqueue-only at C1; drain thread at C2)
+    InitPTXCeremonyTransport();
 }
 
 void InitTierTwoChainTip()
@@ -323,6 +326,7 @@ void StartTierTwoThreadsAndScheduleJobs(boost::thread_group& threadGroup, CSched
 void StopTierTwoThreads()
 {
     llmq::StopLLMQSystem();
+    StopPTXCeremonyTransport(); // W2.0b ceremony transport teardown
 }
 
 void DeleteTierTwo()

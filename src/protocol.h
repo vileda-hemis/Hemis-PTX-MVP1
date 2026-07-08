@@ -298,6 +298,16 @@ extern const char* QGETSIGSHARES;
 extern const char* QBSIGSHARES;
 extern const char* QSIGREC;
 extern const char* CLSIG;
+/*
+ * Messages for PTX-DKG ceremony transport (W2.0b, IMP-D2) — PTX-namespaced,
+ * separate from the LLMQ DKG types above (LLMQ keeps running for ChainLocks).
+ * One command per ceremony phase 0-4; Phase 0 (hash-commit) has no LLMQ analog.
+ */
+extern const char* PTXQHASHCOMMIT;
+extern const char* PTXQCONTRIB;
+extern const char* PTXQCOMPLAINT;
+extern const char* PTXQJUSTIFICATION;
+extern const char* PTXQPCOMMITMENT;
 }; // namespace NetMsgType
 
 /* Get a vector of all valid message types (see above) */
@@ -456,7 +466,14 @@ enum GetDataMsg {
     MSG_QUORUM_PREMATURE_COMMITMENT,
     MSG_QUORUM_RECOVERED_SIG,
     MSG_CLSIG,
-    MSG_TYPE_MAX = MSG_CLSIG,
+    // PTX-DKG ceremony transport (W2.0b) — appended; MSG_TYPE_MAX has no
+    // range-validation consumers (grep-verified at C1), append is wire-safe.
+    MSG_PTX_QUORUM_HASH_COMMIT,
+    MSG_PTX_QUORUM_CONTRIB,
+    MSG_PTX_QUORUM_COMPLAINT,
+    MSG_PTX_QUORUM_JUSTIFICATION,
+    MSG_PTX_QUORUM_PREMATURE_COMMITMENT,
+    MSG_TYPE_MAX = MSG_PTX_QUORUM_PREMATURE_COMMITMENT,
 };
 
 /** inv message data */

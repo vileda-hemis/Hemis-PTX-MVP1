@@ -12,6 +12,7 @@
 #include "gamemasterman.h"  // for gamemasterman
 #include "net_processing.h" // for Misbehaving
 #include "netmessagemaker.h"
+#include "ptx/ptx_dkg_net.h" // for g_ptx_ceremony_transport (W2.0b)
 #include "spork.h"   // for sporkManager
 #include "streams.h" // for CDataStream
 #include "tiertwo/tiertwo_sync_state.h"
@@ -68,6 +69,21 @@ bool CGamemasterSync::MessageDispatcher(CNode* pfrom, std::string& strCommand, C
         || strCommand == NetMsgType::QJUSTIFICATION
         || strCommand == NetMsgType::QPCOMMITMENT) {
         if (!llmq::quorumDKGSessionManager->ProcessMessage(pfrom, strCommand, vRecv)) {
+            WITH_LOCK(cs_main, Misbehaving(pfrom->GetId(), 100));
+        }
+        return true;
+    }
+
+    // PTX-DKG ceremony transport (W2.0b, IMP-D2) — the LLMQ-DKG branch above
+    // is the template.  Enqueue-only here; validate/receive is the drain
+    // pipeline's (C2).  false = unroutable command → Misbehaving, the same
+    // contract as the LLMQ branch.
+    if (strCommand == NetMsgType::PTXQHASHCOMMIT
+        || strCommand == NetMsgType::PTXQCONTRIB
+        || strCommand == NetMsgType::PTXQCOMPLAINT
+        || strCommand == NetMsgType::PTXQJUSTIFICATION
+        || strCommand == NetMsgType::PTXQPCOMMITMENT) {
+        if (!g_ptx_ceremony_transport.ProcessMessage(pfrom->GetId(), strCommand, vRecv)) {
             WITH_LOCK(cs_main, Misbehaving(pfrom->GetId(), 100));
         }
         return true;
