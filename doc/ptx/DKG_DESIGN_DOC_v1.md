@@ -663,15 +663,18 @@ as construct-only in commit bae1dcf (W1.2 P5).
 
 ### §9.9 PTXDKG acceptance window and per-formation uniqueness (ODC-030)
 
-**Open.** Two lifecycle-bound acceptance rules deliberately deferred to W2.
+**CLOSED (2026-07-08, W2.1 C5 close-out).** The anticipated split executed: clause 2
+closed at W2.1; clause 1 split into its own open ODC (ODC-033, §9.12) — exactly the
+"may split into separate ODCs if W2 resolves them on different timelines" path this
+entry reserved.
 
-1. **Staleness bound:** LLMQ enforces max-age via `cacheDkgInterval` (specialtx_validation.cpp:565–567); PTX has no interval analog and no formation cadence yet. Inventing a consensus constant before W2 defines rotation cadence is guessing. W1.3 ships V1–V3 (existence, height-consistency, ancestor) with **no max-age bound**.
+1. **Staleness bound — SPLIT OUT → ODC-033 (§9.12), still open.** LLMQ enforces max-age via `cacheDkgInterval` (specialtx_validation.cpp:565–567); PTX has no interval analog and no formation cadence yet. Inventing a consensus constant before W2 defines rotation cadence is guessing. Continues unchanged under ODC-033, bound to W2.2/W2.3 cadence design.
 
-2. **Cross-block per-formation uniqueness:** "one accepted PTXDKG per formation absent rotation/disband" needs a chain-state index (quorum_hash → accepted txid) maintained in Connect/DisconnectBlock, and its legality condition is exactly W2's rotation semantics. Interim risk is bounded: a *conflicting* second group_pk for the same formation requires ≥ t members signing both — outside the KDD-059 trust boundary; a *duplicate* identical PTXDKG is chain bloat, mitigated by the one-per-block rule (W1.3_VALIDATION_SPEC_v1 §4.4) and the §C1 node-side guard (W1.3_VALIDATION_SPEC_v1 §5.5).
+2. **Cross-block per-formation uniqueness — CLOSED (W2.1 C1/C4, `0b403fc`/`55c1a5a`).** Implemented exactly as this clause specified: the chain-state index is `CPTXQuorumStore` (quorum_hash → record incl. accepted_txid), maintained at Connect (`ProcessBlock` write) / Disconnect (`UndoBlock` explicit-erase). Enforcement is a PAIR: the validation-surface check V9 in `CheckPTXDKGTx` (`ptxdkg-duplicate-formation`, DoS 100 — the reject with observability) + the persist-boundary guard in `CPTXQuorumStore::ProcessBlock` (defense-in-depth). The legality condition under rotation ("absent rotation/disband") is honored by construction: the record erases on disconnect and W2.3 rotation will transition state rather than accept a second formation at the same anchor. Falsified: battery T5 (duplicate populate REFUSED) + stub→RED (check bypassed → duplicate wrongly accepted) + positive (first formation accepts — no over-reject); re-falsified 2026-07-08 post-CC-restart. See §22.4. The C4 commit also landed the adjacent **member-containment check** (`ptxdkg-member-not-in-quorum`, load-bearing for KDD-061 — every committed member must hold a derivable share_index; V10, after V5) as part of the same enforceability split.
 
-**Resolve with:** W2 lifecycle design. The two clauses may split into separate ODCs if W2 resolves them on different timelines.
+**Resolved with:** W2.1 registry (KDD-062) for clause 2; clause 1 → ODC-033.
 
-**Raised:** 2026-06-13. Registered from W1.3_VALIDATION_SPEC_v1 §6.
+**Raised:** 2026-06-13. Registered from W1.3_VALIDATION_SPEC_v1 §6. Closed 2026-07-08 (clause 2 at W2.1 C4 `55c1a5a`; clause 1 split → ODC-033 at W2.1 C5).
 
 **ODC:** ODC-030
 
@@ -712,8 +715,24 @@ orchestration). Deferred-not-dropped. It is not "closed" and not "open".
 There is no flat "V1–V4 complete": V3's reorg-transition half and V4 are distinct — V4 is
 COMPLETE, V3-REORG-TRANSITION is bound to W2.2.
 
+**W2.1 delta (2026-07-08, C5 close-out) — F-6 DISCHARGED; datadir-v2 premise superseded.**
+The W2.1 C0 `operator_keys` populate mode (`727742c`) produces a **connect-valid** payload
+with no ceremony and no transport — which removes the hard dependency ("connect-valid
+payload = datadir-v2 = W2 formation orchestration") that bound this remainder to W2.2.
+- **F-6 (accept path): DISCHARGED.** Exercised end-to-end on the N=22 ptxbea fleet, twice
+  (C0 landing falsification — the first connect-valid PTXDKG ever accepted — and the C4
+  re-falsification t1 run, 2026-07-08): validated no-force populate ACCEPTED (full
+  `CheckPTXDKGTx` pass at tip) → mined through the real assembler keep path → connected
+  through the real `ProcessSpecialTxsInBlock` → persisted record verified field-by-field
+  (`ptx_quorum_info`).
+- **STILL OWED (not run — do not narrow): V3-REORG-TRANSITION, C3-INVOCATION, F-9.** All
+  three are now *mechanically unblocked* (C0 gives connect-valid payloads; `build_only`
+  gives raw tx_hex for crafted blocks; the W2.0a fleet + battery machinery exist) but were
+  NOT exercised at W2.1 — the owed binding moves from "blocked on datadir-v2" to "runnable
+  on the W2.1 workbench, owed at W2.2 or earlier".
+
 **Raised:** 2026-06-30 (architecture-chat). Registered from PTX_LE_STANDUP C-2 close-out.
-Partially closed 2026-07-04 (C6/C7 close-out).
+Partially closed 2026-07-04 (C6/C7 close-out); F-6 discharged 2026-07-08 (W2.1 C5 close-out).
 
 **ODC:** ODC-031
 
@@ -731,6 +750,30 @@ F-6 / F-9, all datadir-v2-bound) stands regardless — ODC-031 is partially clos
 **Raised:** 2026-06-30 (architecture-chat). Candidate/deferred.
 
 **ODC:** ODC-032
+
+### §9.12 PTXDKG staleness / max-age bound (ODC-033 — split from ODC-030 clause 1)
+
+**Open.** A PTXDKG may currently be accepted with an arbitrarily old formation anchor:
+V1–V3 prove the anchor exists, matches the payload height, and sits on the connecting
+chain — but there is **no max-age bound**, so a formation whose member selection was
+snapshotted against a long-stale DGM list remains acceptable indefinitely. LLMQ's analog
+is `cacheDkgInterval` max-age (specialtx_validation.cpp:565–567); PTX has no interval
+because formation cadence does not exist yet — it is exactly W2.2/W2.3's rotation
+semantics. Inventing the consensus constant ahead of that design is guessing.
+
+Interim risk (updated from the ODC-030 assessment, tighter now): a conflicting second
+group_pk for the same formation requires ≥ t members signing both (outside the KDD-059
+trust boundary); a duplicate identical PTXDKG is now **consensus-rejected** (ODC-030
+clause 2 closed — `ptxdkg-duplicate-formation` + the persist-boundary guard), not merely
+bloat-bounded. The residual exposure is stale-anchor acceptance only.
+
+**Resolve with:** W2.2 formation cadence / W2.3 rotation design — the bound's legality
+condition and its constant come from whichever workstream defines the cadence.
+
+**Raised:** 2026-06-13 as ODC-030 clause 1; split into its own ODC 2026-07-08 (W2.1 C5
+close-out, per §9.9's anticipated split).
+
+**ODC:** ODC-033
 
 ---
 
@@ -1661,8 +1704,8 @@ clause 2 verbatim) and committed-member containment
 (`ptxdkg-member-not-in-quorum` — load-bearing for KDD-061: every committed
 member must hold a derivable share_index; recon-confirmed absent from V1–V8,
 which count-check `member_node_ids` only). DEFERRED, register-marked:
-staleness/max-age (needs W2.2/W2.3 cadence — §9.9 clause 1; recommend the
-anticipated ODC split) and cross-quorum membership / single-quorum-per-GM
+staleness/max-age (needs W2.2/W2.3 cadence — §9.9 clause 1; split executed at
+C5 → ODC-033, §9.12) and cross-quorum membership / single-quorum-per-GM
 (KDD-040 — a W2.2 formation-side pool rule; two overlapping quorums are
 mechanically injectable NOW via the debug RPC, but enforcing a consensus
 reject would invent overlap-legality semantics ahead of W2.2/W2.3 rotation —
@@ -1710,6 +1753,7 @@ C1/C2; falsified rows and producer-pending marks per the table above.
 | ODC-027 | vvec_hash scope in PTXDKGPayload — vvec[0]-only for W1.2 (S4 approved); full-vvec scope deferred to W3.2 audit input | §9.6 | Open |
 | ODC-028 | sk_share commitment in PTXDKGPhase4Msg — g^{sk_share_i} G1 proof-of-share; not required for W1.2; deferred to W3.2 audit input | §9.7 | Open |
 | ODC-029 | PTXDKG submission model — direct-block-inject decided (KDD-058, 2026-06-12); block-inject wiring pending W1.3 | §9.8, §18 | Closed |
-| ODC-030 | PTXDKG acceptance window (no max-age in W1.3) + cross-block per-formation uniqueness — both deferred to W2 lifecycle | §9.9 | Open |
-| ODC-031 | V1–V4 anchoring-chain coverage not unit-testable in test_ptx; exercised via Package 3 wiring on a real chain. COMPLETE (C6/C7): V1, V2, V3-PREDICATE, V4, F-5, populate-refusal. BOUND TO W2.2 (datadir-v2): V3-REORG-TRANSITION, C3-INVOCATION, F-6, F-9. C3-INVOCATION not unit-covered (FA-2b) | §9.10 | Partially closed (C6/C7, 2026-07-04) |
+| ODC-030 | PTXDKG acceptance window + cross-block per-formation uniqueness. Clause 2 (uniqueness) CLOSED at W2.1: CPTXQuorumStore index + V9 `ptxdkg-duplicate-formation` / persist-boundary pair, falsified T5 + stub→RED. Clause 1 (staleness) split → ODC-033 | §9.9 | Closed (2026-07-08, W2.1 C4/C5; clause 1 continues as ODC-033) |
+| ODC-031 | V1–V4 anchoring-chain coverage not unit-testable in test_ptx; exercised via Package 3 wiring on a real chain. COMPLETE (C6/C7): V1, V2, V3-PREDICATE, V4, F-5, populate-refusal. F-6 DISCHARGED at W2.1 (C0 connect-valid substrate; accept path end-to-end ×2). STILL OWED, mechanically unblocked, bound W2.2: V3-REORG-TRANSITION, C3-INVOCATION, F-9. C3-INVOCATION not unit-covered (FA-2b) | §9.10 | Partially closed (C6/C7 2026-07-04; F-6 discharged 2026-07-08) |
 | ODC-032 | Can TestChainSetup run in test_ptx (the fixture block-mining hang; runtime face of umbrella rot); if resolved the anchoring checks could move to unit coverage, but the ODC-031 W2.2 remainder binding stands (ODC-031 partially closed) | §9.11 | Open (deferred) |
+| ODC-033 | PTXDKG staleness/max-age bound — split from ODC-030 clause 1; no max-age on formation-anchor age (stale-anchor acceptance is the residual exposure; duplicate/conflict arms now covered by ODC-030 closure); constant + legality condition come from W2.2/W2.3 cadence design | §9.12 | Open (bound W2.2/W2.3) |
