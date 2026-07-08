@@ -14,7 +14,9 @@
 #include "ptx/ptx_pose.h"
 #include "ptx/ptx_quorum.h"
 #include "ptx/ptx_seed.h"
+#include "bls/key_io.h" // bls::DecodeSecret (W2.1 C0 operator_keys mode)
 #include "crypto/sha256.h"
+#include "evo/deterministicgms.h"
 #include "key_io.h"
 #include "logging.h"
 #include "primitives/transaction.h"
@@ -609,6 +611,94 @@ static CMutableTransaction PTX_Debug_BuildPTXDKGTxFromSpec(const uint256& quorum
     return tx;
 }
 
+// Real-operator-key builder (W2.1 C0 — the C6 "operator_keys" mode).  Builds a
+// CONNECT-VALID payload with no ceremony and no transport: members come from the
+// canonical selection at the anchor (PTX_DKG_SelectQuorumFromList — the same
+// KDD-060 core CheckPTXDKGTx V5 runs, so construction and validation agree by
+// construction) and premits are signed with the SUPPLIED operator secrets,
+// matched to selected members by registered pubKeyOperator.  `exclude` drops
+// members from the committed list (under-strength payloads, KDD-061);
+// `members_override`, when present, replaces the committed member list verbatim
+// (containment falsification rows) — premits still come from real survivors.
+static CMutableTransaction PTX_Debug_BuildPTXDKGTxFromChain(const uint256& quorum_hash,
+                                                            int formation_height,
+                                                            const uint8_t group_pk[48],
+                                                            const uint256& vvec_hash,
+                                                            const std::vector<CBLSSecretKey>& operator_sks,
+                                                            const std::set<std::string>& exclude,
+                                                            const std::vector<std::string>* members_override,
+                                                            int n_premits)
+{
+    CDeterministicGMList dgmList;
+    {
+        LOCK(cs_main);
+        const CBlockIndex* pindexQuorum = LookupBlockIndex(quorum_hash);
+        if (pindexQuorum == nullptr) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                "operator_keys mode requires a real anchor: quorum_hash not found");
+        }
+        dgmList = deterministicGMManager->GetListForBlock(pindexQuorum);
+    }
+    const std::vector<CDeterministicGMCPtr> quorum11 =
+        PTX_DKG_SelectQuorumFromList(dgmList, quorum_hash);
+    if (quorum11.empty()) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "no eligible GMs at anchor");
+    }
+
+    std::map<std::vector<uint8_t>, CBLSSecretKey> sk_by_pk;
+    for (const CBLSSecretKey& sk : operator_sks) {
+        sk_by_pk[sk.GetPublicKey().ToByteVector()] = sk;
+    }
+
+    PTXDKGPayload pl;
+    pl.quorum_hash      = quorum_hash;
+    memcpy(pl.group_pk_bytes, group_pk, 48);
+    pl.vvec_hash        = vvec_hash;
+    pl.formation_height = formation_height;
+
+    // Survivors: selection order minus excluded — committed list keeps the
+    // KDD-052/060 score order; exclusion leaves GAPPED share indices (KDD-061).
+    std::vector<CDeterministicGMCPtr> survivors;
+    for (const auto& dgm : quorum11) {
+        if (exclude.count(dgm->pdgmState->node_id)) continue;
+        survivors.push_back(dgm);
+    }
+    if (members_override != nullptr) {
+        pl.member_node_ids = *members_override;
+    } else {
+        for (const auto& dgm : survivors) {
+            pl.member_node_ids.push_back(dgm->pdgmState->node_id);
+        }
+    }
+
+    int built = 0;
+    for (const auto& dgm : survivors) {
+        if (built >= n_premits) break;
+        const CBLSPublicKey op_pk = dgm->pdgmState->pubKeyOperator.Get();
+        auto it = sk_by_pk.find(op_pk.ToByteVector());
+        if (it == sk_by_pk.end()) continue; // no secret supplied for this member
+        PTXDKGPhase4Msg p;
+        p.quorum_hash = quorum_hash;
+        p.proTxHash   = dgm->proTxHash;
+        memcpy(p.group_pk_bytes, group_pk, 48);
+        p.vvec_hash   = vvec_hash;
+        p.sig         = it->second.Sign(p.GetSignHash());
+        pl.premit_commitments[p.proTxHash] = p;
+        built++;
+    }
+    if (built < n_premits) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER,
+            strprintf("only %d of %d premits buildable: supplied operator_keys match "
+                      "%d selected survivors", built, n_premits, built));
+    }
+
+    CMutableTransaction tx;
+    tx.nVersion = CTransaction::TxVersion::SAPLING;
+    tx.nType    = CTransaction::TxType::PTXDKG;
+    SetTxPayload(tx, pl);
+    return tx;
+}
+
 UniValue ptx_debug_ptxdkgpopulate(const JSONRPCRequest& request)
 {
     if (request.fHelp || request.params.size() < 1 || request.params.size() > 2) {
@@ -617,8 +707,11 @@ UniValue ptx_debug_ptxdkgpopulate(const JSONRPCRequest& request)
             "\nTEST-GATED: regtest and ptxbea ONLY — hard error on every other network.\n"
             "Build a PTXDKG special transaction server-side from an explicit payload\n"
             "description and populate the pending block-inject slot (W1.3 P3 C5 driver).\n"
-            "Premit signatures are throwaway-key BLS sigs: structurally valid, never\n"
-            "operator-key valid. Real-operator-key premits land at C6 (operator_keys).\n"
+            "Without operator_keys: premit signatures are throwaway-key BLS sigs —\n"
+            "structurally valid, never operator-key valid (bad-anchor battery rows).\n"
+            "With operator_keys (W2.1 C0): members = the canonical selection at the\n"
+            "anchor (KDD-060 core), premits signed by the supplied operator secrets —\n"
+            "a CONNECT-VALID payload, no ceremony needed.\n"
             "\nArguments:\n"
             "1. payload   (object, required)\n"
             "     {\n"
@@ -628,8 +721,14 @@ UniValue ptx_debug_ptxdkgpopulate(const JSONRPCRequest& request)
             "                                     compressed G1, or generate a throwaway key\n"
             "       \"vvec_hash\": \"hex\",         (string, optional, default 5e..5e) 32-byte hash\n"
             "       \"premits\": n,               (numeric, optional, default 6) premit count\n"
-            "       \"members\": n,               (numeric, optional, default 11) member count\n"
-            "       \"operator_keys\": [..]       (array, optional) C6 stub — errors if present\n"
+            "       \"members\": n,               (numeric, optional, default 11) member count (fake mode only)\n"
+            "       \"operator_keys\": [\"bls-sk-..\", ..]  (array, optional) REAL mode: members from the\n"
+            "                                     canonical selection at the anchor; premits signed by\n"
+            "                                     these operator secrets (bech32, bls::DecodeSecret)\n"
+            "       \"exclude\": [\"node_id\", ..]  (array, optional, real mode) drop these members from\n"
+            "                                     the committed list (under-strength / gapped-index rows)\n"
+            "       \"members_override\": [..]     (array, optional, real mode) replace the committed\n"
+            "                                     member list verbatim (containment falsification rows)\n"
             "       \"build_only\": bool          (optional) build + return tx_hex, do NOT touch the slot\n"
             "     }\n"
             "2. force     (boolean, optional, default false) E-1: bypass BOTH populate-time\n"
@@ -661,10 +760,39 @@ UniValue ptx_debug_ptxdkgpopulate(const JSONRPCRequest& request)
     const bool fForce = request.params.size() > 1 && !request.params[1].isNull()
                         && request.params[1].get_bool();
 
-    // C6 stub: the real-operator-key premit mode is not implemented yet.
-    if (!find_value(spec, "operator_keys").isNull()) {
-        throw JSONRPCError(RPC_INVALID_PARAMETER,
-            "operator_keys (real-operator-key premit mode) lands at C6");
+    // W2.1 C0: real-operator-key premit mode (the mode C5 stubbed as "lands at C6").
+    std::vector<CBLSSecretKey> operator_sks;
+    const UniValue& v_ok = find_value(spec, "operator_keys");
+    if (!v_ok.isNull()) {
+        for (size_t i = 0; i < v_ok.size(); i++) {
+            auto opKey = bls::DecodeSecret(Params(), v_ok[i].get_str());
+            if (!opKey) {
+                throw JSONRPCError(RPC_INVALID_PARAMETER,
+                    strprintf("operator_keys[%u] is not a valid BLS secret", (unsigned)i));
+            }
+            operator_sks.push_back(*opKey);
+        }
+        if (operator_sks.empty()) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "operator_keys must be non-empty when present");
+        }
+    }
+    std::set<std::string> exclude;
+    const UniValue& v_ex = find_value(spec, "exclude");
+    if (!v_ex.isNull()) {
+        if (operator_sks.empty()) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "exclude requires operator_keys mode");
+        }
+        for (size_t i = 0; i < v_ex.size(); i++) exclude.insert(v_ex[i].get_str());
+    }
+    std::vector<std::string> members_override;
+    bool fMembersOverride = false;
+    const UniValue& v_mo = find_value(spec, "members_override");
+    if (!v_mo.isNull()) {
+        if (operator_sks.empty()) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "members_override requires operator_keys mode");
+        }
+        fMembersOverride = true;
+        for (size_t i = 0; i < v_mo.size(); i++) members_override.push_back(v_mo[i].get_str());
     }
 
     const UniValue& v_qh = find_value(spec, "quorum_hash");
@@ -708,13 +836,27 @@ UniValue ptx_debug_ptxdkgpopulate(const JSONRPCRequest& request)
     const int n_premits = v_pre.isNull() ? 6 : v_pre.get_int();
     const int n_members = v_mem.isNull() ? 11 : v_mem.get_int();
 
-    const CMutableTransaction mtx = PTX_Debug_BuildPTXDKGTxFromSpec(
-        quorum_hash, formation_height, group_pk, vvec_hash, n_members, n_premits);
+    const CMutableTransaction mtx = operator_sks.empty()
+        ? PTX_Debug_BuildPTXDKGTxFromSpec(
+              quorum_hash, formation_height, group_pk, vvec_hash, n_members, n_premits)
+        : PTX_Debug_BuildPTXDKGTxFromChain(
+              quorum_hash, formation_height, group_pk, vvec_hash, operator_sks,
+              exclude, fMembersOverride ? &members_override : nullptr, n_premits);
     const CTransactionRef tx = MakeTransactionRef(mtx);
 
     UniValue ret(UniValue::VOBJ);
     ret.pushKV("txid",   tx->GetHash().GetHex());
     ret.pushKV("tx_hex", EncodeHexTx(*tx));
+    // Real mode: surface the committed member list (selection order) so
+    // battery rows can learn the canonical selection without decoding tx_hex.
+    if (!operator_sks.empty()) {
+        PTXDKGPayload built;
+        if (GetTxPayload(*tx, built)) {
+            UniValue mv(UniValue::VARR);
+            for (const std::string& nid : built.member_node_ids) mv.push_back(nid);
+            ret.pushKV("member_node_ids", mv);
+        }
+    }
 
     // BUILD_ONLY (C6): return the serialized tx WITHOUT touching the pending
     // slot — the mempool-rejection (F-5) and two-per-block (C3-invocation) rows
