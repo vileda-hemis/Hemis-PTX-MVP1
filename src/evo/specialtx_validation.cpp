@@ -679,6 +679,19 @@ bool CheckPTXDKGTx(const CTransaction& tx, const CBlockIndex* pindexPrev,
                                         payload.quorum_hash.ToString()),
                              REJECT_INVALID, "ptxdkg-quorum-hash-not-active-chain");
 
+        // V9 (W2.1 C4, ODC-030 clause 2): one accepted PTXDKG per formation —
+        // cross-block uniqueness against the persisted quorum index.  evodb
+        // tracks the connecting chain through the scoped transaction stack, so
+        // the answer is reorg-consistent for populate (tip), assembler
+        // (pindexPrev) and block-connect alike.  Validation-surface twin of
+        // the persist-boundary guard in CPTXQuorumStore::ProcessBlock — this
+        // is the reject with observability (populate refusal / generate-time
+        // keep-but-skip); the store guard is defense-in-depth.
+        if (ptxQuorumStore && ptxQuorumStore->HasQuorumRecord(payload.quorum_hash))
+            return state.DoS(100, error("%s: PTXDKG for formation %s already accepted", __func__,
+                                        payload.quorum_hash.ToString()),
+                             REJECT_INVALID, "ptxdkg-duplicate-formation");
+
         // V4: snapshot the GM list at the formation block.  A missing snapshot
         // post-activation is local DB corruption — GetListForBlock throws and the
         // throw PROPAGATES (no try/catch; converting it to a reject would be wrong
@@ -695,6 +708,24 @@ bool CheckPTXDKGTx(const CTransaction& tx, const CBlockIndex* pindexPrev,
             return state.DoS(100, error("%s: PTXDKG quorum underfull (%d of 11) at anchor",
                                         __func__, (int)quorum11.size()),
                              REJECT_INVALID, "ptxdkg-quorum-underfull");
+
+        // V10 (W2.1 C4): committed member containment — every member_node_ids
+        // entry must hold a rank in the canonical selection, no duplicates.
+        // Load-bearing for KDD-061: a committed member outside the selection
+        // has NO derivable share_index, making recovery unreconstructable from
+        // committed data.  (V1-V8 only count-check member_node_ids; premit
+        // checks V7* cover committers, not the committed member list.)
+        {
+            std::set<std::string> selected;
+            for (const auto& dgm : quorum11) selected.insert(dgm->pdgmState->node_id);
+            std::set<std::string> seen;
+            for (const std::string& nid : payload.member_node_ids) {
+                if (!selected.count(nid) || !seen.insert(nid).second)
+                    return state.DoS(100, error("%s: PTXDKG committed member '%s' not in the "
+                                                "canonical selection (or duplicated)", __func__, nid),
+                                     REJECT_INVALID, "ptxdkg-member-not-in-quorum");
+            }
+        }
 
         // V6–V8: per-premit operator-key signature agreement against the quorum.
         if (!PTX_DKG_VerifyPremits(quorum11, payload, state))

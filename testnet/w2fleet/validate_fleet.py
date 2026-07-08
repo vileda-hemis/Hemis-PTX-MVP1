@@ -116,7 +116,13 @@ def eligibility_gate(cluster: W2Cluster, expected_n: int) -> dict:
             "populate ACCEPTED a fabricated-premit payload — validation regression")
     except RPCError as e:
         reason = e.message
-    if "ptxdkg-committer-not-in-quorum" in reason:
+    # Either reason proves V5 assembled a full quorum-of-11: V10
+    # member-containment (W2.1 C4) runs only after the underfull check on the
+    # assembled selection, and the fake-mode dbggm ids always trip it before
+    # V6-V8's committer check is reached.  Pre-C4 binaries fall through to the
+    # committer reason instead.
+    if ("ptxdkg-committer-not-in-quorum" in reason
+            or "ptxdkg-member-not-in-quorum" in reason):
         print(f"[eligibility] GATE PASS — V5 selection assembled a full "
               f"quorum-of-11 at anchor h{anchor_h}; refusal reason: {reason!r}")
         return {"pass": True, "reason": reason, "anchor_height": anchor_h}
