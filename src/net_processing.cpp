@@ -14,6 +14,7 @@
 #include "llmq/quorums_blockprocessor.h"
 #include "llmq/quorums_chainlocks.h"
 #include "llmq/quorums_dkgsessionmgr.h"
+#include "ptx/ptx_dkg_net.h"
 #include "llmq/quorums_signing.h"
 #include "gamemaster-payments.h"
 #include "gamemaster-sync.h"
@@ -875,6 +876,12 @@ bool static AlreadyHave(const CInv& inv) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
     case MSG_QUORUM_JUSTIFICATION:
     case MSG_QUORUM_PREMATURE_COMMITMENT:
         return llmq::quorumDKGSessionManager->AlreadyHave(inv);
+    case MSG_PTX_QUORUM_HASH_COMMIT:
+    case MSG_PTX_QUORUM_CONTRIB:
+    case MSG_PTX_QUORUM_COMPLAINT:
+    case MSG_PTX_QUORUM_JUSTIFICATION:
+    case MSG_PTX_QUORUM_PREMATURE_COMMITMENT:
+        return g_ptx_ceremony_transport.AlreadyHaveMsg(inv);
     case MSG_QUORUM_RECOVERED_SIG:
         return llmq::quorumSigningManager->AlreadyHave(inv);
     case MSG_CLSIG:
@@ -990,6 +997,50 @@ bool static PushTierTwoGetDataRequest(const CInv& inv,
         llmq::CDKGPrematureCommitment o;
         if (llmq::quorumDKGSessionManager->GetPrematureCommitment(inv.hash, o)) {
             connman->PushMessage(pfrom, msgMaker.Make(NetMsgType::QPCOMMITMENT, o));
+            return true;
+        }
+    }
+
+    // PTX-DKG ceremony transport (W2.0b) — getdata serving from the
+    // envelope-valid stores; byte-stable re-serialization (C0) makes the
+    // reply byte-identical to the stored message's received bytes.
+    if (inv.type == MSG_PTX_QUORUM_HASH_COMMIT) {
+        if (!deterministicGMManager->IsDIP3Enforced()) return false;
+        PTXDKGPhase0Msg o;
+        if (g_ptx_ceremony_transport.GetStoredPhase0(inv.hash, o)) {
+            connman->PushMessage(pfrom, msgMaker.Make(NetMsgType::PTXQHASHCOMMIT, o));
+            return true;
+        }
+    }
+    if (inv.type == MSG_PTX_QUORUM_CONTRIB) {
+        if (!deterministicGMManager->IsDIP3Enforced()) return false;
+        PTXDKGPhase1Msg o;
+        if (g_ptx_ceremony_transport.GetStoredPhase1(inv.hash, o)) {
+            connman->PushMessage(pfrom, msgMaker.Make(NetMsgType::PTXQCONTRIB, o));
+            return true;
+        }
+    }
+    if (inv.type == MSG_PTX_QUORUM_COMPLAINT) {
+        if (!deterministicGMManager->IsDIP3Enforced()) return false;
+        PTXDKGPhase2Msg o;
+        if (g_ptx_ceremony_transport.GetStoredPhase2(inv.hash, o)) {
+            connman->PushMessage(pfrom, msgMaker.Make(NetMsgType::PTXQCOMPLAINT, o));
+            return true;
+        }
+    }
+    if (inv.type == MSG_PTX_QUORUM_JUSTIFICATION) {
+        if (!deterministicGMManager->IsDIP3Enforced()) return false;
+        PTXDKGPhase3Msg o;
+        if (g_ptx_ceremony_transport.GetStoredPhase3(inv.hash, o)) {
+            connman->PushMessage(pfrom, msgMaker.Make(NetMsgType::PTXQJUSTIFICATION, o));
+            return true;
+        }
+    }
+    if (inv.type == MSG_PTX_QUORUM_PREMATURE_COMMITMENT) {
+        if (!deterministicGMManager->IsDIP3Enforced()) return false;
+        PTXDKGPhase4Msg o;
+        if (g_ptx_ceremony_transport.GetStoredPhase4(inv.hash, o)) {
+            connman->PushMessage(pfrom, msgMaker.Make(NetMsgType::PTXQPCOMMITMENT, o));
             return true;
         }
     }

@@ -125,6 +125,83 @@ struct PTXDKGPhase0Msg {
 static const uint64_t PTX_DKG_WIRE_MAX_VVEC = 11;
 
 // ---------------------------------------------------------------------------
+// Serialization formatters for the raw blst types (KDD-054 seams).  Split
+// Ser/Unser (the Using<> pattern) so each stream direction instantiates only
+// its own path — REQUIRED because ceremony messages serialize over the wire
+// through CVectorWriter (write-only, via CNetMsgMaker), which has no read():
+// a raw SER_READ(s.read(...)) fails to COMPILE against it.  LLMQ dodges this
+// by only READWRITE-ing types with their own Serialize/Unserialize; PTX's raw
+// blst points/scalars need these formatters.
+// ---------------------------------------------------------------------------
+
+// A blst_p1_affine as 48 compressed bytes; Unser rejects points that fail
+// decompress (the C0 "ptxdkg-phase1-bad-point" gate).
+struct PTXBlstG1Formatter {
+    template <typename Stream> void Ser(Stream& s, const blst_p1_affine& pt) const {
+        uint8_t buf[48];
+        blst_p1_affine_compress(buf, &pt);
+        s.write(reinterpret_cast<const char*>(buf), 48);
+    }
+    template <typename Stream> void Unser(Stream& s, blst_p1_affine& pt) const {
+        uint8_t buf[48];
+        s.read(reinterpret_cast<char*>(buf), 48);
+        if (blst_p1_uncompress(&pt, buf) != BLST_SUCCESS)
+            throw std::ios_base::failure("ptxdkg-phase1-bad-point");
+    }
+};
+
+// std::vector<blst_p1_affine> as compactsize count (capped) + compressed points.
+struct PTXVvecFormatter {
+    template <typename Stream> void Ser(Stream& s, const std::vector<blst_p1_affine>& vvec) const {
+        ::WriteCompactSize(s, vvec.size());
+        PTXBlstG1Formatter pf;
+        for (const auto& pt : vvec) pf.Ser(s, pt);
+    }
+    template <typename Stream> void Unser(Stream& s, std::vector<blst_p1_affine>& vvec) const {
+        const uint64_t n = ::ReadCompactSize(s);
+        if (n > PTX_DKG_WIRE_MAX_VVEC)
+            throw std::ios_base::failure("ptxdkg-phase1-vvec-oversize");
+        vvec.clear();
+        vvec.reserve(n);
+        PTXBlstG1Formatter pf;
+        for (uint64_t k = 0; k < n; k++) {
+            blst_p1_affine pt;
+            pf.Unser(s, pt);
+            vvec.push_back(pt);
+        }
+    }
+};
+
+// A blst_scalar as 32 opaque big-endian bytes (IMP-D1 seam); Unser rejects
+// non-canonical scalars (the C0 "ptxdkg-phase3-noncanonical-scalar" gate).
+struct PTXBlstScalarFormatter {
+    template <typename Stream> void Ser(Stream& s, const blst_scalar& sc) const {
+        uint8_t buf[32];
+        blst_bendian_from_scalar(buf, &sc);
+        s.write(reinterpret_cast<const char*>(buf), 32);
+    }
+    template <typename Stream> void Unser(Stream& s, blst_scalar& sc) const {
+        uint8_t buf[32];
+        s.read(reinterpret_cast<char*>(buf), 32);
+        blst_scalar_from_bendian(&sc, buf);
+        if (!blst_scalar_fr_check(&sc))
+            throw std::ios_base::failure("ptxdkg-phase3-noncanonical-scalar");
+    }
+};
+
+// Fixed N raw bytes (no length prefix) — for group_pk_bytes[48].  Ser/Unser
+// split so the write path never references s.read.
+template <int N>
+struct PTXFixedBytesFormatter {
+    template <typename Stream> void Ser(Stream& s, const uint8_t (&arr)[N]) const {
+        s.write(reinterpret_cast<const char*>(arr), N);
+    }
+    template <typename Stream> void Unser(Stream& s, uint8_t (&arr)[N]) const {
+        s.read(reinterpret_cast<char*>(arr), N);
+    }
+};
+
+// ---------------------------------------------------------------------------
 // PTXDKGPhase1Msg — the CONTRIB P2P message.
 // Reveals the sender's vvec and carries per-QUAL-member encrypted evaluations.
 //
@@ -167,27 +244,7 @@ struct PTXDKGPhase1Msg {
     SERIALIZE_METHODS(PTXDKGPhase1Msg, obj)
     {
         READWRITE(obj.quorum_hash, obj.proTxHash);
-        SER_WRITE(obj, ::WriteCompactSize(s, obj.vvec.size()));
-        SER_WRITE(obj, for (const auto& pt : obj.vvec) {
-            uint8_t buf[48];
-            blst_p1_affine_compress(buf, &pt);
-            s.write(reinterpret_cast<const char*>(buf), 48);
-        });
-        SER_READ(obj, {
-            const uint64_t n = ::ReadCompactSize(s);
-            if (n > PTX_DKG_WIRE_MAX_VVEC)
-                throw std::ios_base::failure("ptxdkg-phase1-vvec-oversize");
-            obj.vvec.clear();
-            obj.vvec.reserve(n);
-            for (uint64_t k = 0; k < n; k++) {
-                uint8_t buf[48];
-                s.read(reinterpret_cast<char*>(buf), 48);
-                blst_p1_affine pt;
-                if (blst_p1_uncompress(&pt, buf) != BLST_SUCCESS)
-                    throw std::ios_base::failure("ptxdkg-phase1-bad-point");
-                obj.vvec.push_back(pt);
-            }
-        });
+        READWRITE(Using<PTXVvecFormatter>(obj.vvec));
         READWRITE(obj.encrypted_shares, obj.sig);
     }
 };
@@ -250,18 +307,7 @@ struct PTXDKGPhase3Msg {
     SERIALIZE_METHODS(PTXDKGPhase3Msg, obj)
     {
         READWRITE(obj.quorum_hash, obj.dealer_proTxHash, obj.complainant_proTxHash);
-        SER_WRITE(obj, {
-            uint8_t buf[32];
-            blst_bendian_from_scalar(buf, &obj.revealed_share);
-            s.write(reinterpret_cast<const char*>(buf), 32);
-        });
-        SER_READ(obj, {
-            uint8_t buf[32];
-            s.read(reinterpret_cast<char*>(buf), 32);
-            blst_scalar_from_bendian(&obj.revealed_share, buf);
-            if (!blst_scalar_fr_check(&obj.revealed_share))
-                throw std::ios_base::failure("ptxdkg-phase3-noncanonical-scalar");
-        });
+        READWRITE(Using<PTXBlstScalarFormatter>(obj.revealed_share));
         READWRITE(obj.sig);
     }
 };
@@ -284,9 +330,11 @@ struct PTXDKGPhase4Msg {
     SERIALIZE_METHODS(PTXDKGPhase4Msg, obj)
     {
         READWRITE(obj.quorum_hash, obj.proTxHash);
-        // group_pk_bytes: fixed 48 bytes, no size prefix (SER_WRITE/SER_READ for C-array)
-        SER_WRITE(obj, s.write(reinterpret_cast<const char*>(obj.group_pk_bytes), 48));
-        SER_READ(obj,  s.read(reinterpret_cast<char*>(obj.group_pk_bytes), 48));
+        // group_pk_bytes: fixed 48 bytes, no size prefix.  Formatter (not raw
+        // SER_READ) so this compiles over the write-only wire stream too; the
+        // 48 emitted bytes are IDENTICAL to the prior encoding — the
+        // consensus-frozen on-chain form is unchanged (S-4 guards it).
+        READWRITE(Using<PTXFixedBytesFormatter<48>>(obj.group_pk_bytes));
         READWRITE(obj.vvec_hash, obj.sig);
     }
 };
@@ -308,8 +356,7 @@ struct PTXDKGPayload {
     SERIALIZE_METHODS(PTXDKGPayload, obj)
     {
         READWRITE(obj.quorum_hash);
-        SER_WRITE(obj, s.write(reinterpret_cast<const char*>(obj.group_pk_bytes), 48));
-        SER_READ(obj,  s.read(reinterpret_cast<char*>(obj.group_pk_bytes), 48));
+        READWRITE(Using<PTXFixedBytesFormatter<48>>(obj.group_pk_bytes));
         READWRITE(obj.vvec_hash, obj.member_node_ids,
                   obj.formation_height, obj.premit_commitments);
     }

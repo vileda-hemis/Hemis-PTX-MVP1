@@ -30,16 +30,20 @@
 // register-marked producer-pending, ZERO production callers at W2.0b (the
 // W2.1 MarkForming convention).  Unit tests construct sessions directly.
 
+#include "protocol.h" // CInv
 #include "ptx/ptx_dkg.h"
 #include "streams.h"
 #include "sync.h"
 #include "uint256.h"
 
+#include <atomic>
+#include <functional>
 #include <list>
 #include <map>
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 
 typedef int NodeId; // matches net.h:94; avoids pulling net.h into ceremony code
 
@@ -50,6 +54,13 @@ static const size_t PTX_DKG_TRANSPORT_MAX_PER_NODE = 22;
 // Drain batch size (C2 consumer) — the LLMQ pattern
 // (ProcessPendingMessageBatch callers, quorums_dkgsessionhandler.cpp:547-574).
 static const size_t PTX_DKG_TRANSPORT_BATCH = 8;
+
+// Per-member per-phase ACCEPTED-message cap — the LLMQ per-member
+// contribution cap (quorums_dkgsession.cpp:248-254): a member's messages
+// past this count are dropped BEFORE the expensive sig verify (no ban —
+// matching the template).  Bounds store growth and CPU under a
+// valid-key-flood from a compromised member.
+static const size_t PTX_DKG_TRANSPORT_MAX_PER_MEMBER = 2;
 
 // ---------------------------------------------------------------------------
 // CPTXPendingMessages — one instance per ceremony phase message type.
@@ -106,6 +117,25 @@ private:
     CPTXPendingMessages pendingJustifications{PTX_DKG_TRANSPORT_MAX_PER_NODE};
     CPTXPendingMessages pendingPremits{PTX_DKG_TRANSPORT_MAX_PER_NODE};
 
+    // Accepted (envelope-valid) messages, per phase, keyed by RAW-received-
+    // bytes hash — the relay/getdata identity.  Byte-stability (C0) makes
+    // the re-serialized getdata reply byte-identical to what was received.
+    mutable RecursiveMutex cs_store;
+    std::map<uint256, PTXDKGPhase0Msg> storeP0;
+    std::map<uint256, PTXDKGPhase1Msg> storeP1;
+    std::map<uint256, PTXDKGPhase2Msg> storeP2;
+    std::map<uint256, PTXDKGPhase3Msg> storeP3;
+    std::map<uint256, PTXDKGPhase4Msg> storeP4;
+    std::map<uint256, size_t> acceptedPerMember[5]; // sender proTxHash → count
+
+    // Drain thread (daemon path; unit rows call ProcessBatch directly).
+    std::thread drainThread;
+    std::atomic<bool> stopDrain{false};
+    void DrainLoop();
+
+    template <typename Msg>
+    void ProcessBatchT(int phase, int invType, std::map<uint256, Msg>& store, size_t maxCount);
+
 public:
     // THE SEAM.  Returns the active session iff quorum_hash matches, else
     // nullptr (caller drops, no ban).  W2.5 swaps the slot for a map behind
@@ -114,7 +144,43 @@ public:
 
     // PRODUCER: W2.2 formation (register-marked producer-pending; zero
     // production callers at W2.0b — Resolution 1).  nullptr clears.
+    // Swapping/clearing the session clears queues + stores (single-slot
+    // hygiene; the W2.5 map revisits this).
     void SetActiveSession(PTXDKGSession* session);
+
+    // Injectable side-effect hooks.  Daemon defaults are installed by
+    // InitPTXCeremonyTransport: penalty = Misbehaving(score) under cs_main
+    // (the tiertwo_networksync.cpp:66-74 contract), relay = inv push to
+    // GMAUTH-verified peers that are members of the RESOLVED session
+    // (verifiedProRegTxHash ∈ session.members — quorums_dkgsession.cpp
+    // :1314-1322, born-restricted).  Unset hooks are no-ops.  Unit rows
+    // install recorders to OBSERVE relayed-vs-dropped / punished-vs-not
+    // per reject arm.
+    std::function<void(NodeId, int)> penaltyHook;
+    std::function<void(const CInv&, const PTXDKGSession&)> relayHook;
+
+    // The drain pipeline for one phase queue.  ORDER (cheap → expensive,
+    // the LLMQ ordering, quorums_dkgsessionhandler.cpp:430-499 — enqueue
+    // already applied per-node cap + seen-hash dedup BEFORE this):
+    //   deserialize (R1 malformed → ban) → resolve (R2 unknown-quorum →
+    //   silent drop) → membership of the RESOLVED session (R3 → ban) →
+    //   per-member accept cap (drop, no ban) → operator-key sig verify
+    //   (R4 → ban; the EXPENSIVE check, deliberately LAST) → store +
+    //   relay (envelope-valid relays REGARDLESS of the deeper semantic
+    //   outcome — quorums_dkgsession.cpp:270-272) → PTX_DKG_Receive*.
+    void ProcessBatch(int phase, size_t maxCount = PTX_DKG_TRANSPORT_BATCH);
+
+    // Relay/getdata surface (net_processing AlreadyHave / ProcessGetData).
+    bool AlreadyHaveMsg(const CInv& inv);
+    bool GetStoredPhase0(const uint256& hash, PTXDKGPhase0Msg& ret);
+    bool GetStoredPhase1(const uint256& hash, PTXDKGPhase1Msg& ret);
+    bool GetStoredPhase2(const uint256& hash, PTXDKGPhase2Msg& ret);
+    bool GetStoredPhase3(const uint256& hash, PTXDKGPhase3Msg& ret);
+    bool GetStoredPhase4(const uint256& hash, PTXDKGPhase4Msg& ret);
+
+    void StartDrain();
+    void StopDrain();
+    void ClearAll(); // queues + stores + member counts
 
     // Enqueue-only entry from the tier-two dispatcher (P2P message thread).
     // Returns false ONLY on an unroutable command (dispatcher misroute →
