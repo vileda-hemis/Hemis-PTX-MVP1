@@ -139,6 +139,8 @@ bool CPTXQuorumStore::ProcessBlock(const CBlock& block, const CBlockIndex* pinde
         LOCK(cs);
         recordCache[rec.quorum_hash] = rec;
     }
+    // T-E consumption hook: no-op until W2.2 produces FORMING entries.
+    ConsumeFormingOnConnect(rec.quorum_hash);
 
     LogPrintf("%s: persisted PTXDKG quorum record. quorum_hash=%s anchor_height=%d "
               "mined_height=%d formed=%d completed=%d txid=%s\n", __func__,
@@ -178,6 +180,65 @@ bool CPTXQuorumStore::UndoBlock(const CBlock& block, const CBlockIndex* pindex)
     LogPrintf("%s: erased PTXDKG quorum record on disconnect. quorum_hash=%s height=%d\n",
               __func__, payload.quorum_hash.ToString(), pindex->nHeight);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// W2.1 C2 — PRODUCER-PENDING transition functions (see header contract; no
+// production caller except the documented no-op ConsumeFormingOnConnect hook).
+// Register-marked: falsification bound to W2.2 (forming) / W2.4 (disband).
+// ---------------------------------------------------------------------------
+
+void CPTXQuorumStore::MarkForming(const uint256& quorum_hash, int formation_height)
+{
+    LOCK(cs);
+    formingEntries[quorum_hash] = formation_height;
+    LogPrintf("%s: FORMING entry registered (node-local). quorum_hash=%s height=%d\n",
+              __func__, quorum_hash.ToString(), formation_height);
+}
+
+void CPTXQuorumStore::ClearForming(const uint256& quorum_hash)
+{
+    LOCK(cs);
+    if (formingEntries.erase(quorum_hash)) {
+        // §C1: this erase is the state-side half of abort-clears-slot; the
+        // sk-share clear it authorizes is built at W2.2, not here.
+        LogPrintf("%s: FORMING entry cleared (abort/authorized-replacement path). "
+                  "quorum_hash=%s\n", __func__, quorum_hash.ToString());
+    }
+}
+
+void CPTXQuorumStore::ConsumeFormingOnConnect(const uint256& quorum_hash)
+{
+    LOCK(cs);
+    if (formingEntries.erase(quorum_hash)) {
+        LogPrintf("%s: FORMING entry consumed by accepted PTXDKG. quorum_hash=%s\n",
+                  __func__, quorum_hash.ToString());
+    }
+    // Empty map until W2.2 produces FORMING entries — no-op today by design.
+}
+
+bool CPTXQuorumStore::MarkDisbanded(const uint256& quorum_hash, int disband_height)
+{
+    // PRODUCER-PENDING (W2.4).  No block event drives this at W2.1 and its
+    // disconnect-undo is deliberately not designed yet — W2.4 wires both.
+    LOCK(cs);
+    CPTXQuorumRecord rec;
+    if (!GetQuorumRecord(quorum_hash, rec)) {
+        return false;
+    }
+    rec.state = static_cast<uint8_t>(PTXQuorumState::DISBANDED);
+    rec.consecutive_inquorate_blocks = 0;
+    evoDb.Write(std::make_pair(DB_PTXDKG_QUORUM, quorum_hash), rec);
+    recordCache[quorum_hash] = rec;
+    LogPrintf("%s: quorum DISBANDED at height %d. quorum_hash=%s\n",
+              __func__, disband_height, quorum_hash.ToString());
+    return true;
+}
+
+bool CPTXQuorumStore::IsForming(const uint256& quorum_hash) const
+{
+    LOCK(cs);
+    return formingEntries.count(quorum_hash) > 0;
 }
 
 bool CPTXQuorumStore::HasQuorumRecord(const uint256& quorum_hash)

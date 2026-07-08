@@ -1568,6 +1568,113 @@ check bind to W2 DKG-go-live; payload materialization is a hard W2 format constr
 
 ---
 
+## §22 Decided: W2.1 Quorum Registry — persisted PTXDKG record, event-based ACTIVE mark, state-machine skeleton
+
+**KDD-062 (2026-07-08). The quorum registry is a chain-derived evodb store: one
+versioned `CPTXQuorumRecord` per ACCEPTED PTXDKG, written at block-connect and
+explicit-erased at block-disconnect (LLMQ mined-commitment pattern). ACTIVE is
+an EVENT-based predicate — "an accepted PTXDKG connected on the current chain"
+— not a provenance-based one. The registry owns the §C1 forming-vs-active
+discriminant: the committed/active mark IS the persisted record with
+`state == ACTIVE`.**
+
+### 22.1 Persisted record (v1, version-tagged)
+
+`src/ptx/ptx_quorum_store.h` `CPTXQuorumRecord`, serialized under a leading
+`nVersion` — future fields land ADDITIVE under a bumped version; a reader keys
+on the version; undo never deserializes the record (erases by key from the
+disconnected block's payload) so undo is version-agnostic. evodb keys:
+`("pq_r", quorum_hash) → record`; `("pq_h", htobe32(UINT32_MAX − mined_height))
+→ quorum_hash` (most-recent-first iteration, the LLMQ inversed-height trick).
+
+Fields: quorum_hash (anchor = identity), formation_height, group_pk, vvec_hash,
+**the FULL selected-11 in KDD-052/060 score order with per-member (node_id,
+proTxHash, share_index 1..11, in_qual)** — the KDD-061 materialization, derived
+at connect through the SAME `PTX_DKG_SelectQuorumFromList` call the V5 check
+just ran (one-function contract; satisfies KDD-061's "re-derivable from
+quorum_hash" arm with no payload format change — whether the PAYLOAD also
+materializes indices stays a W2.2 tx-format decision); formed_size /
+completed_size (born-under-strength representable: formed-11/completed-k,
+k ≥ t, gaps preserved by construction); state; provenance; accepted_txid;
+mined_block_hash/height; reserved lifecycle fields (last_rotation_height,
+drift_offset, consecutive_inquorate_blocks) written as sentinels.
+
+**Provenance (reserved, always UNSET at W2.1):** provenance is NOT
+chain-derivable — a debug-injected and a ceremony-formed PTXDKG are
+byte-identical by design, and the record is consensus-derived state
+(`-reindex` must reproduce records byte-identically on every node). The field
+exists so W2.2 has a landing slot if distinguishing formed-vs-injected ever
+matters; any setter must preserve reindex-determinism. The LEGIT producer of
+an ACTIVE quorum is W2.2 formation; the W2.1 debug-injected substrate
+exercises the same connect event, and W2.2 inherits the ACTIVE predicate
+unchanged (it produces the same event; nothing to fight).
+
+### 22.2 State machine (full design; producer-pending discipline)
+
+States: `FORMING` (node-local ONLY, never persisted — nothing is on chain
+until accept; producer W2.2), `ACTIVE` (the §C1 mark; producer LIVE —
+accepted-PTXDKG-at-connect), `ROTATING` (schema only; W2.3), `DISBANDED`
+(W2.4). UNDER-STRENGTH is a **marker, not a state** (`completed_size <
+formed_size` on an ACTIVE record) — it composes with states instead of
+forking the transition table; top-up vs run-to-rotation stays KDD-045/W2.4.
+
+| # | Transition | Producer | W2.1 status |
+|---|---|---|---|
+| T-A | (none)→ACTIVE at connect of accepted PTXDKG | LIVE (C0 debug inject → mine) | **FALSIFIED** (battery T1) |
+| T-B | ACTIVE→(none) at disconnect | LIVE (invalidateblock) | **FALSIFIED** (T2 + STUB-UNDO RED) |
+| T-C | re-connect re-persists | LIVE (reconsiderblock) | **FALSIFIED** (T8) |
+| T-D | (none)→FORMING | W2.2 formation trigger | producer-pending (`MarkForming`) |
+| T-E | FORMING→ACTIVE consumption | W2.2 (ceremony completes) | producer-pending (`ConsumeFormingOnConnect` — live no-op hook on an always-empty map) |
+| T-F | FORMING→aborted (§C1 abort-clears-slot authorization) | W2.2 abort | producer-pending (`ClearForming`); the sk-share CLEAR PATH itself is built at W2.2 |
+| T-G | ACTIVE→ROTATING→ACTIVE′ | W2.3 | enum + reserved fields only |
+| T-H | ACTIVE→DISBANDED | W2.4 (KDD-047, 30 inquorate) | producer-pending (`MarkDisbanded`); W2.4 wires the block event AND its disconnect-undo |
+| T-I | (condition) member DGM-deregistration mid-life (BUG-019 class) | any collateral spend | record snapshots identity at formation (nothing dangles); ejection semantics W2.4 |
+
+**Producer-pending contract:** T-D/E/F/H functions compile, are reviewed, have
+no production caller (T-E's hook runs against an always-empty map), and are
+NOT claimed tested — no synthetic direct-state-injection test exists. Each is
+register-marked "falsification bound to W2.2 / W2.4."
+
+**State-mutation persistence (W2.3/W2.4 forward-look):** ROTATING/DISBANDED
+transitions will be block-event-driven and need their own connect-write +
+disconnect-undo of the state mutation. The versioned record makes that
+additive; the mechanism (state-diff keys vs record-rewrite + undo journal) is
+deliberately NOT decided at W2.1 — decided by the workstream that produces the
+events.
+
+### 22.3 Undo is explicit-erase (not DGM cache-only)
+
+The DGM manager's undo erases only in-memory caches — safe there because its
+evodb keys are block-hash-keyed and reachable only by active-chain walk. This
+store has EXISTENCE semantics (`Exists(quorum_hash)` backs ODC-030 uniqueness)
+and a height-iteration index: a stale key after reorg is *visible* (phantom
+quorum; wrongly-firing uniqueness reject). The LLMQ explicit-erase undo is the
+correct member of the pattern family; the STUB-UNDO battery RED demonstrates
+the corruption cache-only undo would cause. E-5 held: no re-pend on disconnect
+(re-submission is W2.2's; register-marked).
+
+### 22.4 ODC-030 enforceability split (registry-level)
+
+NOW (implemented at the persist boundary in C1; validation-surface twins at
+C4): one-accepted-PTXDKG-per-quorum_hash (`ptxdkg-duplicate-formation` — §9.9
+clause 2 verbatim) and committed-member containment
+(`ptxdkg-member-not-in-quorum` — load-bearing for KDD-061: every committed
+member must hold a derivable share_index; recon-confirmed absent from V1–V8,
+which count-check `member_node_ids` only). DEFERRED, register-marked:
+staleness/max-age (needs W2.2/W2.3 cadence — §9.9 clause 1; recommend the
+anticipated ODC split) and cross-quorum membership / single-quorum-per-GM
+(KDD-040 — a W2.2 formation-side pool rule; two overlapping quorums are
+mechanically injectable NOW via the debug RPC, but enforcing a consensus
+reject would invent overlap-legality semantics ahead of W2.2/W2.3 rotation —
+deferral is semantic, not a testability gap).
+
+**Status:** Decided 2026-07-08 (W2.1 build). Registry/store landed at W2.1
+C1/C2; falsified rows and producer-pending marks per the table above.
+
+**KDD:** KDD-062
+
+---
+
 ## Appendix: Register cross-reference
 
 | KDD | Title | §| Status |
@@ -1595,6 +1702,7 @@ check bind to W2 DKG-go-live; payload materialization is a hard W2 format constr
 | KDD-059 | PTXDKG validation semantics — attestation-counting; accountability not correctness; share-correctness/recovery deferred to ODC-027/028 | §19 | Decided (impl pending W1.3) |
 | KDD-060 | Canonical quorum selection: `GetListForBlock(B).CalculateQuorum(11, quorum_hash)` — one function, raw modifier, formation + validation; membership predicate fix; scorer retirement; V7a distinctness sharpening. Amends KDD-059. | §20 | Decided 2026-06-13 (impl pending W1.3) |
 | KDD-061 | Lagrange index-space reconciliation — recovery-x = committed formation share_index (score-order, KDD-052/060); preserve-gaps under QUAL exclusion (<t=6 → abort/re-form); HARD W2 constraint: payload materializes per-member share_index (list order alone is lossy under exclusion); index mismatch must fail diagnostically, not via generic verify | §21 | Decided 2026-07-06 (RECORD at W1.3; fix bound to DKG-go-live) |
+| KDD-062 | W2.1 quorum registry — versioned evodb record per accepted PTXDKG (connect-write/disconnect-explicit-erase, LLMQ pattern); event-based ACTIVE = the §C1 committed/active mark; connect-time share_index materialization (KDD-061 re-derivable arm); provenance reserved-UNSET (reindex-determinism); state-machine skeleton with producer-pending T-D/E/F/H bound to W2.2/W2.4 | §22 | Decided 2026-07-08 (W2.1 build) |
 | ODC-021 | Coordinator SPOF | §2 | Resolved by DKG |
 | ODC-024 | Multi-quorum membership — deferred future extension | §9.3 | Open (partially resolved per KDD-053: selection + failover decided) |
 | ODC-025 | Rotation-N final value — pending ceremony duration | §9.2 | Open |

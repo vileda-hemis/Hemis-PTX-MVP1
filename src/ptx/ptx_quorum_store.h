@@ -167,6 +167,51 @@ public:
 
     bool HasQuorumRecord(const uint256& quorum_hash);
     bool GetQuorumRecord(const uint256& quorum_hash, CPTXQuorumRecord& ret);
+
+    // ------------------------------------------------------------------
+    // W2.1 C2 — state-machine skeleton: PRODUCER-PENDING transitions.
+    //
+    // These compile, are reviewed, and have NO production caller.  Each is
+    // register-marked: "transition defined; falsification BOUND to <producer>
+    // when it exists."  They are NOT claimed tested — no synthetic
+    // direct-state-injection test exercises them (the scope line the W2.1
+    // plan holds).  The full transition table lives in DKG_DESIGN_DOC_v1
+    // (W2.1 state-machine section).
+    // ------------------------------------------------------------------
+
+    // T-D (none)->FORMING.  PRODUCER-PENDING (W2.2 formation trigger).
+    // FORMING is node-local only — never persisted (nothing is on chain until
+    // the PTXDKG is accepted); an in-memory slot keyed by the formation
+    // anchor.  Falsification bound to W2.2.
+    void MarkForming(const uint256& quorum_hash, int formation_height);
+
+    // T-F FORMING->aborted (§C1 abort-clears-slot authorization hook).
+    // PRODUCER-PENDING (W2.2 ceremony failure/abort).  Clearing the FORMING
+    // entry is what will AUTHORIZE the sk-share clear path W2.2 must build
+    // (no runtime clear exists at HEAD — ptx_bls static-init only).
+    // Falsification bound to W2.2.
+    void ClearForming(const uint256& quorum_hash);
+
+    // T-E consumption half of FORMING->ACTIVE.  PRODUCER-PENDING (W2.2).
+    // The ACTIVE half (persist-at-connect) is LIVE and falsified (C1);
+    // consuming a FORMING entry when its PTXDKG connects is the pending part.
+    // ProcessBlock will call this once W2.2 populates FORMING entries; today
+    // it is a no-op on an always-empty map.  Falsification bound to W2.2.
+    void ConsumeFormingOnConnect(const uint256& quorum_hash);
+
+    // T-H ACTIVE->DISBANDED.  PRODUCER-PENDING (W2.4 disband trigger:
+    // consecutive_inquorate_blocks == 30, KDD-047).  Rewrites the persisted
+    // record's state (versioned layout unchanged).  NOTE: W2.4 must wire the
+    // block-event driving this AND its disconnect-undo (state-mutation undo
+    // mechanism deliberately not designed at W2.1 — see design doc).
+    // Falsification bound to W2.4.
+    bool MarkDisbanded(const uint256& quorum_hash, int disband_height);
+
+    bool IsForming(const uint256& quorum_hash) const;
+
+private:
+    // FORMING entries (node-local, in-memory only; W2.2 is the sole producer).
+    std::map<uint256, int> formingEntries GUARDED_BY(cs);
 };
 
 extern std::unique_ptr<CPTXQuorumStore> ptxQuorumStore;
