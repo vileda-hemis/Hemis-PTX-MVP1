@@ -22,6 +22,7 @@
 #include "ptx/ptx_dkg.h"
 #include "ptx/ptx_dkg_pending.h"
 #include "ptx/ptx_lottery_state.h"
+#include "ptx/ptx_quorum_store.h"
 #include "ptx/ptx_winner_selection.h"
 #include "spork.h"
 #include "crypto/sha256.h"
@@ -1218,6 +1219,14 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
         return false;
     }
 
+    // W2.1 C1: persist the accepted PTXDKG as an ACTIVE quorum record (evodb;
+    // LLMQ mined-commitment pattern).  Checks run under fJustCheck; the write
+    // is !fJustCheck only.  Undo mirror in UndoSpecialTxsInBlock.
+    if (!ptxQuorumStore->ProcessBlock(block, pindex, state, fJustCheck)) {
+        // pass the state returned by the function above
+        return false;
+    }
+
     return true;
 }
 
@@ -1316,6 +1325,12 @@ bool UndoSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex)
         GetLotteryState() = prevState;
     }
 
+    // W2.1 C1: reverse of connect order — the PTXDKG quorum record is written
+    // last at connect, so it is erased first at disconnect.  Explicit-erase of
+    // both evodb keys; NO re-pend (E-5 — re-submission is W2.2 formation's).
+    if (!ptxQuorumStore->UndoBlock(block, pindex)) {
+        return false;
+    }
     if (!deterministicGMManager->UndoBlock(block, pindex)) {
         return false;
     }

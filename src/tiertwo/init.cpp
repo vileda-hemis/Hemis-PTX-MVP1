@@ -14,6 +14,7 @@
 #include "gamemaster-payments.h"
 #include "gamemasterconfig.h"
 #include "llmq/quorums_init.h"
+#include "ptx/ptx_quorum_store.h"
 #include "scheduler.h"
 #include "tiertwo/gamemaster_meta_manager.h"
 #include "tiertwo/netfulfilledman.h"
@@ -65,10 +66,12 @@ void ResetTierTwoInterfaces()
 void InitTierTwoPreChainLoad(bool fReindex)
 {
     int64_t nEvoDbCache = 1024 * 1024 * 64; // Max cache is 64MB
+    ptxQuorumStore.reset();
     deterministicGMManager.reset();
     evoDb.reset();
     evoDb.reset(new CEvoDB(nEvoDbCache, false, fReindex));
     deterministicGMManager.reset(new CDeterministicGMManager(*evoDb));
+    ptxQuorumStore.reset(new CPTXQuorumStore(*evoDb)); // W2.1 quorum registry store
 }
 
 void InitTierTwoPostCoinsCacheLoad(CScheduler* scheduler)
@@ -325,6 +328,7 @@ void StopTierTwoThreads()
 void DeleteTierTwo()
 {
     llmq::DestroyLLMQSystem();
+    ptxQuorumStore.reset();
     deterministicGMManager.reset();
     evoDb.reset();
 }

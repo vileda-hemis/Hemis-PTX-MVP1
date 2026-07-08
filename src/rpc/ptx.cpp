@@ -13,6 +13,7 @@
 #include "ptx/ptx_output_mapping.h"
 #include "ptx/ptx_pose.h"
 #include "ptx/ptx_quorum.h"
+#include "ptx/ptx_quorum_store.h"
 #include "ptx/ptx_seed.h"
 #include "bls/key_io.h" // bls::DecodeSecret (W2.1 C0 operator_keys mode)
 #include "crypto/sha256.h"
@@ -884,6 +885,68 @@ UniValue ptx_debug_ptxdkgpopulate(const JSONRPCRequest& request)
     return ret;
 }
 
+// ---------------------------------------------------------------------------
+// RPC: ptx_quorum_info (W2.1 C1 — read-only registry observation port)
+// ---------------------------------------------------------------------------
+
+static UniValue QuorumRecordToJson(const CPTXQuorumRecord& rec)
+{
+    UniValue ret(UniValue::VOBJ);
+    ret.pushKV("version",           (int)rec.nVersion);
+    ret.pushKV("quorum_hash",       rec.quorum_hash.ToString());
+    ret.pushKV("formation_height",  rec.formation_height);
+    ret.pushKV("group_pk",          HexStr(rec.group_pk_bytes));
+    ret.pushKV("vvec_hash",         rec.vvec_hash.ToString());
+    ret.pushKV("formed_size",       (int)rec.formed_size);
+    ret.pushKV("completed_size",    (int)rec.completed_size);
+    switch (static_cast<PTXQuorumState>(rec.state)) {
+        case PTXQuorumState::FORMING:   ret.pushKV("state", "forming");   break;
+        case PTXQuorumState::ACTIVE:    ret.pushKV("state", "active");    break;
+        case PTXQuorumState::ROTATING:  ret.pushKV("state", "rotating");  break;
+        case PTXQuorumState::DISBANDED: ret.pushKV("state", "disbanded"); break;
+        default:                        ret.pushKV("state", strprintf("unknown(%d)", rec.state));
+    }
+    ret.pushKV("provenance",        (int)rec.provenance);
+    ret.pushKV("accepted_txid",     rec.accepted_txid.ToString());
+    ret.pushKV("mined_block_hash",  rec.mined_block_hash.ToString());
+    ret.pushKV("mined_height",      rec.mined_height);
+    ret.pushKV("last_rotation_height", rec.last_rotation_height);
+    ret.pushKV("drift_offset",      rec.drift_offset);
+    ret.pushKV("consecutive_inquorate_blocks", rec.consecutive_inquorate_blocks);
+    UniValue members(UniValue::VARR);
+    for (const PTXQuorumMemberRecord& m : rec.members) {
+        UniValue mv(UniValue::VOBJ);
+        mv.pushKV("node_id",     m.node_id);
+        mv.pushKV("pro_tx_hash", m.proTxHash.ToString());
+        mv.pushKV("share_index", (int)m.share_index);
+        mv.pushKV("in_qual",     m.in_qual);
+        members.push_back(mv);
+    }
+    ret.pushKV("members", members);
+    return ret;
+}
+
+UniValue ptx_quorum_info(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() != 1) {
+        throw std::runtime_error(
+            "ptx_quorum_info \"quorum_hash\"\n"
+            "\nReturn the persisted quorum record for a formation anchor (W2.1 registry).\n"
+            "Read-only; all networks.\n"
+            "\nArguments:\n"
+            "1. quorum_hash (string, required) formation anchor block hash\n"
+            "\nResult: the full record incl. per-member materialized share_index (KDD-061)\n"
+            + HelpExampleRpc("ptx_quorum_info", "\"00..\"")
+        );
+    }
+    const uint256 quorum_hash = uint256S(request.params[0].get_str());
+    CPTXQuorumRecord rec;
+    if (ptxQuorumStore == nullptr || !ptxQuorumStore->GetQuorumRecord(quorum_hash, rec)) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "no quorum record for that quorum_hash");
+    }
+    return QuorumRecordToJson(rec);
+}
+
 // Forward declaration: defined after ptx_pose_status (Step 13).
 static UniValue PTX_BuildPoseJson(const PTXNodeRecord& rec);
 
@@ -1372,6 +1435,7 @@ static const CRPCCommand commands[] = {
     { "ptx",  "gm_bls_sign",               &gm_bls_sign,                true,   {"round_seed_hex"} },
     { "ptx",  "ptx_debug_setnodefailmode", &ptx_debug_setnodefailmode,  true,   {"target_node_id","mode"} },
     { "ptx",  "ptx_debug_ptxdkgpopulate",  &ptx_debug_ptxdkgpopulate,   true,   {"payload","force"} },
+    { "ptx",  "ptx_quorum_info",           &ptx_quorum_info,            true,   {"quorum_hash"} },
     { "ptx",  "ptx_getroundstatus",        &ptx_getroundstatus,         true,   {"round_id"} },
     { "ptx",  "ptx_pose_status",           &ptx_pose_status,            true,   {} },
     { "ptx",  "ptx_gm_pose",               &ptx_gm_pose,                true,   {"node_id"} },
