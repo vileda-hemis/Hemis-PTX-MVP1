@@ -109,7 +109,20 @@ struct PTXDKGPhase0Msg {
 
     // Covers quorum_hash || proTxHash || commitment.
     uint256 GetSignHash() const;
+
+    // Wire form (W2.0b transport). GetSignHash is a direct field hash and does
+    // not depend on this encoding — auth is unchanged by serialization.
+    SERIALIZE_METHODS(PTXDKGPhase0Msg, obj)
+    {
+        READWRITE(obj.quorum_hash, obj.proTxHash, obj.commitment, obj.sig);
+    }
 };
+
+// Deserialize-time cap on the Phase 1 vvec element count (memory-DoS hygiene
+// only; t=6 today, cap = n = 11).  The EXACT size/content gate is downstream:
+// the vvec bytes are bound by the Phase 0 commitment and the operator-key sig,
+// so any tampered or wrong-sized vvec fails those checks in ReceivePhase1Msg.
+static const uint64_t PTX_DKG_WIRE_MAX_VVEC = 11;
 
 // ---------------------------------------------------------------------------
 // PTXDKGPhase1Msg — the CONTRIB P2P message.
@@ -138,6 +151,45 @@ struct PTXDKGPhase1Msg {
     // Identical compressed-G1 primitive (blst_p1_affine_compress) as
     // ComputeVvecCommitment so both notions of "the vvec" are the same bytes.
     uint256 GetSignHash() const;
+
+    // Wire form (W2.0b transport).  vvec: compactsize count + 48B compressed
+    // G1 per point — the SAME blst_p1_affine_compress bytes GetSignHash and
+    // ComputeVvecCommitment hash, so wire/sig/commitment share one canonical
+    // byte form of "the vvec".  Deserialize rejects: count > cap (memory-DoS
+    // hygiene) and bytes that fail blst_p1_uncompress (the same check the
+    // in-process premit path applies to group_pk_bytes, ptx_dkg.cpp
+    // ReceivePhase4Msg).  Subgroup (in-G1) validity is deliberately NOT
+    // checked here — no in-process receive path checks it either; share
+    // correctness is the Phase 2 Feldman gate's job (audit note for W3.2,
+    // alongside ODC-027/028).  The IES blobs serialize whole via their own
+    // src/bls serializer and stay bound INSIDE the outer sig (KDD-054
+    // invariant) — this encoding adds no unsigned-blob path.
+    SERIALIZE_METHODS(PTXDKGPhase1Msg, obj)
+    {
+        READWRITE(obj.quorum_hash, obj.proTxHash);
+        SER_WRITE(obj, ::WriteCompactSize(s, obj.vvec.size()));
+        SER_WRITE(obj, for (const auto& pt : obj.vvec) {
+            uint8_t buf[48];
+            blst_p1_affine_compress(buf, &pt);
+            s.write(reinterpret_cast<const char*>(buf), 48);
+        });
+        SER_READ(obj, {
+            const uint64_t n = ::ReadCompactSize(s);
+            if (n > PTX_DKG_WIRE_MAX_VVEC)
+                throw std::ios_base::failure("ptxdkg-phase1-vvec-oversize");
+            obj.vvec.clear();
+            obj.vvec.reserve(n);
+            for (uint64_t k = 0; k < n; k++) {
+                uint8_t buf[48];
+                s.read(reinterpret_cast<char*>(buf), 48);
+                blst_p1_affine pt;
+                if (blst_p1_uncompress(&pt, buf) != BLST_SUCCESS)
+                    throw std::ios_base::failure("ptxdkg-phase1-bad-point");
+                obj.vvec.push_back(pt);
+            }
+        });
+        READWRITE(obj.encrypted_shares, obj.sig);
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -157,6 +209,15 @@ struct PTXDKGPhase2Msg {
     // SHA256( quorum_hash[32] || complainant_proTxHash[32] ||
     //         dealer_proTxHash[32] || htole32(share_index_j)[4] )
     uint256 GetSignHash() const;
+
+    // Wire form (W2.0b transport).  share_index_j as int32 (the
+    // PTXDKGPayload::formation_height precedent); range validity is
+    // ReceivePhase2Msg's existing check, not the decoder's.
+    SERIALIZE_METHODS(PTXDKGPhase2Msg, obj)
+    {
+        READWRITE(obj.quorum_hash, obj.complainant_proTxHash,
+                  obj.dealer_proTxHash, obj.share_index_j, obj.sig);
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -179,6 +240,30 @@ struct PTXDKGPhase3Msg {
     // The revealed scalar IS bound in the sign hash; a tampered scalar fails
     // the sig check before the Feldman check runs (regression-guarded by T2-23).
     uint256 GetSignHash() const;
+
+    // Wire form (W2.0b transport).  revealed_share crosses as 32 opaque
+    // big-endian bytes (the KDD-054 / IMP-D1 seam: blst_bendian_from_scalar /
+    // blst_scalar_from_bendian, no chiabls type touches it).  Deserialize
+    // rejects non-canonical scalars with the SAME blst_scalar_fr_check that
+    // ReceivePhase3Msg applies (ptx_dkg.cpp, justify check 10) — the decoder
+    // never constructs a scalar the receive path would call invalid.
+    SERIALIZE_METHODS(PTXDKGPhase3Msg, obj)
+    {
+        READWRITE(obj.quorum_hash, obj.dealer_proTxHash, obj.complainant_proTxHash);
+        SER_WRITE(obj, {
+            uint8_t buf[32];
+            blst_bendian_from_scalar(buf, &obj.revealed_share);
+            s.write(reinterpret_cast<const char*>(buf), 32);
+        });
+        SER_READ(obj, {
+            uint8_t buf[32];
+            s.read(reinterpret_cast<char*>(buf), 32);
+            blst_scalar_from_bendian(&obj.revealed_share, buf);
+            if (!blst_scalar_fr_check(&obj.revealed_share))
+                throw std::ios_base::failure("ptxdkg-phase3-noncanonical-scalar");
+        });
+        READWRITE(obj.sig);
+    }
 };
 
 // ---------------------------------------------------------------------------

@@ -215,6 +215,7 @@ PTX_TESTS = \
   ptx/test/ptx_dkg_phase2_tests.cpp \
   ptx/test/ptx_dkg_phase4_tests.cpp \
   ptx/test/ptx_dkg_phase5_tests.cpp \
+  ptx/test/ptx_dkg_serialization_tests.cpp \
   ptx/test/ptx_dkg_validation_tests.cpp \
   ptx/test/ptx_dkg_wiring_tests.cpp \
   test/ptx_lottery_state_tests.cpp \
