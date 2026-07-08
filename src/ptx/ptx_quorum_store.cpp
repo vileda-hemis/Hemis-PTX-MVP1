@@ -182,6 +182,46 @@ bool CPTXQuorumStore::UndoBlock(const CBlock& block, const CBlockIndex* pindex)
     return true;
 }
 
+std::vector<CPTXQuorumRecord> CPTXQuorumStore::GetActiveQuorumsAtHeight(int nHeight)
+{
+    // LLMQ GetMinedCommitmentsUntilBlock pattern: seek the inversed-height key
+    // for nHeight, walk forward (= decreasing mined height) while the prefix
+    // holds, map each quorum_hash to its record, filter ACTIVE.
+    std::vector<uint256> hashes;
+    {
+        LOCK(evoDb.cs);
+        auto dbIt = evoDb.GetCurTransaction().NewIteratorUniquePtr();
+        const auto firstKey = BuildPTXInversedHeightKey(nHeight);
+        dbIt->Seek(firstKey);
+        while (dbIt->Valid()) {
+            std::pair<std::string, uint32_t> curKey;
+            if (!dbIt->GetKey(curKey) || std::get<0>(curKey) != DB_PTXDKG_BY_INV_H) {
+                break;
+            }
+            const uint32_t minedHeight =
+                std::numeric_limits<uint32_t>::max() - be32toh(std::get<1>(curKey));
+            if (minedHeight > (uint32_t)nHeight) {
+                break; // defensive: Seek should already start at <= nHeight
+            }
+            uint256 qh;
+            if (!dbIt->GetValue(qh)) {
+                break;
+            }
+            hashes.push_back(qh);
+            dbIt->Next();
+        }
+    }
+    std::vector<CPTXQuorumRecord> ret;
+    for (const uint256& qh : hashes) {
+        CPTXQuorumRecord rec;
+        if (GetQuorumRecord(qh, rec) &&
+            rec.state == static_cast<uint8_t>(PTXQuorumState::ACTIVE)) {
+            ret.push_back(rec);
+        }
+    }
+    return ret;
+}
+
 // ---------------------------------------------------------------------------
 // W2.1 C2 — PRODUCER-PENDING transition functions (see header contract; no
 // production caller except the documented no-op ConsumeFormingOnConnect hook).

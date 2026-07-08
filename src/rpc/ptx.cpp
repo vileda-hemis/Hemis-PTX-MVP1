@@ -926,6 +926,49 @@ static UniValue QuorumRecordToJson(const CPTXQuorumRecord& rec)
     return ret;
 }
 
+UniValue ptx_quorum_list(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() > 1) {
+        throw std::runtime_error(
+            "ptx_quorum_list ( height )\n"
+            "\nList ACTIVE quorums at a height (default: chain tip) — the router's\n"
+            "active-set-at-height query (W2.1 registry). Read-only; all networks.\n"
+            "\nArguments:\n"
+            "1. height (numeric, optional) query height; default current tip\n"
+            "\nResult: { \"height\": n, \"quorums\": [ {summary}, ... ] } most-recent first\n"
+            + HelpExampleRpc("ptx_quorum_list", "")
+        );
+    }
+    int nHeight;
+    {
+        LOCK(cs_main);
+        nHeight = chainActive.Height();
+    }
+    if (request.params.size() == 1 && !request.params[0].isNull()) {
+        nHeight = request.params[0].get_int();
+        if (nHeight < 0) throw JSONRPCError(RPC_INVALID_PARAMETER, "height must be >= 0");
+    }
+    if (ptxQuorumStore == nullptr) {
+        throw JSONRPCError(RPC_MISC_ERROR, "quorum store unavailable");
+    }
+    UniValue ret(UniValue::VOBJ);
+    ret.pushKV("height", nHeight);
+    UniValue arr(UniValue::VARR);
+    for (const CPTXQuorumRecord& rec : ptxQuorumStore->GetActiveQuorumsAtHeight(nHeight)) {
+        UniValue q(UniValue::VOBJ);
+        q.pushKV("quorum_hash",      rec.quorum_hash.ToString());
+        q.pushKV("formation_height", rec.formation_height);
+        q.pushKV("mined_height",     rec.mined_height);
+        q.pushKV("formed_size",      (int)rec.formed_size);
+        q.pushKV("completed_size",   (int)rec.completed_size);
+        q.pushKV("state",            rec.state == (uint8_t)PTXQuorumState::ACTIVE
+                                         ? "active" : strprintf("state(%d)", rec.state));
+        arr.push_back(q);
+    }
+    ret.pushKV("quorums", arr);
+    return ret;
+}
+
 UniValue ptx_quorum_info(const JSONRPCRequest& request)
 {
     if (request.fHelp || request.params.size() != 1) {
@@ -1436,6 +1479,7 @@ static const CRPCCommand commands[] = {
     { "ptx",  "ptx_debug_setnodefailmode", &ptx_debug_setnodefailmode,  true,   {"target_node_id","mode"} },
     { "ptx",  "ptx_debug_ptxdkgpopulate",  &ptx_debug_ptxdkgpopulate,   true,   {"payload","force"} },
     { "ptx",  "ptx_quorum_info",           &ptx_quorum_info,            true,   {"quorum_hash"} },
+    { "ptx",  "ptx_quorum_list",           &ptx_quorum_list,            true,   {"height"} },
     { "ptx",  "ptx_getroundstatus",        &ptx_getroundstatus,         true,   {"round_id"} },
     { "ptx",  "ptx_pose_status",           &ptx_pose_status,            true,   {} },
     { "ptx",  "ptx_gm_pose",               &ptx_gm_pose,                true,   {"node_id"} },

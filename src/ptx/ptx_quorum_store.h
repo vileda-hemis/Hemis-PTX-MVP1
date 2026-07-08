@@ -168,6 +168,14 @@ public:
     bool HasQuorumRecord(const uint256& quorum_hash);
     bool GetQuorumRecord(const uint256& quorum_hash, CPTXQuorumRecord& ret);
 
+    // W2.1 C3 — the router's query: all quorums with mined_height <= nHeight
+    // whose state is ACTIVE, most-recently-mined first (inversed-height
+    // iteration).  At W2.1 every record is ACTIVE (no disband producer); the
+    // state filter is written now so W2.3/W2.4 states are excluded by
+    // construction, not by retrofit.  Reorg-consistency: records erase on
+    // disconnect, so the store answers for the CURRENT chain.
+    std::vector<CPTXQuorumRecord> GetActiveQuorumsAtHeight(int nHeight);
+
     // ------------------------------------------------------------------
     // W2.1 C2 — state-machine skeleton: PRODUCER-PENDING transitions.
     //
