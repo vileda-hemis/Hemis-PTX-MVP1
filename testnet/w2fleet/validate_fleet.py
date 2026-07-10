@@ -172,6 +172,33 @@ def gmauth_gate(cluster: W2Cluster, registration_path: str) -> dict:
     return {"n": cluster.n}
 
 
+def lock_gate(cluster: W2Cluster, expected_n: int) -> dict:
+    """SG-0 Piece 2: BUG-019 (a) lock-coverage ASSERT (a gate, not a print).
+    Every registered GM collateral must be in gm01's listlockunspent. N-generic
+    (22 fixture / 60 fleet). HONEST LIMIT: PASS proves coverage NOW; it cannot
+    retro-protect the pre-RPC residuals R1/R2 (staker-starts-before-auto-lock,
+    init-abort-skips-auto-lock — see relock_collaterals docstring). Those are
+    BUG-019 (d)'s to close (lock before staker start), owed pre-testnet."""
+    gm01 = cluster.gms[0]
+    protx = gm01.protx_list(detailed=True, valid_only=True)
+    outs = {(e["collateralHash"], e["collateralIndex"]) for e in protx}
+    if len(outs) != expected_n:
+        raise AssertionError(
+            f"LOCK GATE FAILED: expected {expected_n} registered GMs, "
+            f"protx_list gave {len(outs)} (a consumed collateral DEREGISTERS "
+            f"its GM — the BUG-019 signal)")
+    locked = {(l["txid"], l["vout"])
+              for l in gm01.call("listlockunspent")["transparent"]}
+    missing = outs - locked
+    if missing:
+        raise AssertionError(
+            f"LOCK GATE FAILED: {len(missing)}/{len(outs)} collaterals NOT in "
+            f"listlockunspent — stake-consumable RIGHT NOW")
+    print(f"[locks] GATE PASS — {len(outs)}/{len(outs)} registered collaterals "
+          f"in listlockunspent (start->lock residual: see BUG-019 (d))")
+    return {"n": len(outs)}
+
+
 def chain_extends(cluster: W2Cluster, blocks: int = 2, timeout: int = 600) -> int:
     gm01 = cluster.gms[0]
     start = gm01.getblockcount()
@@ -203,6 +230,8 @@ if __name__ == "__main__":
         reg = (sys.argv[3] if len(sys.argv) > 3 else
                f"/mnt/pve/Node14TB/hemis-ptx/w2-fleet/registration-N{n}.json")
         gmauth_gate(c, reg)
+    if which in ("all", "locks"):
+        lock_gate(c, n)
     if which in ("all", "extend"):
         chain_extends(c)
     c.assert_poc_untouched("validate_fleet end")

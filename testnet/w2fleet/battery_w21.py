@@ -134,21 +134,19 @@ def quorum_info_absent(qh) -> bool:
 
 # ---------------------------------------------------------------------------
 def row_relock():
-    """BUG-019 interim guard: lock every collateral UTXO in gm01's wallet."""
-    protx = gm01.protx_list(detailed=True, valid_only=True)
-    outs = [{"txid": e["collateralHash"], "vout": e["collateralIndex"]} for e in protx]
-    if len(outs) != 22:
-        die(f"expected 22 registered GMs, protx_list gave {len(outs)}")
-    already = {(l["txid"], l["vout"]) for l in gm01.call("listlockunspent")["transparent"]}
-    todo = [o for o in outs if (o["txid"], o["vout"]) not in already]
-    if todo:
-        gm01.call("lockunspent", False, True, todo)  # lock, transparent
-    locked = gm01.call("listlockunspent")["transparent"]
-    locked_set = {(l["txid"], l["vout"]) for l in locked}
-    missing = [o for o in outs if (o["txid"], o["vout"]) not in locked_set]
-    if missing:
-        die(f"lock gate: {len(missing)} collaterals not in listlockunspent")
-    ok(f"all 22 collaterals locked (listlockunspent gate passed)")
+    """BUG-019 (a) interim guard — N-generic core lives in
+    harness.cluster.relock_collaterals (also auto-invoked by wait_ready after
+    every harness-driven fleet start). This battery is the N22 fixture, so it
+    pins expect_n=22. HONEST LIMIT: the daemon auto-locks at init (gmconflock);
+    this is the belt + asserted coverage. Residuals R1/R2 (pre-RPC: staker
+    starts before the auto-lock; init-abort skips it) are BUG-019 (d)'s to
+    close, owed pre-testnet — see relock_collaterals docstring."""
+    from harness.cluster import relock_collaterals
+    try:
+        n = relock_collaterals(gm01, expect_n=22)
+    except AssertionError as e:
+        die(str(e))
+    ok(f"all {n} collaterals locked (listlockunspent gate passed)")
 
 
 def inject_at_tip(exclude=None, members_override=None, expect_reject=None,

@@ -40,6 +40,58 @@ def poc_snapshot() -> str:
     return ps.strip() + "\n---\n" + vols
 
 
+def relock_collaterals(gm01: Node, expect_n: Optional[int] = None) -> int:
+    """BUG-019 (a) INTERIM guard: lock every registered GM collateral UTXO in
+    gm01's wallet (in-memory lockunspent), idempotent.
+
+    MECHANISM (corrected 2026-07-10, SG-0 Piece 2): the daemon ALREADY
+    auto-locks all IsMine DGM collaterals at init (-gmconflock default ON,
+    tiertwo/init.cpp "automatic lock for DGM"), BEFORE RPC warm-up finishes,
+    and the staker respects locks (StakeableCoins passes fIncludeLocked=false).
+    This harness relock is therefore a BELT + the input to an ASSERTED
+    invariant (validate_fleet lock_gate), not the primary protection.
+
+    HONEST RESIDUALS (a) cannot close — both live BEFORE RPC exists:
+      R1: ThreadStakeMinter starts at init.cpp:1855; the auto-lock runs
+          inside InitActiveGM at :1860 — a staker-live-before-locks gap of
+          seconds on every start.
+      R2: any init failure between those points aborts InitActiveGM BEFORE
+          the auto-lock while the staker is already live (observed 2026-07-10
+          Piece-1 crash-loop: 33 blocks staked lock-free, clean by luck).
+    BUG-019 (d) redefined by this finding: lock at WALLET LOAD / before the
+    staker thread starts + cover the abort path (closes R1+R2); owed,
+    pre-testnet-bound. gm44's 2026-07-07 death mechanism remains an OPEN
+    sub-question (the recorded "no auto-lock exists" root cause is FALSIFIED
+    — the auto-lock exists in the 40b109c binary; see standup 2026-07-10).
+
+    Returns the number of collaterals covered (0 pre-registration)."""
+    try:
+        protx = gm01.protx_list(detailed=True, valid_only=True)
+    except Exception:
+        return 0  # pre-registration bootstrap stage — nothing to lock yet
+    outs = [{"txid": e["collateralHash"], "vout": e["collateralIndex"]}
+            for e in protx]
+    if expect_n is not None and len(outs) != expect_n:
+        raise AssertionError(
+            f"relock: expected {expect_n} registered GMs, protx_list gave {len(outs)}")
+    if not outs:
+        return 0
+    already = {(l["txid"], l["vout"])
+               for l in gm01.call("listlockunspent")["transparent"]}
+    todo = [o for o in outs if (o["txid"], o["vout"]) not in already]
+    if todo:
+        gm01.call("lockunspent", False, True, todo)
+    locked = {(l["txid"], l["vout"])
+              for l in gm01.call("listlockunspent")["transparent"]}
+    missing = [o for o in outs if (o["txid"], o["vout"]) not in locked]
+    if missing:
+        raise AssertionError(
+            f"relock: {len(missing)}/{len(outs)} collaterals NOT in listlockunspent")
+    print(f"[relock] {len(outs)} collaterals locked "
+          f"(in-memory; start->lock residual applies — BUG-019 (d) owed)")
+    return len(outs)
+
+
 class W2Cluster:
     def __init__(self,
                  n: int,
@@ -133,6 +185,13 @@ class W2Cluster:
         while time.time() < deadline:
             ready = sum(1 for nd in self.all_nodes if nd.is_rpc_ready())
             if ready == len(self.all_nodes):
+                # BUG-019 (a): re-apply the in-memory collateral locks at the
+                # EARLIEST harness moment after every fleet start — this hook
+                # covers every recipe that goes through wait_ready (bootstrap
+                # Phase-2 restart, run_bootstrap, restore->validate, batteries).
+                # The start->lock residual before this point is NOT closed
+                # here — see relock_collaterals docstring; (d) owed.
+                relock_collaterals(self.gms[0])
                 return
             time.sleep(poll)
         not_ready = [nd.name for nd in self.all_nodes if not nd.is_rpc_ready()]

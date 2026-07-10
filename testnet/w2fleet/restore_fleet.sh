@@ -4,7 +4,12 @@
 # Restores datadirs + .env (compound node_ids) into place. Start afterwards:
 #   docker compose -f /mnt/pve/Node14TB/hemis-ptx/docker-w2/docker-compose.generated.yml \
 #     -p ptx-w2 up -d
-# Then prove GM-ELIGIBLE, not just running (Amendment 4):
+# Then IMMEDIATELY validate (BUG-019 (a): the daemon auto-locks IsMine DGM
+# collaterals at init IF init completes (gmconflock, tiertwo/init.cpp);
+# wait_ready re-locks at earliest RPC readiness and the `locks` gate ASSERTS
+# coverage instead of assuming it. Residuals R1/R2 — staker starts before
+# the auto-lock; init-abort skips it — are pre-RPC and owed to BUG-019 (d),
+# pre-testnet):
 #   python3 testnet/w2fleet/validate_fleet.py <N> all
 # Never touches ptx-bea-* or any named volume.
 set -euo pipefail
@@ -18,7 +23,10 @@ if docker ps --format '{{.Names}}' | grep -q '^ptx-w2-'; then
     exit 1
 fi
 
-md5sum -c "$TAR.md5" 2>/dev/null || echo "WARN: no .md5 beside tar (continuing)"
+# run the tar checksum from the tar's own directory — the .md5 references a
+# bare filename, so a CWD elsewhere made this silently fail (Piece-1 nit)
+( cd "$(dirname "$TAR")" && md5sum -c "$(basename "$TAR").md5" ) 2>/dev/null \
+    || echo "WARN: no .md5 beside tar (continuing)"
 
 STAGE="$W2_ROOT/.restore-stage"
 rm -rf "$STAGE"; mkdir -p "$STAGE"
@@ -31,3 +39,4 @@ cp -a "$STAGE/env" "$DOCKER_W2/.env"
 cp -a "$STAGE/docker-compose.generated.yml" "$DOCKER_W2/"
 rm -rf "$STAGE"
 echo "RESTORED from $TAR — now: docker compose -f $DOCKER_W2/docker-compose.generated.yml -p ptx-w2 up -d"
+echo "THEN IMMEDIATELY: python3 testnet/w2fleet/validate_fleet.py <N> all  (BUG-019 (a): banked collaterals UNLOCKED until relock lands; residual owed to (d))"
