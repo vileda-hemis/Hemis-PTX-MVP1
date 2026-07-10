@@ -297,6 +297,33 @@ The routing layer skips mid-ceremony quorums (see §7.4).
 
 **KDD:** KDD-045
 
+> **[Reinforced 2026-07-10 — KDD-045 CONFIRMED on a second, independent ground. The
+> original fairness rationale above is unchanged.]** The unbounded-quorum-count
+> constraint (quorum count is not parameter-bounded; hundreds–thousands of concurrent
+> quorums must be viable) supplies a second, independent ground for KDD-045.
+> Fresh-draw (dissolve-and-rebatch) is a GLOBAL policy — per-cycle work proportional
+> to total quorums: consensus-critical pool-wide draw re-derivation on every
+> validating node (O(pool) per cycle), plus a thundering herd of Q simultaneous
+> ceremonies at the boundary that would reinstate per-quorum stagger. Static
+> membership + periodic same-set re-DKG is PER-QUORUM-LOCAL: validating a rotation
+> commitment is O(11) ("same 11 as the existing record"), and each quorum runs one
+> ceremony per N on its own drift-staggered cadence regardless of Q — per-node cost
+> is constant in Q (each GM is in at most one quorum, KDD-040). The 2026-07-09
+> "supersede KDD-045 for the cycle model" flag was a single-scale artifact: it
+> evaluated the Dash template at Dash's parameter-BOUNDED quorum count (one formation
+> per dkgInterval, active set capped at signingActiveQuorumCount); under unbounded Q
+> the inversion is complete — the cycle SCHEDULE survives, the Dash SELECTION does
+> not. **KDD-045 CONFIRMED, now on two grounds: fairness + scaling.** That flag is
+> RESOLVED → KDD-045 KEPT (decision 2026-07-10; the flag itself remains in the record).
+>
+> **Precision note (rotation semantics):** KDD-045 rotation is a FULL re-DKG producing
+> a FRESH KEYPAIR; the old keypair is ABANDONED. It is NOT proactive resharing of the
+> same key. Security consequence: shares stolen before a rotation are shares of a DEAD
+> key — worthless; an attacker must corrupt ≥ t=6 of the same 11 members within ONE
+> refresh window (window ≈ N). The refresh cadence N is the remaining security-vs-cost
+> tunable (ODC-025; 1440 starting value; bounded below by ceremony duration M, M < N)
+> — open, on the architecture surface.
+
 ### §7.3 Disband
 
 **Decision:** a quorum that has been inquorate (below t=6 signing-capable members, i.e. ≤5
@@ -1728,7 +1755,7 @@ C1/C2; falsified rows and producer-pending marks per the table above.
 | KDD-042 | GM reward model — masternode backbone + PTX bonus | §5.1 | Decided |
 | KDD-043 | Roll fee — 1 HMS, spork-adjustable, atomic-with-result | §5.2 | Decided |
 | KDD-044 | Quorum formation — batch-of-11 from pool | §7.1 | Decided |
-| KDD-045 | Quorum rotation — same-set re-DKG, staggered | §7.2 | Decided |
+| KDD-045 | Quorum rotation — same-set re-DKG, staggered | §7.2 | Decided — reinforced 2026-07-10 (second ground: unbounded-quorum scaling; supersede-flag resolved → kept) |
 | KDD-046 | Ejection/PoSe discipline — 15-of-60, 120-ban | §8 | Decided |
 | KDD-047 | Disband — inquorate → pool, tickets carry; n_disband=30; dissolve-to-pool | §7.3 | Decided |
 | KDD-048 | Quorum params: t=6 decided; upgrade-gated consensus constant, not spork | §3, §9.1 | Decided |
