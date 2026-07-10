@@ -324,6 +324,47 @@ The routing layer skips mid-ceremony quorums (see §7.4).
 > tunable (ODC-025; 1440 starting value; bounded below by ceremony duration M, M < N)
 > — open, on the architecture surface.
 
+> **[Amended 2026-07-10 — HANDOVER-AT-ACCEPT ADOPTED. The "During rotation:
+> unavailable" sentence above is superseded by this amendment; the original text is
+> retained per append-only discipline.]** On rotation, the OLD keypair remains ACTIVE
+> and SERVICING until the successor PTXDKG record CONNECTS (is mined/accepted), then
+> the swap is atomic at that block-connect (new record ACTIVE, old record SUPERSEDED,
+> one connect event). **The quorum is never unavailable during rotation.**
+>
+> **Structural rationale (decisive):** the W2.1 registry forces the
+> two-records-and-a-swap shape — quorum_hash is the record identity (the
+> formation-anchor block hash, ptx_quorum_store.h:105) and ProcessBlock never
+> overwrites an existing quorum_hash (the persist-boundary guard backing ODC-030/V9
+> duplicate-formation). A same-set re-DKG therefore ALWAYS lands as a NEW record with
+> the old record persisting alongside; the implementation plan's earlier "mutate
+> group_pk in place on one record" sketch is unbuildable against the store as shipped.
+> Handover-at-accept completes the shape the store imposes, and is a SMALLER build
+> than revoke-at-start: trigger → MarkForming only (node-local, zero persisted
+> change); accept → persist path + ConsumeFormingOnConnect + one new
+> old-ACTIVE→SUPERSEDED transition at the same connect (undo mechanism shared with
+> W2.4 disband); abort → ClearForming with the old record untouched.
+>
+> **Safety (recorded):** (1) no two-valid-keys ambiguity — FORMING is node-local and
+> never persisted, so during the ceremony the old record is the only persisted ACTIVE
+> one; GetActiveQuorumsAtHeight (state==ACTIVE) yields exactly one of the pair at any
+> height on every node; rule = old-until-new-connects, then new, chain-derived. A
+> post-swap roll against the old key fails at RESOLUTION (the old quorum is not
+> selectable), not merely at signature verify. (2) historical verification intact —
+> retirement is a state change, records are never deleted; a past beacon still
+> verifies against its committed group_pk. Caveat (not handover-specific; disband has
+> the identical shape): point-in-time "active as of a past height" is not
+> reconstructible; additively fixable via superseded_height under nVersion 2 if ever
+> needed. (3) compromise-window extension negligible — the old key lives ~N+M instead
+> of ~N (+M/N ≈ +3.3% at N=1440/M≈47); old-key shares are useless against the new key
+> (independent polynomials); no new attack class. Abort is SAFER by construction: the
+> old key never left service and nothing persisted during an aborted ceremony — zero
+> residue, retry at the next boundary.
+>
+> **Consequence for the rotation cadence:** the availability floor on N dissolves —
+> N is bounded ONLY by the security ceiling (compromise window ≈ N). The Q=1
+> launch-era rotation outage is eliminated. N remains open (ODC-025; 1440 starting
+> value; hard M < N only).
+
 ### §7.3 Disband
 
 **Decision:** a quorum that has been inquorate (below t=6 signing-capable members, i.e. ≤5
@@ -378,6 +419,16 @@ state (formation complete, not mid-rotation ceremony). Mid-ceremony quorums are 
 layer selects among available quorums. This is a design requirement: a caller should have no
 ability to target a specific quorum, which would enable quorum-targeting attacks and would require
 callers to track quorum topology.
+
+> **[Amended 2026-07-10 — handover-at-accept adopted (§7.2 amendment).]** "Mid-ceremony
+> quorums are skipped" no longer arises from ROTATION: a rotating quorum keeps servicing
+> on its old keypair until the successor PTXDKG connects, so rotation never removes a
+> quorum from the routable set. The skip rule survives only for quorums with no
+> serviceable keypair at all — i.e. INITIAL formation (no predecessor key exists yet;
+> nothing to route to until the first PTXDKG connects, which the ACTIVE-record predicate
+> already expresses) — and for non-ACTIVE states (SUPERSEDED/DISBANDED). The router rule
+> is simply: route over records with state == ACTIVE; no mid-rotation special case
+> remains. The original sentence is retained above per append-only discipline.
 
 ---
 
@@ -1755,7 +1806,7 @@ C1/C2; falsified rows and producer-pending marks per the table above.
 | KDD-042 | GM reward model — masternode backbone + PTX bonus | §5.1 | Decided |
 | KDD-043 | Roll fee — 1 HMS, spork-adjustable, atomic-with-result | §5.2 | Decided |
 | KDD-044 | Quorum formation — batch-of-11 from pool | §7.1 | Decided |
-| KDD-045 | Quorum rotation — same-set re-DKG, staggered | §7.2 | Decided — reinforced 2026-07-10 (second ground: unbounded-quorum scaling; supersede-flag resolved → kept) |
+| KDD-045 | Quorum rotation — same-set re-DKG, staggered | §7.2 | Decided — reinforced 2026-07-10 (second ground: unbounded-quorum scaling; supersede-flag resolved → kept); amended 2026-07-10: handover-at-accept adopted (old key serves until successor connects; rotation never unavailable) |
 | KDD-046 | Ejection/PoSe discipline — 15-of-60, 120-ban | §8 | Decided |
 | KDD-047 | Disband — inquorate → pool, tickets carry; n_disband=30; dissolve-to-pool | §7.3 | Decided |
 | KDD-048 | Quorum params: t=6 decided; upgrade-gated consensus constant, not spork | §3, §9.1 | Decided |
