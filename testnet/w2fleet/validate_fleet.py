@@ -133,6 +133,45 @@ def eligibility_gate(cluster: W2Cluster, expected_n: int) -> dict:
     raise AssertionError(f"unexpected populate refusal: {reason!r}")
 
 
+def gmauth_gate(cluster: W2Cluster, registration_path: str) -> dict:
+    """SG-0 Piece 1: GMAUTH-live. Every GM must be running as a DETERMINISTIC
+    gamemaster whose active operator key matches its registration entry.
+    Per GM asserts: getgamemasterstatus answers on the deterministic path
+    (dgmstate present), status == "Ready", and dgmstate.operatorPubKey ==
+    the registration JSON's operator_pubkey. A legacy-GM answer, an RPC
+    error ("This is not a gamemaster." = flags not wired), or a pubkey
+    mismatch is a FAIL. Public keys only — no secret is read or printed.
+    """
+    import json
+    with open(registration_path) as f:
+        reg = json.load(f)
+    bad = {}
+    for i, nd in enumerate(cluster.gms, start=1):
+        g = f"gm{i:02d}"
+        try:
+            st = nd.call("getgamemasterstatus")
+        except Exception as e:
+            # RPCError AND transport failures: a GM whose daemon refuses to
+            # run (e.g. operator-key/ProTx service mismatch exits at init)
+            # must be NAMED here, not hang the harness upstream.
+            bad[g] = f"unreachable/rpc: {e}"
+            continue
+        status = st.get("status")
+        op = (st.get("dgmstate") or {}).get("operatorPubKey")
+        want = reg.get(g, {}).get("operator_pubkey")
+        if op is None:
+            bad[g] = "no dgmstate — not on the deterministic path"
+        elif status != "Ready":
+            bad[g] = f"status={status!r}"
+        elif op != want:
+            bad[g] = "operatorPubKey != registration operator_pubkey"
+    if bad:
+        raise AssertionError(f"GMAUTH GATE FAILED ({len(bad)}/{cluster.n}): {bad}")
+    print(f"[gmauth] GATE PASS — {cluster.n}/{cluster.n} GMs deterministic + "
+          f"Ready, operator pubkeys match registration")
+    return {"n": cluster.n}
+
+
 def chain_extends(cluster: W2Cluster, blocks: int = 2, timeout: int = 600) -> int:
     gm01 = cluster.gms[0]
     start = gm01.getblockcount()
@@ -146,11 +185,24 @@ if __name__ == "__main__":
     n = int(sys.argv[1])
     which = sys.argv[2] if len(sys.argv) > 2 else "all"
     c = W2Cluster(n)
-    c.wait_ready()
+    if which == "gmauth":
+        # gmauth must FAIL FAST naming a down GM (a bad operator key exits
+        # the daemon at init) — a short readiness window, then let the gate
+        # itself report unreachable nodes, instead of wait_ready's ceiling.
+        try:
+            c.wait_ready(timeout=60)
+        except TimeoutError as e:
+            print(f"[gmauth] proceeding with non-ready nodes ({e})")
+    else:
+        c.wait_ready()
     if which in ("all", "topology"):
         topology_gate(c)
     if which in ("all", "eligibility"):
         eligibility_gate(c, n)
+    if which in ("all", "gmauth"):
+        reg = (sys.argv[3] if len(sys.argv) > 3 else
+               f"/mnt/pve/Node14TB/hemis-ptx/w2-fleet/registration-N{n}.json")
+        gmauth_gate(c, reg)
     if which in ("all", "extend"):
         chain_extends(c)
     c.assert_poc_untouched("validate_fleet end")

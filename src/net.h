@@ -529,6 +529,10 @@ bool IsReachable(const CNetAddr& addr);
 
 bool AddLocal(const CService& addr, int nScore = LOCAL_NONE);
 bool AddLocal(const CNetAddr& addr, int nScore = LOCAL_NONE);
+// True only on the ptxbea fixture chain AND for addresses inside the isolated
+// docker fleet subnet (172.31.0.0/24). Production-safe by construction — see
+// the definition in net.cpp for the structural argument.
+bool IsPTXBeaFleetAddr(const CNetAddr& addr);
 bool RemoveLocal(const CService& addr);
 bool SeenLocal(const CService& addr);
 bool IsLocal(const CService& addr);

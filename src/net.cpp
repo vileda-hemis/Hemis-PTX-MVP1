@@ -203,10 +203,33 @@ void AdvertiseLocal(CNode* pnode)
     }
 }
 
+// ptxbea fixture-fleet carve-out (SG-0, 2026-07-10). Deterministic-GM
+// activation needs the node's externalip locally known and valid, but the
+// isolated ptxbea docker fleet lives on RFC1918 addresses (172.31.0.0/24,
+// the gen_fleet.py isolation spine), which IsRoutable() correctly rejects.
+// This predicate is PRODUCTION-SAFE BY CONSTRUCTION, not by removal:
+//  - it is gated on the chain identity (strNetworkID == "ptxbea",
+//    chainparams.h:100) — selectable ONLY by the explicit -ptxbea arg,
+//    mutually exclusive with -testnet/-regtest/-ptxtestnet
+//    (util/system.cpp GetChainName), and a different network (own genesis/
+//    magic) — so no mainnet or public-testnet node can ever satisfy it;
+//  - inside that gate it matches ONLY the fleet subnet, not all private
+//    address space.
+// On every real network this is inert dead code; nothing to remove.
+bool IsPTXBeaFleetAddr(const CNetAddr& addr)
+{
+    if (!Params().IsPTXBeaTestNet())
+        return false;
+    CSubNet fleet;
+    if (!LookupSubNet("172.31.0.0/24", fleet))
+        return false;
+    return fleet.Match(addr);
+}
+
 // learn a new local address
 bool AddLocal(const CService& addr, int nScore)
 {
-    if (!addr.IsRoutable())
+    if (!addr.IsRoutable() && !IsPTXBeaFleetAddr(addr))
         return false;
 
     if (!fDiscover && nScore < LOCAL_MANUAL)

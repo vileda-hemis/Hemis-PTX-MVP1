@@ -231,7 +231,10 @@ void CActiveDeterministicGamemasterManager::UpdatedBlockTip(const CBlockIndex* p
 bool CActiveDeterministicGamemasterManager::IsValidNetAddr(const CService& addrIn)
 {
     // TODO: check IPv6 and TOR addresses
-    return Params().IsRegTestNet() || (addrIn.IsIPv4() && IsReachable(addrIn) && addrIn.IsRoutable());
+    // IsPTXBeaFleetAddr: ptxbea-chain-gated + fleet-subnet-scoped (net.cpp) —
+    // production-safe by construction; inert on every real network.
+    return Params().IsRegTestNet() || IsPTXBeaFleetAddr(addrIn) ||
+           (addrIn.IsIPv4() && IsReachable(addrIn) && addrIn.IsRoutable());
 }
 
 

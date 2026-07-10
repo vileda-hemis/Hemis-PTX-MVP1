@@ -24,9 +24,20 @@ Regeneration is .env-safe: an existing .env (which carries the compound
 node_ids captured at ProRegPL registration — the fleet's identity after the
 Phase-2 restart) is NEVER overwritten; a fresh label-only .env is written
 only if none exists.
+
+Operator-key wiring (SG-0 Piece 1, GMAUTH-live): with --registration
+<registration-NXX.json>, every GM service gains -gamemaster=1 and
+-gmoperatorprivatekey=${GMxx_OPERATOR_SK:?...}, and the per-GM operator
+secrets are APPENDED to .env (idempotent — only missing keys are added; the
+.env-preserve invariant above holds). Secret flow: registration JSON -> .env
+-> compose env-substitution, ALL host-side. This file carries ONLY the
+variable-reference pattern, never a secret value. The caller gets no key
+(it is not registered — separation of roles). Without --registration the
+emitted compose is unchanged (GMAUTH-inert, pre-SG-0 behaviour).
 """
 
 import argparse
+import json
 import os
 import shutil
 import sys
@@ -79,7 +90,44 @@ def peers_of(i, n):
     return out
 
 
-def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser):
+def load_registration(path, n):
+    """Validate the registration JSON covers gm01..gmNN with operator secrets.
+    Returns the parsed dict. Secrets are only ever written to .env (host-side);
+    callers must never print or embed them."""
+    with open(path) as f:
+        reg = json.load(f)
+    missing = [gm_name(i) for i in range(1, n + 1)
+               if not reg.get(gm_name(i), {}).get("operator_secret")]
+    if missing:
+        sys.exit(f"--registration {path} missing operator_secret for: "
+                 f"{', '.join(missing)}")
+    return reg
+
+
+def ensure_env_operator_keys(env_path, reg, n):
+    """Append missing GMxx_OPERATOR_SK lines to .env (idempotent; never
+    rewrites existing lines — the compound-node_id preserve invariant)."""
+    existing = ""
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            existing = f.read()
+    have = {ln.split("=", 1)[0] for ln in existing.splitlines() if "=" in ln}
+    add = []
+    for i in range(1, n + 1):
+        g = gm_name(i)
+        key = f"{g.upper()}_OPERATOR_SK"
+        if key not in have:
+            add.append(f"{key}={reg[g]['operator_secret']}")
+    if add:
+        with open(env_path, "a") as f:
+            if existing and not existing.endswith("\n"):
+                f.write("\n")
+            f.write("\n".join(add) + "\n")
+    return len(add)
+
+
+def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser,
+                 wire_operators=False):
     lines = [HEADER.format(n=n, image=image, rpcuser=rpcuser)]
 
     # ── caller ──────────────────────────────────────────────────────────
@@ -132,6 +180,13 @@ def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser):
     command:
       - -externalip={gm_ip(subnet_base, i)}
 """)
+        if wire_operators:
+            # GMAUTH-live (SG-0 Piece 1): value comes from .env at compose
+            # time — the reference pattern is the ONLY thing committed here.
+            lines.append("      - -gamemaster=1\n")
+            lines.append(f"      - -gmoperatorprivatekey="
+                         f"${{{g.upper()}_OPERATOR_SK:?"
+                         f"{g.upper()}_OPERATOR_SK must be set in .env}}\n")
         for p in peers_of(i, n):
             lines.append(f"      - -addnode={gm_ip(subnet_base, p)}\n")
         lines.append("\n")
@@ -167,6 +222,9 @@ def main():
     ap.add_argument("--image", default=DEF_IMAGE)
     ap.add_argument("--rpcuser", default=DEF_RPCUSER)
     ap.add_argument("--rpcpass", default=DEF_RPCPASS)
+    ap.add_argument("--registration", default=None,
+                    help="registration-NXX.json — wires -gamemaster=1 + "
+                         "-gmoperatorprivatekey per GM (secrets to .env only)")
     args = ap.parse_args()
 
     if not (2 <= args.n <= 240):
@@ -179,10 +237,13 @@ def main():
     for name in ["caller"] + [gm_name(i) for i in range(1, args.n + 1)]:
         os.makedirs(os.path.join(args.data_root, name), exist_ok=True)
 
+    reg = load_registration(args.registration, args.n) if args.registration else None
+
     compose_path = os.path.join(args.out, "docker-compose.generated.yml")
     with open(compose_path, "w") as f:
         f.write(emit_compose(args.n, args.image, args.subnet_base,
-                             args.port_base, args.data_root, args.rpcuser))
+                             args.port_base, args.data_root, args.rpcuser,
+                             wire_operators=reg is not None))
 
     env_path = os.path.join(args.out, ".env")
     if os.path.exists(env_path):
@@ -191,6 +252,12 @@ def main():
         with open(env_path, "w") as f:
             f.write(emit_env(args.n, args.rpcuser, args.rpcpass))
         print(f"[gen] wrote fresh label-only {env_path}")
+
+    if reg is not None:
+        added = ensure_env_operator_keys(env_path, reg, args.n)
+        print(f"[gen] operator keys wired for {args.n} GMs; "
+              f"{added} GMxx_OPERATOR_SK line(s) appended to .env "
+              f"(values host-side only)")
 
     # runtime docker assets ride along from the committed templates
     here = os.path.dirname(os.path.abspath(__file__))
