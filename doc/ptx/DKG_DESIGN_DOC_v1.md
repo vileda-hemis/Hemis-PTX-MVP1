@@ -1796,6 +1796,48 @@ C1/C2; falsified rows and producer-pending marks per the table above.
 
 ---
 
+## §23 Decided: Handover-at-Accept Rotation
+
+**KDD-063 (2026-07-10). Splits the handover mechanics out of the KDD-045 §7.2
+amendment into its own entry; KDD-045 (same-set re-DKG, fairness + scaling grounds)
+is unchanged and cross-referenced.**
+
+**Decision.** On KDD-045 same-set re-DKG rotation, the old keypair stays ACTIVE and
+servicing until the successor PTXDKG record connects; the swap is atomic at that
+block-connect (new record ACTIVE, old record SUPERSEDED). The quorum is never
+unavailable during rotation.
+
+**Structural ground.** The W2.1 store forces two-records-and-a-swap: quorum_hash is
+the immutable record identity and ProcessBlock never overwrites an existing
+quorum_hash (V9/ODC-030 persist-boundary guard), so in-place group_pk mutation is
+unbuildable; handover is the natural, smaller build (trigger → MarkForming only,
+node-local; accept → persist path + ConsumeFormingOnConnect + one
+old-ACTIVE→SUPERSEDED transition at the same connect; abort → ClearForming, old
+record untouched).
+
+**Safety.** No two-keys ambiguity (FORMING never persisted; exactly one of the pair
+ACTIVE per height; rule = old-until-new-connects, chain-derived; a post-swap old-key
+roll fails at resolution). Historical verification intact (records never deleted; a
+past beacon verifies against its committed group_pk). Compromise-window extension
+~+M/N (~+3.3% at N=1440/M≈47) — negligible. Abort safer (zero persisted residue;
+retry next boundary).
+
+**Payoff.** The availability floor on N dissolves — N is security-ceiling-only
+(compromise window ≈ N). The Q=1 launch-era daily rotation outage is eliminated.
+M-provisionality no longer gates the N decision (hard M < N only).
+
+**Owed to W2.3:** ROTATING→SUPERSEDED repurpose; the old-ACTIVE→SUPERSEDED-at-connect
+transition + its undo (state-mutation undo mechanism shared with W2.4 disband T-H);
+the rotation-validation arm (a rotation's members == the predecessor record's 11, not
+a fresh draw at the new anchor).
+
+**Cross-ref:** KDD-045 (§7.2 + its 2026-07-10 amendments), KDD-062 (§22 store
+semantics), ODC-025 (cadence N, open).
+
+**KDD:** KDD-063
+
+---
+
 ## Appendix: Register cross-reference
 
 | KDD | Title | §| Status |
@@ -1806,7 +1848,7 @@ C1/C2; falsified rows and producer-pending marks per the table above.
 | KDD-042 | GM reward model — masternode backbone + PTX bonus | §5.1 | Decided |
 | KDD-043 | Roll fee — 1 HMS, spork-adjustable, atomic-with-result | §5.2 | Decided |
 | KDD-044 | Quorum formation — batch-of-11 from pool | §7.1 | Decided |
-| KDD-045 | Quorum rotation — same-set re-DKG, staggered | §7.2 | Decided — reinforced 2026-07-10 (second ground: unbounded-quorum scaling; supersede-flag resolved → kept); amended 2026-07-10: handover-at-accept adopted (old key serves until successor connects; rotation never unavailable) |
+| KDD-045 | Quorum rotation — same-set re-DKG, staggered | §7.2 | Decided — reinforced 2026-07-10 (second ground: unbounded-quorum scaling; supersede-flag resolved → kept); amended 2026-07-10: handover-at-accept adopted (old key serves until successor connects; rotation never unavailable); handover mechanics split to KDD-063 (2026-07-10) |
 | KDD-046 | Ejection/PoSe discipline — 15-of-60, 120-ban | §8 | Decided |
 | KDD-047 | Disband — inquorate → pool, tickets carry; n_disband=30; dissolve-to-pool | §7.3 | Decided |
 | KDD-048 | Quorum params: t=6 decided; upgrade-gated consensus constant, not spork | §3, §9.1 | Decided |
@@ -1824,6 +1866,7 @@ C1/C2; falsified rows and producer-pending marks per the table above.
 | KDD-060 | Canonical quorum selection: `GetListForBlock(B).CalculateQuorum(11, quorum_hash)` — one function, raw modifier, formation + validation; membership predicate fix; scorer retirement; V7a distinctness sharpening. Amends KDD-059. | §20 | Decided 2026-06-13 (impl pending W1.3) |
 | KDD-061 | Lagrange index-space reconciliation — recovery-x = committed formation share_index (score-order, KDD-052/060); preserve-gaps under QUAL exclusion (<t=6 → abort/re-form); HARD W2 constraint: payload materializes per-member share_index (list order alone is lossy under exclusion); index mismatch must fail diagnostically, not via generic verify | §21 | Decided 2026-07-06 (RECORD at W1.3; fix bound to DKG-go-live) |
 | KDD-062 | W2.1 quorum registry — versioned evodb record per accepted PTXDKG (connect-write/disconnect-explicit-erase, LLMQ pattern); event-based ACTIVE = the §C1 committed/active mark; connect-time share_index materialization (KDD-061 re-derivable arm); provenance reserved-UNSET (reindex-determinism); state-machine skeleton with producer-pending T-D/E/F/H bound to W2.2/W2.4 | §22 | Decided 2026-07-08 (W2.1 build) |
+| KDD-063 | Handover-at-accept rotation — old keypair ACTIVE+servicing until successor PTXDKG connects; atomic swap at connect (new ACTIVE, old SUPERSEDED); rotation never unavailable; N = security-ceiling-only; W2.3 owed: SUPERSEDED repurpose, swap transition + undo (shared W2.4), rotation-validation arm. Cross-ref KDD-045. | §23 | Decided 2026-07-10 |
 | ODC-021 | Coordinator SPOF | §2 | Resolved by DKG |
 | ODC-024 | Multi-quorum membership — deferred future extension | §9.3 | Open (partially resolved per KDD-053: selection + failover decided) |
 | ODC-025 | Rotation-N final value — pending ceremony duration | §9.2 | Open |
