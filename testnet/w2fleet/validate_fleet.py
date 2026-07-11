@@ -199,6 +199,42 @@ def lock_gate(cluster: W2Cluster, expected_n: int) -> dict:
     return {"n": len(outs)}
 
 
+def soak_gate(cluster: W2Cluster, expected_n: int, blocks: int = 30,
+              poll: float = 20.0, timeout: int = 3600) -> dict:
+    """SG-0 Piece 3: the protx==N SOAK — the gm44-class deregistration
+    tripwire. A quietly-dying collateral deregisters its GM (collateral-spend
+    => DGM delete), dropping protx_list below N. A single snapshot cannot see
+    it; this holds the assert over a REAL window of staked blocks. Any drop
+    below N is an immediate FAIL (a live deregistration — a gm44-class
+    recurrence that must be understood before trusting the fleet)."""
+    gm01 = cluster.gms[0]
+    start_h = gm01.getblockcount()
+    target_h = start_h + blocks
+    deadline = time.time() + timeout
+    checks = []
+    print(f"[soak] protx=={expected_n} over +{blocks} blocks "
+          f"(h{start_h} -> h{target_h})")
+    while True:
+        h = gm01.getblockcount()
+        n_reg = len(gm01.protx_list(detailed=False))
+        checks.append((h, n_reg))
+        if n_reg != expected_n:
+            raise AssertionError(
+                f"SOAK GATE FAILED at h{h}: protx_list == {n_reg}, expected "
+                f"{expected_n} — LIVE DEREGISTRATION (gm44-class). STOP.")
+        if h >= target_h:
+            break
+        if time.time() > deadline:
+            raise AssertionError(
+                f"SOAK GATE FAILED: chain stalled — only h{h} of h{target_h} "
+                f"after {timeout}s (protx held {expected_n} throughout)")
+        time.sleep(poll)
+    print(f"[soak] GATE PASS — protx=={expected_n} held over "
+          f"h{start_h} -> h{checks[-1][0]} ({len(checks)} checks, every check "
+          f"{expected_n}/{expected_n})")
+    return {"start": start_h, "end": checks[-1][0], "checks": len(checks)}
+
+
 def chain_extends(cluster: W2Cluster, blocks: int = 2, timeout: int = 600) -> int:
     gm01 = cluster.gms[0]
     start = gm01.getblockcount()
@@ -234,5 +270,8 @@ if __name__ == "__main__":
         lock_gate(c, n)
     if which in ("all", "extend"):
         chain_extends(c)
+    if which == "soak":  # not in "all": a real-duration gate, invoked explicitly
+        blocks = int(sys.argv[3]) if len(sys.argv) > 3 else 30
+        soak_gate(c, n, blocks=blocks)
     c.assert_poc_untouched("validate_fleet end")
     print("[validate] ALL REQUESTED GATES PASS; PoC untouched")
