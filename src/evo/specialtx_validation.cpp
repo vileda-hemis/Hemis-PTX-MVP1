@@ -680,6 +680,22 @@ bool CheckPTXDKGTx(const CTransaction& tx, const CBlockIndex* pindexPrev,
                                         payload.quorum_hash.ToString()),
                              REJECT_INVALID, "ptxdkg-quorum-hash-not-active-chain");
 
+        // V11 (W2.2 SG-1b-iii): the anchor must sit ON the formation
+        // schedule — height % N == 0 via PTX_Formation_IsBoundary (genesis
+        // excluded). SG-1b defines WHEN formation may fire; validation must
+        // REQUIRE it or produce and validate diverge (the SG-1a asymmetry
+        // class). Shape mirrors the LLMQ commitment's dkgInterval check
+        // (CheckLLMQCommitmentTx above). Deliberately NO activation-height
+        // gate — a RESETTABLE-FLEET simplification only; mainnet/public
+        // testnet REQUIRE a height-gate before this ships there or historical
+        // off-boundary PTXDKGs become retroactively invalid (forward-bind
+        // recorded 2026-07-13, pre-testnet/mainnet-migration owed-list).
+        if (!PTX_Formation_IsBoundary(pindexQuorum->nHeight,
+                                      Params().GetConsensus().ptxFormation))
+            return state.DoS(100, error("%s: PTXDKG anchor %s (height %d) is not a formation boundary",
+                                        __func__, payload.quorum_hash.ToString(), pindexQuorum->nHeight),
+                             REJECT_INVALID, "ptxdkg-anchor-not-boundary");
+
         // V9 (W2.1 C4, ODC-030 clause 2): one accepted PTXDKG per formation —
         // cross-block uniqueness against the persisted quorum index.  evodb
         // tracks the connecting chain through the scoped transaction stack, so

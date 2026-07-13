@@ -9,7 +9,10 @@ topology_gate  — Amendment 2: a compose that came up is not a mesh that works.
 
 eligibility_gate — Amendments 1/4: proves the fleet is FORMATION-READY through
   the real KDD-060 selection core, not by reading registration state alone.
-  Mechanism: a no-force ptx_debug_ptxdkgpopulate at a tip anchor runs
+  Mechanism: a no-force ptx_debug_ptxdkgpopulate at a BOUNDARY anchor (V11,
+  SG-1b-iii: a tip-anchored probe would refuse ptxdkg-anchor-not-boundary
+  before V5 is ever reached; boundaries already carrying a formed quorum are
+  walked past — V9 duplicate-formation also fires before V5) runs
   CheckPTXDKGTx contextually (SetPendingTx validates at the tip,
   ptx_dkg_pending.cpp:18-42): V4 snapshots the DGM list at the anchor, V5 runs
   PTX_DKG_SelectQuorumFromList. The debug payload's premits carry FABRICATED
@@ -105,17 +108,35 @@ def eligibility_gate(cluster: W2Cluster, expected_n: int) -> dict:
     print(f"[eligibility] {expected_n} GMs registered, compound-id'd, "
           f"confirmation-deep at tip={tip}")
 
-    # end-to-end selection proof through the real V5 core
-    anchor_hash = gm01.getbestblockhash()
-    anchor_h = tip
-    spec = {"quorum_hash": anchor_hash, "formation_height": anchor_h,
-            "members": 11, "premits": 6}
-    try:
-        gm01.call("ptx_debug_ptxdkgpopulate", spec)
+    # end-to-end selection proof through the real V5 core.  V11 (SG-1b-iii)
+    # requires the anchor ON the formation schedule, so probe the latest
+    # boundary <= tip; a boundary already carrying a formed quorum refuses at
+    # V9 (duplicate-formation, also pre-V5) — walk back one boundary, bounded.
+    FORMATION_N = 80  # dev-net nFormationInterval (chainparams, SG-1b-i)
+    anchor_h = tip - (tip % FORMATION_N)
+    reason = None
+    for _ in range(4):
+        if anchor_h < FORMATION_N:
+            raise AssertionError(
+                "no probeable formation boundary below tip (all recent "
+                "boundaries carry formed quorums or chain too short)")
+        anchor_hash = gm01.call("getblockhash", anchor_h)
+        spec = {"quorum_hash": anchor_hash, "formation_height": anchor_h,
+                "members": 11, "premits": 6}
+        try:
+            gm01.call("ptx_debug_ptxdkgpopulate", spec)
+            raise AssertionError(
+                "populate ACCEPTED a fabricated-premit payload — validation regression")
+        except RPCError as e:
+            reason = e.message
+        if "ptxdkg-duplicate-formation" in reason:
+            anchor_h -= FORMATION_N
+            continue
+        break
+    if "ptxdkg-anchor-not-boundary" in reason:
         raise AssertionError(
-            "populate ACCEPTED a fabricated-premit payload — validation regression")
-    except RPCError as e:
-        reason = e.message
+            f"boundary-anchored probe refused as off-boundary at h{anchor_h} — "
+            f"harness/params mismatch (FORMATION_N?): {reason!r}")
     # Either reason proves V5 assembled a full quorum-of-11: V10
     # member-containment (W2.1 C4) runs only after the underfull check on the
     # assembled selection, and the fake-mode dbggm ids always trip it before
