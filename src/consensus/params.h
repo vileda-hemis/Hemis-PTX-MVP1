@@ -165,6 +165,22 @@ struct LLMQParams {
     int cacheDkgInterval;
 };
 
+// W2.2 SG-1b — PTX formation cycle parameters. A single struct (not an
+// LLMQ-style map): there is exactly one PTX quorum type; the map is a cheap
+// refactor if types ever multiply (SG-1b plan-gate decision 2, 2026-07-13).
+struct PTXFormationParams {
+    // not consensus critical, only used in logging
+    std::string name;
+
+    // N — the formation cadence: a formation boundary occurs at every height
+    // with height > 0 && height % N == 0 (height 0 excluded by construction —
+    // no formation from genesis). N is a SECURITY CEILING only
+    // (handover-at-accept keeps rotation available across boundaries, KDD-063);
+    // it must exceed the ceremony floor M (~47 blocks) so a new boundary
+    // cannot fire before the prior ceremony completes.
+    int nFormationInterval;
+};
+
 /**
  * Parameters that influence chain consensus.
  */
@@ -279,6 +295,9 @@ struct Params {
     std::map<LLMQType, LLMQParams> llmqs;
     Optional<LLMQParams> GetLLMQParams(uint8_t llmqtype) const;
     LLMQType llmqChainLocks;
+
+    // PTX formation schedule (W2.2 SG-1b)
+    PTXFormationParams ptxFormation;
 };
 } // namespace Consensus
 

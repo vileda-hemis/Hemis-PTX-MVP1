@@ -5,6 +5,7 @@
 #include "ptx/ptx_formation.h"
 
 #include "chain.h"
+#include "consensus/params.h"
 
 #include <set>
 
@@ -72,4 +73,24 @@ bool PTX_Formation_SelectAtAnchor(const CBlockIndex* pindexAnchor,
     membersOut = PTX_DKG_BuildMemberVectorFromList(
             pool, pindexAnchor->GetBlockHash());
     return membersOut.size() == 11;
+}
+
+bool PTX_Formation_IsBoundary(int nHeight,
+                              const Consensus::PTXFormationParams& params)
+{
+    // nHeight > 0 is load-bearing: 0 % N == 0 would make genesis a boundary.
+    return nHeight > 0 && (nHeight % params.nFormationInterval) == 0;
+}
+
+const CBlockIndex* PTX_Formation_GetAnchor(
+        const CBlockIndex* pindexNew,
+        const Consensus::PTXFormationParams& params)
+{
+    if (pindexNew == nullptr)
+        return nullptr;
+    // Walk pindexNew's OWN branch (V3's reorg-robust idiom) — never
+    // chainActive[] (equivalent only while the tip is on the active chain;
+    // divergent, self-poisoning, on a fork), never cached across tips.
+    const int stage = pindexNew->nHeight % params.nFormationInterval;
+    return pindexNew->GetAncestor(pindexNew->nHeight - stage);
 }

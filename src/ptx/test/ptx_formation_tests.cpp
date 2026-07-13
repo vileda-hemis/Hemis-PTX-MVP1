@@ -31,11 +31,14 @@
 #include "evo/deterministicgms.h"
 
 #include "bls/bls_wrapper.h"
+#include "chain.h"
+#include "consensus/params.h"
 #include "uint256.h"
 
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <deque>
 #include <set>
 #include <string>
 #include <vector>
@@ -290,6 +293,184 @@ BOOST_AUTO_TEST_CASE(pool_threshold_gate)
     std::set<uint256> got;
     for (const auto& m : draw11) got.insert(m.proTxHash);
     BOOST_CHECK_EQUAL(got.size(), 11u);
+}
+
+// ===========================================================================
+// W2.2 SG-1b-i — pure schedule core (boundary + anchor). Rows per the
+// authorised plan; tests inject arbitrary N via the params argument (no net
+// dependency). The chain fixture is synthetic CBlockIndex (pprev + BuildSkip
+// — the skiplist_tests idiom); GetAncestor follows pskip, so BuildSkip is
+// mandatory on every index.
+// ===========================================================================
+
+namespace {
+
+static Consensus::PTXFormationParams ScheduleParams(int n)
+{
+    Consensus::PTXFormationParams p;
+    p.name = "unit";
+    p.nFormationInterval = n;
+    return p;
+}
+
+// Extend a branch by `count` blocks from `from` (nullptr => start at genesis
+// h0). std::deque keeps element addresses stable across growth.
+static CBlockIndex* ExtendBranch(std::deque<CBlockIndex>& store,
+                                 CBlockIndex* from, int count)
+{
+    CBlockIndex* tip = from;
+    for (int i = 0; i < count; i++) {
+        store.emplace_back();
+        CBlockIndex& ix = store.back();
+        ix.pprev = tip;
+        ix.nHeight = tip ? tip->nHeight + 1 : 0;
+        ix.BuildSkip();
+        tip = &ix;
+    }
+    return tip;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Row 1 — MID-CYCLE NO-FIRE (the stub->RED driver): every h % N != 0 must
+// NOT be a boundary. Runs first among the schedule rows by design: against
+// the always-true stub this is the RED.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(sg1b_midcycle_nofire)
+{
+    for (int N : {7, 80}) {
+        const auto p = ScheduleParams(N);
+        for (int h = 1; h <= 4 * N; h++) {
+            if (h % N == 0) continue;
+            BOOST_CHECK_MESSAGE(!PTX_Formation_IsBoundary(h, p),
+                "mid-cycle height " << h << " fired (N=" << N << ")");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Row 2 — the boundary fires: h = k*N for k >= 1.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(sg1b_boundary_fires)
+{
+    for (int N : {7, 80, 1440}) {
+        const auto p = ScheduleParams(N);
+        for (int k = 1; k <= 5; k++)
+            BOOST_CHECK_MESSAGE(PTX_Formation_IsBoundary(k * N, p),
+                "boundary height " << k * N << " did not fire (N=" << N << ")");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Row 3 — GENESIS EDGE: 0 % N == 0 for every N, so height 0 must be
+// EXPLICITLY excluded (no formation from genesis, by construction).
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(sg1b_genesis_excluded)
+{
+    for (int N : {1, 7, 80, 1440})
+        BOOST_CHECK_MESSAGE(!PTX_Formation_IsBoundary(0, ScheduleParams(N)),
+            "genesis (h0) fired as a boundary (N=" << N << ")");
+}
+
+// ---------------------------------------------------------------------------
+// Row 4 — ANCHOR EXACTNESS: for every h in [kN, (k+1)N) the anchor is the
+// block at kN on the tip's own branch; at h = kN the anchor is pindexNew
+// itself. (Pre-first-boundary heights anchor to genesis; IsBoundary is what
+// gates firing, not the walk.)
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(sg1b_anchor_exactness)
+{
+    std::deque<CBlockIndex> store;
+    CBlockIndex* tip = ExtendBranch(store, nullptr, 201); // h0..h200
+    const auto p = ScheduleParams(80);
+
+    std::vector<const CBlockIndex*> byHeight(201, nullptr);
+    for (const CBlockIndex* ix = tip; ix; ix = ix->pprev)
+        byHeight[ix->nHeight] = ix;
+
+    for (int h = 0; h <= 200; h++) {
+        const CBlockIndex* anchor =
+            PTX_Formation_GetAnchor(byHeight[h], p);
+        const int expect = h - (h % 80);
+        BOOST_REQUIRE_MESSAGE(anchor != nullptr, "null anchor at h" << h);
+        BOOST_CHECK_EQUAL(anchor->nHeight, expect);
+        BOOST_CHECK_MESSAGE(anchor == byHeight[expect],
+            "anchor at h" << h << " is not the branch's block at " << expect);
+        if (h % 80 == 0)
+            BOOST_CHECK_MESSAGE(anchor == byHeight[h],
+                "at a boundary the anchor must be pindexNew itself (h" << h << ")");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Row 5 — REORG: GetAncestor-vs-chainActive made concrete.
+// Fork BELOW a boundary, both branches extended past it: each tip's anchor
+// is ITS OWN branch's boundary block — same height, different block.
+// chainActive[] indexing would have handed BOTH tips the active branch's
+// block (the self-poisoning divergence class). Fork ABOVE the boundary:
+// both tips share the identical anchor block.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(sg1b_anchor_reorg_getancestor)
+{
+    const auto p = ScheduleParams(80);
+    std::deque<CBlockIndex> store;
+
+    // "Active" branch A: h0..h170.
+    CBlockIndex* tipA = ExtendBranch(store, nullptr, 171);
+    std::vector<CBlockIndex*> a(171, nullptr);
+    for (CBlockIndex* ix = tipA; ix; ix = ix->pprev)
+        a[ix->nHeight] = ix;
+
+    // Fork BELOW the h160 boundary: branch B leaves A at h75, extends to
+    // h170 with its own blocks 76..170.
+    CBlockIndex* tipB = ExtendBranch(store, a[75], 95);
+    BOOST_REQUIRE_EQUAL(tipB->nHeight, 170);
+
+    const CBlockIndex* anchorA = PTX_Formation_GetAnchor(tipA, p);
+    const CBlockIndex* anchorB = PTX_Formation_GetAnchor(tipB, p);
+    BOOST_REQUIRE(anchorA != nullptr && anchorB != nullptr);
+    BOOST_CHECK_EQUAL(anchorA->nHeight, 160);
+    BOOST_CHECK_EQUAL(anchorB->nHeight, 160);
+    BOOST_CHECK_MESSAGE(anchorA == a[160],
+        "A's anchor must be A's own block at h160");
+    BOOST_CHECK_MESSAGE(anchorA != anchorB,
+        "fork below the boundary: each tip must anchor to ITS OWN branch's "
+        "boundary block — a shared anchor here is exactly what chainActive[] "
+        "indexing would wrongly produce for the non-active tip");
+    BOOST_CHECK(tipB->GetAncestor(160) == anchorB); // B's anchor is on B
+
+    // Fork ABOVE the h80 boundary (and below h160): branch C leaves A at
+    // h100, extends to h150. Both tips derive the identical SHARED anchor.
+    CBlockIndex* tipC = ExtendBranch(store, a[100], 50);
+    BOOST_REQUIRE_EQUAL(tipC->nHeight, 150);
+    const CBlockIndex* anchorC  = PTX_Formation_GetAnchor(tipC, p);
+    const CBlockIndex* anchorA2 = PTX_Formation_GetAnchor(a[150], p);
+    BOOST_CHECK_MESSAGE(anchorC == anchorA2 && anchorC == a[80],
+        "fork above the boundary: both tips must share the pre-fork anchor");
+}
+
+// ---------------------------------------------------------------------------
+// Row 6 — DETERMINISM: repeated identical inputs -> identical outputs
+// (recorded; purity is otherwise enforced by signature — no wall-clock, no
+// node-local state can enter).
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(sg1b_schedule_determinism)
+{
+    const auto p = ScheduleParams(80);
+    std::deque<CBlockIndex> store;
+    CBlockIndex* tip = ExtendBranch(store, nullptr, 130); // h0..h129
+
+    std::vector<bool> first;
+    for (int h = 0; h <= 129; h++)
+        first.push_back(PTX_Formation_IsBoundary(h, p));
+    const CBlockIndex* anchorFirst = PTX_Formation_GetAnchor(tip, p);
+
+    for (int rep = 0; rep < 3; rep++) {
+        for (int h = 0; h <= 129; h++)
+            BOOST_CHECK(PTX_Formation_IsBoundary(h, p) == first[(size_t)h]);
+        BOOST_CHECK(PTX_Formation_GetAnchor(tip, p) == anchorFirst);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

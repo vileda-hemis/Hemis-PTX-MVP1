@@ -29,6 +29,7 @@
 #include <vector>
 
 class CBlockIndex;
+namespace Consensus { struct PTXFormationParams; }
 
 // The KDD-040 pool join — PURE list-in/list-out (zero globals; fully
 // unit-testable). pool = listAtAnchor filtered by PTX_DKG_IsGMPTXEligible
@@ -68,5 +69,31 @@ CDeterministicGMList PTX_Formation_BuildPool(
 // by the caller (chain/DGM/store reads).
 bool PTX_Formation_SelectAtAnchor(const CBlockIndex* pindexAnchor,
                                   std::vector<PTXDKGMember>& membersOut);
+
+// ---------------------------------------------------------------------------
+// W2.2 SG-1b-i — the pure schedule core (boundary + anchor). PURITY IS
+// ENFORCED BY SIGNATURE: (height/pindex, params) in, (fires?, anchor) out —
+// no wall-clock, no FORMING reads, no fInitialDownload parameter (the IBD
+// guard lives only in SG-1b-ii's notification wrapper and gates ACTION, never
+// this computation). Two nodes with the same chain state MUST compute the
+// identical answer.
+// ---------------------------------------------------------------------------
+
+// Formation boundary: nHeight > 0 && nHeight % N == 0. The nHeight > 0 term
+// is load-bearing — 0 % N == 0, so genesis would otherwise be a boundary; no
+// formation fires from genesis, by construction.
+bool PTX_Formation_IsBoundary(int nHeight,
+                              const Consensus::PTXFormationParams& params);
+
+// The cycle-start anchor for pindexNew's height, walked down pindexNew's OWN
+// branch: pindexNew->GetAncestor(nHeight - nHeight % N) — the reorg-robust
+// V3 idiom (specialtx_validation.cpp CheckPTXDKGTx), NEVER chainActive[]
+// indexing and NEVER cached across tips: after a reorg that crosses a
+// boundary, each tip derives its own branch's boundary block. Heights before
+// the first boundary anchor to genesis; PTX_Formation_IsBoundary is what
+// gates firing, not this walk. Returns nullptr only for a null pindexNew.
+const CBlockIndex* PTX_Formation_GetAnchor(
+        const CBlockIndex* pindexNew,
+        const Consensus::PTXFormationParams& params);
 
 #endif // PTX_FORMATION_H

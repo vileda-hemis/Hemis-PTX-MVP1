@@ -370,6 +370,10 @@ public:
         consensus.llmqs[Consensus::LLMQ_400_60] = llmq400_60;
         consensus.llmqs[Consensus::LLMQ_400_85] = llmq400_85;
 
+        // PTX formation cadence (W2.2 SG-1b): N = 1440 = 24h at 60s spacing,
+        // security-ceiling-only (KDD-063 handover-at-accept).
+        consensus.ptxFormation = {"main", 1440};
+
         nLLMQConnectionRetryTimeout = 60;
 
         consensus.llmqChainLocks = Consensus::LLMQ_400_60;
@@ -535,6 +539,10 @@ public:
         consensus.llmqs[Consensus::LLMQ_400_60] = llmq400_60;
         consensus.llmqs[Consensus::LLMQ_400_85] = llmq400_85;
 
+        // PTX formation cadence (W2.2 SG-1b): public testnet mirrors the
+        // mainnet posture (SG-1b plan-gate decision 1).
+        consensus.ptxFormation = {"test", 1440};
+
         nLLMQConnectionRetryTimeout = 60;
 
         consensus.llmqChainLocks = Consensus::LLMQ_400_60;
@@ -677,6 +685,10 @@ public:
         nLLMQConnectionRetryTimeout = 10;
 
         consensus.llmqChainLocks = Consensus::LLMQ_TEST;
+
+        // PTX formation cadence (W2.2 SG-1b): dev test-N = 80, M-coupled
+        // (~1.7x the ceremony floor M~47; SG-1b plan-gate decision 1).
+        consensus.ptxFormation = {"regtest", 80};
 
         // Tier two
         nFulfilledRequestExpireTime = 60 * 60; // fulfilled requests expire in 1 hour
@@ -824,6 +836,10 @@ public:
         nLLMQConnectionRetryTimeout = 10;
         consensus.llmqChainLocks = Consensus::LLMQ_TEST;
 
+        // PTX formation cadence (W2.2 SG-1b): dev test-N = 80, M-coupled
+        // (~1.7x the ceremony floor M~47; SG-1b plan-gate decision 1).
+        consensus.ptxFormation = {"ptxtest", 80};
+
         nFulfilledRequestExpireTime = 60 * 60;
 
         // PTX lottery pool — burn-style address, no known private key
@@ -955,6 +971,10 @@ public:
         consensus.llmqs[Consensus::LLMQ_TEST] = llmq_test;
         nLLMQConnectionRetryTimeout = 10;
         consensus.llmqChainLocks = Consensus::LLMQ_TEST;
+
+        // PTX formation cadence (W2.2 SG-1b): dev test-N = 80, M-coupled
+        // (~1.7x the ceremony floor M~47; SG-1b plan-gate decision 1).
+        consensus.ptxFormation = {"ptxbea", 80};
 
         nFulfilledRequestExpireTime = 60 * 60;
 
