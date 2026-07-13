@@ -21,6 +21,7 @@
 #include "ptx/ptx_coalesce.h"
 #include "ptx/ptx_dkg.h"
 #include "ptx/ptx_dkg_pending.h"
+#include "ptx/ptx_formation.h"
 #include "ptx/ptx_lottery_state.h"
 #include "ptx/ptx_quorum_store.h"
 #include "ptx/ptx_winner_selection.h"
@@ -702,8 +703,24 @@ bool CheckPTXDKGTx(const CTransaction& tx, const CBlockIndex* pindexPrev,
         // (eligibility filter then CalculateQuorum) — never bare CalculateQuorum
         // on the unfiltered dgmList, which would score empty-node_id GMs that
         // formation excludes and split the chain.
+        // SG-1a (2026-07-12): the KDD-040 pool join is CONSENSUS-SHARED — the
+        // validator builds the SAME eligible-minus-active pool as formation
+        // (PTX_Formation_BuildPool, D-SG1a-1 full formed-11 exclusion) or an
+        // honest second formation would self-reject the moment quorum #2
+        // exists. At zero ACTIVE records the pool equals the eligible list
+        // byte-identically (proven at the SG-1a gate). Forward-bind D-SG1a-2:
+        // when W2.3/W2.4 add state mutations, GetActiveQuorumsAtHeight must
+        // answer state-AS-OF-HEIGHT here — consensus obligation on their
+        // owed-lists. Null store = unit-test env only (= zero ACTIVE records).
+        std::vector<CPTXQuorumRecord> activeAtAnchor;
+        if (ptxQuorumStore) {
+            activeAtAnchor =
+                ptxQuorumStore->GetActiveQuorumsAtHeight(pindexQuorum->nHeight);
+        }
+        const CDeterministicGMList formationPool =
+            PTX_Formation_BuildPool(dgmList, activeAtAnchor);
         std::vector<CDeterministicGMCPtr> quorum11 =
-            PTX_DKG_SelectQuorumFromList(dgmList, payload.quorum_hash);
+            PTX_DKG_SelectQuorumFromList(formationPool, payload.quorum_hash);
         if (quorum11.size() != 11)
             return state.DoS(100, error("%s: PTXDKG quorum underfull (%d of 11) at anchor",
                                         __func__, (int)quorum11.size()),

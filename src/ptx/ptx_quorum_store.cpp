@@ -13,6 +13,7 @@
 #include "primitives/block.h"
 #include "primitives/transaction.h" // GetTxPayload
 #include "ptx/ptx_dkg.h"
+#include "ptx/ptx_formation.h"
 #include "util/system.h" // error()
 #include "validation.h"  // LookupBlockIndex
 
@@ -80,8 +81,19 @@ bool CPTXQuorumStore::ProcessBlock(const CBlock& block, const CBlockIndex* pinde
                          REJECT_INVALID, "ptxdkg-quorum-hash-not-found");
     }
     const CDeterministicGMList dgmList = deterministicGMManager->GetListForBlock(pindexQuorum);
+    // SG-1a: the connect-time materialization/containment guard reconstructs
+    // through the SAME KDD-040 pool as V5 and formation (the one-function
+    // contract now includes the pool). THE MISSED-SITE LESSON (2026-07-13,
+    // caught live by battery_sg1 row v5(y)): with V5 pool-aware and this
+    // guard raw, a valid PTXDKG passed populate + assembler and was REJECTED
+    // at connect ("11 committed, 4 matched") — a self-poisoning divergence.
+    // All THREE reconstruction sites (V5, debug builder, this guard) must
+    // share PTX_Formation_BuildPool.
+    const CDeterministicGMList formationPool =
+        PTX_Formation_BuildPool(dgmList,
+                                GetActiveQuorumsAtHeight(pindexQuorum->nHeight));
     const std::vector<CDeterministicGMCPtr> quorum11 =
-        PTX_DKG_SelectQuorumFromList(dgmList, payload.quorum_hash);
+        PTX_DKG_SelectQuorumFromList(formationPool, payload.quorum_hash);
 
     // Materialize per-member share_index (KDD-061: recovery-x = committed
     // formation share_index, score-order, gaps preserved).  The full

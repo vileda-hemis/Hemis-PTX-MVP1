@@ -6,6 +6,7 @@
 #include "ptx/ptx_commit_reveal.h"
 #include "ptx/ptx_dkg.h"
 #include "ptx/ptx_dkg_pending.h"
+#include "ptx/ptx_formation.h"
 #include "core_io.h" // EncodeHexTx (C6 build_only mode)
 #include "ptx/ptx_fanout.h"
 #include "ptx/ptx_lottery_state.h"
@@ -631,6 +632,11 @@ static CMutableTransaction PTX_Debug_BuildPTXDKGTxFromChain(const uint256& quoru
                                                             int n_premits)
 {
     CDeterministicGMList dgmList;
+    // SG-1a: the builder mirrors V5's CONSENSUS pool (eligible minus active,
+    // PTX_Formation_BuildPool) — with the V5 swap, a raw-list selection could
+    // never build an acceptable PTXDKG once any ACTIVE quorum exists (its
+    // premit signers would include excluded members).
+    std::vector<CPTXQuorumRecord> activeAtAnchor;
     {
         LOCK(cs_main);
         const CBlockIndex* pindexQuorum = LookupBlockIndex(quorum_hash);
@@ -639,9 +645,15 @@ static CMutableTransaction PTX_Debug_BuildPTXDKGTxFromChain(const uint256& quoru
                 "operator_keys mode requires a real anchor: quorum_hash not found");
         }
         dgmList = deterministicGMManager->GetListForBlock(pindexQuorum);
+        if (ptxQuorumStore) {
+            activeAtAnchor =
+                ptxQuorumStore->GetActiveQuorumsAtHeight(pindexQuorum->nHeight);
+        }
     }
+    const CDeterministicGMList formationPool =
+        PTX_Formation_BuildPool(dgmList, activeAtAnchor);
     const std::vector<CDeterministicGMCPtr> quorum11 =
-        PTX_DKG_SelectQuorumFromList(dgmList, quorum_hash);
+        PTX_DKG_SelectQuorumFromList(formationPool, quorum_hash);
     if (quorum11.empty()) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, "no eligible GMs at anchor");
     }
@@ -1468,6 +1480,79 @@ UniValue ptx_wallet_operated_gms(const JSONRPCRequest& request)
 // Registration
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// ptx_debug_selectquorum — SG-1a probe: run the pure formation caller at an
+// explicit anchor and return the score-ordered selection. READ-ONLY (no
+// pending slot, no session, no store write). Net-gated like
+// ptx_debug_ptxdkgpopulate: fails CLOSED off regtest/ptxbea. This is the
+// surface the all-22 same-anchor identity row (c) and the on-fleet
+// score-order fixture query per node.
+// ---------------------------------------------------------------------------
+static UniValue ptx_debug_selectquorum(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() != 1)
+        throw std::runtime_error(
+            "ptx_debug_selectquorum \"anchor_hash\"\n"
+            "\nSG-1a debug probe: the pure formation selection at an anchor.\n"
+            "Read-only; regtest/ptxbea only.\n"
+            "\nArguments:\n"
+            "1. anchor_hash   (string, required) block hash of the formation anchor\n"
+            "\nResult: {anchor, height, eligible, active_excluded, pool,\n"
+            "          selected: [{node_id, proTxHash, share_index}] (score order)}\n");
+
+    if (!Params().IsRegTestNet() && !Params().IsPTXBeaTestNet()) {
+        throw JSONRPCError(RPC_METHOD_NOT_FOUND,
+            "ptx_debug_selectquorum is only available on regtest or the ptxbea test network");
+    }
+
+    const uint256 anchor_hash = ParseHashV(request.params[0], "anchor_hash");
+
+    UniValue ret(UniValue::VOBJ);
+    LOCK(cs_main);
+
+    const CBlockIndex* pindexAnchor = LookupBlockIndex(anchor_hash);
+    if (pindexAnchor == nullptr)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "anchor_hash not found");
+    // DETERMINISM: the anchor must be on the active chain — a stale-branch
+    // anchor would let two nodes answer from different histories.
+    if (!chainActive.Contains(pindexAnchor))
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "anchor not on the active chain");
+
+    // Diagnostics mirror the caller's own pool build (same functions).
+    const CDeterministicGMList listAtAnchor =
+        deterministicGMManager->GetListForBlock(pindexAnchor);
+    std::vector<CPTXQuorumRecord> activeAtAnchor;
+    if (ptxQuorumStore) {
+        activeAtAnchor = ptxQuorumStore->GetActiveQuorumsAtHeight(pindexAnchor->nHeight);
+    }
+    size_t eligible = 0;
+    listAtAnchor.ForEachGM(true, [&](const CDeterministicGMCPtr& dgm) {
+        if (PTX_DKG_IsGMPTXEligible(dgm)) eligible++;
+    });
+    const CDeterministicGMList pool =
+        PTX_Formation_BuildPool(listAtAnchor, activeAtAnchor);
+
+    std::vector<PTXDKGMember> members;
+    const bool formed = PTX_Formation_SelectAtAnchor(pindexAnchor, members);
+
+    ret.pushKV("anchor", anchor_hash.ToString());
+    ret.pushKV("height", pindexAnchor->nHeight);
+    ret.pushKV("eligible", (uint64_t)eligible);
+    ret.pushKV("active_excluded", (uint64_t)(eligible - pool.GetValidGMsCount()));
+    ret.pushKV("pool", (uint64_t)pool.GetValidGMsCount());
+    ret.pushKV("formed", formed);
+    UniValue arr(UniValue::VARR);
+    for (size_t i = 0; i < members.size(); i++) {
+        UniValue m(UniValue::VOBJ);
+        m.pushKV("node_id", members[i].node_id);
+        m.pushKV("proTxHash", members[i].proTxHash.ToString());
+        m.pushKV("share_index", (uint64_t)(i + 1));
+        arr.push_back(m);
+    }
+    ret.pushKV("selected", arr);
+    return ret;
+}
+
 // clang-format off
 static const CRPCCommand commands[] = {
 //  category  name                         handler                       okSafe  argNames
@@ -1478,6 +1563,7 @@ static const CRPCCommand commands[] = {
     { "ptx",  "gm_bls_sign",               &gm_bls_sign,                true,   {"round_seed_hex"} },
     { "ptx",  "ptx_debug_setnodefailmode", &ptx_debug_setnodefailmode,  true,   {"target_node_id","mode"} },
     { "ptx",  "ptx_debug_ptxdkgpopulate",  &ptx_debug_ptxdkgpopulate,   true,   {"payload","force"} },
+    { "ptx",  "ptx_debug_selectquorum",    &ptx_debug_selectquorum,     true,   {"anchor_hash"} },
     { "ptx",  "ptx_quorum_info",           &ptx_quorum_info,            true,   {"quorum_hash"} },
     { "ptx",  "ptx_quorum_list",           &ptx_quorum_list,            true,   {"height"} },
     { "ptx",  "ptx_getroundstatus",        &ptx_getroundstatus,         true,   {"round_id"} },
