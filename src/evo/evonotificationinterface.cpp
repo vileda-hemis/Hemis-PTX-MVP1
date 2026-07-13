@@ -9,6 +9,7 @@
 #include "llmq/quorums.h"
 #include "llmq/quorums_chainlocks.h"
 #include "llmq/quorums_dkgsessionmgr.h"
+#include "ptx/ptx_formation.h"
 #include "validation.h"
 
 void EvoNotificationInterface::InitializeCurrentBlockTip()
@@ -28,6 +29,7 @@ void EvoNotificationInterface::UpdatedBlockTip(const CBlockIndex *pindexNew, con
     llmq::chainLocksHandler->UpdatedBlockTip(pindexNew, pindexFork);
     llmq::quorumDKGSessionManager->UpdatedBlockTip(pindexNew, fInitialDownload);
     llmq::quorumManager->UpdatedBlockTip(pindexNew, pindexFork, fInitialDownload);
+    PTX_Formation_NotifyUpdatedBlockTip(pindexNew, fInitialDownload); // W2.2 SG-1b-ii, log-only
 }
 
 void EvoNotificationInterface::NotifyGamemasterListChanged(bool undo, const CDeterministicGMList& oldGMList, const CDeterministicGMListDiff& diff)

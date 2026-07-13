@@ -96,4 +96,23 @@ const CBlockIndex* PTX_Formation_GetAnchor(
         const CBlockIndex* pindexNew,
         const Consensus::PTXFormationParams& params);
 
+// ---------------------------------------------------------------------------
+// W2.2 SG-1b-ii — the notification wrapper (LOG-ONLY). Modeled on
+// CDKGSessionManager::UpdatedBlockTip (llmq/quorums_dkgsessionmgr.cpp):
+// fInitialDownload early-return + IsDIP3Enforced activation guard (the DGM
+// list is formation's substrate; no PTX spork/upgrade gate exists — these
+// two are the guard set), LOCK(cs_main) (the notification arrives on the
+// background scheduler thread without it, like the LLMQ manager), then the
+// pure SG-1b-i core: IsBoundary -> GetAnchor -> LogPrintf.
+//
+// THE GUARDS GATE ACTION ONLY — the pure schedule functions above cannot
+// receive them (purity by signature; two nodes at the same chain state
+// compute the identical boundary/anchor regardless of either guard).
+// NO session start, NO MarkForming (SG-1c's — see the scope banner), NO
+// SelectAtAnchor: this unit only OBSERVES the boundary firing; acting on it
+// is SG-1c. Called from EvoNotificationInterface::UpdatedBlockTip.
+// ---------------------------------------------------------------------------
+void PTX_Formation_NotifyUpdatedBlockTip(const CBlockIndex* pindexNew,
+                                         bool fInitialDownload);
+
 #endif // PTX_FORMATION_H

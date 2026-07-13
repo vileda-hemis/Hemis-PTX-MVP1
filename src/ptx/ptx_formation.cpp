@@ -5,7 +5,10 @@
 #include "ptx/ptx_formation.h"
 
 #include "chain.h"
+#include "chainparams.h"
 #include "consensus/params.h"
+#include "logging.h"
+#include "validation.h"
 
 #include <set>
 
@@ -93,4 +96,35 @@ const CBlockIndex* PTX_Formation_GetAnchor(
     // divergent, self-poisoning, on a fork), never cached across tips.
     const int stage = pindexNew->nHeight % params.nFormationInterval;
     return pindexNew->GetAncestor(pindexNew->nHeight - stage);
+}
+
+void PTX_Formation_NotifyUpdatedBlockTip(const CBlockIndex* pindexNew,
+                                         bool fInitialDownload)
+{
+    if (pindexNew == nullptr)
+        return;
+
+    // ACTION guards (the CDKGSessionManager::UpdatedBlockTip pair). Neither
+    // is an input to the boundary computation — the pure core below cannot
+    // receive them by signature.
+    if (fInitialDownload)
+        return;
+    if (!deterministicGMManager->IsDIP3Enforced(pindexNew->nHeight))
+        return;
+
+    const Consensus::PTXFormationParams& params =
+            Params().GetConsensus().ptxFormation;
+    if (!PTX_Formation_IsBoundary(pindexNew->nHeight, params))
+        return;
+
+    LOCK(cs_main);
+    const CBlockIndex* pindexAnchor = PTX_Formation_GetAnchor(pindexNew, params);
+    if (pindexAnchor == nullptr)
+        return;
+
+    // LOG-ONLY (SG-1b-ii): observing the boundary is this unit's whole
+    // action. Session start / MarkForming / SelectAtAnchor are SG-1c's.
+    LogPrintf("PTX formation boundary: height=%d anchor=%s anchor_height=%d N=%d (log-only, SG-1b-ii)\n",
+              pindexNew->nHeight, pindexAnchor->GetBlockHash().ToString(),
+              pindexAnchor->nHeight, params.nFormationInterval);
 }
