@@ -34,6 +34,7 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -69,18 +70,51 @@ BOOST_AUTO_TEST_CASE(n2_resolve_match_mismatch_clear)
 {
     CPTXCeremonyTransport transport;
 
-    PTXDKGSession session;
+    auto session = std::make_shared<PTXDKGSession>();
     std::vector<unsigned char> buf(32, 0xFB);
-    session.quorum_hash = uint256(buf);
+    session->quorum_hash = uint256(buf);
 
-    transport.SetActiveSession(&session);
-    BOOST_CHECK(transport.resolve(session.quorum_hash) == &session);
+    transport.SetActiveSession(session);
+    BOOST_CHECK(transport.resolve(session->quorum_hash) == session);
 
     std::vector<unsigned char> other(32, 0xEE);
     BOOST_CHECK(transport.resolve(uint256(other)) == nullptr); // unknown → drop
 
     transport.SetActiveSession(nullptr);
-    BOOST_CHECK(transport.resolve(session.quorum_hash) == nullptr);
+    BOOST_CHECK(transport.resolve(session->quorum_hash) == nullptr);
+}
+
+// N-2b — SG-1c-i teardown-memory contract: a resolved (ref-holding) copy
+// keeps the session ALIVE across the producer clearing the slot — the
+// use-after-free the SG-1c plan gate caught, made a unit row.  New resolves
+// return nullptr immediately; the held copy stays fully readable and is the
+// LAST owner once the producer's ref drops.
+BOOST_AUTO_TEST_CASE(n2b_resolved_copy_survives_producer_teardown)
+{
+    CPTXCeremonyTransport transport;
+
+    auto session = std::make_shared<PTXDKGSession>();
+    std::vector<unsigned char> buf(32, 0xFB);
+    session->quorum_hash = uint256(buf);
+    session->my_idx = 4;
+
+    transport.SetActiveSession(session);
+    std::shared_ptr<PTXDKGSession> inflight = transport.resolve(session->quorum_hash);
+    BOOST_REQUIRE(inflight != nullptr);
+
+    // Producer teardown: clear the slot, drop the producer's own ref —
+    // exactly the ceremony thread's exit sequence.
+    transport.SetActiveSession(nullptr);
+    const uint256 qh = session->quorum_hash;
+    session.reset();
+
+    // The in-flight dispatch's copy is now the sole owner: alive, readable.
+    BOOST_CHECK_EQUAL(inflight.use_count(), 1);
+    BOOST_CHECK(inflight->quorum_hash == qh);
+    BOOST_CHECK_EQUAL(inflight->my_idx, 4);
+
+    // And the transport no longer resolves it for anyone new.
+    BOOST_CHECK(transport.resolve(qh) == nullptr);
 }
 
 // N-3 — dedup is content-based and cross-peer (the LLMQ seenMessages arm).

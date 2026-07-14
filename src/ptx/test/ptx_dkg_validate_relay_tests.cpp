@@ -48,6 +48,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -100,7 +101,11 @@ struct Harness {
         session.quorum_hash = QHash();
         session.members = members;
         session.phase = PTXDKGPhase::HASH_COMMIT;
-        transport.SetActiveSession(&session);
+        // SG-1c-i shared_ptr slot: non-owning wrap of the harness-owned
+        // session (no-op deleter) — the ownership semantics themselves are
+        // unit-proven in ptx_dkg_net_tests n2b.
+        transport.SetActiveSession(
+                std::shared_ptr<PTXDKGSession>(&session, [](PTXDKGSession*) {}));
         transport.relayHook = [this](const CInv& inv, const PTXDKGSession&) { relayed.push_back(inv); };
         transport.penaltyHook = [this](NodeId id, int score) { penalties.emplace_back(id, score); };
     }

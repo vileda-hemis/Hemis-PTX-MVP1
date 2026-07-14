@@ -123,20 +123,20 @@ void CPTXPendingMessages::Clear()
 // CPTXCeremonyTransport
 // ---------------------------------------------------------------------------
 
-PTXDKGSession* CPTXCeremonyTransport::resolve(const uint256& quorum_hash)
+std::shared_ptr<PTXDKGSession> CPTXCeremonyTransport::resolve(const uint256& quorum_hash)
 {
     LOCK(cs_session);
     if (activeSession && activeSession->quorum_hash == quorum_hash) {
-        return activeSession;
+        return activeSession; // ref-holding copy — survives producer teardown
     }
     return nullptr; // unknown formation → caller drops, no ban
 }
 
-void CPTXCeremonyTransport::SetActiveSession(PTXDKGSession* session)
+void CPTXCeremonyTransport::SetActiveSession(std::shared_ptr<PTXDKGSession> session)
 {
     {
         LOCK(cs_session);
-        activeSession = session;
+        activeSession = std::move(session);
     }
     ClearAll(); // single-slot hygiene: a session swap invalidates queued/stored msgs
 }
@@ -215,7 +215,7 @@ void CPTXCeremonyTransport::ProcessBatchT(int phase, int invType, std::map<uint2
         // R2 — unknown formation: resolve() nullptr → SILENT drop, no ban
         // (a node may legitimately not know a formation — session :219-222),
         // never relayed.
-        PTXDKGSession* session = resolve(msg.quorum_hash);
+        std::shared_ptr<PTXDKGSession> session = resolve(msg.quorum_hash);
         if (session == nullptr) {
             LogPrintf("PTX: transport drop phase=%d unknown-quorum %s peer=%d\n",
                       phase, msg.quorum_hash.ToString(), from);

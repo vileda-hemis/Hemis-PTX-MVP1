@@ -115,4 +115,32 @@ const CBlockIndex* PTX_Formation_GetAnchor(
 void PTX_Formation_NotifyUpdatedBlockTip(const CBlockIndex* pindexNew,
                                          bool fInitialDownload);
 
+// ---------------------------------------------------------------------------
+// W2.2 SG-1c-i — the ACTING trigger (Model B foundation: thread-driven,
+// self-clocked, pure worker). On a boundary the wrapper above now also:
+// re-verifies the anchor at action time (chainActive.Contains — the h400
+// do-not-drift input, decision 3a) -> IsForming idempotence skip ->
+// SelectAtAnchor -> InitSession(my proTxHash) -> member? spawn the ceremony
+// thread OWNING the session (shared_ptr; the transport's resolve() hands out
+// ref-holding copies — teardown-memory safety) + MarkForming +
+// SetActiveSession : fully passive discard (no FORMING, no thread, no
+// transport touch; a null activeGamemasterManager — non-GM node — is
+// passive-by-identity).
+//
+// THE THREAD IS A PURE WORKER: it drives only THIS node's participation
+// (zero cross-node authority; the form-decision is the chain-deterministic
+// SG-1b boundary; the ceremony is GJKR peer-symmetric). It is SELF-CLOCKED:
+// at SG-1c-i it is PARKED on an interruptible wait — SG-2 fills the phase
+// loop body with own-schedule deadlines; inbound messages are data, never
+// control flow.
+//
+// COLLISION (boundary k+1 vs a live thread k): abort-old = interrupt +
+// RELEASE-LOCKS + join, then start k+1 (the LLMQ release-before-join
+// pattern; joining under cs_main/cs_session would deadlock against the
+// exit path — SG-1c plan-gate liveness decision 2).
+//
+// Shutdown: called from tiertwo/init.cpp BEFORE StopPTXCeremonyTransport
+// (join the producer before tearing down the router).
+void PTX_Formation_StopCeremonyRunner();
+
 #endif // PTX_FORMATION_H

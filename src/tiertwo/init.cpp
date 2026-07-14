@@ -15,6 +15,7 @@
 #include "gamemasterconfig.h"
 #include "llmq/quorums_init.h"
 #include "ptx/ptx_dkg_net.h"
+#include "ptx/ptx_formation.h"
 #include "ptx/ptx_quorum_store.h"
 #include "scheduler.h"
 #include "tiertwo/gamemaster_meta_manager.h"
@@ -326,6 +327,10 @@ void StartTierTwoThreadsAndScheduleJobs(boost::thread_group& threadGroup, CSched
 void StopTierTwoThreads()
 {
     llmq::StopLLMQSystem();
+    // SG-1c-i: join the ceremony producer BEFORE tearing down the router —
+    // the thread's exit path publishes SetActiveSession(nullptr) through the
+    // still-live transport.
+    PTX_Formation_StopCeremonyRunner();
     StopPTXCeremonyTransport(); // W2.0b ceremony transport teardown
 }
 

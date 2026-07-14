@@ -106,10 +106,14 @@ class CPTXCeremonyTransport
 {
 private:
     mutable RecursiveMutex cs_session;
-    // W2.0b: the single-session slot behind resolve().  NON-OWNING: the
-    // producer (W2.2 formation) owns the session and must clear the slot
-    // before destroying it (producer-side contract, register-marked).
-    PTXDKGSession* activeSession{nullptr};
+    // W2.0b: the single-session slot behind resolve().  W2.2 SG-1c-i: the
+    // slot holds a shared_ptr (the LLMQ curSession idiom,
+    // quorums_dkgsessionhandler.cpp:165) — the ceremony THREAD owns the
+    // session; resolve() hands out a ref-holding copy so an in-flight
+    // dispatch keeps the session alive across a producer-side teardown
+    // (the SG-1c plan-gate use-after-free catch).  Session lifetime =
+    // thread scope + a bounded one-message dispatch tail.
+    std::shared_ptr<PTXDKGSession> activeSession;
 
     CPTXPendingMessages pendingHashCommits{PTX_DKG_TRANSPORT_MAX_PER_NODE};
     CPTXPendingMessages pendingContributions{PTX_DKG_TRANSPORT_MAX_PER_NODE};
@@ -137,16 +141,19 @@ private:
     void ProcessBatchT(int phase, int invType, std::map<uint256, Msg>& store, size_t maxCount);
 
 public:
-    // THE SEAM.  Returns the active session iff quorum_hash matches, else
-    // nullptr (caller drops, no ban).  W2.5 swaps the slot for a map behind
-    // this same signature; no caller changes.
-    PTXDKGSession* resolve(const uint256& quorum_hash);
+    // THE SEAM.  Returns a REF-HOLDING copy of the active session iff
+    // quorum_hash matches, else nullptr (caller drops, no ban).  The copy
+    // keeps the session alive through the caller's dispatch even if the
+    // owning ceremony thread exits meanwhile (teardown-memory safety,
+    // SG-1c-i).  W2.5 swaps the slot for a map behind this same signature;
+    // no caller changes.
+    std::shared_ptr<PTXDKGSession> resolve(const uint256& quorum_hash);
 
-    // PRODUCER: W2.2 formation (register-marked producer-pending; zero
-    // production callers at W2.0b — Resolution 1).  nullptr clears.
-    // Swapping/clearing the session clears queues + stores (single-slot
-    // hygiene; the W2.5 map revisits this).
-    void SetActiveSession(PTXDKGSession* session);
+    // PRODUCER: W2.2 formation's ceremony thread (SG-1c-i; Resolution 1
+    // unchanged — the transport routes, the producer owns the ceremony).
+    // nullptr clears.  Swapping/clearing the session clears queues + stores
+    // (single-slot hygiene; the W2.5 map revisits this).
+    void SetActiveSession(std::shared_ptr<PTXDKGSession> session);
 
     // Injectable side-effect hooks.  Daemon defaults are installed by
     // InitPTXCeremonyTransport: penalty = Misbehaving(score) under cs_main
