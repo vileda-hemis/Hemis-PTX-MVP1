@@ -108,6 +108,7 @@ public:
             thread.join();
             interrupt.reset();
         }
+        ClearLive(); // idempotent — the exit path already cleared it
     }
 
     // Spawn the ceremony thread owning the session.  Single slot: any prior
@@ -116,11 +117,29 @@ public:
     void Start(std::shared_ptr<PTXDKGSession> session, int formation_height)
     {
         AbortAndJoin();
+        {
+            LOCK(cs_live);
+            liveQuorumHash = session->quorum_hash;
+            liveHeight = formation_height;
+            fLive = true;
+        }
         std::function<void()> body =
             std::bind(&PTXFormationCeremonyRunner::ThreadBody, this,
                       std::move(session), formation_height);
         thread = std::thread(&TraceThread<std::function<void()>>,
                              std::string("ptx-ceremony"), std::move(body));
+    }
+
+    // SG-1c-ii — live-session IDENTITY for the wrapper's per-tip re-arm.
+    // LEAF LOCK, read-only: the wrapper reads runner identity only, never
+    // session state ("no global session pointer escapes" holds).
+    bool GetLiveAnchor(uint256& quorum_hash_out, int& height_out) const
+    {
+        LOCK(cs_live);
+        if (!fLive) return false;
+        quorum_hash_out = liveQuorumHash;
+        height_out = liveHeight;
+        return true;
     }
 
 private:
@@ -145,64 +164,37 @@ private:
         // ConsumeFormingOnConnect stays silent (the "unless-consumed" arm).
         g_ptx_ceremony_transport.SetActiveSession(nullptr);
         if (ptxQuorumStore) ptxQuorumStore->ClearForming(quorum_hash);
+        ClearLive();
         LogPrintf("PTX formation: ceremony session EXITED quorum_hash=%s\n",
                   quorum_hash.ToString());
         // The owning ref drops here; the session dies when the last
         // in-flight dispatch (if any) completes.
     }
 
+    void ClearLive()
+    {
+        LOCK(cs_live);
+        fLive = false;
+    }
+
     std::thread thread;
     CThreadInterrupt interrupt;
+    mutable RecursiveMutex cs_live;
+    bool fLive GUARDED_BY(cs_live){false};
+    uint256 liveQuorumHash GUARDED_BY(cs_live);
+    int liveHeight GUARDED_BY(cs_live){0};
 };
 
 PTXFormationCeremonyRunner g_ptx_formation_runner;
 
-} // namespace
-
-void PTX_Formation_StopCeremonyRunner()
+// The formation ACTION at pindexNew's current-cycle anchor — shared by the
+// boundary branch and the SG-1c-ii re-arm restart (NARROW policy: the re-arm
+// path only reaches here after a live session was reorg-aborted).  Caller
+// must NOT hold cs_main (AbortAndJoin runs inside — release-before-join).
+void StartFormationAtAnchor(const CBlockIndex* pindexNew,
+                            const Consensus::PTXFormationParams& params,
+                            bool fBoundary)
 {
-    g_ptx_formation_runner.AbortAndJoin();
-}
-
-bool PTX_Formation_IsBoundary(int nHeight,
-                              const Consensus::PTXFormationParams& params)
-{
-    // nHeight > 0 is load-bearing: 0 % N == 0 would make genesis a boundary.
-    return nHeight > 0 && (nHeight % params.nFormationInterval) == 0;
-}
-
-const CBlockIndex* PTX_Formation_GetAnchor(
-        const CBlockIndex* pindexNew,
-        const Consensus::PTXFormationParams& params)
-{
-    if (pindexNew == nullptr)
-        return nullptr;
-    // Walk pindexNew's OWN branch (V3's reorg-robust idiom) — never
-    // chainActive[] (equivalent only while the tip is on the active chain;
-    // divergent, self-poisoning, on a fork), never cached across tips.
-    const int stage = pindexNew->nHeight % params.nFormationInterval;
-    return pindexNew->GetAncestor(pindexNew->nHeight - stage);
-}
-
-void PTX_Formation_NotifyUpdatedBlockTip(const CBlockIndex* pindexNew,
-                                         bool fInitialDownload)
-{
-    if (pindexNew == nullptr)
-        return;
-
-    // ACTION guards (the CDKGSessionManager::UpdatedBlockTip pair). Neither
-    // is an input to the boundary computation — the pure core below cannot
-    // receive them by signature.
-    if (fInitialDownload)
-        return;
-    if (!deterministicGMManager->IsDIP3Enforced(pindexNew->nHeight))
-        return;
-
-    const Consensus::PTXFormationParams& params =
-            Params().GetConsensus().ptxFormation;
-    if (!PTX_Formation_IsBoundary(pindexNew->nHeight, params))
-        return;
-
     // Chain-derived work under cs_main; the ACTION (thread spawn/join)
     // happens after the lock releases (release-before-join, liveness).
     std::vector<PTXDKGMember> members;
@@ -215,18 +207,23 @@ void PTX_Formation_NotifyUpdatedBlockTip(const CBlockIndex* pindexNew,
         if (pindexAnchor == nullptr)
             return;
 
-        // The SG-1b-ii observability line stays — the boundary fires
-        // identically on every node regardless of what this node then does.
-        LogPrintf("PTX formation boundary: height=%d anchor=%s anchor_height=%d N=%d\n",
-                  pindexNew->nHeight, pindexAnchor->GetBlockHash().ToString(),
-                  pindexAnchor->nHeight, params.nFormationInterval);
+        if (fBoundary) {
+            // The SG-1b-ii observability line stays — the boundary fires
+            // identically on every node regardless of what this node then
+            // does.  The re-arm path logs its own RE-ARM line instead.
+            LogPrintf("PTX formation boundary: height=%d anchor=%s anchor_height=%d N=%d\n",
+                      pindexNew->nHeight, pindexAnchor->GetBlockHash().ToString(),
+                      pindexAnchor->nHeight, params.nFormationInterval);
+        }
 
         // (a) AT-START ANCHOR RE-VERIFY (decision 3a — the h400 stake-race
         // do-not-drift input): the anchor must be on the ACTIVE chain at
-        // action time; the notified tip can itself be stale by now.  The
-        // per-tip re-arm half (3b) is SG-1c-ii.
+        // action time; the notified tip can itself be stale by now.
+        // Behavioural coverage is (b)'s — the per-tip re-arm below is the
+        // live safety net for this assert's failure mode (recorded
+        // subsumption, 2026-07-15).
         if (!chainActive.Contains(pindexAnchor)) {
-            LogPrintf("PTX formation: anchor %s no longer on the active chain at action time — not starting (SG-1c-ii re-arms)\n",
+            LogPrintf("PTX formation: anchor %s no longer on the active chain at action time — not starting (the per-tip re-arm covers it)\n",
                       pindexAnchor->GetBlockHash().ToString());
             return;
         }
@@ -278,4 +275,103 @@ void PTX_Formation_NotifyUpdatedBlockTip(const CBlockIndex* pindexNew,
     g_ptx_formation_runner.AbortAndJoin();
     ptxQuorumStore->MarkForming(anchorHash, anchorHeight);
     g_ptx_formation_runner.Start(std::move(session), anchorHeight);
+}
+
+} // namespace
+
+void PTX_Formation_StopCeremonyRunner()
+{
+    g_ptx_formation_runner.AbortAndJoin();
+}
+
+bool PTX_Formation_IsBoundary(int nHeight,
+                              const Consensus::PTXFormationParams& params)
+{
+    // nHeight > 0 is load-bearing: 0 % N == 0 would make genesis a boundary.
+    return nHeight > 0 && (nHeight % params.nFormationInterval) == 0;
+}
+
+const CBlockIndex* PTX_Formation_GetAnchor(
+        const CBlockIndex* pindexNew,
+        const Consensus::PTXFormationParams& params)
+{
+    if (pindexNew == nullptr)
+        return nullptr;
+    // Walk pindexNew's OWN branch (V3's reorg-robust idiom) — never
+    // chainActive[] (equivalent only while the tip is on the active chain;
+    // divergent, self-poisoning, on a fork), never cached across tips.
+    const int stage = pindexNew->nHeight % params.nFormationInterval;
+    return pindexNew->GetAncestor(pindexNew->nHeight - stage);
+}
+
+void PTX_Formation_NotifyUpdatedBlockTip(const CBlockIndex* pindexNew,
+                                         bool fInitialDownload)
+{
+    if (pindexNew == nullptr)
+        return;
+
+    // ACTION guards (the CDKGSessionManager::UpdatedBlockTip pair). Neither
+    // is an input to the boundary computation — the pure core below cannot
+    // receive them by signature.
+    if (fInitialDownload)
+        return;
+    if (!deterministicGMManager->IsDIP3Enforced(pindexNew->nHeight))
+        return;
+
+    const Consensus::PTXFormationParams& params =
+            Params().GetConsensus().ptxFormation;
+
+    if (!PTX_Formation_IsBoundary(pindexNew->nHeight, params)) {
+        // ------------------------------------------------------------------
+        // SG-1c-ii — PER-TIP RE-ARM: THE REORG-CLASS HANDLER (NARROW: acts
+        // only when a live session exists; no late-join — a recorded SG-2
+        // design input).  ZERO cost when no session runs (one leaf-lock
+        // read).
+        //
+        // WHY THIS ARM EXISTS (not defense-in-depth — the sole rescuer for
+        // its class): a REORG delivers ONE UpdatedBlockTip at the final tip
+        // (one notification per work-improvement pass; the disconnect loop
+        // is silent and the connect loop only breaks past the old tip's
+        // work — validation.cpp:2230-42, :2282-86, :2377-84).  A boundary
+        // inside the reorged range gets NO notification, so the boundary
+        // branch above never runs for it — the stale session's ONLY exit is
+        // this non-boundary check (the gm11/h400 case).  Forward crossings,
+        // by contrast, notify per height and are owned by the boundary
+        // branch.
+        //
+        // The staleness test is ANCHOR-IDENTITY INEQUALITY against the
+        // recomputed current-cycle anchor: session anchor != GetAnchor(tip).
+        // This subsumes a Contains check (an anchor that left the active
+        // chain can never equal the active chain's cycle anchor) AND catches
+        // cycle-staleness — a session left anchored to a previous cycle.
+        // Pure chain-state decision; only the action is node-local.
+        // ------------------------------------------------------------------
+        uint256 liveHash;
+        int liveHeight = 0;
+        if (!g_ptx_formation_runner.GetLiveAnchor(liveHash, liveHeight))
+            return;
+        uint256 currentAnchorHash;
+        {
+            LOCK(cs_main);
+            const CBlockIndex* pindexAnchor =
+                    PTX_Formation_GetAnchor(pindexNew, params);
+            if (pindexAnchor == nullptr)
+                return;
+            currentAnchorHash = pindexAnchor->GetBlockHash();
+        }
+        if (currentAnchorHash == liveHash)
+            return; // anchor still the live cycle's anchor — nothing to do
+
+        LogPrintf("PTX formation: RE-ARM — live session anchor %s (h%d) != current-cycle anchor %s at tip h%d; aborting and restarting\n",
+                  liveHash.ToString(), liveHeight,
+                  currentAnchorHash.ToString(), pindexNew->nHeight);
+        // Abort OUTSIDE all locks (release-before-join, the h800-proven
+        // shape), then restart at the recomputed anchor via the shared
+        // action path.
+        g_ptx_formation_runner.AbortAndJoin();
+        StartFormationAtAnchor(pindexNew, params, /*fBoundary=*/false);
+        return;
+    }
+
+    StartFormationAtAnchor(pindexNew, params, /*fBoundary=*/true);
 }

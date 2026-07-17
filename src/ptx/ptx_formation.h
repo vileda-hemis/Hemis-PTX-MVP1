@@ -139,6 +139,39 @@ void PTX_Formation_NotifyUpdatedBlockTip(const CBlockIndex* pindexNew,
 // pattern; joining under cs_main/cs_session would deadlock against the
 // exit path — SG-1c plan-gate liveness decision 2).
 //
+// W2.2 SG-1c-ii — PER-TIP RE-ARM: THE REORG-CLASS HANDLER (the h400
+// do-not-drift closure, NARROW). On every non-boundary tip, iff a live
+// session exists, the wrapper compares the session's anchor against the
+// recomputed current-cycle anchor (GetAnchor(tip)); inequality
+// (reorg-swapped boundary block or cycle-staleness — subsumes a Contains
+// check) => abort (release-before-join) + restart at the recomputed anchor
+// through the same action path.
+//
+// THE TWO-PATH DIVISION OF LABOUR (source-decided 2026-07-17):
+// UpdatedBlockTip fires ONCE PER WORK-IMPROVEMENT PASS, not per height
+// (validation.cpp: starting_tip captured :2342, inner loop :2374, the
+// single notification :2377-84; the Step's disconnect loop is silent
+// :2230-42 and its connect loop early-breaks only when new chainwork
+// EXCEEDS the old tip's :2282-86).
+//  - FORWARD arrival: each block is its own pass -> per-height
+//    notifications -> the BOUNDARY path in the wrapper owns forward
+//    crossings (proven on real catch-ups at 14/48/309-block scales).
+//  - REORG: one pass disconnects to the fork and connects PAST the old
+//    tip's work before the break can fire -> ONE notification at the final
+//    tip -> a boundary inside the skip window (fork+1 .. overtake height)
+//    gets NO notification -> the boundary path never runs -> THIS ARM IS
+//    THE SOLE RESCUER.  h400 is exactly this class: gm11's single pass
+//    (disconnect its own h400, connect the majority's h400+h401 — equal
+//    work at 400, overtake at 401) notified only at h401; without this arm
+//    its stale session would have parked forever.
+//  - Nuance: if new work exceeds the old tip exactly AT the boundary, the
+//    pass notifies at B and the boundary path handles it; the skip case is
+//    the same-length-race class.
+//
+// No late-join: starting with NO live session on a non-boundary tip is an
+// SG-2 design input (participation model / phase window — recorded
+// 2026-07-15).
+//
 // Shutdown: called from tiertwo/init.cpp BEFORE StopPTXCeremonyTransport
 // (join the producer before tearing down the router).
 void PTX_Formation_StopCeremonyRunner();
