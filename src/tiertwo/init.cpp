@@ -219,6 +219,47 @@ void SetBudgetFinMode(const std::string& mode)
     LogPrintf("Budget Mode %s\n", g_budgetman.strBudgetMode);
 }
 
+// BUG-019(d): lock DGM collaterals BEFORE the staker's first stakeable-coins
+// snapshot.  The staker (ThreadStakeMinter) takes a pre-lock snapshot on
+// iteration 1 and FREEZES it through the tier-two-sync wait (miner.cpp:141-148
+// refreshes only when !fStakeableCoins), so a collateral unlocked at that
+// instant can be staked minutes later — consuming it and DEREGISTERING the GM
+// (the gm44 / gm03@h3077 mechanism).  Hoisting the lock ahead of the staker
+// closes BOTH residuals structurally: R1 (the snapshot is now post-lock) AND
+// R2 (an init abort before this call is also before the staker start — the
+// staker cannot run on unlocked collateral because the lock precedes it on the
+// same code path).  LockCoin / LockOutpointIfMine are idempotent.
+void LockGamemasterCollaterals()
+{
+#ifdef ENABLE_WALLET
+    // !TODO: remove after complete transition to DGM
+    // use only the first wallet here. This section can be removed after transition to DGM
+    if (gArgs.GetBoolArg("-gmconflock", DEFAULT_GMCONFLOCK) && !vpwallets.empty() && vpwallets[0]) {
+        LOCK(vpwallets[0]->cs_wallet);
+        LogPrintf("Locking Gamemasters collateral utxo:\n");
+        uint256 gmTxHash;
+        for (const auto& gme : gamemasterConfig.getEntries()) {
+            gmTxHash.SetHex(gme.getTxHash());
+            COutPoint outpoint = COutPoint(gmTxHash, (unsigned int) std::stoul(gme.getOutputIndex()));
+            vpwallets[0]->LockCoin(outpoint);
+            LogPrintf("Locked collateral, GM: %s, tx hash: %s, output index: %s\n",
+                      gme.getAlias(), gme.getTxHash(), gme.getOutputIndex());
+        }
+    }
+
+    // automatic lock for DGM
+    if (gArgs.GetBoolArg("-gmconflock", DEFAULT_GMCONFLOCK)) {
+        LogPrintf("Locking gamemaster collaterals...\n");
+        const auto& gmList = deterministicGMManager->GetListAtChainTip();
+        gmList.ForEachGM(false, [&](const CDeterministicGMCPtr& dgm) {
+            for (CWallet* pwallet : vpwallets) {
+                pwallet->LockOutpointIfMineWithMutex(nullptr, dgm->collateralOutpoint);
+            }
+        });
+    }
+#endif
+}
+
 bool InitActiveGM()
 {
     fGameMaster = gArgs.GetBoolArg("-gamemaster", DEFAULT_GAMEMASTER);
@@ -276,33 +317,8 @@ bool InitActiveGM()
         }
     }
 
-#ifdef ENABLE_WALLET
-    // !TODO: remove after complete transition to DGM
-    // use only the first wallet here. This section can be removed after transition to DGM
-    if (gArgs.GetBoolArg("-gmconflock", DEFAULT_GMCONFLOCK) && !vpwallets.empty() && vpwallets[0]) {
-        LOCK(vpwallets[0]->cs_wallet);
-        LogPrintf("Locking Gamemasters collateral utxo:\n");
-        uint256 gmTxHash;
-        for (const auto& gme : gamemasterConfig.getEntries()) {
-            gmTxHash.SetHex(gme.getTxHash());
-            COutPoint outpoint = COutPoint(gmTxHash, (unsigned int) std::stoul(gme.getOutputIndex()));
-            vpwallets[0]->LockCoin(outpoint);
-            LogPrintf("Locked collateral, GM: %s, tx hash: %s, output index: %s\n",
-                      gme.getAlias(), gme.getTxHash(), gme.getOutputIndex());
-        }
-    }
-
-    // automatic lock for DGM
-    if (gArgs.GetBoolArg("-gmconflock", DEFAULT_GMCONFLOCK)) {
-        LogPrintf("Locking gamemaster collaterals...\n");
-        const auto& gmList = deterministicGMManager->GetListAtChainTip();
-        gmList.ForEachGM(false, [&](const CDeterministicGMCPtr& dgm) {
-            for (CWallet* pwallet : vpwallets) {
-                pwallet->LockOutpointIfMineWithMutex(nullptr, dgm->collateralOutpoint);
-            }
-        });
-    }
-#endif
+    // BUG-019(d): DGM collateral locking moved to LockGamemasterCollaterals(),
+    // called BEFORE the staker starts (init.cpp) — see that function's contract.
     // All good
     return true;
 }

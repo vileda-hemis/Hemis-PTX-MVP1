@@ -47,6 +47,10 @@ void SetBudgetFinMode(const std::string& mode);
 /** Initialize the active Gamemaster manager */
 bool InitActiveGM();
 
+/** BUG-019(d): lock DGM collaterals before the staker's first snapshot.
+ *  Must be called ahead of ThreadStakeMinter creation. */
+void LockGamemasterCollaterals();
+
 /** Starts tier two threads and jobs */
 void StartTierTwoThreadsAndScheduleJobs(boost::thread_group& threadGroup, CScheduler& scheduler);
 

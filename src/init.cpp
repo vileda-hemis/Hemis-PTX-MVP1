@@ -1850,6 +1850,14 @@ bool AppInitMain()
     for (CWalletRef pwallet : vpwallets) {
         pwallet->postInitProcess(scheduler);
     }
+    // BUG-019(d): lock DGM collaterals BEFORE the staker's first snapshot (R1),
+    // and — being ahead of the staker-start on the same code path — an init
+    // abort before here is also before the staker (R2).  Unconditional (as the
+    // old in-InitActiveGM lock was): a non-staking GM still locks its
+    // collateral.  InitActiveGM() below no longer locks; this is the sole site.
+    if (!vpwallets.empty()) {
+        LockGamemasterCollaterals();
+    }
     // StakeMiner thread disabled by default on regtest
     if (!vpwallets.empty() && gArgs.GetBoolArg("-staking", !Params().IsRegTestNet() && DEFAULT_STAKING)) {
         threadGroup.create_thread(std::bind(&ThreadStakeMinter));
