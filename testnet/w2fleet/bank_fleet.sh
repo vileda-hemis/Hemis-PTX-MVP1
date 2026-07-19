@@ -19,6 +19,24 @@ if docker ps --format '{{.Names}}' | grep -q '^ptx-w2-'; then
     exit 1
 fi
 
+# KDD-064 BANK INVARIANT (abort-gate): the state being banked must carry >=1
+# coin at depth >=120 PER PRODUCER at the bank tip, or every restore of this
+# bank replays the permanent post-restore deadlock at its gate crossing.
+# Run `validate_fleet.py 22 bank` BEFORE stopping the fleet — it verifies the
+# margin over RPC and writes this stamp; a stale/missing stamp REFUSES.
+STAMP="$W2_ROOT/.bank-margin-ok"
+if [ ! -f "$STAMP" ]; then
+    echo "REFUSED: no bank-margin stamp — run 'validate_fleet.py <N> bank' (KDD-064 invariant) before stopping the fleet" >&2
+    exit 1
+fi
+STAMP_TS=$(sed -n 's/.*ts=\([0-9]*\).*/\1/p' "$STAMP")
+NOW=$(date +%s)
+if [ -z "$STAMP_TS" ] || [ $((NOW - STAMP_TS)) -gt 1800 ]; then
+    echo "REFUSED: bank-margin stamp is stale (>30min) — re-run 'validate_fleet.py <N> bank'" >&2
+    exit 1
+fi
+echo "bank-margin stamp OK: $(cat "$STAMP")"
+
 mkdir -p "$BANK"
 STAGE="$BANK/.stage-N${N}-${TAG}"
 rm -rf "$STAGE"; mkdir -p "$STAGE"
@@ -26,6 +44,8 @@ rm -rf "$STAGE"; mkdir -p "$STAGE"
 # log hygiene: truncate per-node debug.log before tar (disk discipline; logs
 # are runtime artifacts, not chain state)
 find "$W2_ROOT/datadirs" -name debug.log -exec truncate -s 0 {} \;
+
+rm -f "$STAMP"   # single-use: each re-bank re-verifies its own margin
 
 cp -a "$W2_ROOT/datadirs" "$STAGE/datadirs"
 cp -a "$DOCKER_W2/.env" "$STAGE/env"

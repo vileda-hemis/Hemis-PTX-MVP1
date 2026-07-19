@@ -256,6 +256,37 @@ def soak_gate(cluster: W2Cluster, expected_n: int, blocks: int = 30,
     return {"start": start_h, "end": checks[-1][0], "checks": len(checks)}
 
 
+BANK_MARGIN_STAMP = "/mnt/pve/Node14TB/hemis-ptx/w2-fleet/.bank-margin-ok"
+
+
+def bank_gate(cluster: W2Cluster) -> dict:
+    """KDD-064 BANK INVARIANT — an ABORT-GATE, not an observation.  The state
+    about to be banked MUST carry >=1 coin at depth >= 120 PER PRODUCER
+    (gm01 + caller) at the bank tip: a bank without it replays the
+    permanent-deadlock question at every restore's gate crossing (depth is
+    block-measured — no stakeable coin means no block means depths are frozen
+    forever; a restore just replays into the freeze).  On PASS this writes the
+    stamp file bank_fleet.sh REQUIRES (fresh) before it will bank; on FAIL it
+    raises — DO NOT BANK."""
+    def deep_count(node):
+        us = node.call("listunspent", 1, 9999999)
+        return sum(1 for u in us if u["confirmations"] >= 120)
+    h = cluster.gms[0].getblockcount()
+    g01 = deep_count(cluster.gms[0])
+    cal = deep_count(cluster.caller)
+    print(f"[bank] tip={h} deep(>=120) coins: gm01={g01} caller={cal}")
+    if g01 < 1 or cal < 1:
+        raise AssertionError(
+            f"BANK GATE FAILED — a producer has NO depth>=120 coin at the bank "
+            f"tip (gm01={g01}, caller={cal}).  Banking this state plants a "
+            f"permanent post-restore deadlock.  ABORT the re-bank.")
+    import time as _t
+    with open(BANK_MARGIN_STAMP, "w") as f:
+        f.write(f"height={h} gm01_deep={g01} caller_deep={cal} ts={int(_t.time())}\n")
+    print(f"[bank] GATE PASS — margin stamped ({BANK_MARGIN_STAMP})")
+    return {"height": h, "gm01_deep": g01, "caller_deep": cal}
+
+
 def chain_extends(cluster: W2Cluster, blocks: int = 2, timeout: int = 600) -> int:
     gm01 = cluster.gms[0]
     start = gm01.getblockcount()
@@ -294,5 +325,7 @@ if __name__ == "__main__":
     if which == "soak":  # not in "all": a real-duration gate, invoked explicitly
         blocks = int(sys.argv[3]) if len(sys.argv) > 3 else 30
         soak_gate(c, n, blocks=blocks)
+    if which == "bank":  # not in "all": run IMMEDIATELY BEFORE stopping to re-bank
+        bank_gate(c)
     c.assert_poc_untouched("validate_fleet end")
     print("[validate] ALL REQUESTED GATES PASS; PoC untouched")

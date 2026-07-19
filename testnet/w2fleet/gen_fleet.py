@@ -131,7 +131,13 @@ def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser,
     lines = [HEADER.format(n=n, image=image, rpcuser=rpcuser)]
 
     # ── caller ──────────────────────────────────────────────────────────
-    caller_peers = sorted({1, (n // 2) or 1, n})
+    # KDD-064 session hardening (2026-07-18): 3 addnodes was single-points-of-
+    # isolation fragile — when the caller forked (BUG-020 forensics), all 3
+    # targets banning it meant TOTAL isolation.  7 spread peers is topology
+    # robustness ONLY — it does NOT prevent the ban mechanism (more peers just
+    # means more banners); the root fix is the KDD-064 maturity gate.
+    caller_peers = sorted({1, 2, (n // 4) or 1, (n // 2) or 1,
+                           ((n // 2) + 1) if n >= 2 else 1, (3 * n // 4) or 1, n})
     lines.append(f"""\
   caller:
     <<: *node-defaults
