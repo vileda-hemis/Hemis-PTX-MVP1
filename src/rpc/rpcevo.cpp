@@ -804,7 +804,11 @@ static void AddDGMEntryToList(UniValue& ret, CWallet* pwallet, const CDeterminis
     bool skipWalletCheck = !fFromWallet && !fVerbose;
 
     if (pwallet && !skipWalletCheck) {
-        LOCK(pwallet->cs_wallet);
+        // BUG-022: cs_main BEFORE cs_wallet (canonical order, 92:0 in-tree) —
+        // GetTransaction below takes cs_main (validation.cpp) inside this span;
+        // wallet-first inverted against LoadWallet's LOCK2(cs_main, cs_wallet)
+        // (deadlock-class, caught by the DEBUG_LOCKORDER-armed fleet).
+        LOCK2(cs_main, pwallet->cs_wallet);
         hasOwnerKey = pwallet->HaveKey(dgm->pdgmState->keyIDOwner);
         hasVotingKey = pwallet->HaveKey(dgm->pdgmState->keyIDVoting);
         ownsPayeeScript = CheckWalletOwnsScript(pwallet, dgm->pdgmState->scriptPayout);
