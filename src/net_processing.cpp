@@ -1213,7 +1213,18 @@ bool static IsTierTwoInventoryTypeKnown(int type)
            type == MSG_QUORUM_JUSTIFICATION ||
            type == MSG_QUORUM_PREMATURE_COMMITMENT ||
            type == MSG_QUORUM_RECOVERED_SIG ||
-           type == MSG_CLSIG;
+           type == MSG_CLSIG ||
+           // BUG-021: the PTX ceremony types were missing from this admission
+           // list, leaving the PTX serve arms in PushTierTwoGetDataRequest
+           // unreachable AND wedging ProcessGetData on any PTX getdata (the
+           // unadmitted inv is never dequeued, so ProcessMessages:2348 stops
+           // processing that peer permanently).  Admission is the clearing
+           // mechanism: it++ runs pre-serve, store-miss → NOTFOUND.
+           type == MSG_PTX_QUORUM_HASH_COMMIT ||
+           type == MSG_PTX_QUORUM_CONTRIB ||
+           type == MSG_PTX_QUORUM_COMPLAINT ||
+           type == MSG_PTX_QUORUM_JUSTIFICATION ||
+           type == MSG_PTX_QUORUM_PREMATURE_COMMITMENT;
 }
 
 void static ProcessGetData(CNode* pfrom, CConnman* connman, const std::atomic<bool>& interruptMsgProc)
