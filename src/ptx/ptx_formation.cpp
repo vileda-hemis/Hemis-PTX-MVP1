@@ -9,10 +9,13 @@
 #include "chainparams.h"
 #include "consensus/params.h"
 #include "logging.h"
+#include "ptx/ptx_ceremony_driver.h"
 #include "ptx/ptx_dkg_net.h"
+#include "streams.h"
 #include "threadinterrupt.h"
 #include "util/system.h"
 #include "validation.h"
+#include "version.h"
 
 #include <functional>
 #include <memory>
@@ -148,14 +151,58 @@ private:
         const uint256 quorum_hash = session->quorum_hash;
         const int my_idx = session->my_idx;
         g_ptx_ceremony_transport.SetActiveSession(session);
-        LogPrintf("PTX formation: ceremony session STARTED (parked) quorum_hash=%s formation_height=%d my_idx=%d (SG-1c-i — SG-2 fills the phase loop)\n",
+        LogPrintf("PTX formation: ceremony session STARTED quorum_hash=%s formation_height=%d my_idx=%d (SG-2a driver)\n",
                   quorum_hash.ToString(), formation_height, my_idx);
 
-        // PARKED (SG-1c-i): self-clocked interruptible wait; the SG-2 phase
-        // walk replaces this loop body.  sleep_for returns false when
-        // interrupted — abort/shutdown is the only exit today.
-        while (interrupt.sleep_for(std::chrono::milliseconds(500))) {
-        }
+        // Operator key — signs this node's own phase messages; NEVER stored in
+        // the session (key-separation invariant).  A member ceremony thread is
+        // only started with a live activeGamemasterManager (my_idx >= 0 path).
+        CBLSSecretKey operator_sk;
+        if (activeGamemasterManager != nullptr)
+            operator_sk = *activeGamemasterManager->OperatorKey();
+
+        PTXCeremonyDriverState  dstate;
+        PTXCeremonyDeadlines    deadlines;   // production defaults (tip-height widths)
+        std::vector<PTXCeremonyOutbound> outbounds;
+        CMutableTransaction     dkgtx;
+
+        // SG-2a — the self-clocked phase walk (replaces the SG-1c-i park).
+        // Each tick: read the tip-height clock under cs_main and RELEASE it
+        // (invariant 2 — never held with session.cs); step the ceremony by at
+        // most one transition; then TRANSMIT outbounds (invariant 1 — sending
+        // takes the pending-queue lock, never held under session.cs).
+        // interrupt.sleep_for returns false on interrupt (abort/shutdown).
+        do {
+            int height = -1;
+            { LOCK(cs_main); height = chainActive.Height(); }
+
+            PTXStepResult r = PTX_Ceremony_Step(*session, dstate, height, deadlines,
+                                                operator_sk, formation_height,
+                                                outbounds, dkgtx);
+
+            // Invariant 1: transmit only after the step returned (session.cs
+            // released).  Own message is routed through the transport as if
+            // received from self — the drain stores it and relays the inv to
+            // member peers; the redundant self-dispatch is a dedup no-op (the
+            // step already self-delivered it).
+            AssertLockNotHeld(cs_main);
+            for (const auto& ob : outbounds) {
+                CDataStream ss(ob.raw, SER_NETWORK, PROTOCOL_VERSION);
+                g_ptx_ceremony_transport.ProcessMessage(PTX_CEREMONY_SELF_NODE_ID,
+                                                        ob.command, ss);
+            }
+
+            if (r == PTXStepResult::DONE) {
+                LogPrintf("PTX formation: ceremony DONE quorum_hash=%s — group_pk set, sk_share stored, nType=11 tx built (formation_height=%d)\n",
+                          quorum_hash.ToString(), formation_height);
+                break;
+            }
+            if (r == PTXStepResult::ABORTED) {
+                LogPrintf("PTX formation: ceremony ABORTED quorum_hash=%s (sub-threshold close)\n",
+                          quorum_hash.ToString());
+                break;
+            }
+        } while (interrupt.sleep_for(std::chrono::milliseconds(1000)));
 
         // Teardown order: unpublish from the transport FIRST (no new
         // resolves; in-flight dispatches keep their ref — the shared_ptr

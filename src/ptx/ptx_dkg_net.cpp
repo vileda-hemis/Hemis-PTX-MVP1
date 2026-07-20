@@ -264,7 +264,16 @@ void CPTXCeremonyTransport::ProcessBatchT(int phase, int invType, std::map<uint2
         }
         if (relayHook) relayHook(CInv(invType, hash), *session);
 
-        const bool ok = ReceiveDispatch(*session, msg);
+        // SG-2a Resolution A: the drain thread is one of two session writers
+        // (the other is the ceremony STEP thread, PTX_Ceremony_Step).  Take
+        // the session-state lock around the ONLY session mutation here —
+        // ReceiveDispatch — and nothing else (invariant: `cs` never nests with
+        // the pending-queue lock, already popped above, nor with cs_main).
+        bool ok;
+        {
+            LOCK(*session->cs);
+            ok = ReceiveDispatch(*session, msg);
+        }
         LogPrintf("PTX: transport %s phase=%d from=%s peer=%d\n",
                   ok ? "accepted" : "semantic-reject", phase,
                   member->proTxHash.ToString(), from);

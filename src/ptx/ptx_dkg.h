@@ -27,6 +27,7 @@
 // out) — the IMP-D1 scalar-representation seam is never crossed.
 #include "bls/bls_ies.h"
 #include "primitives/transaction.h"  // CMutableTransaction, SetTxPayload, SERIALIZE_METHODS
+#include "sync.h"                     // RecursiveMutex (SG-2a session-state lock)
 #include "uint256.h"
 
 #include <map>
@@ -423,6 +424,35 @@ struct PTXDKGSession {
     blst_scalar    sk_share_i;
     blst_p1_affine group_pk;
     bool           phase4_computed{false}; // guard: prevents double-compute
+
+    // SG-2a — session-state lock (Resolution A).  EXTERNAL / coarse: the pure
+    // PTX_DKG_Receive*/Close*/Build*/Compute* functions stay lock-AGNOSTIC (so
+    // the single-threaded unit rows and the in-suite harness call them without
+    // locking).  Two writers exist in the daemon: the transport DRAIN thread
+    // (ProcessBatchT → ReceiveDispatch) and the SG-2 ceremony STEP thread
+    // (PTX_Ceremony_Step).  Both serialise on this mutex at their call
+    // boundaries.  Under SG-1c the ceremony thread was parked (drain = sole
+    // mutator, race-free); SG-2 makes it a second writer — this lock closes
+    // that race.  NEVER field-GUARDED_BY (that would force locking inside the
+    // pure fns and trip -Wthread-safety in the unlocked test callers).
+    //
+    // LOCK-ORDER INVARIANTS (SG-2a, assertable — see ptx_ceremony_driver.cpp):
+    //   1. `cs` is NEVER held across a send (transport.ProcessMessage →
+    //      PushPendingMessage takes the pending-queue lock).  The step mutates
+    //      under `cs`, RELEASES, then the caller transmits.  Pairs with
+    //      ProcessBatchT, which pops the pending queue (releasing its lock)
+    //      BEFORE taking `cs` for ReceiveDispatch — neither side nests them.
+    //   2. `cs` and cs_main are NEVER held simultaneously.  Height is read
+    //      under cs_main (transient) strictly BEFORE `cs` is taken; the sole
+    //      DKG call reaching cs_main — ClosePhase5 (→ SetPendingTx,
+    //      ptx_dkg_pending.cpp order cs_main→pending) — is invoked OUTSIDE
+    //      `cs` (sound: at FINALIZE every ReceivePhaseN early-returns on its
+    //      phase gate, so the terminal close is single-writer).
+    //
+    // unique_ptr-held (not a bare member): RecursiveMutex is non-movable and
+    // the phase-test TUs hold sessions in std::vector (resize requires
+    // MoveInsertable) — the indirection keeps the struct movable.
+    std::unique_ptr<RecursiveMutex> cs{new RecursiveMutex()};
 };
 
 // ---------------------------------------------------------------------------
