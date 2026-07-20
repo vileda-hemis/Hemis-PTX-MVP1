@@ -14,8 +14,11 @@
 #include "streams.h"
 #include "threadinterrupt.h"
 #include "util/system.h"
+#include "utilstrencodings.h" // HexStr (CP-5 group_pk-in-DONE observability)
 #include "validation.h"
 #include "version.h"
+
+#include "span.h"
 
 #include <functional>
 #include <memory>
@@ -193,8 +196,18 @@ private:
             }
 
             if (r == PTXStepResult::DONE) {
-                LogPrintf("PTX formation: ceremony DONE quorum_hash=%s — group_pk set, sk_share stored, nType=11 tx built (formation_height=%d)\n",
-                          quorum_hash.ToString(), formation_height);
+                // CP-5 observability (SG-2b-0): emit the COMPRESSED group_pk so a
+                // fleet-grep can compare all members for identity — the detector
+                // for SILENT PARTIAL-DIVERGENCE (N nodes on key X, one on X', all
+                // reporting DONE).  Pure read of the already-computed
+                // session->group_pk (ComputeGroupPk ran at PREMIT); no recompute,
+                // no control-flow change.  Single-owner at DONE (drain quiesced by
+                // the FINALIZE phase gate), same as the existing teardown reads.
+                uint8_t gpk[48];
+                blst_p1_affine_compress(gpk, &session->group_pk);
+                LogPrintf("PTX formation: ceremony DONE quorum_hash=%s group_pk=%s sk_share stored, nType=11 tx built (formation_height=%d)\n",
+                          quorum_hash.ToString(), HexStr(Span<const uint8_t>(gpk, 48)),
+                          formation_height);
                 break;
             }
             if (r == PTXStepResult::ABORTED) {

@@ -22,6 +22,23 @@ PTXCeremonyOutbound MakeOutbound(const std::string& command, const Msg& msg)
     return PTXCeremonyOutbound{command, std::vector<unsigned char>(ss.begin(), ss.end())};
 }
 
+// Short phase name for the CP-4 transition log (fleet-grep timeline).
+const char* PhaseName(PTXDKGPhase p)
+{
+    switch (p) {
+        case PTXDKGPhase::IDLE:        return "IDLE";
+        case PTXDKGPhase::HASH_COMMIT: return "HASH_COMMIT";
+        case PTXDKGPhase::CONTRIB:     return "CONTRIB";
+        case PTXDKGPhase::COMPLAINT:   return "COMPLAINT";
+        case PTXDKGPhase::JUSTIFY:     return "JUSTIFY";
+        case PTXDKGPhase::PREMIT:      return "PREMIT";
+        case PTXDKGPhase::FINALIZE:    return "FINALIZE";
+        case PTXDKGPhase::DONE:        return "DONE";
+        case PTXDKGPhase::ABORTED:     return "ABORTED";
+    }
+    return "?";
+}
+
 // Decrypt every revealed (qual, non-bad) dealer's share to this node — incl.
 // self (self-delivered its own Phase 1, so phase1_encrypted_shares[self] is
 // present).  Best-effort: a wrong/absent blob leaves received_shares without
@@ -249,6 +266,18 @@ PTXStepResult PTX_Ceremony_Step(PTXDKGSession& session,
                 break;
             default:
                 break;
+        }
+
+        // CP-4 observability (SG-2b-0): the per-node phase-transition timeline.
+        // Pure read of already-updated session state — no control-flow effect.
+        // Matches the unconditional LogPrintf convention of the sibling
+        // ceremony lines (STARTED/DONE); volume is one line per phase per
+        // ceremony per node.
+        if (result == PTXStepResult::PROGRESSED || result == PTXStepResult::ABORTED) {
+            LogPrintf("PTX ceremony: phase %s->%s height=%d my_idx=%d qual=%d bad=%d\n",
+                      PhaseName(ph), PhaseName(session.phase), current_height,
+                      session.my_idx, (int)session.qual.size(),
+                      (int)session.bad_members.size());
         }
     }
 
