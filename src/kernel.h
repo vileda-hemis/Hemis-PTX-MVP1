@@ -57,11 +57,17 @@ bool Stake(const CBlockIndex* pindexPrev, CStakeInput* stakeInput, unsigned int 
  *
  * @param[in]   block           block with the proof being verified
  * @param[out]  strError        string returning error message (if any, else empty)
+ * @param[out]  fViewDependent  BUG-020: true iff the failure is a function of this
+ *                              node's active-chain view (coin unresolvable here —
+ *                              a valid competing fork), false for provably-invalid
+ *                              failures (bad kernel hash / forged sig). The caller
+ *                              scores view-dependent failures at a low DoS so a
+ *                              valid-lighter fork's relayer is not banned.
  * @param[in]   pindexPrev      index of the parent block
  *                              (if nullptr, it will be searched in mapBlockIndex)
  * @return      bool            true if the block has a valid proof of stake
  */
-bool CheckProofOfStake(const CBlock& block, std::string& strError, const CBlockIndex* pindexPrev = nullptr);
+bool CheckProofOfStake(const CBlock& block, std::string& strError, bool& fViewDependent, const CBlockIndex* pindexPrev = nullptr);
 
 /*
  * GetStakeKernelHash   Return stake kernel of a block

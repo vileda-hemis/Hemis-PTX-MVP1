@@ -143,13 +143,26 @@ bool Stake(const CBlockIndex* pindexPrev, CStakeInput* stakeInput, unsigned int 
  *                              (if nullptr, it will be searched in mapBlockIndex)
  * @return      bool            true if the block has a valid proof of stake
  */
-bool CheckProofOfStake(const CBlock& block, std::string& strError, const CBlockIndex* pindexPrev)
+bool CheckProofOfStake(const CBlock& block, std::string& strError, bool& fViewDependent, const CBlockIndex* pindexPrev)
 {
+    // BUG-020: fViewDependent flags failures that are a function of THIS node's
+    // active-chain UTXO view — a valid competing fork's stake coin that exists
+    // on its own branch but is not resolvable here — as opposed to
+    // provably-invalid failures (bad kernel hash / forged sig) that hold under
+    // any view.  The caller (AcceptBlock) scores view-dependent failures at a
+    // low DoS so relaying a valid-but-lighter fork does not ban the peer (the
+    // caller-island seal), while provably-invalid stays DoS(100).  Ambiguity
+    // note: a fabricated (nonexistent-anywhere) coin also lands here — it
+    // cannot be distinguished from a real fork locally — so this is a
+    // low-not-zero score; a flood still accumulates to the ban threshold.
+    fViewDependent = false;
+
     const int nHeight = pindexPrev->nHeight + 1;
     // Initialize stake input
     std::unique_ptr<CStakeInput> stakeInput;
     if (!LoadStakeInput(block, stakeInput, nHeight)) {
         strError = "stake input initialization failed";
+        fViewDependent = true; // #1: coin not resolvable in this active view
         return false;
     }
 
@@ -157,7 +170,7 @@ bool CheckProofOfStake(const CBlock& block, std::string& strError, const CBlockI
     CStakeKernel stakeKernel(pindexPrev, stakeInput.get(), block.nBits, block.nTime);
     if (!stakeKernel.CheckKernelHash()) {
         strError = "kernel hash check fails";
-        return false;
+        return false; // #2: coin IS in view, kernel math wrong — provably invalid
     }
 
     // zPoS disabled (ContextCheck) before blocks V7, and the tx input signature is in CoinSpend
@@ -167,6 +180,7 @@ bool CheckProofOfStake(const CBlock& block, std::string& strError, const CBlockI
     CTxOut stakePrevout;
     if (!stakeInput->GetTxOutFrom(stakePrevout)) {
         strError = "unable to get stake prevout for coinstake";
+        fViewDependent = true; // #3: prevout not resolvable in this active view
         return false;
     }
     const auto& tx = block.vtx[1];

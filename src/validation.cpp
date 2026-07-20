@@ -3315,8 +3315,18 @@ static bool AcceptBlock(const CBlock& block, CValidationState& state, CBlockInde
     bool isPoS = block.IsProofOfStake();
     if (isPoS) {
         std::string strError;
-        if (!CheckProofOfStake(block, strError, pindexPrev))
-            return state.DoS(100, error("%s: proof of stake check failed (%s)", __func__, strError));
+        bool fViewDependent = false;
+        if (!CheckProofOfStake(block, strError, fViewDependent, pindexPrev))
+            // BUG-020: a VIEW-DEPENDENT stake failure (a valid competing fork's
+            // coin unresolvable in this active view) scores DoS(1) — the block
+            // is STILL REJECTED (this node cannot validate it now), but the
+            // relaying peer is not banned for a single such block (the
+            // caller-island seal).  A flood accumulates to the ban threshold
+            // (100), closing the spam hazard.  Provably-invalid stays DoS(100).
+            // Local ban-policy only: acceptance/fork-choice unchanged (state.DoS
+            // returns false either way — the block is not connected).
+            return state.DoS(fViewDependent ? 1 : 100,
+                             error("%s: proof of stake check failed (%s)", __func__, strError));
     }
 
     if (!AcceptBlockHeader(block, state, &pindex, pindexPrev))
