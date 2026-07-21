@@ -17,7 +17,7 @@
 //   W5_BlockRules_AcceptsOnePTXDKG               Green  one PTXDKG in a block passes
 //   W6_BlockRules_AcceptsZeroPTXDKG              Green  PTXDKG-free block passes
 //   P1_Pending_SetGetClear                       Green  slot set → get returns it; clear → empty
-//   P2_Pending_RefuseWhileSet                    Green  second Set refused while occupied (E-4)
+//   P2_Pending_PerQuorumReplacementPolicy        Green  not-better refused; dup no-op (KDD-058-A)
 //   P3_Pending_ValidateBeforeInject              Green  structurally-invalid tx refused at populate
 //   P4_Pending_ClearOnInclusion                  Green  clear keys on txid match, not any PTXDKG
 //   R1_NetGate_RefusesNonPermittedNets           Green  RPC hard-errors on main/testnet/ptxtestnet
@@ -35,7 +35,10 @@
 
 #include "test/test_Hemis.h"
 #include "ptx/ptx_dkg.h"
-#include "ptx/ptx_dkg_pending.h"
+#include "ptx/ptx_dkg_commitments.h"
+#include "streams.h"
+#include "tiertwo/tiertwo_sync_state.h"
+#include "version.h"
 #include "consensus/tx_verify.h"
 #include "consensus/validation.h"
 #include "evo/specialtx_validation.h"
@@ -338,7 +341,7 @@ BOOST_AUTO_TEST_CASE(W6_BlockRules_AcceptsZeroPTXDKG)
 }
 
 // ---------------------------------------------------------------------------
-// P1–P4 — the C4 pending-injection slot (KDD-058; W1.3 spec §4).
+// P1–P4 — the minable-commitments store (KDD-058-A; superseded the C4 slot).
 //
 // Structural level only (see the inventory note above).  Each case clears
 // the slot at entry AND exit: the slot is process-global, and the phase5 TU
@@ -359,68 +362,75 @@ static CTransactionRef MakeRealPTXDKGTxRef(int formation_height, int session_idx
 
 BOOST_AUTO_TEST_CASE(P1_Pending_SetGetClear)
 {
-    PTX_DKG_ClearPendingTx();
-    BOOST_REQUIRE(!PTX_DKG_HasPendingTx());
+    PTX_DKG_Commitments_Clear();
+    BOOST_REQUIRE(PTX_DKG_Commitments_Empty());
     {
         LOCK(cs_main);
         CTransactionRef out;
-        BOOST_CHECK(!PTX_DKG_GetMinablePTXDKGTx(nullptr, out)); // empty slot → false
+        BOOST_CHECK(!PTX_DKG_Commitments_GetMinableTx(nullptr, out)); // empty slot → false
     }
 
     CTransactionRef tx = MakeRealPTXDKGTxRef(1000);
     CValidationState state;
-    BOOST_CHECK(PTX_DKG_SetPendingTx(tx, state));
+    BOOST_CHECK(PTX_DKG_Commitments_AddAndRelay(tx, state));
     BOOST_CHECK(state.IsValid());
-    BOOST_CHECK(PTX_DKG_HasPendingTx());
+    BOOST_CHECK(!PTX_DKG_Commitments_Empty());
 
     // Structural GetMinable: null pindexPrev (no chain) → structural
     // re-validation passes → the slot tx comes back.
     {
         LOCK(cs_main);
         CTransactionRef out;
-        BOOST_REQUIRE(PTX_DKG_GetMinablePTXDKGTx(nullptr, out));
+        BOOST_REQUIRE(PTX_DKG_Commitments_GetMinableTx(nullptr, out));
         BOOST_CHECK(out->GetHash() == tx->GetHash());
     }
 
-    PTX_DKG_ClearPendingTx();
-    BOOST_CHECK(!PTX_DKG_HasPendingTx());
+    PTX_DKG_Commitments_Clear();
+    BOOST_CHECK(PTX_DKG_Commitments_Empty());
     {
         LOCK(cs_main);
         CTransactionRef out;
-        BOOST_CHECK(!PTX_DKG_GetMinablePTXDKGTx(nullptr, out));
+        BOOST_CHECK(!PTX_DKG_Commitments_GetMinableTx(nullptr, out));
     }
 }
 
-BOOST_AUTO_TEST_CASE(P2_Pending_RefuseWhileSet)
+BOOST_AUTO_TEST_CASE(P2_Pending_PerQuorumReplacementPolicy)
 {
-    PTX_DKG_ClearPendingTx();
+    PTX_DKG_Commitments_Clear();
 
     CTransactionRef tx0 = MakeRealPTXDKGTxRef(1000);
     CTransactionRef tx1 = MakeRealPTXDKGTxRef(2000);
     BOOST_REQUIRE(tx0->GetHash() != tx1->GetHash());
 
     CValidationState state0;
-    BOOST_REQUIRE(PTX_DKG_SetPendingTx(tx0, state0));
+    BOOST_REQUIRE(PTX_DKG_Commitments_AddAndRelay(tx0, state0));
 
-    // E-4: REFUSE-WHILE-SET — no last-wins; explicit clear required.
+    // KDD-058-A supersedes E-4's refuse-while-set with the per-quorum
+    // replacement policy (HasBetterMinableCommitment mirror): tx1 carries the
+    // SAME quorum_hash with an EQUAL completed count → not-better → refused.
     CValidationState state1;
-    BOOST_CHECK(!PTX_DKG_SetPendingTx(tx1, state1));
-    BOOST_CHECK_EQUAL(state1.GetRejectReason(), "ptxdkg-pending-occupied");
+    BOOST_CHECK(!PTX_DKG_Commitments_AddAndRelay(tx1, state1));
+    BOOST_CHECK_EQUAL(state1.GetRejectReason(), "ptxdkg-commitment-not-better");
 
-    // The first tx is still the occupant.
+    // Re-adding the IDENTICAL tx is a benign no-op (gossip overlap), not a
+    // refusal.
+    CValidationState state2;
+    BOOST_CHECK(PTX_DKG_Commitments_AddAndRelay(tx0, state2));
+
+    // The first tx is still the stored minable for this quorum.
     {
         LOCK(cs_main);
         CTransactionRef out;
-        BOOST_REQUIRE(PTX_DKG_GetMinablePTXDKGTx(nullptr, out));
+        BOOST_REQUIRE(PTX_DKG_Commitments_GetMinableTx(nullptr, out));
         BOOST_CHECK(out->GetHash() == tx0->GetHash());
     }
 
-    PTX_DKG_ClearPendingTx();
+    PTX_DKG_Commitments_Clear();
 }
 
 BOOST_AUTO_TEST_CASE(P3_Pending_ValidateBeforeInject)
 {
-    PTX_DKG_ClearPendingTx();
+    PTX_DKG_Commitments_Clear();
 
     // Type-only PTXDKG: payload {0x01} fails GetTxPayload → the structural
     // body's first reject.  VALIDATE-BEFORE-INJECT must refuse it at
@@ -429,40 +439,40 @@ BOOST_AUTO_TEST_CASE(P3_Pending_ValidateBeforeInject)
     BOOST_REQUIRE(bad->IsPTXDKGTx());
 
     CValidationState state;
-    BOOST_CHECK(!PTX_DKG_SetPendingTx(bad, state));
+    BOOST_CHECK(!PTX_DKG_Commitments_AddAndRelay(bad, state));
     BOOST_CHECK_EQUAL(state.GetRejectReason(), "ptxdkg-bad-payload");
-    BOOST_CHECK(!PTX_DKG_HasPendingTx());
+    BOOST_CHECK(PTX_DKG_Commitments_Empty());
 
-    PTX_DKG_ClearPendingTx();
+    PTX_DKG_Commitments_Clear();
 }
 
 BOOST_AUTO_TEST_CASE(P4_Pending_ClearOnInclusion)
 {
-    PTX_DKG_ClearPendingTx();
+    PTX_DKG_Commitments_Clear();
 
     CTransactionRef tx = MakeRealPTXDKGTxRef(1000);
     CValidationState state;
-    BOOST_REQUIRE(PTX_DKG_SetPendingTx(tx, state));
+    BOOST_REQUIRE(PTX_DKG_Commitments_AddAndRelay(tx, state));
 
     // A block with a DIFFERENT PTXDKG does not clear — match is by txid.
     CBlock other;
     other.vtx.push_back(MakeTransactionRef(MakeTypeOnlyPTXDKGTx()));
     BOOST_REQUIRE(other.vtx[0]->IsPTXDKGTx());
-    PTX_DKG_ClearPendingIfIncluded(other);
-    BOOST_CHECK(PTX_DKG_HasPendingTx());
+    PTX_DKG_Commitments_EraseMined(other);
+    BOOST_CHECK(!PTX_DKG_Commitments_Empty());
 
     // A PTXDKG-free block does not clear.
     CBlock empty;
-    PTX_DKG_ClearPendingIfIncluded(empty);
-    BOOST_CHECK(PTX_DKG_HasPendingTx());
+    PTX_DKG_Commitments_EraseMined(empty);
+    BOOST_CHECK(!PTX_DKG_Commitments_Empty());
 
     // The block that includes the slot tx clears it.
     CBlock incl;
     incl.vtx.push_back(tx);
-    PTX_DKG_ClearPendingIfIncluded(incl);
-    BOOST_CHECK(!PTX_DKG_HasPendingTx());
+    PTX_DKG_Commitments_EraseMined(incl);
+    BOOST_CHECK(PTX_DKG_Commitments_Empty());
 
-    PTX_DKG_ClearPendingTx();
+    PTX_DKG_Commitments_Clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -511,67 +521,67 @@ JSONRPCRequest MakePopulateRequest(int premits, bool force)
 
 BOOST_AUTO_TEST_CASE(R1_NetGate_RefusesNonPermittedNets)
 {
-    PTX_DKG_ClearPendingTx();
+    PTX_DKG_Commitments_Clear();
 
     // Fixture selected MAIN.  A fully-valid request must die at the gate —
     // before any state touch — on main, public testnet and ptxtestnet.  The
-    // slot is cleared between sub-checks so each one tests the gate alone:
+    // store is cleared between sub-checks so each one tests the gate alone:
     // with the gate stubbed, every throw-assert fails on its own (no
-    // accidental pass via ptxdkg-pending-occupied from the previous call).
+    // accidental pass via a not-better refusal from the previous call).
     const JSONRPCRequest req = MakePopulateRequest(6, false);
     BOOST_CHECK_THROW(ptx_debug_ptxdkgpopulate(req), UniValue);
-    PTX_DKG_ClearPendingTx();
+    PTX_DKG_Commitments_Clear();
 
     SelectParams(CBaseChainParams::TESTNET);
     BOOST_CHECK_THROW(ptx_debug_ptxdkgpopulate(req), UniValue);
-    PTX_DKG_ClearPendingTx();
+    PTX_DKG_Commitments_Clear();
 
     SelectParams(CBaseChainParams::PTXTESTNET);
     BOOST_CHECK_THROW(ptx_debug_ptxdkgpopulate(req), UniValue);
 
     // The gate fired before the slot was touched.
-    BOOST_CHECK(!PTX_DKG_HasPendingTx());
+    BOOST_CHECK(PTX_DKG_Commitments_Empty());
 }
 
 BOOST_FIXTURE_TEST_CASE(R2_Populate_SmokeValidRegtest, RegtestSetup)
 {
-    PTX_DKG_ClearPendingTx();
+    PTX_DKG_Commitments_Clear();
 
     // Valid spec through the RPC path → guarded populate succeeds.
     const UniValue ret = ptx_debug_ptxdkgpopulate(MakePopulateRequest(6, false));
     BOOST_CHECK(find_value(ret, "populated").get_bool());
     BOOST_CHECK(!find_value(ret, "force").get_bool());
-    BOOST_REQUIRE(PTX_DKG_HasPendingTx());
+    BOOST_REQUIRE(!PTX_DKG_Commitments_Empty());
 
     // The slot holds the returned txid (structural GetMinable, null tip).
     {
         LOCK(cs_main);
         CTransactionRef out;
-        BOOST_REQUIRE(PTX_DKG_GetMinablePTXDKGTx(nullptr, out));
+        BOOST_REQUIRE(PTX_DKG_Commitments_GetMinableTx(nullptr, out));
         BOOST_CHECK_EQUAL(out->GetHash().GetHex(), find_value(ret, "txid").get_str());
     }
 
     // Second unforced populate → the RPC surfaces E-4 as a JSONRPCError.
     BOOST_CHECK_THROW(ptx_debug_ptxdkgpopulate(MakePopulateRequest(6, false)), UniValue);
 
-    PTX_DKG_ClearPendingTx();
+    PTX_DKG_Commitments_Clear();
 }
 
 BOOST_FIXTURE_TEST_CASE(R3_NetGate_AdmitsPtxBea, PtxBeaSetup)
 {
-    PTX_DKG_ClearPendingTx();
+    PTX_DKG_Commitments_Clear();
 
     // The second allowlist arm: the RPC runs on ptxbea params.
     const UniValue ret = ptx_debug_ptxdkgpopulate(MakePopulateRequest(6, false));
     BOOST_CHECK(find_value(ret, "populated").get_bool());
-    BOOST_CHECK(PTX_DKG_HasPendingTx());
+    BOOST_CHECK(!PTX_DKG_Commitments_Empty());
 
-    PTX_DKG_ClearPendingTx();
+    PTX_DKG_Commitments_Clear();
 }
 
 BOOST_FIXTURE_TEST_CASE(R4_Force_BypassesPopulateGuard, RegtestSetup)
 {
-    PTX_DKG_ClearPendingTx();
+    PTX_DKG_Commitments_Clear();
 
     // Seat a valid tx first — minable at the structural level.
     const UniValue ok = ptx_debug_ptxdkgpopulate(MakePopulateRequest(6, false));
@@ -579,7 +589,7 @@ BOOST_FIXTURE_TEST_CASE(R4_Force_BypassesPopulateGuard, RegtestSetup)
     {
         LOCK(cs_main);
         CTransactionRef out;
-        BOOST_REQUIRE(PTX_DKG_GetMinablePTXDKGTx(nullptr, out));
+        BOOST_REQUIRE(PTX_DKG_Commitments_GetMinableTx(nullptr, out));
         BOOST_CHECK_EQUAL(out->GetHash().GetHex(), validTxid);
     }
 
@@ -589,7 +599,7 @@ BOOST_FIXTURE_TEST_CASE(R4_Force_BypassesPopulateGuard, RegtestSetup)
     {
         LOCK(cs_main);
         CTransactionRef out;
-        BOOST_REQUIRE(PTX_DKG_GetMinablePTXDKGTx(nullptr, out));
+        BOOST_REQUIRE(PTX_DKG_Commitments_GetMinableTx(nullptr, out));
         BOOST_CHECK_EQUAL(out->GetHash().GetHex(), validTxid);
     }
 
@@ -600,14 +610,115 @@ BOOST_FIXTURE_TEST_CASE(R4_Force_BypassesPopulateGuard, RegtestSetup)
     const UniValue forced = ptx_debug_ptxdkgpopulate(MakePopulateRequest(3, true));
     const std::string badTxid = find_value(forced, "txid").get_str();
     BOOST_CHECK(badTxid != validTxid);
-    BOOST_REQUIRE(PTX_DKG_HasPendingTx());
+    BOOST_REQUIRE(!PTX_DKG_Commitments_Empty());
     {
         LOCK(cs_main);
         CTransactionRef out;
-        BOOST_CHECK(!PTX_DKG_GetMinablePTXDKGTx(nullptr, out));
+        BOOST_CHECK(!PTX_DKG_Commitments_GetMinableTx(nullptr, out));
     }
 
-    PTX_DKG_ClearPendingTx();
+    PTX_DKG_Commitments_Clear();
+}
+
+// ---------------------------------------------------------------------------
+// K-cases — KDD-058-A landing relay (the replicated minable-commitments
+// store that superseded the member-only slot).  Structural level, reusing
+// the P-case ceremony fixtures.
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(K1_Commitments_WireRoundTrip)
+{
+    PTX_DKG_Commitments_Clear();
+    CTransactionRef tx = MakeRealPTXDKGTxRef(1000);
+
+    // Wire form: the PTXDKGCOMMIT payload is the full nType=11 tx —
+    // the serializer-path row (layered-helper discipline).
+    CDataStream ds(SER_NETWORK, PROTOCOL_VERSION);
+    ds << tx;
+
+    // Sync soft-gate (GMAUTH posture): unsynced → ignored WITHOUT DoS and
+    // WITHOUT storing.
+    g_tiertwo_sync_state.SetBlockchainSync(false, 0);
+    int score = -1;
+    {
+        CDataStream d2(ds);
+        BOOST_CHECK(PTX_DKG_Commitments_ProcessMessage(1, d2, score));
+    }
+    BOOST_CHECK_EQUAL(score, 0);
+    BOOST_CHECK(PTX_DKG_Commitments_Empty());
+
+    // Synced → stored via the same AddAndRelay path the origin uses.
+    g_tiertwo_sync_state.SetBlockchainSync(true, 0);
+    {
+        CDataStream d3(ds);
+        BOOST_CHECK(PTX_DKG_Commitments_ProcessMessage(1, d3, score));
+    }
+    BOOST_CHECK_EQUAL(score, 0);
+    BOOST_CHECK(PTX_DKG_Commitments_Has(tx->GetHash()));
+    CTransactionRef out;
+    BOOST_REQUIRE(PTX_DKG_Commitments_GetByHash(tx->GetHash(), out));
+    BOOST_CHECK(out->GetHash() == tx->GetHash());
+
+    g_tiertwo_sync_state.SetBlockchainSync(false, 0); // restore default
+    PTX_DKG_Commitments_Clear();
+}
+
+BOOST_AUTO_TEST_CASE(K2_Commitments_WireGarbageScores100)
+{
+    PTX_DKG_Commitments_Clear();
+    g_tiertwo_sync_state.SetBlockchainSync(true, 0);
+
+    // Non-deserializable junk → unroutable, 100.
+    CDataStream junk(SER_NETWORK, PROTOCOL_VERSION);
+    junk << std::string("not-a-tx");
+    int score = 0;
+    BOOST_CHECK(!PTX_DKG_Commitments_ProcessMessage(1, junk, score));
+    BOOST_CHECK_EQUAL(score, 100);
+
+    // A well-formed NON-PTXDKG tx → structural garbage for this channel, 100.
+    CMutableTransaction plain; // default nType — not PTXDKG
+    CDataStream d(SER_NETWORK, PROTOCOL_VERSION);
+    d << MakeTransactionRef(plain);
+    score = 0;
+    BOOST_CHECK(!PTX_DKG_Commitments_ProcessMessage(1, d, score));
+    BOOST_CHECK_EQUAL(score, 100);
+    BOOST_CHECK(PTX_DKG_Commitments_Empty());
+
+    g_tiertwo_sync_state.SetBlockchainSync(false, 0);
+    PTX_DKG_Commitments_Clear();
+}
+
+BOOST_AUTO_TEST_CASE(K3_Commitments_PerQuorumCoexistence)
+{
+    PTX_DKG_Commitments_Clear();
+
+    CTransactionRef tx0 = MakeRealPTXDKGTxRef(1000);
+    CValidationState st;
+    BOOST_REQUIRE(PTX_DKG_Commitments_AddAndRelay(tx0, st));
+
+    // A second quorum's result COEXISTS (the E-4 single-slot supersession).
+    // Force-add a quorum-hash-mutated copy (force = validation bypass; the
+    // mutation breaks premit binding, which is irrelevant to store keying).
+    PTXDKGPayload pl;
+    BOOST_REQUIRE(GetTxPayload(*tx0, pl));
+    pl.quorum_hash = uint256S("0x99");
+    CMutableTransaction mtx(*tx0);
+    SetTxPayload(mtx, pl);
+    CTransactionRef tx1 = MakeTransactionRef(mtx);
+    BOOST_REQUIRE(tx1->GetHash() != tx0->GetHash());
+    PTX_DKG_Commitments_ForceAdd(tx1);
+
+    BOOST_CHECK(PTX_DKG_Commitments_Has(tx0->GetHash()));
+    BOOST_CHECK(PTX_DKG_Commitments_Has(tx1->GetHash()));
+
+    // Erase-on-mined removes ONLY the mined quorum's entry.
+    CBlock incl;
+    incl.vtx.push_back(tx0);
+    PTX_DKG_Commitments_EraseMined(incl);
+    BOOST_CHECK(!PTX_DKG_Commitments_Has(tx0->GetHash()));
+    BOOST_CHECK(PTX_DKG_Commitments_Has(tx1->GetHash()));
+
+    PTX_DKG_Commitments_Clear();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

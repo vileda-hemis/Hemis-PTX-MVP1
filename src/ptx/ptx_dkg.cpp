@@ -4,7 +4,7 @@
 
 #include "ptx/ptx_dkg.h"
 #include "ptx/ptx_bls.h"
-#include "ptx/ptx_dkg_pending.h"  // W1.3 C4: pending-injection slot (KDD-058)
+#include "ptx/ptx_dkg_commitments.h"  // KDD-058-A: replicated minable-commitments store
 
 #include "evo/deterministicgms.h"  // CDeterministicGMList, CDeterministicGMCPtr (KDD-060)
 #include "consensus/validation.h"  // CValidationState, REJECT_INVALID (Package 2 validator)
@@ -1434,17 +1434,18 @@ bool PTX_DKG_ClosePhase5(PTXDKGSession& session,
 
     ptxdkg_tx_out = PTX_DKG_BuildPTXDKGTx(session, formation_height);
 
-    // W1.3 C4: populate the pending-injection slot (KDD-058).  WIRED BUT
-    // DORMANT in W1.3 — ClosePhase5 has no production callers until W2
-    // orchestration; the debug RPC (C5) is the only live driver.  Best
-    // effort: a populate refusal (slot occupied, validation reject) is
-    // logged, not fatal to the ceremony close — the ceremony result and
-    // sk_share are already stored; W2 owns retry/re-submission and the
-    // debug RPC owns explicit clear.
+    // KDD-058-A: store + RELAY the finished commitment network-wide (the
+    // qfc shape) — every node holds it in the replicated minable store, so
+    // ANY staker's assembler can land it (members are near-zero-stake by
+    // design; the member-only slot this replaces landed 1-of-3 fleet
+    // results, by whale-luck).  RelayInv scope — deliberately NOT the
+    // member-mesh ceremony relayHook.  Best-effort posture kept: a refusal
+    // is logged, not fatal — the ceremony result and sk_share are already
+    // stored.
     {
         CValidationState pendState;
-        if (!PTX_DKG_SetPendingTx(MakeTransactionRef(ptxdkg_tx_out), pendState)) {
-            LogPrintf("PTX DKG: ClosePhase5: pending slot populate refused (%s)\n",
+        if (!PTX_DKG_Commitments_AddAndRelay(MakeTransactionRef(ptxdkg_tx_out), pendState)) {
+            LogPrintf("PTX DKG: ClosePhase5: commitment store/relay refused (%s)\n",
                       pendState.GetRejectReason());
         }
     }

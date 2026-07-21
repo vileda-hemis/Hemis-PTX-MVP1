@@ -12,6 +12,7 @@
 #include "gamemasterman.h"  // for gamemasterman
 #include "net_processing.h" // for Misbehaving
 #include "netmessagemaker.h"
+#include "ptx/ptx_dkg_commitments.h" // KDD-058-A landing relay dispatch
 #include "ptx/ptx_dkg_net.h" // for g_ptx_ceremony_transport (W2.0b)
 #include "spork.h"   // for sporkManager
 #include "streams.h" // for CDataStream
@@ -85,6 +86,19 @@ bool CGamemasterSync::MessageDispatcher(CNode* pfrom, std::string& strCommand, C
         || strCommand == NetMsgType::PTXQPCOMMITMENT) {
         if (!g_ptx_ceremony_transport.ProcessMessage(pfrom->GetId(), strCommand, vRecv)) {
             WITH_LOCK(cs_main, Misbehaving(pfrom->GetId(), 100));
+        }
+        return true;
+    }
+
+    // KDD-058-A landing relay: the finished nType=11 commitment, gossiped
+    // network-wide (qfc precedent) — validate, store, re-relay; any staker's
+    // assembler packages it.  Graduated scoring (100 garbage / 10 contextual)
+    // comes back via the out-param, unlike the all-or-nothing branch above.
+    if (strCommand == NetMsgType::PTXDKGCOMMIT) {
+        int score = 0;
+        PTX_DKG_Commitments_ProcessMessage(pfrom->GetId(), vRecv, score);
+        if (score > 0) {
+            WITH_LOCK(cs_main, Misbehaving(pfrom->GetId(), score));
         }
         return true;
     }

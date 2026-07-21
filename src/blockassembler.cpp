@@ -17,7 +17,7 @@
 #include "llmq/quorums_blockprocessor.h"
 #include "evo/deterministicgms.h"
 #include "ptx/ptx_coalesce.h"
-#include "ptx/ptx_dkg_pending.h"
+#include "ptx/ptx_dkg_commitments.h"
 #include "ptx/ptx_lottery_state.h"
 #include "ptx/ptx_payout.h"
 #include "ptx/ptx_pose.h"
@@ -281,7 +281,7 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
         // put a rejecting tx into the template.
         if (consensus.NetworkUpgradeActive(nHeight, Consensus::UPGRADE_V6_0)) {
             CTransactionRef dkgTx;
-            if (PTX_DKG_GetMinablePTXDKGTx(pindexPrev, dkgTx)) {
+            if (PTX_DKG_Commitments_GetMinableTx(pindexPrev, dkgTx)) {
                 pblock->vtx.emplace_back(dkgTx);
                 pblocktemplate->vTxFees.emplace_back(0);
                 pblocktemplate->vTxSigOps.emplace_back(0);

@@ -20,7 +20,7 @@
 #include "ptx/ptx_accum_script.h"
 #include "ptx/ptx_coalesce.h"
 #include "ptx/ptx_dkg.h"
-#include "ptx/ptx_dkg_pending.h"
+#include "ptx/ptx_dkg_commitments.h"
 #include "ptx/ptx_formation.h"
 #include "ptx/ptx_lottery_state.h"
 #include "ptx/ptx_quorum_store.h"
@@ -1237,12 +1237,13 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
         return false;
     }
 
-    // W1.3 C4: a connecting block that includes the pending PTXDKG clears the
-    // slot (LLMQ ProcessCommitment precedent; !fJustCheck only).  Clear-on-
-    // inclusion only — disconnect does NOT re-pend in W1.3 (E-5); W2 owns
-    // re-submission.
+    // KDD-058-A: a connecting block that includes a PTXDKG erases it from the
+    // replicated minable-commitments store (LLMQ ProcessCommitment precedent;
+    // !fJustCheck only).  BOOKKEEPING-ONLY — no validation behavior lives
+    // here; the erase-on-inclusion posture is unchanged from the W1.3 slot
+    // (E-5: disconnect does NOT re-pend).
     if (!fJustCheck) {
-        PTX_DKG_ClearPendingIfIncluded(block);
+        PTX_DKG_Commitments_EraseMined(block);
     }
 
     // Update pose tracker from PTXSESS quorum_members in this block.

@@ -415,7 +415,7 @@ libbitcoin_server_a_SOURCES = \
   ptx/ptx_bls.cpp \
   ptx/ptx_dkg.cpp \
   ptx/ptx_dkg_net.cpp \
-  ptx/ptx_dkg_pending.cpp \
+  ptx/ptx_dkg_commitments.cpp \
   ptx/ptx_quorum_store.cpp \
   ptx/ptx_formation.cpp \
   ptx/ptx_ceremony_driver.cpp \

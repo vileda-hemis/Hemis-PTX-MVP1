@@ -41,7 +41,7 @@
 #include "ptx/ptx_ceremony_driver.h"
 #include "ptx/ptx_dkg.h"
 #include "ptx/ptx_dkg_net.h"
-#include "ptx/ptx_dkg_pending.h"
+#include "ptx/ptx_dkg_commitments.h"
 #include "protocol.h"
 #include "streams.h"
 #include "version.h"
@@ -169,7 +169,7 @@ static std::vector<unsigned char> CompressPk(const PTXDKGSession& s)
 static HarnessResult RunCeremony(const HarnessCfg& cfg,
                                  std::map<uint256, CBLSSecretKey>* key_map_out = nullptr)
 {
-    PTX_DKG_ClearPendingTx();
+    PTX_DKG_Commitments_Clear();
     PTX_TEST_ClearSkShareSlot();
 
     std::map<uint256, CBLSSecretKey> key_map;
@@ -257,7 +257,7 @@ static HarnessResult RunCeremony(const HarnessCfg& cfg,
         if (n.last == PTXStepResult::ABORTED) r.aborted_count++;
     }
     if (key_map_out) *key_map_out = key_map;
-    PTX_DKG_ClearPendingTx();
+    PTX_DKG_Commitments_Clear();
     PTX_TEST_ClearSkShareSlot();
     return r;
 }

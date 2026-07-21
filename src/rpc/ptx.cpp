@@ -5,7 +5,7 @@
 #include "ptx/ptx_bls.h"
 #include "ptx/ptx_commit_reveal.h"
 #include "ptx/ptx_dkg.h"
-#include "ptx/ptx_dkg_pending.h"
+#include "ptx/ptx_dkg_commitments.h"
 #include "ptx/ptx_formation.h"
 #include "core_io.h" // EncodeHexTx (C6 build_only mode)
 #include "ptx/ptx_fanout.h"
@@ -883,10 +883,10 @@ UniValue ptx_debug_ptxdkgpopulate(const JSONRPCRequest& request)
     }
 
     if (fForce) {
-        PTX_DKG_ForceSetPendingTx(tx);
+        PTX_DKG_Commitments_ForceAdd(tx);
     } else {
         CValidationState state;
-        if (!PTX_DKG_SetPendingTx(tx, state)) {
+        if (!PTX_DKG_Commitments_AddAndRelay(tx, state)) {
             throw JSONRPCError(RPC_VERIFY_REJECTED,
                 strprintf("populate refused: %s", state.GetRejectReason()));
         }

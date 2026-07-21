@@ -14,6 +14,7 @@
 #include "llmq/quorums_blockprocessor.h"
 #include "llmq/quorums_chainlocks.h"
 #include "llmq/quorums_dkgsessionmgr.h"
+#include "ptx/ptx_dkg_commitments.h" // KDD-058-A landing relay (AlreadyHave/serve seams)
 #include "ptx/ptx_dkg_net.h"
 #include "llmq/quorums_signing.h"
 #include "gamemaster-payments.h"
@@ -882,6 +883,8 @@ bool static AlreadyHave(const CInv& inv) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
     case MSG_PTX_QUORUM_JUSTIFICATION:
     case MSG_PTX_QUORUM_PREMATURE_COMMITMENT:
         return g_ptx_ceremony_transport.AlreadyHaveMsg(inv);
+    case MSG_PTX_DKG_COMMITMENT:
+        return PTX_DKG_Commitments_Has(inv.hash);
     case MSG_QUORUM_RECOVERED_SIG:
         return llmq::quorumSigningManager->AlreadyHave(inv);
     case MSG_CLSIG:
@@ -1041,6 +1044,15 @@ bool static PushTierTwoGetDataRequest(const CInv& inv,
         PTXDKGPhase4Msg o;
         if (g_ptx_ceremony_transport.GetStoredPhase4(inv.hash, o)) {
             connman->PushMessage(pfrom, msgMaker.Make(NetMsgType::PTXQPCOMMITMENT, o));
+            return true;
+        }
+    }
+    // KDD-058-A: serve a stored minable commitment (full nType=11 tx).
+    if (inv.type == MSG_PTX_DKG_COMMITMENT) {
+        if (!deterministicGMManager->IsDIP3Enforced()) return false;
+        CTransactionRef tx;
+        if (PTX_DKG_Commitments_GetByHash(inv.hash, tx)) {
+            connman->PushMessage(pfrom, msgMaker.Make(NetMsgType::PTXDKGCOMMIT, tx));
             return true;
         }
     }
@@ -1224,7 +1236,10 @@ bool static IsTierTwoInventoryTypeKnown(int type)
            type == MSG_PTX_QUORUM_CONTRIB ||
            type == MSG_PTX_QUORUM_COMPLAINT ||
            type == MSG_PTX_QUORUM_JUSTIFICATION ||
-           type == MSG_PTX_QUORUM_PREMATURE_COMMITMENT;
+           type == MSG_PTX_QUORUM_PREMATURE_COMMITMENT ||
+           // KDD-058-A landing relay: same BUG-021 admission requirement as
+           // the ceremony types above — omission here wedges ProcessGetData.
+           type == MSG_PTX_DKG_COMMITMENT;
 }
 
 void static ProcessGetData(CNode* pfrom, CConnman* connman, const std::atomic<bool>& interruptMsgProc)

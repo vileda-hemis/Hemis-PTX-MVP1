@@ -70,6 +70,7 @@ const char* PTXQCONTRIB = "ptxqcontrib";
 const char* PTXQCOMPLAINT = "ptxqcomplaint";
 const char* PTXQJUSTIFICATION = "ptxqjustify";
 const char* PTXQPCOMMITMENT = "ptxqpcommit";
+const char* PTXDKGCOMMIT = "ptxdkgcommit";
 }; // namespace NetMsgType
 
 
@@ -137,6 +138,7 @@ const static std::string allNetMessageTypes[] = {
     NetMsgType::PTXQCOMPLAINT,
     NetMsgType::PTXQJUSTIFICATION,
     NetMsgType::PTXQPCOMMITMENT,
+    NetMsgType::PTXDKGCOMMIT,
 };
 const static std::vector<std::string> allNetMessageTypesVec(allNetMessageTypes, allNetMessageTypes + ARRAYLEN(allNetMessageTypes));
 const static std::vector<std::string> tiertwoNetMessageTypesVec(std::find(allNetMessageTypesVec.begin(), allNetMessageTypesVec.end(), NetMsgType::SPORK), allNetMessageTypesVec.end());
@@ -247,6 +249,7 @@ std::string CInv::GetCommand() const
         case MSG_PTX_QUORUM_COMPLAINT: return cmd.append(NetMsgType::PTXQCOMPLAINT);
         case MSG_PTX_QUORUM_JUSTIFICATION: return cmd.append(NetMsgType::PTXQJUSTIFICATION);
         case MSG_PTX_QUORUM_PREMATURE_COMMITMENT: return cmd.append(NetMsgType::PTXQPCOMMITMENT);
+        case MSG_PTX_DKG_COMMITMENT: return cmd.append(NetMsgType::PTXDKGCOMMIT);
         default:
             throw std::out_of_range(strprintf("%s: type=%d unknown type", __func__, type));
     }

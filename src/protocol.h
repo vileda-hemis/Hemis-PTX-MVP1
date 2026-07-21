@@ -308,6 +308,7 @@ extern const char* PTXQCONTRIB;
 extern const char* PTXQCOMPLAINT;
 extern const char* PTXQJUSTIFICATION;
 extern const char* PTXQPCOMMITMENT;
+extern const char* PTXDKGCOMMIT;
 }; // namespace NetMsgType
 
 /* Get a vector of all valid message types (see above) */
@@ -473,7 +474,10 @@ enum GetDataMsg {
     MSG_PTX_QUORUM_COMPLAINT,
     MSG_PTX_QUORUM_JUSTIFICATION,
     MSG_PTX_QUORUM_PREMATURE_COMMITMENT,
-    MSG_TYPE_MAX = MSG_PTX_QUORUM_PREMATURE_COMMITMENT,
+    // KDD-058-A landing relay — appended under the same wire-safe-append
+    // justification as the W2.0b ceremony types above.
+    MSG_PTX_DKG_COMMITMENT,
+    MSG_TYPE_MAX = MSG_PTX_DKG_COMMITMENT,
 };
 
 /** inv message data */
