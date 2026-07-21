@@ -9,10 +9,12 @@
 #include "chainparams.h"
 #include "consensus/params.h"
 #include "logging.h"
+#include "net.h" // g_connman (KDD-065 member-connection hooks)
 #include "ptx/ptx_ceremony_driver.h"
 #include "ptx/ptx_dkg_net.h"
 #include "streams.h"
 #include "threadinterrupt.h"
+#include "tiertwo/net_gamemasters.h" // TierTwoConnMan (KDD-065 member-connection hooks)
 #include "util/system.h"
 #include "utilstrencodings.h" // HexStr (CP-5 group_pk-in-DONE observability)
 #include "validation.h"
@@ -157,6 +159,25 @@ private:
         LogPrintf("PTX formation: ceremony session STARTED quorum_hash=%s formation_height=%d my_idx=%d (SG-2a driver)\n",
                   quorum_hash.ToString(), formation_height, my_idx);
 
+        // KDD-065 member-connections: hand the member set to the tiertwo
+        // connman — it opens GM connections (one per cycle), the GMAUTH
+        // handshake stamps verifiedProRegTxHash, and the transport relayHook
+        // gains its targets. Full mesh minus self (11-member scale; LLMQ's
+        // relay-subset is a 400-member optimisation). Keyed by quorum_hash so
+        // the epilogue removes exactly this session's entry (thrash-safe).
+        if (g_connman != nullptr && my_idx >= 0) {
+            std::set<uint256> memberProTxs;
+            const uint256& myProTx = session->members[my_idx].proTxHash;
+            for (const auto& m : session->members) {
+                if (m.proTxHash != myProTx)
+                    memberProTxs.insert(m.proTxHash);
+            }
+            g_connman->GetTierTwoConnMan()->setQuorumNodes(
+                    Consensus::LLMQ_TYPE_PTX_CEREMONY, quorum_hash, memberProTxs);
+            LogPrintf("PTX: member-connections SET quorum_hash=%s n=%d\n",
+                      quorum_hash.ToString(), (int)memberProTxs.size());
+        }
+
         // Operator key — signs this node's own phase messages; NEVER stored in
         // the session (key-separation invariant).  A member ceremony thread is
         // only started with a live activeGamemasterManager (my_idx >= 0 path).
@@ -223,6 +244,16 @@ private:
         // ClearForming is erase-if-present: an entry already consumed by
         // ConsumeFormingOnConnect stays silent (the "unless-consumed" arm).
         g_ptx_ceremony_transport.SetActiveSession(nullptr);
+        // KDD-065 mirror of the SET above — same single epilogue every exit
+        // funnels through (DONE/ABORT/interrupt); erase is idempotent and
+        // keyed by this session's quorum_hash, so re-arm thrash removes
+        // exactly its own entry.
+        if (g_connman != nullptr) {
+            g_connman->GetTierTwoConnMan()->removeQuorumNodes(
+                    Consensus::LLMQ_TYPE_PTX_CEREMONY, quorum_hash);
+            LogPrintf("PTX: member-connections REMOVED quorum_hash=%s\n",
+                      quorum_hash.ToString());
+        }
         if (ptxQuorumStore) ptxQuorumStore->ClearForming(quorum_hash);
         ClearLive();
         LogPrintf("PTX formation: ceremony session EXITED quorum_hash=%s\n",

@@ -96,6 +96,13 @@ enum LLMQType : uint8_t
 
     // for testing only
     LLMQ_TEST = 100, // 3 members, 2 (66%) threshold, one per hour. Params might differ when -llmqtestparams is used
+
+    // KDD-065: PTX ceremony member-connection pseudo-type. A TierTwoConnMan
+    // MAP KEY ONLY (setQuorumNodes/removeQuorumNodes) — the connman path is
+    // type-opaque. CONSTRAINT: never insert this type into consensus.llmqs
+    // and never key a params lookup (GetLLMQParams/llmqs.at) by it; it names
+    // no LLMQ and has no LLMQParams.
+    LLMQ_TYPE_PTX_CEREMONY = 200,
 };
 
 // Configures a LLMQ and its DKG
