@@ -370,6 +370,12 @@ UniValue ptx_roll(const JSONRPCRequest& request)
         LOCK(cs_ptx_bls);
         blst_p1_affine_compress(group_pk_bytes, &g_ptx_bls_state.group_pk);
     }
+    // SG-3 observability: the exact verification key, so a run can assert it is
+    // byte-equal to the selected quorum's committed group_pk (predicate A) —
+    // beside the "DKG signing material" line so source + key are one grep.
+    LogPrintf("PTX roll: verify group_pk=%s source=%s\n",
+              HexStr(Span<const uint8_t>(group_pk_bytes, 48)),
+              dkg_ctx.active ? "dkg" : "dealer");
     if (!PTX_BLS_Verify(group_pk_bytes, round_seed, combined_sig))
         throw JSONRPCError(RPC_MISC_ERROR, "PTX: BLS threshold signature verification failed");
 
@@ -441,6 +447,13 @@ UniValue ptx_roll(const JSONRPCRequest& request)
     UniValue qm_arr(UniValue::VARR);
     for (const auto& nid : member_ids) qm_arr.push_back(nid);
     ret.pushKV("quorum_members", qm_arr);
+    // SG-3 observability: which quorum signed and via which path — so
+    // predicate B (selection correct) is assertable in-harness from the RPC
+    // response, not by log-scrape.  quorum_hash is empty on the dealer path
+    // (no on-chain quorum); signing_source names the path taken.
+    ret.pushKV("signing_source", dkg_ctx.active ? "dkg" : "dealer");
+    ret.pushKV("quorum_hash",    dkg_ctx.active ? dkg_ctx.quorum_hash.ToString()
+                                                : std::string());
     ret.pushKV("block_height",   (int64_t)block_height);
     ret.pushKV("tx_id",          txid);
     return ret;
