@@ -247,6 +247,7 @@ struct PTXDKGSigningCtx {
     uint256                   quorum_hash;
     std::vector<std::string>  member_ids;      // in_qual (committed effective-QUAL) only
     std::map<std::string,int> share_index;     // node_id -> 1-based score-order x
+    int                       threshold{0};    // t = majority(formed_size); QUORUM-scoped, NOT registry-derived (ODC-036)
     std::vector<uint8_t>      group_pk;        // 48 compressed bytes, as committed
 };
 
@@ -258,7 +259,11 @@ struct PTXDKGSigningCtx {
 // registered N>1 design (deterministic shuffle over
 // H(anchor_block_hash || game_id || roll_index), chain-determined and
 // ungrindable).  No consensus surface today — coordinator recovery side only.
-PTXDKGSigningCtx PTX_SelectDKGSigningCtx(const std::vector<CPTXQuorumRecord>& active,
-                                         int threshold);
+// The signing threshold is QUORUM-SCOPED: t = majority(formed_size) — a
+// property of the selected quorum, NOT of the coordinator's node registry
+// (ODC-036: deriving it from registry size mis-signs when registered-nodes !=
+// quorum-size).  No threshold parameter: it is derived here and returned in
+// ctx.threshold, the single source the roll path reads.
+PTXDKGSigningCtx PTX_SelectDKGSigningCtx(const std::vector<CPTXQuorumRecord>& active);
 
 #endif // PTX_QUORUM_STORE_H

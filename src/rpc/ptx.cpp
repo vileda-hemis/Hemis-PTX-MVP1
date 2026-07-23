@@ -118,11 +118,10 @@ static std::set<int64_t> PTX_ResolveExclude(const UniValue& arr)
 
 // The store query is the only impure part; selection itself is the pure
 // PTX_SelectDKGSigningCtx (ptx_quorum_store.h) so it is unit-testable.
-static PTXDKGSigningCtx PTX_LoadDKGSigningCtx(int nHeight, int threshold)
+static PTXDKGSigningCtx PTX_LoadDKGSigningCtx(int nHeight)
 {
     if (!ptxQuorumStore) return PTXDKGSigningCtx();
-    return PTX_SelectDKGSigningCtx(ptxQuorumStore->GetActiveQuorumsAtHeight(nHeight),
-                                   threshold);
+    return PTX_SelectDKGSigningCtx(ptxQuorumStore->GetActiveQuorumsAtHeight(nHeight));
 }
 
 // ---------------------------------------------------------------------------
@@ -239,7 +238,13 @@ UniValue ptx_roll(const JSONRPCRequest& request)
     // group_pk is the committed one, so minting a fresh dealer keyset would
     // both overwrite nothing usable and verify against the wrong key.
     const PTXDKGSigningCtx dkg_ctx =
-            PTX_LoadDKGSigningCtx((int)block_height, bls_threshold);
+            PTX_LoadDKGSigningCtx((int)block_height);
+
+    // The threshold that ACTUALLY governs signing.  DKG: quorum-scoped
+    // (dkg_ctx.threshold = majority(formed_size), ODC-036) — the SINGLE source
+    // read at the four sig-collection / reconstruction sites below.  Dealer:
+    // the registry-derived bls_threshold (n/2+1 over all registered nodes).
+    const int signing_threshold = dkg_ctx.active ? dkg_ctx.threshold : bls_threshold;
 
     // ★ FAIL-CLOSED: an ACTIVE quorum exists but its signing material is
     // unusable (group_pk not 48 bytes, or fewer than `threshold` in_qual
@@ -294,7 +299,7 @@ UniValue ptx_roll(const JSONRPCRequest& request)
         PTXCommitRevealRound round;
         round.round_id       = round_id;
         round.round_seed     = round_seed;
-        round.threshold      = bls_threshold;
+        round.threshold      = signing_threshold;
         round.quorum_members = member_ids;
         round.count          = (uint32_t)count;
         round.low            = low;
@@ -344,16 +349,17 @@ UniValue ptx_roll(const JSONRPCRequest& request)
         }
     }
 
-    if ((int)bls_sigs.size() < bls_threshold)
+    if ((int)bls_sigs.size() < signing_threshold)
         throw JSONRPCError(RPC_MISC_ERROR,
             strprintf("PTX: BLS threshold not met: got %d/%d",
-                      (int)bls_sigs.size(), bls_threshold));
+                      (int)bls_sigs.size(), signing_threshold));
 
-    // Lagrange recovery from the first t partial sigs.
+    // Lagrange recovery from the first t partial sigs (signing_threshold = the
+    // quorum's t on the DKG path, the registry threshold on the dealer path).
     std::vector<std::vector<uint8_t>> thresh_sigs(bls_sigs.begin(),
-                                                   bls_sigs.begin() + bls_threshold);
+                                                   bls_sigs.begin() + signing_threshold);
     std::vector<int> thresh_indices(bls_indices.begin(),
-                                    bls_indices.begin() + bls_threshold);
+                                    bls_indices.begin() + signing_threshold);
 
     uint8_t combined_sig[PTX_SIG_BYTES];
     if (!PTX_BLS_Recover(thresh_indices, thresh_sigs, combined_sig))

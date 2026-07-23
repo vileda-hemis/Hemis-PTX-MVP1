@@ -329,8 +329,7 @@ bool CPTXQuorumStore::GetQuorumRecord(const uint256& quorum_hash, CPTXQuorumReco
 // See the header for the x-basis note and the PROVISIONAL selection rule.
 // ---------------------------------------------------------------------------
 
-PTXDKGSigningCtx PTX_SelectDKGSigningCtx(const std::vector<CPTXQuorumRecord>& active,
-                                         int threshold)
+PTXDKGSigningCtx PTX_SelectDKGSigningCtx(const std::vector<CPTXQuorumRecord>& active)
 {
     PTXDKGSigningCtx ctx;
     if (active.empty())
@@ -355,6 +354,14 @@ PTXDKGSigningCtx PTX_SelectDKGSigningCtx(const std::vector<CPTXQuorumRecord>& ac
 
     ctx.quorum_hash = best->quorum_hash;
 
+    // QUORUM-SCOPED threshold: t = majority(formed_size).  Mirrors
+    // PTX_BLS_Threshold (rpc/ptx.cpp:57, n/2+1) — the DKG ceremony bakes t=6 for
+    // its 11-member quorums (KDD-048).  ODC-036 addendum: this equivalence
+    // (t == n/2+1) is a STOPGAP; KDD-048 pre-documents a t=7-at-n=11 upgrade
+    // where the derivation would silently return 6 for a ceremony that baked 7
+    // — the durable fix persists t in the record.
+    ctx.threshold = (int)best->formed_size / 2 + 1;
+
     if (best->group_pk_bytes.size() != 48)
         return ctx;                 // present but unusable -> caller hard-errors
 
@@ -364,7 +371,7 @@ PTXDKGSigningCtx PTX_SelectDKGSigningCtx(const std::vector<CPTXQuorumRecord>& ac
         ctx.member_ids.push_back(m.node_id);
         ctx.share_index[m.node_id] = (int)m.share_index;
     }
-    if ((int)ctx.member_ids.size() < threshold) {
+    if ((int)ctx.member_ids.size() < ctx.threshold) {
         ctx.member_ids.clear();
         ctx.share_index.clear();
         return ctx;                 // present but sub-threshold -> caller hard-errors

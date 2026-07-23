@@ -496,6 +496,7 @@ static CPTXQuorumRecord MakeSigningRecord(const uint256& qh, int formation_heigh
     rec.formation_height = formation_height;
     rec.group_pk_bytes.assign(pk_size, 0xAB);
     rec.state            = static_cast<uint8_t>(PTXQuorumState::ACTIVE);
+    rec.formed_size      = (uint8_t)n;  // t = majority(formed_size) is derived, not passed
     for (int i = 0; i < n; i++) {
         PTXQuorumMemberRecord m;
         m.node_id     = "gm" + std::to_string(i) + ":8080";
@@ -511,13 +512,15 @@ static uint256 QH(uint8_t b) { std::vector<unsigned char> v(32, b); return uint2
 // S0 — the x-basis pin: emitted x must be 1-based (never 0).
 BOOST_AUTO_TEST_CASE(S0_SigningCtx_ShareIndexIsOneBasedNeverZero)
 {
-    auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 11)}, 6);
+    auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 11)});
     BOOST_REQUIRE(ctx.active);
     int min_x = 99;
     for (const auto& kv : ctx.share_index) min_x = std::min(min_x, kv.second);
     BOOST_CHECK_MESSAGE(min_x == 1,
         "share_index must be 1-BASED — Lagrange x=0 is invalid over the scalar field");
     BOOST_CHECK(ctx.share_index.at("gm0:8080") == 1);
+    BOOST_CHECK_MESSAGE(ctx.threshold == 6,
+        "t must be majority(formed_size=11)=6, derived — not passed in");
 }
 
 // (a) selects the highest formation_height among ACTIVE quorums.
@@ -527,7 +530,7 @@ BOOST_AUTO_TEST_CASE(Sa_SigningCtx_SelectsHighestFormationHeight)
         MakeSigningRecord(QH(0x11), 960,  11, 11),
         MakeSigningRecord(QH(0x22), 1040, 11, 11),
         MakeSigningRecord(QH(0x33), 880,  11, 11)};
-    auto ctx = PTX_SelectDKGSigningCtx(active, 6);
+    auto ctx = PTX_SelectDKGSigningCtx(active);
     BOOST_REQUIRE(ctx.active);
     BOOST_CHECK_MESSAGE(ctx.quorum_hash == QH(0x22),
         "must select the HIGHEST formation_height (1040)");
@@ -536,7 +539,7 @@ BOOST_AUTO_TEST_CASE(Sa_SigningCtx_SelectsHighestFormationHeight)
 // (b) rejects group_pk != 48 bytes — present but unusable (fail-closed).
 BOOST_AUTO_TEST_CASE(Sb_SigningCtx_RejectsBadGroupPkSize)
 {
-    auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 11, 47)}, 6);
+    auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 11, 47)});
     BOOST_CHECK_MESSAGE(ctx.quorum_present, "an ACTIVE record was supplied");
     BOOST_CHECK_MESSAGE(!ctx.active,
         "group_pk != 48 bytes MUST NOT yield usable signing material");
@@ -545,12 +548,12 @@ BOOST_AUTO_TEST_CASE(Sb_SigningCtx_RejectsBadGroupPkSize)
 // (c) rejects in_qual count < threshold.
 BOOST_AUTO_TEST_CASE(Sc_SigningCtx_RejectsSubThresholdInQual)
 {
-    auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 5)}, 6);
+    auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 5)});
     BOOST_CHECK_MESSAGE(ctx.quorum_present, "an ACTIVE record was supplied");
     BOOST_CHECK_MESSAGE(!ctx.active,
         "in_qual (5) < threshold (6) MUST NOT yield usable signing material");
     // and 6 in_qual at threshold 6 IS usable (boundary, the other side).
-    auto ok = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 6)}, 6);
+    auto ok = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 6)});
     BOOST_CHECK(ok.active);
     BOOST_CHECK_EQUAL((int)ok.member_ids.size(), 6);
 }
@@ -562,8 +565,8 @@ BOOST_AUTO_TEST_CASE(Sd_SigningCtx_EqualHeightTiebreakLowestQuorumHash)
                                     MakeSigningRecord(QH(0x22), 1000, 11, 11)};
     std::vector<CPTXQuorumRecord> b{MakeSigningRecord(QH(0x22), 1000, 11, 11),
                                     MakeSigningRecord(QH(0x55), 1000, 11, 11)};
-    auto ca = PTX_SelectDKGSigningCtx(a, 6);
-    auto cb = PTX_SelectDKGSigningCtx(b, 6);
+    auto ca = PTX_SelectDKGSigningCtx(a);
+    auto cb = PTX_SelectDKGSigningCtx(b);
     BOOST_REQUIRE(ca.active && cb.active);
     BOOST_CHECK_MESSAGE(ca.quorum_hash == QH(0x22) && cb.quorum_hash == QH(0x22),
         "equal formation_height MUST break to the LOWEST quorum_hash, "
@@ -574,13 +577,64 @@ BOOST_AUTO_TEST_CASE(Sd_SigningCtx_EqualHeightTiebreakLowestQuorumHash)
 //     from no-quorum, so the caller can hard-error instead of using the dealer.
 BOOST_AUTO_TEST_CASE(Se_SigningCtx_FailClosedDistinguishesPresentFromAbsent)
 {
-    auto none = PTX_SelectDKGSigningCtx({}, 6);
+    auto none = PTX_SelectDKGSigningCtx({});
     BOOST_CHECK_MESSAGE(!none.quorum_present && !none.active,
         "no ACTIVE quorum -> dealer fallback is legitimate");
-    auto bad = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 2)}, 6);
+    auto bad = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 2)});
     BOOST_CHECK_MESSAGE(bad.quorum_present && !bad.active,
         "ACTIVE quorum present but unusable MUST be distinguishable from absent "
         "(the caller hard-errors; falling back to the dealer would be fail-open)");
+}
+
+// ---------------------------------------------------------------------------
+// ODC-036 — the threshold is QUORUM-SCOPED (derived from formed_size), and the
+// coordinator's node-registry size CANNOT influence it.  These pin the
+// DERIVATION, which the hand-passed-threshold tests never exercised (KDD-068).
+// With the parameter GONE, the test literally cannot pass a registry size — the
+// call takes only the active records, so registry-independence is structural.
+// ---------------------------------------------------------------------------
+
+// St1 — t derived from formed_size, registry-independent by construction.
+BOOST_AUTO_TEST_CASE(St1_SigningCtx_ThresholdDerivedFromFormedSizeNotRegistry)
+{
+    // formed_size 11 -> t=6, regardless of how many nodes exist anywhere.
+    auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 9)});
+    BOOST_REQUIRE(ctx.active);
+    BOOST_CHECK_MESSAGE(ctx.threshold == 6,
+        "t = majority(formed_size=11) = 6 — NOT the 22-node registry's 12 (ODC-036)");
+    // 9 in_qual >= t=6 -> usable (the exact fc8e0f0d live case that hard-errored
+    // under the old registry-derived threshold of 12).
+    BOOST_CHECK_EQUAL((int)ctx.member_ids.size(), 9);
+}
+
+// St2 — threshold tracks formed_size.
+BOOST_AUTO_TEST_CASE(St2_SigningCtx_ThresholdTracksFormedSize)
+{
+    struct { int n, t; } cases[] = {{7,4},{11,6},{15,8}};
+    for (auto& c : cases) {
+        auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x22), 100, c.n, c.n)});
+        BOOST_REQUIRE(ctx.active);
+        BOOST_CHECK_MESSAGE(ctx.threshold == c.t,
+            "t = majority(formed_size) must track formed_size");
+    }
+}
+
+// St3 — in_qual == t exactly is USABLE (the live 57e7c7b4 case: formed 11, 6 in_qual).
+BOOST_AUTO_TEST_CASE(St3_SigningCtx_InQualEqualsThresholdIsUsable)
+{
+    auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x33), 100, 11, 6)});
+    BOOST_REQUIRE_EQUAL(ctx.threshold, 6);
+    BOOST_CHECK_MESSAGE(ctx.active && (int)ctx.member_ids.size() == 6,
+        "in_qual == t (6) MUST be usable — no off-by-one at the boundary");
+}
+
+// St4 — in_qual == t-1 is NOT usable, and quorum_present is still set (fail-closed).
+BOOST_AUTO_TEST_CASE(St4_SigningCtx_InQualBelowThresholdFailsClosed)
+{
+    auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x44), 100, 11, 5)});
+    BOOST_REQUIRE_EQUAL(ctx.threshold, 6);
+    BOOST_CHECK_MESSAGE(ctx.quorum_present && !ctx.active,
+        "in_qual == t-1 (5<6) MUST be unusable with quorum_present set (fail-closed)");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
