@@ -1912,6 +1912,8 @@ semantics), ODC-025 (cadence N, open).
 
 ## Appendix: Register cross-reference
 
+*Program status / roadmap (to first testnet), including live fleet-state snapshots and pre-testnet blockers, lives in the tracked `doc/ptx/PTX_ROADMAP.md`. This register tracks decisions; the roadmap tracks status.*
+
 *Register scope (added 2026-07-23): this cross-reference covers the DKG / W-series and begins at **KDD-033 / ODC-021**. Lower numbers (KDD-001–032, ODC-001–020) are Phase-1/2 decisions and are **not** recorded here — they live in the tracked `doc/ptx/ptxbea-*.md` docs and in in-source `KDD-0xx` comments. (The append-only working standup `PTX_LE_STANDUP.md` is **not** tracked in this repo and does not travel with a clone.) Rows below marked "back-filled 2026-07-23" record earlier decisions whose register rows were owed; no prior row was edited (append-only).*
 
 | KDD | Title | §| Status |
