@@ -361,15 +361,19 @@ BOOST_AUTO_TEST_CASE(P5_EndToEnd_SigningPathWorks)
 //
 // THE INDEX-SPACE DISCRIMINATION TEST (the RED twin of the case above).
 //
-// Two index spaces exist: the trusted dealer assigns Lagrange x by
-// ALPHABETICAL node_id order (PTX_BLS_Init, ptx_bls.cpp:41-45); the DKG
-// evaluates f(share_index) with share_index in CalculateQuorum SCORE order
-// (KDD-052; PTX_DKG_InitSession ptx_dkg.cpp:261 -> GenerateLocalContrib :318).
-// Interpolating DKG shares at alphabetical x's produces wrong Lagrange
-// coefficients and a signature that MUST NOT verify.
+// SEAM-CLOSED REGRESSION (post-KDD-069). The alphabetical index basis was the
+// retired trusted dealer's: it assigned Lagrange x by ALPHABETICAL node_id
+// order (the removed PTX_BLS_Init). The DKG evaluates f(share_index) with
+// share_index in CalculateQuorum SCORE order (KDD-052; PTX_DKG_InitSession
+// ptx_dkg.cpp:261 -> GenerateLocalContrib :318). Interpolating DKG shares at
+// alphabetical x's produces wrong Lagrange coefficients and a signature that
+// MUST NOT verify. With the dealer retired (KDD-069) the alphabetical basis no
+// longer exists in production — the index-space seam is STRUCTURALLY IMPOSSIBLE,
+// not merely reconciled; this test reconstructs the dead basis in-test purely to
+// document why it does not verify.
 //
-// GREEN: score-order share_index  -> verifies against the DKG group_pk.
-// RED:   alphabetical positions   -> does NOT verify.
+// GREEN: score-order share_index                 -> verifies against the DKG group_pk.
+// RED:   alphabetical (retired dealer's basis)    -> does NOT verify.
 //
 // ★★ STRUCTURAL ASSERT (non-negotiable): the two orderings must actually
 // DIFFER for this member set, else the RED leg is vacuous and the test would
@@ -391,8 +395,8 @@ BOOST_AUTO_TEST_CASE(P5_IndexSpace_AlphabeticalFailsScoreOrderVerifies)
         test_msg = uint256(buf);
     }
 
-    // The dealer's convention, reconstructed over the SAME member set:
-    // node_ids sorted alphabetically, 1-indexed position (ptx_bls.cpp:41-45).
+    // The retired dealer's convention (KDD-069), reconstructed in-test over the
+    // SAME member set: node_ids sorted alphabetically, 1-indexed position.
     std::vector<std::string> sorted_ids;
     for (const auto& m : sessions[0].members) sorted_ids.push_back(m.node_id);
     std::sort(sorted_ids.begin(), sorted_ids.end());
