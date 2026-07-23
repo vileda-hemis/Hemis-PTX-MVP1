@@ -855,6 +855,34 @@ close-out, per §9.9's anticipated split).
 
 ---
 
+### §9.13 Fleet quorum saturation — no formation possible until disband exists (ODC-034)
+
+**Open — roadmap dependency, not a footnote.** KDD-040 excludes every member of every
+ACTIVE quorum from the formation pool. With N=22 GMs and two ACTIVE quorums of 11, the
+pool is empty and **no further formation can occur**: `PTX_Formation_SelectAtAnchor`
+takes its deterministic pool<11 skip at every boundary. Observed live on the W2 fleet at
+boundaries h1280/h1360/h1440 (`PTX formation: pool below threshold at anchor … —
+deterministic skip`), with both quorums ACTIVE (fh=960 mined h987; fh=1040 mined h1067).
+
+This **blocks every downstream gate that requires a fresh ceremony**, not merely rotation
+work: the fleet cannot form a new quorum at all until a disband path exists.
+
+**Not a first.** The same saturation occurred in the SG-1a era — quorum #2 was mined at
+h518 against the exact complement set ("exclusion EXACT (22/11/11, complement, empty
+intersection)") — and the remedy used then was a **bank-restore to a clean pool**. So it
+is a recurring operational condition with a known stopgap, which is why it has not
+previously been registered; it is registered now because the stopgap is not a fix.
+
+**Resolve with:** W2.4 disband/top-up (the real fix — returns members to the pool).
+Interim: bank-restore. Raising N buys headroom (⌊N/11⌋ concurrent quorums) but does not
+remove the terminal condition.
+
+**Raised:** 2026-07-23 (SG-3 first sub-gate, observed live on the W2 fleet).
+
+**ODC:** ODC-034
+
+---
+
 ## §10 Scale Context
 
 **Day-1 mainnet target:** 35–40 quorums, approximately 385–440 GMs (all registered GMs
@@ -1878,3 +1906,6 @@ semantics), ODC-025 (cadence N, open).
 | ODC-031 | V1–V4 anchoring-chain coverage not unit-testable in test_ptx; exercised via Package 3 wiring on a real chain. COMPLETE (C6/C7): V1, V2, V3-PREDICATE, V4, F-5, populate-refusal. F-6 DISCHARGED at W2.1 (C0 connect-valid substrate; accept path end-to-end ×2). STILL OWED, mechanically unblocked, bound W2.2: V3-REORG-TRANSITION, C3-INVOCATION, F-9. C3-INVOCATION not unit-covered (FA-2b) | §9.10 | Partially closed (C6/C7 2026-07-04; F-6 discharged 2026-07-08) |
 | ODC-032 | Can TestChainSetup run in test_ptx (the fixture block-mining hang; runtime face of umbrella rot); if resolved the anchoring checks could move to unit coverage, but the ODC-031 W2.2 remainder binding stands (ODC-031 partially closed) | §9.11 | Open (deferred) |
 | ODC-033 | PTXDKG staleness/max-age bound — split from ODC-030 clause 1; no max-age on formation-anchor age (stale-anchor acceptance is the residual exposure; duplicate/conflict arms now covered by ODC-030 closure); constant + legality condition come from W2.2/W2.3 cadence design | §9.12 | Open (bound W2.2/W2.3) |
+| KDD-066 | DKG signing-quorum selection (PROVISIONAL) — coordinator picks the ACTIVE quorum with the highest formation_height, ties broken by lowest quorum_hash lexicographically. Deterministic, but a de facto multi-quorum selection policy: it does NOT implement the registered N>1 design (deterministic shuffle over H(anchor_block_hash \|\| game_id \|\| roll_index), chain-determined and ungrindable). Coordinator recovery side only — NO consensus surface. Marked provisional in-source at the selection site (ptx_quorum_store.h / PTX_SelectDKGSigningCtx) | §21 | Provisional (2026-07-23, SG-3 first sub-gate; owed to W2.1) |
+| KDD-067 | sk_share clear/rotate path — PTX_BLS_SetSkShare is refuse-unless-empty (§C1 replay guard, correct as replay protection), and PTX_DKG_StoreSkShare routes through it, so ClosePhase5 turns a refused overwrite into phase=ABORTED. Consequence: **a member that completes one ceremony burns out permanently** — any later re-selection aborts it at FINALIZE. Unit-demonstrated (P5_ReSelection_SecondStoreRefusedAborts). NOT an SG-3 blocker (SG-3 signs with an existing quorum, no re-selection). A legitimate re-selection must clear the prior share first | §23 | Open (owed W2.3 rotation / W2.4 disband-top-up) |
+| ODC-034 | Fleet quorum saturation — 22 GMs with two ACTIVE quorums exhausts the KDD-040 pool; no formation possible until a disband path exists. Blocks every downstream gate needing a fresh ceremony. Recurring (also SG-1a, quorum #2 h518); interim remedy bank-restore | §9.13 | Open (bound W2.4) |

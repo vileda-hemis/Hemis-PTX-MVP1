@@ -323,3 +323,54 @@ bool CPTXQuorumStore::GetQuorumRecord(const uint256& quorum_hash, CPTXQuorumReco
     ret = rec;
     return true;
 }
+
+// ---------------------------------------------------------------------------
+// PTX_SelectDKGSigningCtx (SG-3) — pure selection of DKG signing material.
+// See the header for the x-basis note and the PROVISIONAL selection rule.
+// ---------------------------------------------------------------------------
+
+PTXDKGSigningCtx PTX_SelectDKGSigningCtx(const std::vector<CPTXQuorumRecord>& active,
+                                         int threshold)
+{
+    PTXDKGSigningCtx ctx;
+    if (active.empty())
+        return ctx;                 // no quorum at all -> legitimate dealer fallback
+
+    ctx.quorum_present = true;      // from here, a load failure is FAIL-CLOSED
+
+    // PROVISIONAL selection rule (KDD-066, owed to W2.1 — see header): highest
+    // formation_height; ties broken by LOWEST quorum_hash lexicographically so
+    // the choice is deterministic across nodes rather than iteration-ordered.
+    const CPTXQuorumRecord* best = nullptr;
+    for (const auto& rec : active) {
+        if (best == nullptr ||
+            rec.formation_height > best->formation_height ||
+            (rec.formation_height == best->formation_height &&
+             rec.quorum_hash < best->quorum_hash)) {
+            best = &rec;
+        }
+    }
+    if (best == nullptr)
+        return ctx;
+
+    ctx.quorum_hash = best->quorum_hash;
+
+    if (best->group_pk_bytes.size() != 48)
+        return ctx;                 // present but unusable -> caller hard-errors
+
+    for (const auto& m : best->members) {
+        if (!m.in_qual) continue;   // only committed effective-QUAL members hold usable shares
+        if (m.share_index == 0) continue; // 1-based by construction; 0 means unset
+        ctx.member_ids.push_back(m.node_id);
+        ctx.share_index[m.node_id] = (int)m.share_index;
+    }
+    if ((int)ctx.member_ids.size() < threshold) {
+        ctx.member_ids.clear();
+        ctx.share_index.clear();
+        return ctx;                 // present but sub-threshold -> caller hard-errors
+    }
+
+    ctx.group_pk = best->group_pk_bytes;
+    ctx.active   = true;
+    return ctx;
+}

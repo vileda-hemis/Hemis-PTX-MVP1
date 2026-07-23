@@ -28,6 +28,7 @@
 #include "test/test_Hemis.h"
 #include "ptx/ptx_formation.h"
 #include "ptx/ptx_dkg.h"
+#include "ptx/ptx_quorum_store.h"
 #include "evo/deterministicgms.h"
 
 #include "bls/bls_wrapper.h"
@@ -471,6 +472,115 @@ BOOST_AUTO_TEST_CASE(sg1b_schedule_determinism)
             BOOST_CHECK(PTX_Formation_IsBoundary(h, p) == first[(size_t)h]);
         BOOST_CHECK(PTX_Formation_GetAnchor(tip, p) == anchorFirst);
     }
+}
+
+
+// ---------------------------------------------------------------------------
+// SG-3 — PTX_SelectDKGSigningCtx loader coverage.
+//
+// x-basis pinned: PTXQuorumMemberRecord.share_index is 1-BASED score-order
+// rank (ptx_quorum_store.cpp:109, `(uint8_t)(i + 1)`), the same basis the DKG
+// evaluated at (ptx_dkg.cpp:261 -> :318).  Lagrange x=0 is invalid over the
+// scalar field, so a 0-based record would need +1 — it is NOT 0-based, and
+// S0 below pins that so a future change to the assignment breaks here.
+// ---------------------------------------------------------------------------
+
+namespace {
+// Build an ACTIVE record: n members, first `qual` marked in_qual, share_index
+// 1-based score order (mirrors the persist site).
+static CPTXQuorumRecord MakeSigningRecord(const uint256& qh, int formation_height,
+                                          int n, int qual, size_t pk_size = 48)
+{
+    CPTXQuorumRecord rec;
+    rec.quorum_hash      = qh;
+    rec.formation_height = formation_height;
+    rec.group_pk_bytes.assign(pk_size, 0xAB);
+    rec.state            = static_cast<uint8_t>(PTXQuorumState::ACTIVE);
+    for (int i = 0; i < n; i++) {
+        PTXQuorumMemberRecord m;
+        m.node_id     = "gm" + std::to_string(i) + ":8080";
+        m.share_index = (uint8_t)(i + 1);   // 1-based, as persisted
+        m.in_qual     = (i < qual);
+        rec.members.push_back(m);
+    }
+    return rec;
+}
+static uint256 QH(uint8_t b) { std::vector<unsigned char> v(32, b); return uint256(v); }
+} // namespace
+
+// S0 — the x-basis pin: emitted x must be 1-based (never 0).
+BOOST_AUTO_TEST_CASE(S0_SigningCtx_ShareIndexIsOneBasedNeverZero)
+{
+    auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 11)}, 6);
+    BOOST_REQUIRE(ctx.active);
+    int min_x = 99;
+    for (const auto& kv : ctx.share_index) min_x = std::min(min_x, kv.second);
+    BOOST_CHECK_MESSAGE(min_x == 1,
+        "share_index must be 1-BASED — Lagrange x=0 is invalid over the scalar field");
+    BOOST_CHECK(ctx.share_index.at("gm0:8080") == 1);
+}
+
+// (a) selects the highest formation_height among ACTIVE quorums.
+BOOST_AUTO_TEST_CASE(Sa_SigningCtx_SelectsHighestFormationHeight)
+{
+    std::vector<CPTXQuorumRecord> active{
+        MakeSigningRecord(QH(0x11), 960,  11, 11),
+        MakeSigningRecord(QH(0x22), 1040, 11, 11),
+        MakeSigningRecord(QH(0x33), 880,  11, 11)};
+    auto ctx = PTX_SelectDKGSigningCtx(active, 6);
+    BOOST_REQUIRE(ctx.active);
+    BOOST_CHECK_MESSAGE(ctx.quorum_hash == QH(0x22),
+        "must select the HIGHEST formation_height (1040)");
+}
+
+// (b) rejects group_pk != 48 bytes — present but unusable (fail-closed).
+BOOST_AUTO_TEST_CASE(Sb_SigningCtx_RejectsBadGroupPkSize)
+{
+    auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 11, 47)}, 6);
+    BOOST_CHECK_MESSAGE(ctx.quorum_present, "an ACTIVE record was supplied");
+    BOOST_CHECK_MESSAGE(!ctx.active,
+        "group_pk != 48 bytes MUST NOT yield usable signing material");
+}
+
+// (c) rejects in_qual count < threshold.
+BOOST_AUTO_TEST_CASE(Sc_SigningCtx_RejectsSubThresholdInQual)
+{
+    auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 5)}, 6);
+    BOOST_CHECK_MESSAGE(ctx.quorum_present, "an ACTIVE record was supplied");
+    BOOST_CHECK_MESSAGE(!ctx.active,
+        "in_qual (5) < threshold (6) MUST NOT yield usable signing material");
+    // and 6 in_qual at threshold 6 IS usable (boundary, the other side).
+    auto ok = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 6)}, 6);
+    BOOST_CHECK(ok.active);
+    BOOST_CHECK_EQUAL((int)ok.member_ids.size(), 6);
+}
+
+// (d) equal formation_height tiebreak — DEFINED: lowest quorum_hash wins.
+BOOST_AUTO_TEST_CASE(Sd_SigningCtx_EqualHeightTiebreakLowestQuorumHash)
+{
+    std::vector<CPTXQuorumRecord> a{MakeSigningRecord(QH(0x55), 1000, 11, 11),
+                                    MakeSigningRecord(QH(0x22), 1000, 11, 11)};
+    std::vector<CPTXQuorumRecord> b{MakeSigningRecord(QH(0x22), 1000, 11, 11),
+                                    MakeSigningRecord(QH(0x55), 1000, 11, 11)};
+    auto ca = PTX_SelectDKGSigningCtx(a, 6);
+    auto cb = PTX_SelectDKGSigningCtx(b, 6);
+    BOOST_REQUIRE(ca.active && cb.active);
+    BOOST_CHECK_MESSAGE(ca.quorum_hash == QH(0x22) && cb.quorum_hash == QH(0x22),
+        "equal formation_height MUST break to the LOWEST quorum_hash, "
+        "independent of input order (no iteration-order dependence)");
+}
+
+// (e) fail-closed signalling: quorum present + unusable is distinguishable
+//     from no-quorum, so the caller can hard-error instead of using the dealer.
+BOOST_AUTO_TEST_CASE(Se_SigningCtx_FailClosedDistinguishesPresentFromAbsent)
+{
+    auto none = PTX_SelectDKGSigningCtx({}, 6);
+    BOOST_CHECK_MESSAGE(!none.quorum_present && !none.active,
+        "no ACTIVE quorum -> dealer fallback is legitimate");
+    auto bad = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 2)}, 6);
+    BOOST_CHECK_MESSAGE(bad.quorum_present && !bad.active,
+        "ACTIVE quorum present but unusable MUST be distinguishable from absent "
+        "(the caller hard-errors; falling back to the dealer would be fail-open)");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

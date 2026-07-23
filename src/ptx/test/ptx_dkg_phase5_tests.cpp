@@ -357,6 +357,136 @@ BOOST_AUTO_TEST_CASE(P5_EndToEnd_SigningPathWorks)
 }
 
 // ---------------------------------------------------------------------------
+// P5_IndexSpace_AlphabeticalFailsScoreOrderVerifies   — SG-3 FIRST SUB-GATE
+//
+// THE INDEX-SPACE DISCRIMINATION TEST (the RED twin of the case above).
+//
+// Two index spaces exist: the trusted dealer assigns Lagrange x by
+// ALPHABETICAL node_id order (PTX_BLS_Init, ptx_bls.cpp:41-45); the DKG
+// evaluates f(share_index) with share_index in CalculateQuorum SCORE order
+// (KDD-052; PTX_DKG_InitSession ptx_dkg.cpp:261 -> GenerateLocalContrib :318).
+// Interpolating DKG shares at alphabetical x's produces wrong Lagrange
+// coefficients and a signature that MUST NOT verify.
+//
+// GREEN: score-order share_index  -> verifies against the DKG group_pk.
+// RED:   alphabetical positions   -> does NOT verify.
+//
+// ★★ STRUCTURAL ASSERT (non-negotiable): the two orderings must actually
+// DIFFER for this member set, else the RED leg is vacuous and the test would
+// silently prove nothing if a future member set happened to coincide.
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(P5_IndexSpace_AlphabeticalFailsScoreOrderVerifies)
+{
+    std::map<uint256, CBLSSecretKey> key_map;
+    std::vector<PTXDKGSession> sessions;
+    AdvanceToFinalize(key_map, sessions);
+
+    uint8_t group_pk_bytes[48];
+    blst_p1_affine_compress(group_pk_bytes, &sessions[0].group_pk);
+
+    uint256 test_msg;
+    {
+        std::vector<unsigned char> buf(32, 0xCD);
+        test_msg = uint256(buf);
+    }
+
+    // The dealer's convention, reconstructed over the SAME member set:
+    // node_ids sorted alphabetically, 1-indexed position (ptx_bls.cpp:41-45).
+    std::vector<std::string> sorted_ids;
+    for (const auto& m : sessions[0].members) sorted_ids.push_back(m.node_id);
+    std::sort(sorted_ids.begin(), sorted_ids.end());
+    std::map<std::string, int> alpha_index;
+    for (size_t i = 0; i < sorted_ids.size(); i++)
+        alpha_index[sorted_ids[i]] = (int)i + 1;
+
+    const int t = 6;
+    std::vector<int> score_indices;
+    std::vector<int> alpha_indices;
+    std::vector<std::vector<uint8_t>> partial_sigs;
+
+    for (int i = 0; i < t; i++) {
+        const PTXDKGMember& me = sessions[i].members[sessions[i].my_idx];
+        score_indices.push_back(me.share_index);
+        alpha_indices.push_back(alpha_index.at(me.node_id));
+
+        uint8_t sk_bytes[32];
+        blst_bendian_from_scalar(sk_bytes, &sessions[i].sk_share_i);
+
+        uint8_t sig_buf[PTX_SIG_BYTES];
+        BOOST_REQUIRE(PTX_BLS_PartialSign(sk_bytes, test_msg, sig_buf));
+        partial_sigs.push_back(std::vector<uint8_t>(sig_buf, sig_buf + PTX_SIG_BYTES));
+    }
+
+    // ★★ THE STRUCTURAL ASSERT — the test can never go vacuous.
+    BOOST_REQUIRE_MESSAGE(
+        score_indices != alpha_indices,
+        "orderings coincide for this quorum — test cannot discriminate, pick another "
+        "member set (the alphabetical RED leg would be vacuous)");
+
+    // GREEN — the x the shares were generated at.
+    uint8_t sig_score[PTX_SIG_BYTES];
+    BOOST_REQUIRE(PTX_BLS_Recover(score_indices, partial_sigs, sig_score));
+    BOOST_CHECK_MESSAGE(PTX_BLS_Verify(group_pk_bytes, test_msg, sig_score),
+                        "score-order share_index MUST verify against the DKG group_pk");
+
+    // RED — identical partial sigs, dealer's alphabetical x's.
+    uint8_t sig_alpha[PTX_SIG_BYTES];
+    BOOST_REQUIRE(PTX_BLS_Recover(alpha_indices, partial_sigs, sig_alpha));
+    BOOST_CHECK_MESSAGE(!PTX_BLS_Verify(group_pk_bytes, test_msg, sig_alpha),
+                        "alphabetical ordering MUST NOT verify — the index spaces are "
+                        "not interchangeable (SG-3 seam)");
+
+    // The two recoveries must also differ byte-wise (wrong lambdas -> wrong point).
+    BOOST_CHECK(memcmp(sig_score, sig_alpha, PTX_SIG_BYTES) != 0);
+}
+
+// ---------------------------------------------------------------------------
+// P5_ReSelection_SecondStoreRefusedAborts   — the 2320 MECHANISM
+//
+// §C1 (KDD-057) makes the sk-share slot REFUSE-UNLESS-EMPTY
+// (PTX_BLS_SetSkShare, ptx_bls.h:74-79).  PTX_DKG_StoreSkShare routes through
+// it (ptx_dkg.cpp:1338) and ClosePhase5 turns a refusal into phase = ABORTED
+// (ptx_dkg.h:729-32).  So a member that ALREADY holds a share and is
+// re-selected into a new quorum aborts at FINALIZE — it cannot complete.
+//
+// This is the predicted mechanism of the h2320 warm-mesh sub-threshold: h2240
+// converged (shares stored) but never LANDED, so it never became ACTIVE, so
+// KDD-040 exclusion did not apply, so the SAME 11 were re-selected at 2320 and
+// every one of them refused.  (Post-KDD-058-A quorums land -> ACTIVE ->
+// excluded -> fresh membership, which is why no refusal has been seen since.)
+//
+// Deterministic here; on a live fleet it is currently unforceable — with two
+// ACTIVE quorums the pool is empty and formation correctly deterministic-skips.
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(P5_ReSelection_SecondStoreRefusedAborts)
+{
+    std::map<uint256, CBLSSecretKey> key_map;
+    std::vector<PTXDKGSession> sessions;
+    AdvanceToFinalize(key_map, sessions);
+
+    // First close on an EMPTY slot: stores, reaches DONE.
+    PTX_TEST_ClearSkShareSlot();
+    CMutableTransaction tx_first;
+    BOOST_REQUIRE(PTX_DKG_ClosePhase5(sessions[0], 1000, tx_first));
+    BOOST_REQUIRE(sessions[0].phase == PTXDKGPhase::DONE);
+    BOOST_REQUIRE(g_ptx_my_bls_sk_set);
+
+    // Second close WITHOUT clearing — models the same node re-selected into a
+    // new quorum while still holding its previous share.  §C1 refuses the
+    // overwrite, so the ceremony ABORTS at FINALIZE.
+    CMutableTransaction tx_second;
+    BOOST_CHECK_MESSAGE(!PTX_DKG_ClosePhase5(sessions[1], 2000, tx_second),
+                        "a re-selected member holding a prior share MUST fail to close "
+                        "(sk_share is refuse-unless-empty, §C1)");
+    BOOST_CHECK_MESSAGE(sessions[1].phase == PTXDKGPhase::ABORTED,
+                        "refused StoreSkShare MUST drive phase = ABORTED (the 2320 mechanism)");
+
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// ---------------------------------------------------------------------------
 // P5_CheckPTXDKGTx_AcceptValidPayload
 //
 // A properly constructed PTXDKG transaction passes CheckPTXDKGTx.

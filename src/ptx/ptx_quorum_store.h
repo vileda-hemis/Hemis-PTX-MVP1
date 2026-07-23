@@ -224,4 +224,41 @@ private:
 
 extern std::unique_ptr<CPTXQuorumStore> ptxQuorumStore;
 
+// ---------------------------------------------------------------------------
+// SG-3 — DKG signing material selection (the index-space reconciliation).
+//
+// PURE: records in -> ctx out (zero globals; fully unit-testable — the
+// PTX_Formation_BuildPool convention).  The caller supplies the ACTIVE set.
+//
+// x = PTXQuorumMemberRecord.share_index, which is 1-BASED score-order rank
+// (assigned ptx_quorum_store.cpp:109 as i+1 over the canonical selection) —
+// the SAME basis the DKG evaluated its polynomial at (ptx_dkg.cpp:261 ->
+// :318).  Gaps are preserved: the record holds the full selected-11 and
+// in_qual marks the committed survivors, so an in_qual subset carries
+// non-contiguous x's — exactly the original evaluation points Lagrange needs.
+// ---------------------------------------------------------------------------
+
+struct PTXDKGSigningCtx {
+    // An ACTIVE quorum record existed in the supplied set (regardless of
+    // usability).  Load failure with this TRUE is a HARD ERROR for the caller:
+    // it must NOT fall through to the trusted-dealer path (fail-closed).
+    bool                      quorum_present{false};
+    bool                      active{false};   // usable signing material below
+    uint256                   quorum_hash;
+    std::vector<std::string>  member_ids;      // in_qual (committed effective-QUAL) only
+    std::map<std::string,int> share_index;     // node_id -> 1-based score-order x
+    std::vector<uint8_t>      group_pk;        // 48 compressed bytes, as committed
+};
+
+// Select the signing quorum from an ACTIVE set.
+//
+// SELECTION RULE (KDD-066, PROVISIONAL — owed to W2.1): highest formation_height, ties
+// broken by LOWEST quorum_hash lexicographically.  Deterministic, but this is
+// a de facto multi-quorum selection policy and it does NOT implement the
+// registered N>1 design (deterministic shuffle over
+// H(anchor_block_hash || game_id || roll_index), chain-determined and
+// ungrindable).  No consensus surface today — coordinator recovery side only.
+PTXDKGSigningCtx PTX_SelectDKGSigningCtx(const std::vector<CPTXQuorumRecord>& active,
+                                         int threshold);
+
 #endif // PTX_QUORUM_STORE_H
