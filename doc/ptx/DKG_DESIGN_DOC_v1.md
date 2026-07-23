@@ -883,6 +883,50 @@ remove the terminal condition.
 
 ---
 
+### §9.14 Fleet binary divergence — DO NOT DEPLOY the SG-3 image to GMs (ODC-038)
+
+**Open — a deploy footgun; blocks GM deploy until W2.4.** As of 2026-07-23 the two
+COORDINATOR nodes (172.31.0.33 / .34) run `hemis-ptx-w2:0101a44-dbg` (the SG-3
+signing repoint + threshold fix), while ALL 22 GMs run the earlier
+`hemis-ptx-w2:8719b7c-dbg`. The divergence is INTENTIONAL and CORRECT.
+
+**Why it is intentional.** The SG-3 repoint (commit 0101a44) is COORDINATOR-SIDE
+ONLY: the coordinator reads group_pk and share_index from already-committed
+CPTXQuorumRecord data and interpolates the threshold signature. The GMs' side is
+unchanged — `gm_bls_sign` already signs whatever DKG-produced share sits in
+`g_ptx_my_bls_sk_bytes`. The GMs need NOTHING from 0101a44. Deploying it to them
+buys nothing and risks everything below.
+
+**★ The destruction chain (why a routine GM deploy is catastrophic here).**
+Deploying a new image to a GM restarts its daemon. In sequence:
+  1. A GM restart CLEARS its in-memory sk_share — `g_ptx_my_bls_sk_bytes` is a
+     process-lifetime-only global with no persistence (ODC-035).
+  2. Both quorums are ACTIVE on-chain — fc8e0f0d (fh=1040) and 57e7c7b4 (fh=960)
+     — and their 22 members are exactly the whole fleet.
+  3. KDD-040 (single-quorum-per-GM) therefore excludes every GM from the
+     formation pool, so a fleet whose GMs lost their shares CANNOT reform the
+     quorums.
+  4. No disband path exists to return members to the pool (ODC-034), so the
+     block does not clear on its own.
+  => A fleet-wide GM deploy/restart DESTROYS BOTH QUORUMS PERMANENTLY. The only
+     recovery is a bank-restore to a pre-h960 snapshot — which also discards
+     every result landed after that height.
+
+**When a GM deploy becomes safe.** Only (a) after W2.4 disband exists (members
+can return to the pool and quorums can reform), or (b) as a DELIBERATE restore
+where losing both quorums is the explicit intent (e.g. a fresh pre-h960 bank).
+A routine "update the fleet to the latest image" is NOT safe until then.
+
+**Resolve with:** W2.4 disband/top-up (removes the KDD-040 reformation block),
+and ODC-035's share persistence (removes the restart-clears-shares hazard) —
+either alone downgrades this from catastrophic to recoverable.
+
+**Raised:** 2026-07-23 (SG-3 gate close).
+
+**ODC:** ODC-038
+
+---
+
 ## §10 Scale Context
 
 **Day-1 mainnet target:** 35–40 quorums, approximately 385–440 GMs (all registered GMs
@@ -1912,4 +1956,5 @@ semantics), ODC-025 (cadence N, open).
 | ODC-035 | DKG share material is PROCESS-LIFETIME ONLY — g_ptx_my_bls_sk_bytes is an in-memory global (ptx_bls.cpp:21) with no load/save path (grep-confirmed). A GM restart silently and irrecoverably drops that member from its quorum while the on-chain CPTXQuorumRecord still lists it in_qual: DURABLE membership, EPHEMERAL key material, NO reconciliation. Consequence: a quorum can fall below threshold with no on-chain or RPC indication. Measured 2026-07-23 pre-SG-3-signing: fc8e0f0d(h1040) 9/9 in_qual live, 57e7c7b4(h960) 6/6 live (both PASS-capable at t=6 — no loss yet, but nothing prevents it). Owed: share persistence, or an on-chain/RPC liveness signal, or both (scope, do not solve here). Cross-ref KDD-067 (its permanence is bounded by this), ODC-034 (bank-restore relies on the same restart-clears-slots mechanism) ; NOTE: SG-3 signing gate (2026-07-23) demonstrated a quorum signing CORRECTLY while carrying this risk — a GM restart would still silently drop a signer; risk unchanged | §22 | Open (owed W2.3/W2.4) |
 | ODC-036 | DKG signing threshold was derived from COORDINATOR REGISTRY SIZE (g_ptx_nodes → n/2+1 = 12 at 22 nodes) instead of QUORUM SCOPE (formed_size 11 → t=6). Wrong on any fleet where registered-nodes != quorum-size; reached FOUR sites (PTX_LoadDKGSigningCtx usability, round.threshold→commit-reveal, the enough-partial-sigs check, and the Lagrange slice). Caught LIVE at the first fleet signing attempt (fail-closed hard-error on the valid 9-in_qual fc8e0f0d); invisible to 271/271 because the unit tests passed threshold in EXPLICITLY. FIXED (2026-07-23): PTX_SelectDKGSigningCtx derives t=majority(formed_size) internally (threshold param deleted, so registry-independence is structural) and returns ctx.threshold — the single source the roll's four sites read; St1-St4 pin the derivation, RED-by-inversion. ★ ADDENDUM (owed): deriving t from formed_size is correct ONLY while t == n/2+1. KDD-048 chose t=6 by WARGAME, not formula, and pre-documents a t=7-at-n=11 upgrade; on that upgrade the derivation silently returns 6 for a ceremony that baked 7, and KDD-048's upgrade semantics let t=6 and t=7 quorums coexist. The derivation is a STOPGAP with a known scheduled break. OWED: persist t in CPTXQuorumRecord at formation — CHEAP (record is nVersion-tagged with the additive `if (nVersion>=2)` pattern; v1 records fall back to the derivation, no reindex) | §21 | Fixed (derivation); persist-t OWED |
 | ODC-037 | GM BANLIST RESIDUE survives daemon restart, chainstate wipe, AND bank-restore (banlist.dat is not touched by any of them). A node that earned bans in a prior episode CANNOT re-integrate after being wiped: it presents as persistent `socket send error Broken pipe` CONNECTION failures, NOT as a ban, because it is rejected before any RPC/log surface makes the cause visible. Reason category: MISBEHAVIOUR (`node misbehaving` = DoS-score-to-threshold, the BUG-020-lineage view-dependent stake-failure path). EVIDENCE (2026-07-23): the original caller 172.31.0.10 banned on 7/22 GMs (gm01/02/05/11/12/16/22 — exactly its addnode targets), reason `node misbehaving`, 24h expiry (created+86400); ban predates the node's post-wipe uptime, so retries do NOT re-earn (rejected at connection, cannot misbehave further) — persistence is banlist.dat survival, not a retry loop. This is WHY the caller-resync failed and caller2/caller3 on fresh IPs (.33/.34) were required. OWED: add banlist clearing (clearbanned / remove banlist.dat, or setban remove for the affected IPs) as an EXPLICIT step in the restore procedure (restore_fleet.sh), so a restored fleet does not silently exclude a wiped-and-rejoining node. ★ AMENDMENT (2026-07-23, append-only): CORRECTION — the ban carries a 24h TTL (banned_until 1784845560, ban_created 1784759160, 86400s span); exclusion is BOUNDED, not permanent — the prior wording ('cannot re-integrate', 'persistence') OVERSTATED it. The DURABLE finding is DIAGNOSTIC OPACITY: for up to 24h a wiped node is rejected BEFORE any RPC or log surface shows a ban, presenting only as broken-pipe connection failure — the cause is invisible from the excluded node. REMEDIES in order of touch: (a) wait out the TTL — zero-touch, no GM contact; (b) setban remove on the affected GMs — live RPC, no restart; (c) clearbanned / remove banlist.dat in restore_fleet.sh — the procedural fix for the restore path. SG-3 CONSEQUENCE (honest): fresh-IP caller2/caller3 were NOT strictly required — waiting ~24h would have restored .10; the fresh nodes were the right call under time pressure and gave a cleaner non-GM coordinator, but the ban was not the blocker it appeared to be | §22 | Open (owed — restore-procedure step) |
+| ODC-038 | ★ FLEET BINARY DIVERGENCE — DO NOT DEPLOY TO GMs. As of 2026-07-23 the coordinators (172.31.0.33/.34) run hemis-ptx-w2:0101a44-dbg while ALL 22 GMs run hemis-ptx-w2:8719b7c-dbg. This is INTENTIONAL: the SG-3 signing repoint (0101a44) is COORDINATOR-SIDE ONLY — group_pk/share_index are read from committed data, the GMs' gm_bls_sign already signs the DKG-stored share, so GMs need nothing from it. ★ HAZARD: a GM restart CLEARS its in-memory sk_share (ODC-035 — process-lifetime only, no persistence). Both quorums (fc8e0f0d fh=1040, 57e7c7b4 fh=960) are ACTIVE, so KDD-040 blocks reformation and NO disband path exists (ODC-034) → a fleet-wide GM deploy/restart DESTROYS BOTH QUORUMS PERMANENTLY, and the only recovery is a bank-restore to a pre-h960 snapshot (losing all landed results after it). SAFE to deploy to GMs ONLY after W2.4 disband exists, or as a DELIBERATE restore where losing both quorums is the intent. A routine 'update the fleet to the latest image' is a footgun here | §22 | Open (blocks GM deploy until W2.4) |
 | KDD-068 | Discipline: a pure function tested with a HAND-PASSED parameter does not cover the call site that COMPUTES it. PTX_SelectDKGSigningCtx passed 271/271 with threshold=6 handed in, while the ptx_roll call site computed the wrong value (ODC-036) — untested because the derivation lived at the caller. Rule: extract the derivation into the pure function and pin it; a parameter the test controls is a parameter the test cannot falsify | §21 | Recorded 2026-07-23 |
