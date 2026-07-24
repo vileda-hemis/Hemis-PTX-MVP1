@@ -47,11 +47,6 @@ void PTX_FanOutReveal(const std::string& round_id,
 
 // --- BLS threshold signing (Phase 2) ---
 
-// Send each GM in member_ids its BLS key share via gm_bls_keyset.
-// Skips nodes that already have a keyset flagged in g_ptx_bls.keyset_sent.
-// cs_ptx_bls must NOT be held during HTTP calls.
-void PTX_FanOutKeySet(const std::vector<std::string>& member_ids);
-
 // Ask each GM in member_ids to sign round_seed via gm_bls_sign.
 // Returns node_id -> 96-byte partial signature for every node that responds.
 // cs_ptx_rounds is NOT held during HTTP calls.

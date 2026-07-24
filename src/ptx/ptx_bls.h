@@ -24,26 +24,9 @@ extern const char* PTX_BLS_DST;
 // Compressed G2 point = 96 bytes. Must match CProbabilisticTxPayload quorum_sig.
 static const int PTX_SIG_BYTES = 96;
 
-// Trusted-dealer DKG state (coordinator side).
-// Coordinator generates the master polynomial f(x) of degree t-1 over Zr.
-// Share for GM at 1-indexed position i = f(i).  Lagrange recovery at x=0
-// yields f(0) = master_sk, whose paired G1 point is group_pk.
-struct PTXBLSState {
-    bool initialized = false;
-    int  n           = 0;   // total GM count
-    int  t           = 0;   // threshold
-    blst_scalar        master_sk;
-    blst_p1_affine     group_pk;
-    std::vector<blst_scalar>    shares;      // shares[i] = f(i+1), 0-indexed
-    std::map<std::string, int>  node_index;  // node_id -> 1-indexed position
-};
-
-extern PTXBLSState     g_ptx_bls_state;
-extern RecursiveMutex  cs_ptx_bls;
-
 // GM-side BLS key share storage. Defined in ptx_bls.cpp; written ONLY through
-// PTX_BLS_SetSkShare (the §C1 guarded setter) from its two write sites:
-// gm_bls_keyset (rpc/ptx.cpp) and PTX_DKG_StoreSkShare (ptx_dkg.cpp). Both under
+// PTX_BLS_SetSkShare (the §C1 guarded setter) from its single write site,
+// PTX_DKG_StoreSkShare (ptx_dkg.cpp), on ceremony completion. Under
 // cs_ptx_my_bls_sk. No site writes these directly (that would bypass the guard).
 extern uint8_t        g_ptx_my_bls_sk_bytes[32];
 extern bool           g_ptx_my_bls_sk_set;
@@ -52,30 +35,16 @@ extern RecursiveMutex cs_ptx_my_bls_sk;
 // blst has no global init requirement — no BLS::Init() needed.
 
 // ---------------------------------------------------------------------------
-// Coordinator-side API
-// ---------------------------------------------------------------------------
-
-// Trusted-dealer DKG: generate master polynomial and per-GM key shares.
-// Call once on ptx_roll() first call (lazy-init, as before).
-// node_ids determines 1-indexed positions (alphabetical sort order).
-bool PTX_BLS_Init(const std::vector<std::string>& node_ids, int threshold);
-
-// Copy the 32-byte big-endian scalar share for node_id into sk_out.
-// Used by PTX_FanOutKeySet to extract the share for a given GM.
-bool PTX_BLS_GetShareBytes(const std::string& node_id, uint8_t sk_out[32]);
-
-// Return the 1-indexed polynomial position for node_id (0 = not found).
-int PTX_BLS_GetNodeIndex(const std::string& node_id);
-
-// ---------------------------------------------------------------------------
 // GM-side API
 // ---------------------------------------------------------------------------
 
-// §C1 replay guard (KDD-057): the SINGLE guarded write path for the GM-side
-// sk-share. Both write sites (gm_bls_keyset RPC, PTX_DKG_StoreSkShare) route
-// through here. refuse-unless-empty: first-set stores; overwrite of an already-
-// set share is REFUSED and err is set. No site may write g_ptx_my_bls_sk_bytes/
-// _set directly. Returns true on store, false (with err) on refusal.
+// §C1 replay guard (KDD-057; rationale updated KDD-069): the SINGLE guarded
+// write path for the GM-side sk-share. Post-069 the only write site is
+// PTX_DKG_StoreSkShare (the gm_bls_keyset RPC path was removed with the dealer);
+// the guard now protects against ceremony replay / double-store, not coordinator
+// hijack. refuse-unless-empty: first-set stores; overwrite of an already-set
+// share is REFUSED and err is set. No site may write g_ptx_my_bls_sk_bytes/_set
+// directly. Returns true on store, false (with err) on refusal.
 bool PTX_BLS_SetSkShare(const uint8_t sk_bytes[32], std::string& err);
 
 // Sign msg with a raw 32-byte blst scalar (the GM's stored share).
@@ -100,8 +69,8 @@ bool PTX_BLS_Recover(
 uint256 PTX_BLS_SigToBeacon(const uint8_t sig[PTX_SIG_BYTES]);
 
 // Verify the combined signature against an explicit group public key.
-// group_pk_bytes: 48-byte compressed G1 (caller extracts from
-//   PTXBLSState.group_pk under cs_ptx_bls lock, releases before calling).
+// group_pk_bytes: 48-byte compressed G1 (caller supplies the committed
+//   group_pk from the ACTIVE quorum's CPTXQuorumRecord).
 // Pure function — reads no global state (KDD-049, 2026-06-03).
 bool PTX_BLS_Verify(const uint8_t group_pk_bytes[48],
                     const uint256& msg,

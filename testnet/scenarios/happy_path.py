@@ -187,19 +187,25 @@ def run_happy_path(runner: ScenarioRunner) -> None:
           f"post-V4_0, 60s blocks enforced ✓")
     runner.checkpoint(f"chain warmed past V4_0 (height {WARM_TARGET})")
 
-    # ── Step 2: submit 5 PTXSESS rolls ───────────────────────────────────
-    print(f"[scenario] === Step 2: submit {N_ROLLS} ptx_roll calls ===")
-    tx_ids = []
-    for i in range(N_ROLLS):
-        result = caller.ptx_roll(1, 1, 100, game_id=f"happy-path-{i+1}", salt=f"0{i}aabbcc")
-        tx_id = result["tx_id"]
-        runner.assert_true(
-            len(tx_id) == 64,
-            f"roll {i+1}: tx_id should be 64-char hex, got {tx_id!r}"
-        )
-        tx_ids.append(tx_id)
-        print(f"[scenario] roll {i+1}: tx_id={tx_id[:16]}... result={result['results']}")
-    runner.checkpoint(f"{N_ROLLS} PTXSESS submitted")
+    # ── Step 2: ptx_roll now REQUIRES an ACTIVE DKG quorum (KDD-069) ──────
+    # The trusted dealer is retired: ptx_roll signs ONLY with an ACTIVE DKG
+    # quorum's committed material. This ptx-bea scenario forms no quorum (and
+    # under ODC-034 cannot on the saturated fleet), so on a dealerless build the
+    # roll hard-errors. Assert that. The E2E remainder (coalesce/payout/lottery)
+    # is unreachable without a signing quorum, so the scenario ends here.
+    # NB: run against a dealer-bearing ptx-bea image (a different branch), the
+    # roll would succeed — this branch's copy documents the dealerless behaviour.
+    print(f"[scenario] === Step 2: ptx_roll must hard-error (dealer retired, KDD-069) ===")
+    try:
+        caller.ptx_roll(1, 1, 100, game_id="happy-path-1", salt="00aabbcc")
+        runner.assert_true(False,
+            "ptx_roll should hard-error post-KDD-069 (no ACTIVE quorum, dealer retired)")
+    except RPCError as e:
+        runner.assert_true("KDD-069" in str(e),
+            f"expected KDD-069 dealer-retired error, got: {e}")
+        print(f"[scenario] ptx_roll correctly hard-errors: {e}")
+    runner.checkpoint("ptx_roll hard-errors post-KDD-069 (no dealer, no quorum)")
+    return
 
     # ── Step 3: wait for PTXCOALESCE ─────────────────────────────────────
     # Previous gate polled pool_balance_sat >= N_ROLLS*fee. This is a transient

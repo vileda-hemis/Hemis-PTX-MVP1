@@ -722,9 +722,10 @@ bool PTX_DKG_ClosePhase4(PTXDKGSession& session);
 // Serializes session.sk_share_i with blst_bendian_from_scalar → 32 bytes.
 // Writes under cs_ptx_my_bls_sk lock.
 //
-// New write site to g_ptx_my_bls_sk_bytes (DKG-produced share).
-// Unconditional overwrite; W1.3 replay-protection guard (standup §C1)
-// MUST cover this site, not only the gm_bls_keyset RPC path.
+// The SINGLE write site to g_ptx_my_bls_sk_bytes (DKG-produced share) post
+// KDD-069. Routes through the §C1 refuse-unless-empty guard (PTX_BLS_SetSkShare),
+// which now protects against ceremony replay / double-store (the gm_bls_keyset
+// RPC path was removed with the trusted dealer).
 //
 // Pre: phase == FINALIZE, sk_share_i computed.
 bool PTX_DKG_StoreSkShare(const PTXDKGSession& session);
@@ -743,12 +744,5 @@ CMutableTransaction PTX_DKG_BuildPTXDKGTx(const PTXDKGSession& session,
 bool PTX_DKG_ClosePhase5(PTXDKGSession& session,
                            int formation_height,
                            CMutableTransaction& ptxdkg_tx_out);
-
-// ---------------------------------------------------------------------------
-// Accessor for the global BLS state singleton.
-// All ceremony code uses this instead of g_ptx_bls_state directly, preparing
-// for the W2.1 per-quorum registry refactor.
-struct PTXBLSState;
-PTXBLSState& PTX_GetBLSState();
 
 #endif // HEMIS_PTX_DKG_H

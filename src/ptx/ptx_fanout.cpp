@@ -256,45 +256,6 @@ void PTX_FanOutReveal(const std::string& round_id,
 }
 
 // ---------------------------------------------------------------------------
-// PTX_FanOutKeySet  (Phase 2 BLS)
-// ---------------------------------------------------------------------------
-
-void PTX_FanOutKeySet(const std::vector<std::string>& member_ids)
-{
-    for (const auto& node_id : member_ids) {
-        // Track keyset_sent in g_ptx_bls_state node_index presence
-        // (re-send if not yet acknowledged this session).
-        {
-            LOCK(cs_ptx_bls);
-            if (g_ptx_bls_state.node_index.count(node_id) == 0) {
-                LogPrintf("PTX: FanOutKeySet: no BLS state for %s\n", node_id);
-                continue;
-            }
-        }
-
-        uint8_t sk_bytes[32];
-        if (!PTX_BLS_GetShareBytes(node_id, sk_bytes)) {
-            LogPrintf("PTX: FanOutKeySet: no share for %s\n", node_id);
-            continue;
-        }
-        std::string sk_hex = HexStr(Span<const uint8_t>(sk_bytes, 32));
-
-        const PTXNodeInfo* ni = PTX_FindNode(node_id);
-        if (!ni) {
-            LogPrintf("PTX: FanOutKeySet: no node info for %s\n", node_id);
-            continue;
-        }
-
-        UniValue params(UniValue::VARR);
-        params.push_back(sk_hex);
-
-        auto resp = PTX_CallNodeRpc(*ni, "gm_bls_keyset", params);
-        LogPrintf("PTX: FanOutKeySet: %s %s\n", node_id,
-                  resp.success ? "accepted" : "rejected/unreachable");
-    }
-}
-
-// ---------------------------------------------------------------------------
 // PTX_FanOutSign  (Phase 2 BLS)
 // ---------------------------------------------------------------------------
 

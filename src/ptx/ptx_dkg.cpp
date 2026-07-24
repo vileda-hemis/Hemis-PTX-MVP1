@@ -38,17 +38,6 @@ uint256 PTXDKGPhase0Msg::GetSignHash() const
 }
 
 // ---------------------------------------------------------------------------
-// PTX_GetBLSState
-// All ceremony code calls this instead of g_ptx_bls_state directly, so the
-// W2.1 per-quorum registry refactor changes one function, not every call site.
-// ---------------------------------------------------------------------------
-
-PTXBLSState& PTX_GetBLSState()
-{
-    return g_ptx_bls_state;
-}
-
-// ---------------------------------------------------------------------------
 // ComputeVvecCommitment (internal)
 // SHA256(quorum_hash || proTxHash || compressed-G1-bytes-for-each-vvec-point).
 // Binds the sender to its vvec (= full polynomial in public form) before reveal.

@@ -11,34 +11,34 @@
 #include <algorithm>
 #include <cstring>
 
-PTXBLSState    g_ptx_bls_state;
-RecursiveMutex cs_ptx_bls;
 const char*    PTX_BLS_DST = "BLS_SIG_HEMIS_PTX_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
 
-// GM-side BLS key share (written by gm_bls_keyset RPC and by PTX_DKG_StoreSkShare).
-// Stored as 32-byte big-endian blst scalar. Defined here so both write sites (RPC
-// and DKG) share one storage location guarded by cs_ptx_my_bls_sk.
+// GM-side BLS key share (written by PTX_DKG_StoreSkShare on ceremony completion).
+// Stored as 32-byte big-endian blst scalar. Guarded by cs_ptx_my_bls_sk.
 uint8_t        g_ptx_my_bls_sk_bytes[32] = {};
 bool           g_ptx_my_bls_sk_set       = false;
 RecursiveMutex cs_ptx_my_bls_sk;
 
 // ---------------------------------------------------------------------------
-// PTX_BLS_SetSkShare — §C1 replay guard (KDD-057)
+// PTX_BLS_SetSkShare — §C1 replay guard (KDD-057; rationale updated KDD-069)
 //
-// The SINGLE guarded write path for the GM-side sk-share.  Both write sites —
-// gm_bls_keyset (rpc/ptx.cpp) and PTX_DKG_StoreSkShare (ptx_dkg.cpp) — route
-// through here; no site writes g_ptx_my_bls_sk_bytes/_set directly (a direct
-// write would bypass the guard — that is the hole this closes).
+// The SINGLE guarded write path for the GM-side sk-share.  Post-KDD-069 there
+// is exactly ONE write site: PTX_DKG_StoreSkShare (ptx_dkg.cpp), on local
+// ceremony completion.  The former coordinator-supplied gm_bls_keyset RPC path
+// was removed with the trusted dealer, so this guard no longer defends against
+// a coordinator hijacking the slot — it now defends against CEREMONY REPLAY /
+// double-store (a member re-running a ceremony, or a future rotation/re-select
+// overwriting a live share).  No site writes g_ptx_my_bls_sk_bytes/_set
+// directly (a direct write would bypass the guard).
 //
 // refuse-unless-empty: a first-set (empty slot) stores the share; any overwrite
-// of an already-set share is REFUSED (silent replay / second-coordinator
-// takeover defense, standup §C1).  SAFE AT W1.3 — the share is written only on
-// local ceremony COMPLETION (StoreSkShare fires at phase==FINALIZE, gm_bls_keyset
-// is a single atomic RPC) and a failed/aborted formation leaves the slot clean,
-// so no legitimate write hits a set slot now.  W2 rotation/disband/re-formation
-// MUST add (a) an explicit authorized-overwrite path and (b) an abort-clears-slot
-// / clear mechanism; a plain overwrite is refused here and no runtime clear
-// exists today (clear == daemon restart).
+// of an already-set share is REFUSED.  The share is written only on local
+// ceremony COMPLETION (StoreSkShare fires at phase==FINALIZE) and a
+// failed/aborted formation leaves the slot clean, so no legitimate write hits a
+// set slot now.  W2 rotation/disband/re-formation MUST add (a) an explicit
+// authorized-overwrite path and (b) an abort-clears-slot / clear mechanism
+// (KDD-070 slot mechanism); a plain overwrite is refused here and no runtime
+// clear exists today (clear == daemon restart, ODC-035).
 // ---------------------------------------------------------------------------
 
 bool PTX_BLS_SetSkShare(const uint8_t sk_bytes[32], std::string& err)
@@ -52,105 +52,6 @@ bool PTX_BLS_SetSkShare(const uint8_t sk_bytes[32], std::string& err)
     std::memcpy(g_ptx_my_bls_sk_bytes, sk_bytes, 32);
     g_ptx_my_bls_sk_set = true;
     return true;
-}
-
-// ---------------------------------------------------------------------------
-// PTX_BLS_Init — trusted-dealer DKG
-// ---------------------------------------------------------------------------
-
-bool PTX_BLS_Init(const std::vector<std::string>& node_ids, int threshold)
-{
-    if (node_ids.empty() || threshold < 1 || threshold > (int)node_ids.size())
-        return false;
-
-    PTXBLSState state;
-    state.n = (int)node_ids.size();
-    state.t = threshold;
-
-    // Assign 1-indexed positions by sorted order (deterministic).
-    std::vector<std::string> sorted_ids = node_ids;
-    std::sort(sorted_ids.begin(), sorted_ids.end());
-    for (int i = 0; i < (int)sorted_ids.size(); i++)
-        state.node_index[sorted_ids[i]] = i + 1;
-
-    // Generate polynomial coefficients a[0]..a[t-1] over Zr.
-    // f(x) = a[0] + a[1]*x + ... + a[t-1]*x^(t-1)
-    // master secret = a[0] = f(0)
-    std::vector<blst_fr> coeffs(threshold);
-    for (int i = 0; i < threshold; i++) {
-        uint8_t ikm[32];
-        GetStrongRandBytes(ikm, 32);
-        blst_scalar tmp;
-        blst_keygen(&tmp, ikm, 32, nullptr, 0);
-        blst_fr_from_scalar(&coeffs[i], &tmp);
-        if (i == 0)
-            blst_scalar_from_fr(&state.master_sk, &coeffs[0]);
-    }
-
-    // Group public key: master_sk * G1
-    blst_p1 pk_p1;
-    blst_sk_to_pk_in_g1(&pk_p1, &state.master_sk);
-    blst_p1_to_affine(&state.group_pk, &pk_p1);
-
-    // Compute per-GM shares: share[i] = f(i+1) for i in [0, n-1].
-    state.shares.resize(state.n);
-    for (int i = 0; i < state.n; i++) {
-        int xi = i + 1;
-
-        uint64_t xi_val[4] = {(uint64_t)xi, 0, 0, 0};
-        blst_fr xi_fr;
-        blst_fr_from_uint64(&xi_fr, xi_val);
-
-        blst_fr share = coeffs[0];
-        blst_fr xi_pow;
-        { const uint64_t one[4] = {1,0,0,0}; blst_fr_from_uint64(&xi_pow, one); }
-
-        for (int j = 1; j < threshold; j++) {
-            blst_fr_mul(&xi_pow, &xi_pow, &xi_fr);   // xi^j
-            blst_fr term;
-            blst_fr_mul(&term, &coeffs[j], &xi_pow);
-            blst_fr_add(&share, &share, &term);
-        }
-        blst_scalar_from_fr(&state.shares[i], &share);
-    }
-
-    state.initialized = true;
-
-    LOCK(cs_ptx_bls);
-    g_ptx_bls_state = std::move(state);
-    LogPrintf("PTX BLS: initialized n=%d t=%d (blst/BLS12-381)\n",
-              g_ptx_bls_state.n, g_ptx_bls_state.t);
-    return true;
-}
-
-// ---------------------------------------------------------------------------
-// PTX_BLS_GetShareBytes
-// ---------------------------------------------------------------------------
-
-bool PTX_BLS_GetShareBytes(const std::string& node_id, uint8_t sk_out[32])
-{
-    LOCK(cs_ptx_bls);
-    auto it = g_ptx_bls_state.node_index.find(node_id);
-    if (it == g_ptx_bls_state.node_index.end())
-        return false;
-    int idx = it->second - 1;  // 0-based
-    if (idx < 0 || idx >= (int)g_ptx_bls_state.shares.size())
-        return false;
-    blst_bendian_from_scalar(sk_out, &g_ptx_bls_state.shares[idx]);
-    return true;
-}
-
-// ---------------------------------------------------------------------------
-// PTX_BLS_GetNodeIndex
-// ---------------------------------------------------------------------------
-
-int PTX_BLS_GetNodeIndex(const std::string& node_id)
-{
-    LOCK(cs_ptx_bls);
-    auto it = g_ptx_bls_state.node_index.find(node_id);
-    if (it == g_ptx_bls_state.node_index.end())
-        return 0;
-    return it->second;
 }
 
 // ---------------------------------------------------------------------------

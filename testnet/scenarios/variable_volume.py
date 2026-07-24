@@ -130,17 +130,23 @@ def run_variable_volume(runner: ScenarioRunner) -> None:
     print(f"[scenario] === Step 1c: throughput probe "
           f"(window_start={window_start}, submitting {N_PROBE} rolls) ===")
 
-    # ptx_roll(count, low, high, game_id, salt) → call("ptx_roll", count, low,
-    # high, False, [], game_id, salt) — confirmed against node.py:71 and
-    # ptx.cpp RPC signature "count low high unique exclude game_id caller_salt".
-    for i in range(N_PROBE):
-        result = caller.ptx_roll(1, 1, 100,
-                                 game_id=f"probe-{i+1}",
-                                 salt=f"{i:08x}")
-        runner.assert_true(
-            len(result["tx_id"]) == 64,
-            f"probe roll {i+1}: tx_id should be 64-char hex, got {result['tx_id']!r}"
-        )
+    # KDD-069 (dealer retired): ptx_roll signs ONLY with an ACTIVE DKG quorum.
+    # This ptx-bea scenario forms no quorum (and under ODC-034 cannot), so on a
+    # dealerless build the roll hard-errors. Assert that; the throughput/drain
+    # E2E remainder is unreachable without a signing quorum, so the scenario
+    # ends here. (Against a dealer-bearing ptx-bea image on another branch, the
+    # roll would succeed — this copy documents the dealerless behaviour.)
+    print("[scenario] ptx_roll must hard-error (dealer retired, KDD-069)")
+    try:
+        caller.ptx_roll(1, 1, 100, game_id="probe-1", salt="00000000")
+        runner.assert_true(False,
+            "ptx_roll should hard-error post-KDD-069 (no ACTIVE quorum, dealer retired)")
+    except RPCError as e:
+        runner.assert_true("KDD-069" in str(e),
+            f"expected KDD-069 dealer-retired error, got: {e}")
+        print(f"[scenario] ptx_roll correctly hard-errors: {e}")
+    runner.checkpoint("ptx_roll hard-errors post-KDD-069 (no dealer, no quorum)")
+    return
 
     # Wait for exactly one block to measure per-block throughput.  The low-cap
     # guard fires HERE (after ≤90s) — before the drain-wait which would time

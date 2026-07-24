@@ -53,9 +53,6 @@ std::map<std::string, std::map<std::string, uint256>> g_ptx_local_secrets;
 // GM-side BLS key share — defined in ptx_bls.cpp (extern declared in ptx_bls.h).
 // Accessible here via the ptx_bls.h include above. No local definition needed.
 
-// BLS threshold: t-of-n. KDD-TBD; using simple majority floor(n/2)+1.
-static int PTX_BLS_Threshold(int n) { return n / 2 + 1; }
-
 // ---------------------------------------------------------------------------
 // Exclude-list helpers
 // ---------------------------------------------------------------------------
@@ -94,22 +91,18 @@ static std::set<int64_t> PTX_ResolveExclude(const UniValue& arr)
 }
 
 // ---------------------------------------------------------------------------
-// SG-3 index-space reconciliation — DKG signing material (the REPOINT).
+// DKG signing material (the REPOINT) — DEALER RETIRED (KDD-069).
 //
-// THE SEAM THIS CLOSES: the trusted dealer assigns its Lagrange x by
-// ALPHABETICAL node_id order (PTX_BLS_Init, ptx_bls.cpp:41-45) and evaluates
-// its polynomial there — self-consistent for DEALER-generated shares.  The
-// DKG evaluates f(share_index) with share_index in CalculateQuorum SCORE
-// order (KDD-052; assigned PTX_DKG_InitSession ptx_dkg.cpp:261, used
-// PTX_DKG_GenerateLocalContrib :318).  Interpolating DKG shares at
-// alphabetical x's yields wrong Lagrange coefficients and a signature that
-// does not verify.  The x MUST be the one the shares were generated at.
-//
-// GATE (not removal): the dealer path stays for the legacy roll flow — the
-// BLS falsification suite (ptx_bls_subset_test.cpp) and the fleet scenarios
-// (happy_path / variable_volume / _diag_coalesce) drive it.  DKG material is
-// used when an ACTIVE quorum exists for this height; otherwise the dealer
-// path runs unchanged.  Quorum-presence is the discriminator; no mode flag.
+// The roll signs ONLY with DKG material: group_pk and the Lagrange x
+// (share_index) are READ from the committed CPTXQuorumRecord for the ACTIVE
+// quorum at this height.  The trusted dealer (its central polynomial, its
+// alphabetical index basis, and gm_bls_keyset fan-out) has been removed —
+// there is no fallback.  When no ACTIVE, usable quorum exists for the height,
+// ptx_roll hard-errors (KDD-069); it never mints or signs with dealer key
+// material.  The DKG evaluates f(share_index) with share_index in
+// CalculateQuorum SCORE order (KDD-052; assigned PTX_DKG_InitSession
+// ptx_dkg.cpp:261, used PTX_DKG_GenerateLocalContrib :318) — the only index
+// space that now exists (the alphabetical basis is structurally gone, KDD-052).
 //
 // NO CONSENSUS SURFACE: group_pk and share_index are READ from already
 // committed/persisted data (CPTXQuorumRecord); CheckPTXDKGTx and the
@@ -226,71 +219,46 @@ UniValue ptx_roll(const JSONRPCRequest& request)
     uint256     round_seed  = PTX_BuildRoundSeed(game_id, block_height, {}, nonce, params_hash);
     std::string round_id    = PTX_MakeRoundId(game_id, block_height, params_hash);
 
-    // BLS threshold: select all eligible GMs; t = majority.
     int n_nodes = (int)g_ptx_nodes.size();
     if (n_nodes < 1)
         throw JSONRPCError(RPC_MISC_ERROR, "PTX: no registered nodes");
-    int bls_threshold = PTX_BLS_Threshold(n_nodes);
 
-    // SG-3 REPOINT: prefer DKG material when an ACTIVE quorum exists for this
-    // height.  The dealer lazy-init below is SKIPPED in that case — the
-    // members already hold DKG-produced sk_shares (ptx_dkg.cpp:1338) and the
-    // group_pk is the committed one, so minting a fresh dealer keyset would
-    // both overwrite nothing usable and verify against the wrong key.
+    // DKG signing material for this height (KDD-069: the trusted dealer is
+    // retired — this is the ONLY signing path).
     const PTXDKGSigningCtx dkg_ctx =
             PTX_LoadDKGSigningCtx((int)block_height);
 
-    // The threshold that ACTUALLY governs signing.  DKG: quorum-scoped
-    // (dkg_ctx.threshold = majority(formed_size), ODC-036) — the SINGLE source
-    // read at the four sig-collection / reconstruction sites below.  Dealer:
-    // the registry-derived bls_threshold (n/2+1 over all registered nodes).
-    const int signing_threshold = dkg_ctx.active ? dkg_ctx.threshold : bls_threshold;
-
-    // ★ FAIL-CLOSED: an ACTIVE quorum exists but its signing material is
-    // unusable (group_pk not 48 bytes, or fewer than `threshold` in_qual
-    // members).  Falling through to the trusted dealer here would silently
-    // sign with dealer key material while a real quorum is live — the roll
-    // must hard-error instead.
+    // ★ FAIL-CLOSED (KDD-069): an ACTIVE quorum exists but its signing material
+    // is unusable (group_pk not 48 bytes, or fewer than `threshold` in_qual
+    // members).  There is no dealer to fall back to — hard-error.
     if (dkg_ctx.quorum_present && !dkg_ctx.active) {
         throw JSONRPCError(RPC_MISC_ERROR,
             strprintf("PTX: ACTIVE quorum %s present but signing material unusable "
-                      "(group_pk size or in_qual < threshold %d) — refusing to fall "
-                      "back to the trusted dealer",
-                      dkg_ctx.quorum_hash.ToString(), bls_threshold));
+                      "(group_pk size or in_qual < threshold) — cannot sign "
+                      "(dealer retired, KDD-069)",
+                      dkg_ctx.quorum_hash.ToString()));
     }
 
-    // Lazy-init BLS state: generate master polynomial and per-GM key shares once per session.
+    // ★ NO QUORUM (KDD-069): no ACTIVE quorum for this height, and the trusted
+    // dealer is retired.  There is no signing path — hard-error.
     if (!dkg_ctx.active) {
-        bool need_init = false;
-        {
-            LOCK(cs_ptx_bls);
-            need_init = !g_ptx_bls_state.initialized || g_ptx_bls_state.t != bls_threshold;
-        }
-        if (need_init) {
-            std::vector<std::string> all_ids;
-            for (const auto& ni : g_ptx_nodes) all_ids.push_back(ni.node_id);
-            if (!PTX_BLS_Init(all_ids, bls_threshold))
-                throw JSONRPCError(RPC_MISC_ERROR, "PTX: BLS init failed");
-        }
+        throw JSONRPCError(RPC_MISC_ERROR,
+            strprintf("PTX: no ACTIVE quorum for height %d — cannot sign "
+                      "(dealer retired, KDD-069)", (int)block_height));
     }
 
-    // Signer set: the committed effective-QUAL members of the ACTIVE quorum
-    // when DKG material is in play, else the legacy round-assigned quorum.
-    std::vector<std::string> member_ids;
-    if (dkg_ctx.active) {
-        member_ids = dkg_ctx.member_ids;
-        LogPrintf("PTX roll: DKG signing material — quorum_hash=%s signers=%d (score-order share_index)\n",
-                  dkg_ctx.quorum_hash.ToString(), (int)member_ids.size());
-    } else {
-        PTXQuorumAssignment quorum = PTX_AssignQuorum(round_id, round_seed, n_nodes, bls_threshold);
-        if ((int)quorum.members.size() < bls_threshold)
-            throw JSONRPCError(RPC_MISC_ERROR, "PTX: insufficient eligible nodes for BLS threshold");
-        member_ids = quorum.members;
-    }
+    // The quorum-scoped threshold (dkg_ctx.threshold = majority(formed_size),
+    // ODC-036) — the SINGLE source read at the sig-collection / reconstruction
+    // sites below.
+    const int signing_threshold = dkg_ctx.threshold;
+
+    // Signer set: the committed effective-QUAL members of the ACTIVE quorum.
+    std::vector<std::string> member_ids = dkg_ctx.member_ids;
+    LogPrintf("PTX roll: DKG signing material — quorum_hash=%s signers=%d (score-order share_index)\n",
+              dkg_ctx.quorum_hash.ToString(), (int)member_ids.size());
 
     // Sort members deterministically.  NOTE: this orders the SIGNER LIST only —
-    // the Lagrange x comes from share_index (DKG) or the dealer's own map, never
-    // from this position.
+    // the Lagrange x comes from share_index (KDD-052), never from this position.
     std::sort(member_ids.begin(), member_ids.end());
 
     // Initialise coordinator's round entry.
@@ -311,11 +279,8 @@ UniValue ptx_roll(const JSONRPCRequest& request)
         g_ptx_rounds[round_id] = round;
     }
 
-    // Distribute BLS key shares to any GMs that haven't received one this
-    // session.  DKG members already hold their ceremony-produced share (and
-    // §C1 refuse-unless-empty would reject a dealer share anyway) — skip.
-    if (!dkg_ctx.active)
-        PTX_FanOutKeySet(member_ids);
+    // DKG members already hold their ceremony-produced share (ptx_dkg.cpp:1338);
+    // there is no key fan-out (KDD-069: the dealer's gm_bls_keyset path is gone).
 
     // Collect partial BLS signatures from each quorum member.
     auto partial_sigs_raw = PTX_FanOutSign(round_id, round_seed, member_ids);
@@ -328,17 +293,11 @@ UniValue ptx_roll(const JSONRPCRequest& request)
 
     for (const auto& nid : member_ids) {
         auto it = partial_sigs_raw.find(nid);
-        // ★ THE LAGRANGE x.  DKG: score-order share_index (KDD-052) — the point
-        // the share's polynomial was actually evaluated at.  Dealer: its own
-        // alphabetical map.  Using the wrong space yields wrong lambdas and a
-        // signature that does not verify.
-        int idx;
-        if (dkg_ctx.active) {
-            auto xit = dkg_ctx.share_index.find(nid);
-            idx = (xit == dkg_ctx.share_index.end()) ? 0 : xit->second;
-        } else {
-            idx = PTX_BLS_GetNodeIndex(nid);
-        }
+        // ★ THE LAGRANGE x: score-order share_index (KDD-052) — the point the
+        // share's polynomial was actually evaluated at.  Using the wrong space
+        // yields wrong lambdas and a signature that does not verify.
+        auto xit = dkg_ctx.share_index.find(nid);
+        int idx = (xit == dkg_ctx.share_index.end()) ? 0 : xit->second;
         if (it != partial_sigs_raw.end() && idx > 0 &&
             (int)it->second.size() == PTX_SIG_BYTES) {
             bls_sigs.push_back(it->second);
@@ -365,23 +324,15 @@ UniValue ptx_roll(const JSONRPCRequest& request)
     if (!PTX_BLS_Recover(thresh_indices, thresh_sigs, combined_sig))
         throw JSONRPCError(RPC_MISC_ERROR, "PTX: BLS threshold signature recovery failed");
 
-    // The verification key.  DKG: the COMMITTED group_pk from the quorum
-    // record (ptx_quorum_store.h:110) — the one a third party verifies
-    // against.  Dealer: its own in-memory group_pk, extracted under
-    // cs_ptx_bls and released before verify (pure, KDD-049).
+    // The verification key: the COMMITTED group_pk from the quorum record
+    // (ptx_quorum_store.h) — the one a third party verifies against (KDD-049).
     uint8_t group_pk_bytes[48];
-    if (dkg_ctx.active) {
-        memcpy(group_pk_bytes, dkg_ctx.group_pk.data(), 48);
-    } else {
-        LOCK(cs_ptx_bls);
-        blst_p1_affine_compress(group_pk_bytes, &g_ptx_bls_state.group_pk);
-    }
+    memcpy(group_pk_bytes, dkg_ctx.group_pk.data(), 48);
     // SG-3 observability: the exact verification key, so a run can assert it is
     // byte-equal to the selected quorum's committed group_pk (predicate A) —
     // beside the "DKG signing material" line so source + key are one grep.
-    LogPrintf("PTX roll: verify group_pk=%s source=%s\n",
-              HexStr(Span<const uint8_t>(group_pk_bytes, 48)),
-              dkg_ctx.active ? "dkg" : "dealer");
+    LogPrintf("PTX roll: verify group_pk=%s source=dkg\n",
+              HexStr(Span<const uint8_t>(group_pk_bytes, 48)));
     if (!PTX_BLS_Verify(group_pk_bytes, round_seed, combined_sig))
         throw JSONRPCError(RPC_MISC_ERROR, "PTX: BLS threshold signature verification failed");
 
@@ -453,13 +404,12 @@ UniValue ptx_roll(const JSONRPCRequest& request)
     UniValue qm_arr(UniValue::VARR);
     for (const auto& nid : member_ids) qm_arr.push_back(nid);
     ret.pushKV("quorum_members", qm_arr);
-    // SG-3 observability: which quorum signed and via which path — so
-    // predicate B (selection correct) is assertable in-harness from the RPC
-    // response, not by log-scrape.  quorum_hash is empty on the dealer path
-    // (no on-chain quorum); signing_source names the path taken.
-    ret.pushKV("signing_source", dkg_ctx.active ? "dkg" : "dealer");
-    ret.pushKV("quorum_hash",    dkg_ctx.active ? dkg_ctx.quorum_hash.ToString()
-                                                : std::string());
+    // SG-3 observability: which quorum signed — so predicate B (selection
+    // correct) is assertable in-harness from the RPC response, not by
+    // log-scrape.  Post-KDD-069 the only signing path is DKG, so signing_source
+    // is always "dkg" (retained for client/response-schema stability).
+    ret.pushKV("signing_source", "dkg");
+    ret.pushKV("quorum_hash",    dkg_ctx.quorum_hash.ToString());
     ret.pushKV("block_height",   (int64_t)block_height);
     ret.pushKV("tx_id",          txid);
     return ret;
@@ -550,42 +500,6 @@ UniValue gm_reveal(const JSONRPCRequest& request)
 }
 
 // ---------------------------------------------------------------------------
-// RPC: gm_bls_keyset  (coordinator → GM)
-// ---------------------------------------------------------------------------
-
-UniValue gm_bls_keyset(const JSONRPCRequest& request)
-{
-    if (request.fHelp || request.params.size() < 1) {
-        throw std::runtime_error(
-            "gm_bls_keyset sk_share_hex\n"
-            "\nStore this node's BLS key share (32-byte hex). Called by the coordinator.\n"
-            "\nArguments:\n"
-            "1. sk_share_hex (str) BLS private key share as hex\n"
-            + HelpExampleRpc("gm_bls_keyset", "\"aabb...\"")
-        );
-    }
-
-    std::string sk_hex = request.params[0].get_str();
-    if (!IsHex(sk_hex))
-        throw JSONRPCError(RPC_INVALID_PARAMS, "sk_share_hex must be a hex string");
-
-    std::vector<uint8_t> sk_bytes = ParseHex(sk_hex);
-    if ((int)sk_bytes.size() != 32)
-        throw JSONRPCError(RPC_INVALID_PARAMS, "sk_share_hex must be 32 bytes");
-
-    // §C1 replay guard (KDD-057): route through the single guarded setter —
-    // refuse a silent overwrite of an already-set share.
-    std::string set_err;
-    if (!PTX_BLS_SetSkShare(sk_bytes.data(), set_err))
-        throw JSONRPCError(RPC_MISC_ERROR, set_err);
-    LogPrintf("PTX: gm_bls_keyset: key share stored for node=%s\n", g_ptx_my_node_id);
-
-    UniValue ret(UniValue::VOBJ);
-    ret.pushKV("accepted", true);
-    return ret;
-}
-
-// ---------------------------------------------------------------------------
 // RPC: gm_bls_sign  (coordinator → GM)
 // ---------------------------------------------------------------------------
 
@@ -619,7 +533,7 @@ UniValue gm_bls_sign(const JSONRPCRequest& request)
         if (have_key) memcpy(sk_bytes, g_ptx_my_bls_sk_bytes, 32);
     }
     if (!have_key)
-        throw JSONRPCError(RPC_MISC_ERROR, "BLS key not set: coordinator must call gm_bls_keyset first");
+        throw JSONRPCError(RPC_MISC_ERROR, "BLS key not set: this node holds no DKG sk_share (complete a ceremony first)");
 
     uint8_t sig_buf[PTX_SIG_BYTES];
     if (!PTX_BLS_PartialSign(sk_bytes, round_seed, sig_buf))
@@ -1660,7 +1574,6 @@ static const CRPCCommand commands[] = {
     { "ptx",  "ptx_roll",                  &ptx_roll,                   true,   {"count","low","high","unique","exclude","game_id","caller_salt"} },
     { "ptx",  "gm_commit",                 &gm_commit,                  true,   {"round_id","round_seed_hex","members_json","commitment_hex"} },
     { "ptx",  "gm_reveal",                 &gm_reveal,                  true,   {"round_id","secret_hex"} },
-    { "ptx",  "gm_bls_keyset",             &gm_bls_keyset,              true,   {"sk_share_hex"} },
     { "ptx",  "gm_bls_sign",               &gm_bls_sign,                true,   {"round_seed_hex"} },
     { "ptx",  "ptx_debug_setnodefailmode", &ptx_debug_setnodefailmode,  true,   {"target_node_id","mode"} },
     { "ptx",  "ptx_debug_ptxdkgpopulate",  &ptx_debug_ptxdkgpopulate,   true,   {"payload","force"} },
