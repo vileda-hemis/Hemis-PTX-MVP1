@@ -349,6 +349,16 @@ struct PTXDKGPhase4Msg {
 // Estimated wire size at t=6: ~1,580 bytes; MAX_SPECIALTX_EXTRAPAYLOAD = 10,000.
 // ---------------------------------------------------------------------------
 struct PTXDKGPayload {
+    // KDD-072 P-a: the payload is now VERSIONED — nVersion is the FIRST
+    // serialized field, matching the tree idiom (providertx.h:22,
+    // quorums_commitment.h:29). CURRENT_VERSION = 1 is the current 6-field
+    // layout; KDD-072 P-b adds the rotation predecessor under `if (nVersion>=2)`.
+    // ★ WIRE BREAK: pre-P-a (unversioned) payloads misparse under this layout —
+    // the first 2 bytes of the old quorum_hash read as nVersion. Cost is a fleet
+    // re-form (ODC-038, ODC-034 interim remedy); see KDD-072 §10.
+    static const uint16_t CURRENT_VERSION = 1;
+
+    uint16_t                           nVersion{CURRENT_VERSION};
     uint256                            quorum_hash;
     uint8_t                            group_pk_bytes[48]; // blst_p1_affine_compress
     uint256                            vvec_hash;
@@ -358,6 +368,7 @@ struct PTXDKGPayload {
 
     SERIALIZE_METHODS(PTXDKGPayload, obj)
     {
+        READWRITE(obj.nVersion);
         READWRITE(obj.quorum_hash);
         READWRITE(Using<PTXFixedBytesFormatter<48>>(obj.group_pk_bytes));
         READWRITE(obj.vvec_hash, obj.member_node_ids,

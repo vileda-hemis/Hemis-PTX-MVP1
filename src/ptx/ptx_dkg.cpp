@@ -1376,6 +1376,7 @@ CMutableTransaction PTX_DKG_BuildPTXDKGTx(const PTXDKGSession& session,
     const uint256& my_proTxHash = session.members[session.my_idx].proTxHash;
 
     PTXDKGPayload payload;
+    payload.nVersion         = PTXDKGPayload::CURRENT_VERSION; // KDD-072 P-a — EXPLICIT, not default-reliant
     payload.quorum_hash      = session.quorum_hash;
     payload.formation_height = formation_height;
 

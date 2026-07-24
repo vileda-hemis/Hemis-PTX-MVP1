@@ -29,6 +29,7 @@
 #include "bls/bls_wrapper.h"
 #include "fs.h"                     // KDD-070 P5: iterate src/rpc for the structural check
 #include "random.h"
+#include "streams.h"                // KDD-072 P-a: CDataStream for payload wire round-trip / break tests
 #include "sync.h"
 #include "uint256.h"
 
@@ -1591,6 +1592,147 @@ BOOST_AUTO_TEST_CASE(P5_ShareStore_NoRpcReachableMutator)
             "P5 negative limb: mutator '" << m << "' is referenced under src/rpc — "
             "§1 forbids an rpc-reachable write path to g_ptx_my_shares");
     }
+}
+
+// ===========================================================================
+// KDD-072 P-a — versioned PTXDKGPayload (nVersion FIRST field + version gate).
+// ===========================================================================
+
+namespace {
+// Faithful reconstruction of the PRE-P-a (unversioned) PTXDKGPayload wire form:
+// the SAME fields in the SAME order MINUS nVersion. Byte-identical to what the
+// old serializer emitted. Used by Pa_OldLayoutMisparses to feed genuine old-
+// format bytes to the NEW deserializer, independent of the current serializer.
+struct PaOldLayoutPayload {
+    uint256                            quorum_hash;
+    uint8_t                            group_pk_bytes[48] = {};
+    uint256                            vvec_hash;
+    std::vector<std::string>           member_node_ids;
+    int                                formation_height{0};
+    std::map<uint256, PTXDKGPhase4Msg> premit_commitments;
+    SERIALIZE_METHODS(PaOldLayoutPayload, obj)
+    {
+        READWRITE(obj.quorum_hash);
+        READWRITE(Using<PTXFixedBytesFormatter<48>>(obj.group_pk_bytes));
+        READWRITE(obj.vvec_hash, obj.member_node_ids,
+                  obj.formation_height, obj.premit_commitments);
+    }
+};
+} // namespace
+
+// (1) round-trip — the version field is genuinely ON THE WIRE and survives
+// serialize->deserialize. A distinguishable value (7) proves the field is
+// serialized, not merely defaulted. RED (inversion): drop READWRITE(obj.nVersion)
+// -> the value is not written and deserializes to the default (1) != 7.
+BOOST_AUTO_TEST_CASE(Pa_RoundTrip_VersionIntact)
+{
+    PTXDKGPayload in;
+    in.nVersion = 7;                                   // distinguishable non-default
+    std::memset(in.quorum_hash.begin(), 0xAB, 32);
+    std::memset(in.group_pk_bytes, 0, 48);
+    in.vvec_hash = QHk(0x22);
+    in.formation_height = 4242;
+    in.member_node_ids = {"gm01:aa", "gm02:bb"};
+
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << in;
+    PTXDKGPayload out;
+    ss >> out;
+    BOOST_CHECK_EQUAL(out.nVersion, (uint16_t)7);       // version survived the wire
+    BOOST_CHECK(out.quorum_hash == in.quorum_hash);     // fields aligned, not shifted
+    BOOST_CHECK_EQUAL(out.formation_height, 4242);
+    BOOST_CHECK(out.member_node_ids == in.member_node_ids);
+}
+
+// (2) nVersion == 0 -> bad-ptxdkg-version. RED (inversion): remove the gate ->
+// a v0 payload passes the structural section.
+BOOST_AUTO_TEST_CASE(Pa_Version0_Rejected)
+{
+    std::map<uint256, CBLSSecretKey> key_map;
+    std::vector<PTXDKGSession> sessions;
+    AdvanceToFinalize(key_map, sessions);
+    CMutableTransaction mtx = PTX_DKG_BuildPTXDKGTx(sessions[0], 1000);
+    PTXDKGPayload payload;
+    BOOST_REQUIRE(GetTxPayload(mtx, payload));
+    payload.nVersion = 0;
+    SetTxPayload(mtx, payload);
+    CTransaction tx(mtx);
+    CValidationState state;
+    LOCK(cs_main);
+    BOOST_CHECK(!CheckPTXDKGTx(tx, nullptr, state));
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-ptxdkg-version");
+}
+
+// (3) nVersion > CURRENT_VERSION -> bad-ptxdkg-version. RED (inversion): a gate
+// using >= or a wrong bound accepts CURRENT+1.
+BOOST_AUTO_TEST_CASE(Pa_VersionAboveCurrent_Rejected)
+{
+    std::map<uint256, CBLSSecretKey> key_map;
+    std::vector<PTXDKGSession> sessions;
+    AdvanceToFinalize(key_map, sessions);
+    CMutableTransaction mtx = PTX_DKG_BuildPTXDKGTx(sessions[0], 1000);
+    PTXDKGPayload payload;
+    BOOST_REQUIRE(GetTxPayload(mtx, payload));
+    payload.nVersion = PTXDKGPayload::CURRENT_VERSION + 1;
+    SetTxPayload(mtx, payload);
+    CTransaction tx(mtx);
+    CValidationState state;
+    LOCK(cs_main);
+    BOOST_CHECK(!CheckPTXDKGTx(tx, nullptr, state));
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-ptxdkg-version");
+}
+
+// (4) a valid v1 payload passes the (structural) sequence unchanged, AND
+// BuildPTXDKGTx sets nVersion = CURRENT_VERSION EXPLICITLY (not default-reliant,
+// item 7). RED (inversion): remove the explicit assignment + change the struct
+// default -> BuildPTXDKGTx yields the wrong version; or a gate that rejects v1.
+BOOST_AUTO_TEST_CASE(Pa_ValidV1_PassesAndBuildSetsVersion)
+{
+    std::map<uint256, CBLSSecretKey> key_map;
+    std::vector<PTXDKGSession> sessions;
+    AdvanceToFinalize(key_map, sessions);
+    CMutableTransaction mtx = PTX_DKG_BuildPTXDKGTx(sessions[0], 1000);
+    PTXDKGPayload built;
+    BOOST_REQUIRE(GetTxPayload(mtx, built));
+    const uint16_t cur = PTXDKGPayload::CURRENT_VERSION; // local avoids ODR-use (tree never defines it out-of-line)
+    BOOST_CHECK_EQUAL(built.nVersion, cur);                            // item 7: explicit
+    CTransaction tx(mtx);
+    CValidationState state;
+    LOCK(cs_main);
+    BOOST_CHECK(CheckPTXDKGTx(tx, nullptr, state));                     // valid v1 still passes
+}
+
+// (5) the version field is FIRST: genuine OLD-format bytes (PaOldLayoutPayload,
+// no nVersion) MISPARSE under the new deserializer — proving the wire break is
+// ENFORCED, not silently tolerated. The new reader consumes the first 2 bytes of
+// the old quorum_hash as nVersion and shifts every field, so it either throws
+// (short read) or yields a payload that does not round-trip. RED (inversion):
+// drop READWRITE(obj.nVersion) -> the new reader IS the old reader -> old-format
+// bytes parse cleanly and the misparse assertion fails.
+BOOST_AUTO_TEST_CASE(Pa_OldLayoutMisparses_BreakEnforced)
+{
+    PaOldLayoutPayload oldp;
+    std::memset(oldp.quorum_hash.begin(), 0xAB, 32);   // first 2 bytes 0xABAB -> misparsed version
+    std::memset(oldp.group_pk_bytes, 0, 48);
+    oldp.vvec_hash = QHk(0x33);
+    oldp.formation_height = 100;
+    oldp.member_node_ids = {"gm01:aa"};
+
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << oldp;                                          // genuine pre-P-a wire bytes
+
+    PTXDKGPayload out;
+    bool threw = false;
+    try { ss >> out; } catch (const std::exception&) { threw = true; }
+
+    // Break enforced: either deserialization throws (short read from the 2-byte
+    // shift), OR the fields shifted so the payload does not round-trip.
+    const bool misparsed = threw
+        || out.nVersion != PTXDKGPayload::CURRENT_VERSION
+        || !(out.quorum_hash == oldp.quorum_hash);
+    BOOST_CHECK_MESSAGE(misparsed,
+        "old-format (unversioned) bytes silently round-tripped under the new "
+        "deserializer — the KDD-072 P-a wire break is NOT enforced");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -623,6 +623,16 @@ bool CheckPTXDKGTx(const CTransaction& tx, const CBlockIndex* pindexPrev,
         return state.DoS(100, error("%s: PTXDKG payload failed to deserialize", __func__),
                          REJECT_INVALID, "ptxdkg-bad-payload");
 
+    // KDD-072 P-a: payload version gate. FIRST substantive check — it runs on
+    // BOTH the structural/null-pindexPrev (CheckBlock) path and the contextual
+    // path, before the V1-V8 bifurcation below, so every node gates version
+    // identically regardless of context. Mirrors the ProReg/CFinalCommitment
+    // pattern (this file :198/:342/:539). nVersion==0 or > CURRENT is invalid.
+    if (payload.nVersion == 0 || payload.nVersion > PTXDKGPayload::CURRENT_VERSION)
+        return state.DoS(100, error("%s: PTXDKG payload version %d invalid (max %d)", __func__,
+                                    (int)payload.nVersion, (int)PTXDKGPayload::CURRENT_VERSION),
+                         REJECT_INVALID, "bad-ptxdkg-version");
+
     // group_pk_bytes must decompress to a valid G1 point.
     blst_p1_affine group_pk;
     if (blst_p1_uncompress(&group_pk, payload.group_pk_bytes) != BLST_SUCCESS)
