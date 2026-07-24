@@ -138,8 +138,12 @@ def ensure_env_operator_keys(env_path, reg, n):
     return len(add)
 
 
+def caller_name(k, callers):
+    return "caller" if callers == 1 else f"caller{k}"
+
+
 def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser,
-                 wire_operators=False, project=DEF_PROJECT):
+                 wire_operators=False, project=DEF_PROJECT, callers=1):
     lines = [HEADER.format(n=n, image=image, rpcuser=rpcuser, project=project)]
 
     # ── caller ──────────────────────────────────────────────────────────
@@ -150,32 +154,42 @@ def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser,
     # means more banners); the root fix is the KDD-064 maturity gate.
     caller_peers = sorted({1, 2, (n // 4) or 1, (n // 2) or 1,
                            ((n // 2) + 1) if n >= 2 else 1, (3 * n // 4) or 1, n})
-    lines.append(f"""\
-  caller:
+    # One or more callers. Caller1 is the PRIMARY (ip .10, host port {port_base}) —
+    # the harness drives the bootstrap through it. Additional callers are DRILL
+    # REDUNDANCY (funded, staking-off spares): if a destructive experiment wedges
+    # the primary, a spare takes over via a RESTORE instead of a re-bootstrap.
+    # caller_k: ip .(10-(k-1)) (.10, .9, ...), host port {port_base}+n+(k-1) for k>1.
+    for k in range(1, callers + 1):
+        cname = caller_name(k, callers)
+        cip = f"{subnet_base}.{10 - (k - 1)}"
+        cport = port_base if k == 1 else port_base + n + (k - 1)
+        cnid = "CALLER_NODE_ID" if callers == 1 else f"CALLER{k}_NODE_ID"
+        lines.append(f"""\
+  {cname}:
     <<: *node-defaults
-    container_name: {project}-caller
-    hostname: caller
+    container_name: {project}-{cname}
+    hostname: {cname}
     networks:
       {project}-net:
-        ipv4_address: {subnet_base}.10
+        ipv4_address: {cip}
     volumes:
-      - {data_root}/caller:/root/.hemis-ptxbea
+      - {data_root}/{cname}:/root/.hemis-ptxbea
     ports:
-      - "{port_base}:29903"
+      - "{cport}:29903"
     environment:
       <<: *node-env
-      PTX_NODE_ID: ${{CALLER_NODE_ID:-caller}}
+      PTX_NODE_ID: ${{{cnid}:-{cname}}}
     command:
-      - -externalip={subnet_base}.10
+      - -externalip={cip}
 """)
-    for p in caller_peers:
-        lines.append(f"      - -addnode={gm_ip(subnet_base, p)}\n")
-    lines.append("      # PTX node registry (legacy trusted-dealer roll path; id@host:port per KDD-033)\n")
-    for i in range(1, n + 1):
-        g = gm_name(i)
-        lines.append(
-            f"      - -ptxnode=${{{g.upper()}_NODE_ID:-{g}}}@{gm_ip(subnet_base, i)}:29903\n")
-    lines.append("\n")
+        for p in caller_peers:
+            lines.append(f"      - -addnode={gm_ip(subnet_base, p)}\n")
+        lines.append("      # PTX node registry (legacy trusted-dealer roll path; id@host:port per KDD-033)\n")
+        for i in range(1, n + 1):
+            g = gm_name(i)
+            lines.append(
+                f"      - -ptxnode=${{{g.upper()}_NODE_ID:-{g}}}@{gm_ip(subnet_base, i)}:29903\n")
+        lines.append("\n")
 
     # ── GMs ─────────────────────────────────────────────────────────────
     for i in range(1, n + 1):
@@ -221,9 +235,13 @@ networks:
     return "".join(lines)
 
 
-def emit_env(n, rpcuser, rpcpass):
-    lines = [f"RPCUSER={rpcuser}", f"RPCPASSWORD={rpcpass}",
-             "CALLER_NODE_ID=caller"]
+def emit_env(n, rpcuser, rpcpass, callers=1):
+    lines = [f"RPCUSER={rpcuser}", f"RPCPASSWORD={rpcpass}"]
+    if callers == 1:
+        lines.append("CALLER_NODE_ID=caller")
+    else:
+        for k in range(1, callers + 1):
+            lines.append(f"CALLER{k}_NODE_ID=caller{k}")
     for i in range(1, n + 1):
         g = gm_name(i)
         lines.append(f"{g.upper()}_NODE_ID={g}")
@@ -235,7 +253,10 @@ def main():
     ap.add_argument("--n", type=int, required=True, help="GM count (22 floor, 60 ceiling tested)")
     ap.add_argument("--project", default=DEF_PROJECT,
                     help="compose project + container/network prefix; use a distinct value "
-                         "(e.g. bfleet) for a SECOND, isolated instance")
+                         "(e.g. bf) for a SECOND, isolated instance")
+    ap.add_argument("--callers", type=int, default=1,
+                    help="caller count (1 = primary only; 2+ adds funded staking-off "
+                         "spares for drill redundancy — a wedged primary restores, not re-bootstraps)")
     ap.add_argument("--out", default=DEF_OUT)
     ap.add_argument("--data-root", default=DEF_DATA_ROOT)
     ap.add_argument("--subnet-base", default=DEF_SUBNET_BASE)
@@ -260,7 +281,8 @@ def main():
 
     os.makedirs(args.out, exist_ok=True)
     os.makedirs(args.data_root, exist_ok=True)
-    for name in ["caller"] + [gm_name(i) for i in range(1, args.n + 1)]:
+    caller_dirs = [caller_name(k, args.callers) for k in range(1, args.callers + 1)]
+    for name in caller_dirs + [gm_name(i) for i in range(1, args.n + 1)]:
         os.makedirs(os.path.join(args.data_root, name), exist_ok=True)
 
     reg = load_registration(args.registration, args.n) if args.registration else None
@@ -269,14 +291,15 @@ def main():
     with open(compose_path, "w") as f:
         f.write(emit_compose(args.n, args.image, args.subnet_base,
                              args.port_base, args.data_root, args.rpcuser,
-                             wire_operators=reg is not None, project=args.project))
+                             wire_operators=reg is not None, project=args.project,
+                             callers=args.callers))
 
     env_path = os.path.join(args.out, ".env")
     if os.path.exists(env_path):
         print(f"[gen] {env_path} exists — PRESERVED (compound node_ids live here)")
     else:
         with open(env_path, "w") as f:
-            f.write(emit_env(args.n, args.rpcuser, args.rpcpass))
+            f.write(emit_env(args.n, args.rpcuser, args.rpcpass, callers=args.callers))
         print(f"[gen] wrote fresh label-only {env_path}")
 
     if reg is not None:
