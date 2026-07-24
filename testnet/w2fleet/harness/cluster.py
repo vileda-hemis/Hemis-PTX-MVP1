@@ -100,7 +100,8 @@ class W2Cluster:
                  rpc_pass: str = DEF_RPC_PASS,
                  host: str = _HOST,
                  port_base: int = 31000,
-                 subnet_base: str = "172.31.0"):
+                 subnet_base: str = "172.31.0",
+                 project: str = PROJECT):
         self.n = n
         self.compose_file = compose_file
         self.rpc_user = rpc_user
@@ -108,6 +109,7 @@ class W2Cluster:
         self.host = host
         self.port_base = port_base
         self.subnet_base = subnet_base
+        self.project = project
 
         self.caller = Node("caller", host, port_base, rpc_user, rpc_pass)
         self.gms = [
@@ -128,16 +130,16 @@ class W2Cluster:
 
     # ── scoped compose ──────────────────────────────────────────────────
     def _compose(self, *args, check: bool = True):
-        cmd = ["docker", "compose", "-f", self.compose_file, "-p", PROJECT] + list(args)
+        cmd = ["docker", "compose", "-f", self.compose_file, "-p", self.project] + list(args)
         return subprocess.run(cmd, capture_output=True, text=True, check=check)
 
     def _assert_w2_compose(self):
         with open(self.compose_file) as f:
             head = f.read(4096)
-        if "name: ptx-w2" not in head:
+        if f"name: {self.project}" not in head:
             raise AssertionError(
-                f"REFUSED: {self.compose_file} does not declare 'name: ptx-w2' "
-                f"— will not run lifecycle against a non-W2 compose file")
+                f"REFUSED: {self.compose_file} does not declare 'name: {self.project}' "
+                f"— will not run lifecycle against a mismatched compose file")
 
     def up(self):
         self._assert_w2_compose()

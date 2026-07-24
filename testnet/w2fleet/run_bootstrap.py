@@ -23,12 +23,17 @@ def main():
     ap.add_argument("--n", type=int, required=True)
     ap.add_argument("--compose", default=DEF_COMPOSE)
     ap.add_argument("--env", default="/mnt/pve/Node14TB/hemis-ptx/docker-w2/.env")
+    ap.add_argument("--project", default="ptx-w2",
+                    help="compose project (use e.g. bfleet for a 2nd isolated instance)")
+    ap.add_argument("--port-base", type=int, default=31000)
+    ap.add_argument("--subnet-base", default="172.31.0")
     ap.add_argument("--fund-caller-utxos", type=int, default=500)
     ap.add_argument("--reg-out", default=None,
                     help="write registration dict (incl. operator secrets) here")
     args = ap.parse_args()
 
-    c = W2Cluster(args.n, compose_file=args.compose)
+    c = W2Cluster(args.n, compose_file=args.compose, project=args.project,
+                  port_base=args.port_base, subnet_base=args.subnet_base)
     c.up()
     c.wait_ready()
     print(f"[run] fleet up: {args.n} GMs + caller")

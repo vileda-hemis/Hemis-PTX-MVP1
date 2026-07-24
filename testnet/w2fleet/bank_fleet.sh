@@ -9,13 +9,15 @@ set -euo pipefail
 N="${1:?usage: bank_fleet.sh <N> <tag>}"
 TAG="${2:?usage: bank_fleet.sh <N> <tag>}"
 
-W2_ROOT=/mnt/pve/Node14TB/hemis-ptx/w2-fleet
-DOCKER_W2=/mnt/pve/Node14TB/hemis-ptx/docker-w2
+# Second-instance parameterisation (defaults = the live ptx-w2 fleet):
+PROJECT="${PROJECT:-ptx-w2}"
+W2_ROOT="${W2_ROOT:-/mnt/pve/Node14TB/hemis-ptx/w2-fleet}"
+DOCKER_W2="${DOCKER_W2:-/mnt/pve/Node14TB/hemis-ptx/docker-w2}"
 BANK="$W2_ROOT/bank"
-OUT="$BANK/w2-fleet-N${N}-${TAG}.tar.gz"
+OUT="$BANK/${PROJECT}-N${N}-${TAG}.tar.gz"
 
-if docker ps --format '{{.Names}}' | grep -q '^ptx-w2-'; then
-    echo "REFUSED: ptx-w2 containers still running — stop the fleet first" >&2
+if docker ps --format '{{.Names}}' | grep -q "^${PROJECT}-"; then
+    echo "REFUSED: ${PROJECT} containers still running — stop the fleet first" >&2
     exit 1
 fi
 
@@ -25,17 +27,26 @@ fi
 # Run `validate_fleet.py 22 bank` BEFORE stopping the fleet — it verifies the
 # margin over RPC and writes this stamp; a stale/missing stamp REFUSES.
 STAMP="$W2_ROOT/.bank-margin-ok"
-if [ ! -f "$STAMP" ]; then
+# BANK_SKIP_MARGIN=1 bypasses the KDD-064 mainnet-margin invariant — for a
+# DEV/breakable fleet snapshotting a young pre-drill chain (coins not yet 120
+# deep). Never set it for the live fleet: the invariant prevents a restore from
+# replaying the post-restore deadlock at a gate crossing.
+if [ "${BANK_SKIP_MARGIN:-0}" = "1" ]; then
+    echo "BANK_SKIP_MARGIN=1 — skipping KDD-064 margin gate (dev/breakable fleet only)"
+elif [ ! -f "$STAMP" ]; then
     echo "REFUSED: no bank-margin stamp — run 'validate_fleet.py <N> bank' (KDD-064 invariant) before stopping the fleet" >&2
     exit 1
 fi
-STAMP_TS=$(sed -n 's/.*ts=\([0-9]*\).*/\1/p' "$STAMP")
-NOW=$(date +%s)
-if [ -z "$STAMP_TS" ] || [ $((NOW - STAMP_TS)) -gt 1800 ]; then
-    echo "REFUSED: bank-margin stamp is stale (>30min) — re-run 'validate_fleet.py <N> bank'" >&2
-    exit 1
+if [ "${BANK_SKIP_MARGIN:-0}" != "1" ]; then
+    STAMP_TS=$(sed -n 's/.*ts=\([0-9]*\).*/\1/p' "$STAMP")
+    NOW=$(date +%s)
+    if [ -z "$STAMP_TS" ] || [ $((NOW - STAMP_TS)) -gt 1800 ]; then
+        echo "REFUSED: bank-margin stamp is stale (>30min) — re-run 'validate_fleet.py <N> bank'" >&2
+        exit 1
+    fi
+    echo "bank-margin stamp OK: $(cat "$STAMP")"
+    rm -f "$STAMP"   # single-use: each re-bank re-verifies its own margin
 fi
-echo "bank-margin stamp OK: $(cat "$STAMP")"
 
 mkdir -p "$BANK"
 STAGE="$BANK/.stage-N${N}-${TAG}"
@@ -44,8 +55,6 @@ rm -rf "$STAGE"; mkdir -p "$STAGE"
 # log hygiene: truncate per-node debug.log before tar (disk discipline; logs
 # are runtime artifacts, not chain state)
 find "$W2_ROOT/datadirs" -name debug.log -exec truncate -s 0 {} \;
-
-rm -f "$STAMP"   # single-use: each re-bank re-verifies its own margin
 
 cp -a "$W2_ROOT/datadirs" "$STAGE/datadirs"
 cp -a "$DOCKER_W2/.env" "$STAGE/env"

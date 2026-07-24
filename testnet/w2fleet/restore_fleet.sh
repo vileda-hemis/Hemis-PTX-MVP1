@@ -15,11 +15,13 @@
 set -euo pipefail
 
 TAR="${1:?usage: restore_fleet.sh <bank-tar>}"
-W2_ROOT=/mnt/pve/Node14TB/hemis-ptx/w2-fleet
-DOCKER_W2=/mnt/pve/Node14TB/hemis-ptx/docker-w2
+# Second-instance parameterisation (defaults = the live ptx-w2 fleet):
+PROJECT="${PROJECT:-ptx-w2}"
+W2_ROOT="${W2_ROOT:-/mnt/pve/Node14TB/hemis-ptx/w2-fleet}"
+DOCKER_W2="${DOCKER_W2:-/mnt/pve/Node14TB/hemis-ptx/docker-w2}"
 
-if docker ps --format '{{.Names}}' | grep -q '^ptx-w2-'; then
-    echo "REFUSED: ptx-w2 containers running — stop/down (-p ptx-w2) first" >&2
+if docker ps --format '{{.Names}}' | grep -q "^${PROJECT}-"; then
+    echo "REFUSED: ${PROJECT} containers running — stop/down (-p ${PROJECT}) first" >&2
     exit 1
 fi
 
@@ -38,5 +40,5 @@ mv "$STAGE/datadirs" "$W2_ROOT/datadirs"
 cp -a "$STAGE/env" "$DOCKER_W2/.env"
 cp -a "$STAGE/docker-compose.generated.yml" "$DOCKER_W2/"
 rm -rf "$STAGE"
-echo "RESTORED from $TAR — now: docker compose -f $DOCKER_W2/docker-compose.generated.yml -p ptx-w2 up -d"
+echo "RESTORED from $TAR — now: docker compose -f $DOCKER_W2/docker-compose.generated.yml -p ${PROJECT} up -d"
 echo "THEN IMMEDIATELY: python3 testnet/w2fleet/validate_fleet.py <N> all  (BUG-019 (a): banked collaterals UNLOCKED until relock lands; residual owed to (d))"
