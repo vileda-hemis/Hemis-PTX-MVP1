@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from testnet.harness.cluster import Cluster
 from testnet.harness.bootstrap import bootstrap as do_bootstrap
-from testnet.harness.node import Node
+from testnet.harness.node import Node, RPCError
 
 COIN = 100_000_000
 PTX_SERVICE_FEE_SAT = COIN
@@ -63,21 +63,28 @@ def main():
     gm01   = cluster.gms[0]
     print(f"bootstrap done, height={caller.getblockcount()}")
 
-    # KDD-069 (dealer retired): ptx_roll signs ONLY with an ACTIVE DKG quorum.
-    # This diagnostic forms no quorum, so on a dealerless build the roll
-    # hard-errors and the coalesce/settlement diagnostic below is unreachable.
-    print("\n=== ptx_roll must hard-error (dealer retired, KDD-069) ===")
-    rolled = True
+    # KDD-069 branch (dealer retired — ptx_roll signs ONLY with an ACTIVE DKG
+    # quorum): rolls succeed -> quorum-bearing fleet (assert signing_source ==
+    # "dkg"; the coalesce/settlement diagnostic below then RUNS — that body is
+    # the reason this file is tracked). Roll raises the KDD-069 no-quorum error
+    # -> dealerless/quorumless fleet, the correct post-069 state (report, exit 0).
+    # Any other error -> raised.
+    print(f"\n=== submitting {N_ROLLS} rolls ===")
+    roll_height = caller.getblockcount()
     try:
-        caller.ptx_roll(1, 1, 100, game_id="diag-0", salt="00aabbcc")
-    except Exception as e:
-        rolled = False
-        assert "KDD-069" in str(e), f"expected KDD-069 dealer-retired error, got: {e}"
-        print(f"  ptx_roll correctly hard-errors: {e}")
-    assert not rolled, \
-        "ptx_roll should hard-error post-KDD-069 (no ACTIVE quorum, dealer retired)"
-    print("=== diagnostic ends: no signing quorum on a dealerless build ===")
-    return
+        for i in range(N_ROLLS):
+            r = caller.ptx_roll(1, 1, 100, game_id=f"diag-{i}", salt=f"0{i}aabbcc")
+            if i == 0:
+                assert r.get("signing_source") == "dkg", \
+                    f"signing_source must be 'dkg' (DKG path), got {r.get('signing_source')!r}"
+            print(f"  roll {i+1}: tx_id={r['tx_id'][:16]}... "
+                  f"source={r.get('signing_source')} result={r['results']}")
+    except RPCError as e:
+        if "KDD-069" in str(e):
+            print(f"  ptx_roll: no ACTIVE quorum (dealerless/quorumless fleet) — "
+                  f"correct post-KDD-069 behaviour, exiting 0: {e}")
+            return
+        raise
 
     pre_settled = len(caller.ptx_lottery_status().get("settlement_history", []))
     print(f"\n=== waiting for settlement (pre_settled={pre_settled}) ===")
