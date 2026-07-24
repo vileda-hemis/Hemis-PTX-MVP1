@@ -73,7 +73,16 @@ extern std::set<uint256>            g_ptx_memory_only_shares;
 // REFUSED (err set). Distinct quorum_hashes coexist. Returns true on store,
 // false (with err) on refusal.
 bool PTX_BLS_SetSkShare(const uint256& quorum_hash, int formation_height,
-                        const uint8_t sk_bytes[32], std::string& err);
+                        const uint8_t sk_bytes[32], PTXShareRole role, std::string& err);
+
+// CURRENT-role convenience overload (P1 callers). Forwards to the single guarded
+// setter above — NOT a second write path.
+inline bool PTX_BLS_SetSkShare(const uint256& quorum_hash, int formation_height,
+                               const uint8_t sk_bytes[32], std::string& err)
+{
+    return PTX_BLS_SetSkShare(quorum_hash, formation_height, sk_bytes,
+                              PTXShareRole::CURRENT, err);
+}
 
 // Read the CURRENT-role share for quorum_hash for signing (the SINGLE read path
 // for the signing selection, §5). Returns true and copies 32 bytes into out iff
@@ -137,6 +146,33 @@ void PTX_BLS_MarkMemoryOnly(const uint256& quorum_hash);
 // A node reports these as its degraded state, alongside the LoadShares corrupt
 // count — both distinguish "durable" from "held but will not survive restart".
 std::set<uint256> PTX_BLS_MemoryOnlyShares();
+
+// ---------------------------------------------------------------------------
+// KDD-070 P3 — PENDING role, promotion, TTL expiry.
+// ---------------------------------------------------------------------------
+
+// PENDING_TTL: how long a PENDING share survives without its successor
+// connecting, in blocks. ★ PROVISIONAL — justified by FINALIZE→successor-connect
+// latency under KDD-058-A any-staker inclusion (any staker can mine the successor
+// as soon as it validates from the replicated minable-commitments store — a few
+// blocks + propagation margin), NOT by the rotation interval N. Measurement OWED
+// at W2.3's first live rotation (measure FINALIZE→connect over real rotations).
+static const int PTX_PENDING_TTL_BLOCKS = 8;
+
+// promote(successor): PENDING(successor_qh) -> CURRENT, and CURRENT(predecessor_qh)
+// -> SUPERSEDED_RETAINED with promotion_height stamped = connect_height (P4's
+// depth-discard basis). PURE over explicit inputs — ProcessBlock at block-connect
+// merely calls this. KEY ISOLATION: if there is no PENDING share for successor_qh,
+// it is a NO-OP (returns 0) — a connect for quorum Y never promotes PENDING(X).
+// Re-persists changed shares via the RAW layer (P2). ★ IRREVERSIBLE until P4:
+// there is no undo yet (P4 adds the UndoBlock revert). Returns 1 if promoted, else 0.
+size_t PTX_BLS_Promote(const uint256& successor_qh, const uint256& predecessor_qh,
+                       int connect_height, CEvoDB* evoDb = nullptr);
+
+// Discard every PENDING share older than PENDING_TTL (tip_height - formation_height
+// > TTL). Erases from DISK as well as memory (P2 defect (a) — never memory-only).
+// Returns the number expired. CURRENT/SUPERSEDED shares are untouched.
+size_t PTX_BLS_ExpirePending(int tip_height, CEvoDB* evoDb = nullptr);
 
 // Sign msg with a raw 32-byte blst scalar (the GM's stored share).
 // Called by gm_bls_sign RPC handler on GM nodes.

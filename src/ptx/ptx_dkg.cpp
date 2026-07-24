@@ -1317,7 +1317,8 @@ bool PTX_DKG_ClosePhase4(PTXDKGSession& session)
 // path re-forms into a set slot.
 // ---------------------------------------------------------------------------
 
-bool PTX_DKG_StoreSkShare(const PTXDKGSession& session, int formation_height)
+bool PTX_DKG_StoreSkShare(const PTXDKGSession& session, int formation_height,
+                          PTXShareRole role)
 {
     if (session.phase != PTXDKGPhase::FINALIZE)
         return false;
@@ -1325,11 +1326,12 @@ bool PTX_DKG_StoreSkShare(const PTXDKGSession& session, int formation_height)
     uint8_t sk_bytes[32];
     blst_bendian_from_scalar(sk_bytes, &session.sk_share_i);
 
-    // KDD-070 P1: keyed by the ceremony's quorum_hash (role CURRENT). §C1
-    // refuse-unless-empty is now per-key — a set key is not overwritten.
+    // KDD-070 P1/P3: keyed by the ceremony's quorum_hash. §C1 refuse-unless-empty
+    // is per-key; role is CURRENT for a fresh formation, PENDING for a rotation
+    // successor (store-pending at FINALIZE, promoted at the successor's connect).
     std::string set_err;
-    if (!PTX_BLS_SetSkShare(session.quorum_hash, formation_height, sk_bytes, set_err)) {
-        LogPrintf("PTX DKG: StoreSkShare: refusing sk_share overwrite for quorum_hash=%s (%s)\n",
+    if (!PTX_BLS_SetSkShare(session.quorum_hash, formation_height, sk_bytes, role, set_err)) {
+        LogPrintf("PTX DKG: StoreSkShare: refusing sk_share store for quorum_hash=%s (%s)\n",
                   session.quorum_hash.ToString(), set_err);
         return false;
     }
@@ -1344,7 +1346,7 @@ bool PTX_DKG_StoreSkShare(const PTXDKGSession& session, int formation_height)
         HeldShare hs;
         std::memcpy(hs.bytes, sk_bytes, 32);
         hs.formation_height = formation_height;
-        hs.role             = PTXShareRole::CURRENT;
+        hs.role             = role;
         hs.promotion_height = -1;
         if (!PTX_BLS_PersistShare(*evoDb, session.quorum_hash, hs)) {
             PTX_BLS_MarkMemoryOnly(session.quorum_hash);   // trackable degraded state

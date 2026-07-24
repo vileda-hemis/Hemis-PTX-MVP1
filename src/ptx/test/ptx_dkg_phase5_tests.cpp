@@ -1005,4 +1005,216 @@ BOOST_AUTO_TEST_CASE(P2_MemoryOnly_Tracked_And_Reported)
     PTX_TEST_ClearSkShareSlot();
 }
 
+// ===========================================================================
+// KDD-070 P3 — PENDING role, promotion, TTL expiry, key isolation.
+// ===========================================================================
+
+namespace {
+// held role of a quorum_hash (returns false if not held).
+bool P3_held_role(const uint256& qh, PTXShareRole& out)
+{
+    LOCK(cs_ptx_my_bls_sk);
+    auto it = g_ptx_my_shares.find(qh);
+    if (it == g_ptx_my_shares.end()) return false;
+    out = it->second.role;
+    return true;
+}
+int P3_promo_height(const uint256& qh)
+{
+    LOCK(cs_ptx_my_bls_sk);
+    auto it = g_ptx_my_shares.find(qh);
+    return it == g_ptx_my_shares.end() ? -999 : it->second.promotion_height;
+}
+} // namespace
+
+// store -> PENDING: held (in the map with role PENDING) but NOT signable.
+// RED (inversion): a SetSkShare that stores CURRENT regardless of role -> the
+// share becomes signable and role != PENDING.
+BOOST_AUTO_TEST_CASE(P3_StorePending_HeldButNotSignable)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 qh = QHk(0x31);
+    uint8_t s[32]; std::memset(s, 0x31, 32); std::string e;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(qh, 100, s, PTXShareRole::PENDING, e));
+    PTXShareRole r;
+    BOOST_REQUIRE(P3_held_role(qh, r));
+    BOOST_CHECK(r == PTXShareRole::PENDING);            // held as PENDING
+    uint8_t out[32];
+    BOOST_CHECK(!PTX_BLS_GetCurrentShare(qh, out));     // NOT signable
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// signing a PENDING quorum_hash is refused (GetCurrentShare false) — the gm_bls_sign
+// handler turns that into a hard error naming the quorum.
+// RED (inversion): a GetCurrentShare that ignores role returns the pending bytes.
+BOOST_AUTO_TEST_CASE(P3_SignPending_Refused)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 qh = QHk(0x32);
+    uint8_t s[32]; std::memset(s, 0x32, 32); std::string e;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(qh, 100, s, PTXShareRole::PENDING, e));
+    uint8_t out[32];
+    BOOST_CHECK(!PTX_BLS_GetCurrentShare(qh, out));     // PENDING refuses to sign
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// promote(successor): PENDING(succ)->CURRENT and CURRENT(pred)->SUPERSEDED_RETAINED
+// with promotion_height stamped = connect height. Function-level.
+// RED (inversion): a promote that only flips the successor (leaves pred CURRENT)
+// or stamps no height -> the SUPERSEDED/height assertions fail.
+BOOST_AUTO_TEST_CASE(P3_Promote_FlipsBothRoles_StampsHeight)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 pred = QHk(0x33), succ = QHk(0x34);
+    uint8_t s[32]; std::memset(s, 0x33, 32); std::string e;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(pred, 100, s, PTXShareRole::CURRENT, e));
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(succ, 140, s, PTXShareRole::PENDING, e));
+
+    BOOST_CHECK_EQUAL(PTX_BLS_Promote(succ, pred, 150), 1u);
+    PTXShareRole rs, rp;
+    BOOST_REQUIRE(P3_held_role(succ, rs)); BOOST_CHECK(rs == PTXShareRole::CURRENT);
+    BOOST_REQUIRE(P3_held_role(pred, rp)); BOOST_CHECK(rp == PTXShareRole::SUPERSEDED_RETAINED);
+    BOOST_CHECK_EQUAL(P3_promo_height(pred), 150);      // stamped = connect height
+    uint8_t out[32];
+    BOOST_CHECK(PTX_BLS_GetCurrentShare(succ, out));    // successor now signs
+    BOOST_CHECK(!PTX_BLS_GetCurrentShare(pred, out));   // old no longer signs
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// ★ key isolation: promote for a quorum Y with no PENDING is a NO-OP and does
+// NOT touch PENDING(X). Not a best-effort match.
+// RED (inversion): a promote that promotes the "first PENDING" instead of the
+// keyed one flips X.
+BOOST_AUTO_TEST_CASE(P3_Promote_KeyIsolation_NoOpOnMismatch)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 x = QHk(0x35), y = QHk(0x36), pred = QHk(0x37);
+    uint8_t s[32]; std::memset(s, 0x35, 32); std::string e;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(pred, 100, s, PTXShareRole::CURRENT, e));
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(x,    140, s, PTXShareRole::PENDING, e));
+
+    BOOST_CHECK_EQUAL(PTX_BLS_Promote(y, pred, 150), 0u);   // no PENDING(y) -> no-op
+    PTXShareRole rx, rp;
+    BOOST_REQUIRE(P3_held_role(x, rx)); BOOST_CHECK(rx == PTXShareRole::PENDING);        // X untouched
+    BOOST_REQUIRE(P3_held_role(pred, rp)); BOOST_CHECK(rp == PTXShareRole::CURRENT);     // pred untouched
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// second store-pending refused while a PENDING exists (item 3, KDD-040 rule).
+// RED (inversion): a setter without the one-PENDING guard accepts the second.
+BOOST_AUTO_TEST_CASE(P3_SecondPending_Refused)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 b = QHk(0x38), c = QHk(0x39);
+    uint8_t s[32]; std::memset(s, 0x38, 32); std::string e1, e2;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(b, 100, s, PTXShareRole::PENDING, e1));   // first ok
+    BOOST_CHECK(!PTX_BLS_SetSkShare(c, 100, s, PTXShareRole::PENDING, e2));    // second refused
+    BOOST_CHECK(!e2.empty());
+    PTXShareRole r;
+    BOOST_CHECK(!P3_held_role(c, r));   // C not stored
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// TTL boundary: at exactly TTL kept, past TTL expired.
+// RED (inversion): a `>=` instead of `>` expires at the boundary; a `+1` slip
+// keeps it one block too long.
+BOOST_AUTO_TEST_CASE(P3_TTL_Boundary)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 qh = QHk(0x3A);
+    uint8_t s[32]; std::memset(s, 0x3A, 32); std::string e;
+    const int fh = 1000;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(qh, fh, s, PTXShareRole::PENDING, e));
+
+    // age == TTL -> kept (not > TTL).
+    BOOST_CHECK_EQUAL(PTX_BLS_ExpirePending(fh + PTX_PENDING_TTL_BLOCKS), 0u);
+    PTXShareRole r; BOOST_CHECK(P3_held_role(qh, r));
+    // age == TTL+1 -> expired.
+    BOOST_CHECK_EQUAL(PTX_BLS_ExpirePending(fh + PTX_PENDING_TTL_BLOCKS + 1), 1u);
+    BOOST_CHECK(!P3_held_role(qh, r));
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// expired PENDING is gone from DISK, not just memory (P2 defect (a) not repeated).
+// RED (inversion): an expiry that erases only the map -> the PENDING reloads.
+BOOST_AUTO_TEST_CASE(P3_ExpiredPending_GoneFromDisk)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_TEST_ClearSkShareSlot();
+    uint256 qh = QHk(0x3B);
+    HeldShare hs; std::memset(hs.bytes, 0x3B, 32); hs.role = PTXShareRole::PENDING;
+    hs.formation_height = 1000;
+    BOOST_REQUIRE(PTX_BLS_PersistShare(*evoDb, qh, hs));
+    BOOST_REQUIRE_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);       // held as PENDING
+
+    BOOST_CHECK_EQUAL(PTX_BLS_ExpirePending(1000 + PTX_PENDING_TTL_BLOCKS + 1, evoDb.get()), 1u);
+    PTX_TEST_ClearSkShareSlot();                              // wipe map; disk is truth
+    BOOST_CHECK_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);
+    PTXShareRole r;
+    BOOST_CHECK(!P3_held_role(qh, r));                        // gone from disk
+    PTX_BLS_WipeShares(evoDb.get());
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// late connect after expiry -> promote finds no PENDING, promotes nothing, no crash.
+// RED (inversion): a promote that resurrects/creates a CURRENT for an absent key.
+BOOST_AUTO_TEST_CASE(P3_LateConnect_AfterExpiry_NoOp)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 succ = QHk(0x3C), pred = QHk(0x3D);
+    uint8_t s[32]; std::memset(s, 0x3C, 32); std::string e;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(succ, 1000, s, PTXShareRole::PENDING, e));
+    BOOST_CHECK_EQUAL(PTX_BLS_ExpirePending(1000 + PTX_PENDING_TTL_BLOCKS + 1), 1u);   // expired
+
+    BOOST_CHECK_EQUAL(PTX_BLS_Promote(succ, pred, 2000), 0u);   // nothing to promote
+    PTXShareRole r;
+    BOOST_CHECK(!P3_held_role(succ, r));   // not resurrected
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// PENDING persists and reloads via LoadShares with its role intact.
+// RED (inversion): a serializer that drops role -> reloads as CURRENT (default).
+BOOST_AUTO_TEST_CASE(P3_Pending_Persists_RoleIntact)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_TEST_ClearSkShareSlot();
+    uint256 qh = QHk(0x3E);
+    HeldShare hs; std::memset(hs.bytes, 0x3E, 32); hs.role = PTXShareRole::PENDING;
+    hs.formation_height = 1234;
+    BOOST_REQUIRE(PTX_BLS_PersistShare(*evoDb, qh, hs));
+
+    PTX_TEST_ClearSkShareSlot();
+    BOOST_REQUIRE_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);
+    PTXShareRole r;
+    BOOST_REQUIRE(P3_held_role(qh, r));
+    BOOST_CHECK(r == PTXShareRole::PENDING);   // role survived the round trip
+    PTX_BLS_WipeShares(evoDb.get());
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// promotion survives LoadShares — the flipped roles reload as CURRENT/SUPERSEDED.
+// RED (inversion): a promote that doesn't RE-PERSIST -> LoadShares reloads the
+// pre-promote roles (PENDING successor, CURRENT predecessor).
+BOOST_AUTO_TEST_CASE(P3_Promotion_SurvivesLoadShares)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_TEST_ClearSkShareSlot();
+    uint256 pred = QHk(0x40), succ = QHk(0x41);
+    HeldShare a; std::memset(a.bytes, 0x40, 32); a.role = PTXShareRole::CURRENT; a.formation_height = 100;
+    HeldShare b; std::memset(b.bytes, 0x41, 32); b.role = PTXShareRole::PENDING; b.formation_height = 140;
+    BOOST_REQUIRE(PTX_BLS_PersistShare(*evoDb, pred, a));
+    BOOST_REQUIRE(PTX_BLS_PersistShare(*evoDb, succ, b));
+    BOOST_REQUIRE_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);
+
+    BOOST_CHECK_EQUAL(PTX_BLS_Promote(succ, pred, 150, evoDb.get()), 1u);   // re-persists
+    PTX_TEST_ClearSkShareSlot();
+    BOOST_REQUIRE_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);
+    PTXShareRole rs, rp;
+    BOOST_REQUIRE(P3_held_role(succ, rs)); BOOST_CHECK(rs == PTXShareRole::CURRENT);
+    BOOST_REQUIRE(P3_held_role(pred, rp)); BOOST_CHECK(rp == PTXShareRole::SUPERSEDED_RETAINED);
+    BOOST_CHECK_EQUAL(P3_promo_height(pred), 150);
+    PTX_BLS_WipeShares(evoDb.get());
+    PTX_TEST_ClearSkShareSlot();
+}
+
 BOOST_AUTO_TEST_SUITE_END()

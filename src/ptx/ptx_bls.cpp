@@ -51,7 +51,7 @@ std::set<uint256>            g_ptx_memory_only_shares;   // KDD-070 P2 (b): pers
 // ---------------------------------------------------------------------------
 
 bool PTX_BLS_SetSkShare(const uint256& quorum_hash, int formation_height,
-                        const uint8_t sk_bytes[32], std::string& err)
+                        const uint8_t sk_bytes[32], PTXShareRole role, std::string& err)
 {
     LOCK(cs_ptx_my_bls_sk);
     if (g_ptx_my_shares.count(quorum_hash)) {
@@ -60,10 +60,25 @@ bool PTX_BLS_SetSkShare(const uint256& quorum_hash, int formation_height,
               "rotation/disband must use an authorized clear path)";
         return false;
     }
+    if (role == PTXShareRole::PENDING) {
+        // KDD-070 P3, KDD-040-era rule: at most ONE PENDING in flight — a member
+        // is in one lineage, so at most one rotation-successor may be pending at
+        // a time. A second store-pending is refused (the driver must not start a
+        // second rotation before the first resolves; a stuck PENDING is cleaned
+        // by TTL). W2.5 multi-quorum relaxes this to ONE-PER-LINEAGE; do NOT
+        // encode a global cap in the type.
+        for (const auto& kv : g_ptx_my_shares) {
+            if (kv.second.role == PTXShareRole::PENDING) {
+                err = "a PENDING share already exists (quorum " + kv.first.ToString() +
+                      "); refusing a second (one rotation in flight per member, KDD-040)";
+                return false;
+            }
+        }
+    }
     HeldShare hs;
     std::memcpy(hs.bytes, sk_bytes, 32);
     hs.formation_height = formation_height;
-    hs.role             = PTXShareRole::CURRENT;   // P1: CURRENT only
+    hs.role             = role;
     hs.promotion_height = -1;
     g_ptx_my_shares[quorum_hash] = hs;
     return true;
@@ -135,6 +150,72 @@ std::set<uint256> PTX_BLS_MemoryOnlyShares()
 {
     LOCK(cs_ptx_my_bls_sk);
     return g_ptx_memory_only_shares;
+}
+
+// ---------------------------------------------------------------------------
+// KDD-070 P3 — promotion (pure function) and PENDING TTL expiry.
+// ---------------------------------------------------------------------------
+
+size_t PTX_BLS_Promote(const uint256& successor_qh, const uint256& predecessor_qh,
+                       int connect_height, CEvoDB* evoDb)
+{
+    LOCK(cs_ptx_my_bls_sk);
+    auto sit = g_ptx_my_shares.find(successor_qh);
+    // KEY ISOLATION: only a PENDING share for THIS connecting quorum promotes.
+    // A connect for a quorum with no PENDING (or a non-PENDING share) is a NO-OP
+    // — it never touches PENDING(X) for some other X.
+    if (sit == g_ptx_my_shares.end() || sit->second.role != PTXShareRole::PENDING)
+        return 0;
+
+    // PENDING(successor) -> CURRENT.
+    sit->second.role             = PTXShareRole::CURRENT;
+    sit->second.promotion_height = -1;
+
+    // CURRENT(predecessor) -> SUPERSEDED_RETAINED, stamping promotion_height =
+    // the successor's connect height (P4's depth-discard basis). The old share is
+    // KEPT (P3 discards nothing; P4 adds retention/discard/undo).
+    bool superseded = false;
+    auto pit = g_ptx_my_shares.find(predecessor_qh);
+    if (pit != g_ptx_my_shares.end() && pit->second.role == PTXShareRole::CURRENT) {
+        pit->second.role             = PTXShareRole::SUPERSEDED_RETAINED;
+        pit->second.promotion_height = connect_height;
+        superseded = true;
+    }
+
+    // Re-persist the changed shares via the RAW layer (P2). ★ IRREVERSIBLE until
+    // P4: neither the transactional nor the raw layer auto-reverts on disconnect
+    // (the record store's UndoBlock does an explicit Erase, ptx_quorum_store.cpp)
+    // — P4 adds the explicit undo revert. A persist failure marks memory-only
+    // (the flag follows the material).
+    if (evoDb != nullptr) {
+        if (!PTX_BLS_PersistShare(*evoDb, successor_qh, sit->second))
+            g_ptx_memory_only_shares.insert(successor_qh);
+        if (superseded && !PTX_BLS_PersistShare(*evoDb, predecessor_qh, pit->second))
+            g_ptx_memory_only_shares.insert(predecessor_qh);
+    }
+    return 1;
+}
+
+size_t PTX_BLS_ExpirePending(int tip_height, CEvoDB* evoDb)
+{
+    LOCK(cs_ptx_my_bls_sk);
+    size_t expired = 0;
+    for (auto it = g_ptx_my_shares.begin(); it != g_ptx_my_shares.end(); ) {
+        if (it->second.role == PTXShareRole::PENDING &&
+            (tip_height - it->second.formation_height) > PTX_PENDING_TTL_BLOCKS) {
+            LogPrintf("PTX P3: expiring stale PENDING share for quorum %s "
+                      "(age %d > TTL %d blocks)\n", it->first.ToString(),
+                      tip_height - it->second.formation_height, PTX_PENDING_TTL_BLOCKS);
+            if (evoDb != nullptr)                    // erase from DISK too (P2 defect (a))
+                evoDb->GetRawDB().Erase(std::make_pair(DB_PTX_SKSHARE, it->first));
+            g_ptx_memory_only_shares.erase(it->first);
+            it = g_ptx_my_shares.erase(it);
+            ++expired;
+        } else {
+            ++it;
+        }
+    }
+    return expired;
 }
 
 bool PTX_BLS_PersistShare(CEvoDB& evoDb, const uint256& quorum_hash, const HeldShare& hs)

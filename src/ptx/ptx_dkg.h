@@ -21,6 +21,7 @@
 
 #include "blst.h"
 #include "bls/bls_wrapper.h"
+#include "ptx/ptx_bls.h"               // PTXShareRole (KDD-070 P3 store-pending role)
 // bls_ies.h is included for transport-encryption of ceremony shares only (Phase 1).
 // No llmq:: namespace dependency: bls_ies.h lives in src/bls/ and its transitive
 // includes contain no llmq headers.  The share bytes are blst arithmetic throughout;
@@ -730,7 +731,10 @@ bool PTX_DKG_ClosePhase4(PTXDKGSession& session);
 // with the trusted dealer).
 //
 // Pre: phase == FINALIZE, sk_share_i computed.
-bool PTX_DKG_StoreSkShare(const PTXDKGSession& session, int formation_height);
+// role (KDD-070 P3): CURRENT for a fresh formation (default); PENDING for a
+// rotation successor (stored at FINALIZE, promoted at the successor's connect).
+bool PTX_DKG_StoreSkShare(const PTXDKGSession& session, int formation_height,
+                          PTXShareRole role = PTXShareRole::CURRENT);
 
 // Construct the PTXDKG special transaction.
 // Sets nType = PTXDKG (11), nVersion = SAPLING.
