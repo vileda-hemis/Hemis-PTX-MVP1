@@ -1217,4 +1217,273 @@ BOOST_AUTO_TEST_CASE(P3_Promotion_SurvivesLoadShares)
     PTX_TEST_ClearSkShareSlot();
 }
 
+// ===========================================================================
+// KDD-070 P4 — SUPERSEDED retention window: depth-discard + undo revert.
+// ===========================================================================
+
+namespace {
+// Build a promoted lineage in memory: CURRENT(pred) + PENDING(succ) -> Promote
+// -> SUPERSEDED_RETAINED(pred, promotion_height=connect_h) + CURRENT(succ).
+// Returns after asserting the post-promote roles, so each P4 test starts from a
+// known-good superseded state without repeating the setup.
+void P4_make_promoted(const uint256& pred, const uint256& succ, int connect_h,
+                      uint8_t pred_fill, uint8_t succ_fill)
+{
+    uint8_t sp[32]; std::memset(sp, pred_fill, 32);
+    uint8_t ss[32]; std::memset(ss, succ_fill, 32);
+    std::string e;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(pred, connect_h - 50, sp, e));                     // CURRENT
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(succ, connect_h - 10, ss, PTXShareRole::PENDING, e));
+    BOOST_REQUIRE_EQUAL(PTX_BLS_Promote(succ, pred, connect_h), 1u);
+    PTXShareRole r;
+    BOOST_REQUIRE(P3_held_role(pred, r)); BOOST_REQUIRE(r == PTXShareRole::SUPERSEDED_RETAINED);
+    BOOST_REQUIRE(P3_held_role(succ, r)); BOOST_REQUIRE(r == PTXShareRole::CURRENT);
+}
+} // namespace
+
+// retention boundary: depth 119 kept, depth 120 discarded (DEFAULT_MAX_REORG_DEPTH
+// + PTX_SUPERSEDED_REORG_MARGIN = 100 + 20). DEPTH-based on tip - promotion_height.
+// RED (inversion): a discard using `>` instead of `>=` keeps depth 120 (returns 0).
+BOOST_AUTO_TEST_CASE(P4_RetentionBoundary_119Kept_120Discarded)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 pred = QHk(0x51), succ = QHk(0x52);
+    P4_make_promoted(pred, succ, 150, 0x51, 0x52);   // pred SUPERSEDED, promotion_height=150
+    const int depth = DEFAULT_MAX_REORG_DEPTH + PTX_SUPERSEDED_REORG_MARGIN;   // 120
+    PTXShareRole r;
+
+    // depth 119 (tip = 150 + 119): kept.
+    BOOST_CHECK_EQUAL(PTX_BLS_DiscardSuperseded(150 + depth - 1), 0u);
+    BOOST_REQUIRE(P3_held_role(pred, r)); BOOST_CHECK(r == PTXShareRole::SUPERSEDED_RETAINED);
+
+    // depth 120 (tip = 150 + 120): discarded.
+    BOOST_CHECK_EQUAL(PTX_BLS_DiscardSuperseded(150 + depth), 1u);
+    BOOST_CHECK(!P3_held_role(pred, r));
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// a discarded SUPERSEDED share is gone from DISK, not just memory.
+// RED (inversion): a discard that erases memory but not the RAW-DB entry -> the
+// share reloads on the next LoadShares.
+BOOST_AUTO_TEST_CASE(P4_DiscardedSuperseded_GoneFromDisk)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_TEST_ClearSkShareSlot();
+    uint256 qh = QHk(0x53);
+    HeldShare hs; std::memset(hs.bytes, 0x53, 32); hs.role = PTXShareRole::SUPERSEDED_RETAINED;
+    hs.formation_height = 100; hs.promotion_height = 150;
+    BOOST_REQUIRE(PTX_BLS_PersistShare(*evoDb, qh, hs));
+    BOOST_REQUIRE_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);
+
+    BOOST_CHECK_EQUAL(PTX_BLS_DiscardSuperseded(150 + 120, evoDb.get()), 1u);
+    PTX_TEST_ClearSkShareSlot();
+    BOOST_REQUIRE_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);
+    PTXShareRole r;
+    BOOST_CHECK(!P3_held_role(qh, r));   // gone from DISK, did not reload
+    PTX_BLS_WipeShares(evoDb.get());
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// undo revert: SUPERSEDED(pred) -> CURRENT, the reverted CURRENT(succ) discarded,
+// promotion_height cleared.
+// RED (inversion): an undo that does not clear promotion_height, or does not
+// discard the successor, or does not restore the predecessor role.
+BOOST_AUTO_TEST_CASE(P4_UndoRevert_RestoresPred_DiscardsSucc_ClearsHeight)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 pred = QHk(0x54), succ = QHk(0x55);
+    P4_make_promoted(pred, succ, 150, 0x54, 0x55);
+
+    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(succ, pred), 1u);
+    PTXShareRole rp;
+    BOOST_REQUIRE(P3_held_role(pred, rp)); BOOST_CHECK(rp == PTXShareRole::CURRENT);   // restored
+    BOOST_CHECK_EQUAL(P3_promo_height(pred), -1);                                       // height cleared
+    PTXShareRole rs;
+    BOOST_CHECK(!P3_held_role(succ, rs));                                               // successor discarded
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// post-revert CURRENT signs; pre-revert SUPERSEDED refuses.
+// RED (inversion): an undo that leaves the predecessor non-CURRENT -> the
+// post-revert signing read fails.
+BOOST_AUTO_TEST_CASE(P4_PostRevert_Signs_PreRevert_Refuses)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 pred = QHk(0x56), succ = QHk(0x57);
+    P4_make_promoted(pred, succ, 150, 0x56, 0x57);
+
+    uint8_t out[32];
+    BOOST_CHECK(!PTX_BLS_GetCurrentShare(pred, out));   // pre-revert: SUPERSEDED refuses
+
+    BOOST_REQUIRE_EQUAL(PTX_BLS_UndoPromote(succ, pred), 1u);
+    BOOST_CHECK(PTX_BLS_GetCurrentShare(pred, out));    // post-revert: CURRENT signs
+    uint8_t sp[32]; std::memset(sp, 0x56, 32);
+    BOOST_CHECK(std::memcmp(out, sp, 32) == 0);         // and it is the predecessor's own bytes
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// undo is idempotent: the second call is a no-op, not a double-revert.
+// RED (inversion): an undo that returns 1 without discarding the successor / not
+// requiring successor==CURRENT -> a second call reverts again (returns 1).
+BOOST_AUTO_TEST_CASE(P4_Undo_Idempotent_SecondCallNoOps)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 pred = QHk(0x58), succ = QHk(0x59);
+    P4_make_promoted(pred, succ, 150, 0x58, 0x59);
+
+    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(succ, pred), 1u);   // first: reverts
+    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(succ, pred), 0u);   // second: clean no-op
+    PTXShareRole rp;
+    BOOST_REQUIRE(P3_held_role(pred, rp)); BOOST_CHECK(rp == PTXShareRole::CURRENT);
+    BOOST_CHECK_EQUAL(P3_promo_height(pred), -1);
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// undo for a quorum_hash with no promotion -> clean no-op (returns 0, no error,
+// predecessor untouched).
+// RED (inversion): an undo that restores whenever the predecessor is present,
+// regardless of the successor -> returns 1 for a never-promoted lineage.
+BOOST_AUTO_TEST_CASE(P4_Undo_NoPromotion_CleanNoOp)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 pred = QHk(0x5A), succ = QHk(0x5B);
+    uint8_t sp[32]; std::memset(sp, 0x5A, 32); std::string e;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(pred, 100, sp, e));   // CURRENT, never superseded; succ never held
+
+    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(succ, pred), 0u);   // successor not held -> no-op
+    PTXShareRole rp;
+    BOOST_REQUIRE(P3_held_role(pred, rp)); BOOST_CHECK(rp == PTXShareRole::CURRENT);   // untouched
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// key isolation on the revert: undo(Y) leaves a promoted lineage X untouched.
+// RED (inversion): an undo that reverts the first CURRENT/first SUPERSEDED it
+// finds (ignores the key) -> undo(Y) reverts X.
+BOOST_AUTO_TEST_CASE(P4_Undo_KeyIsolation_LeavesOtherLineageUntouched)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 predX = QHk(0x5C), succX = QHk(0x5D);
+    P4_make_promoted(predX, succX, 150, 0x5C, 0x5D);   // promoted lineage X
+
+    uint256 succY = QHk(0x6A), predY = QHk(0x6B);      // unrelated Y, not held
+    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(succY, predY), 0u);   // no-op
+
+    PTXShareRole r;
+    BOOST_REQUIRE(P3_held_role(succX, r)); BOOST_CHECK(r == PTXShareRole::CURRENT);              // X intact
+    BOOST_REQUIRE(P3_held_role(predX, r)); BOOST_CHECK(r == PTXShareRole::SUPERSEDED_RETAINED);
+    BOOST_CHECK_EQUAL(P3_promo_height(predX), 150);
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// the revert survives LoadShares — roles reload correctly after a revert.
+// RED (inversion): an undo that mutates memory but does not re-persist the
+// restored predecessor / does not erase the discarded successor from disk ->
+// after reload the predecessor is stale SUPERSEDED or the successor reappears.
+BOOST_AUTO_TEST_CASE(P4_Revert_SurvivesLoadShares)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_TEST_ClearSkShareSlot();
+    uint256 pred = QHk(0x5E), succ = QHk(0x5F);
+    uint8_t sp[32]; std::memset(sp, 0x5E, 32);
+    uint8_t ss[32]; std::memset(ss, 0x5F, 32);
+    std::string e;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(pred, 100, sp, e));
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(succ, 140, ss, PTXShareRole::PENDING, e));
+    BOOST_REQUIRE_EQUAL(PTX_BLS_Promote(succ, pred, 150, evoDb.get()), 1u);   // persisted
+
+    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(succ, pred, evoDb.get()), 1u);      // persisted revert
+    PTX_TEST_ClearSkShareSlot();
+    BOOST_REQUIRE_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);
+    PTXShareRole rp;
+    BOOST_REQUIRE(P3_held_role(pred, rp)); BOOST_CHECK(rp == PTXShareRole::CURRENT);   // reloaded restored
+    BOOST_CHECK_EQUAL(P3_promo_height(pred), -1);
+    PTXShareRole rs;
+    BOOST_CHECK(!P3_held_role(succ, rs));                                              // successor gone from disk
+    PTX_BLS_WipeShares(evoDb.get());
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// multi-block disconnect (item 1): the one-PENDING rule does NOT bound completed
+// reorgeable promotions — a lineage can stack SUPERSEDED(A) + SUPERSEDED(B) +
+// CURRENT(C). A reorg disconnects tip-first, reverting each promotion keyed to its
+// block in LIFO order; a disconnect of a block that promoted nothing is a clean
+// no-op. RED (inversion): a key-ignoring revert (first-match) or a non-zero no-op.
+BOOST_AUTO_TEST_CASE(P4_MultiBlockDisconnect_ReversesEachKeyedPromotion)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 A = QHk(0x60), B = QHk(0x61), C = QHk(0x62);
+    uint8_t sa[32]; std::memset(sa, 0x60, 32);
+    uint8_t sb[32]; std::memset(sb, 0x61, 32);
+    uint8_t sc[32]; std::memset(sc, 0x62, 32);
+    std::string e;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(A, 100, sa, e));                        // A CURRENT
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(B, 140, sb, PTXShareRole::PENDING, e));
+    BOOST_REQUIRE_EQUAL(PTX_BLS_Promote(B, A, 150), 1u);                     // A SUPERSEDED(150), B CURRENT
+    // B is now CURRENT (not PENDING), so a SECOND PENDING is permitted — the
+    // one-PENDING rule did NOT prevent a second in-flight promotion.
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(C, 190, sc, PTXShareRole::PENDING, e));
+    BOOST_REQUIRE_EQUAL(PTX_BLS_Promote(C, B, 200), 1u);                     // B SUPERSEDED(200), C CURRENT
+
+    PTXShareRole r;
+    BOOST_REQUIRE(P3_held_role(A, r)); BOOST_CHECK(r == PTXShareRole::SUPERSEDED_RETAINED);
+    BOOST_REQUIRE(P3_held_role(B, r)); BOOST_CHECK(r == PTXShareRole::SUPERSEDED_RETAINED);
+    BOOST_REQUIRE(P3_held_role(C, r)); BOOST_CHECK(r == PTXShareRole::CURRENT);
+
+    // a disconnect of a block that promoted nothing -> clean no-op.
+    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(QHk(0x6F), QHk(0x6E)), 0u);
+
+    // disconnect tip-first: reverse promote2 (C,B), then promote1 (B,A).
+    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(C, B), 1u);
+    BOOST_REQUIRE(P3_held_role(B, r)); BOOST_CHECK(r == PTXShareRole::CURRENT);
+    BOOST_CHECK_EQUAL(P3_promo_height(B), -1);
+    BOOST_CHECK(!P3_held_role(C, r));
+
+    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(B, A), 1u);
+    BOOST_REQUIRE(P3_held_role(A, r)); BOOST_CHECK(r == PTXShareRole::CURRENT);
+    BOOST_CHECK_EQUAL(P3_promo_height(A), -1);
+    BOOST_CHECK(!P3_held_role(B, r));
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// SUPERSEDED is unsignable at EVERY point across promote -> revert -> re-promote,
+// not only at the single moment P4_PostRevert asserts. The signing selection
+// (PTX_BLS_GetCurrentShare — the sole read path; rpc/ptx.cpp:539 is its only
+// caller, feeding PartialSign) gates on role == CURRENT, so a SUPERSEDED share's
+// bytes never reach the signer. RED (inversion): a GetCurrentShare that drops the
+// role check -> the SUPERSEDED predecessor becomes signable at stage 1 (and again
+// after re-promotion).
+BOOST_AUTO_TEST_CASE(P4_SupersededNeverSignable_AcrossCycle)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 P = QHk(0x70), S = QHk(0x71), S2 = QHk(0x72);
+    uint8_t sp[32];  std::memset(sp,  0x70, 32);
+    uint8_t ss[32];  std::memset(ss,  0x71, 32);
+    uint8_t ss2[32]; std::memset(ss2, 0x72, 32);
+    std::string e; uint8_t out[32];
+
+    // stage 0: P CURRENT, S PENDING. PENDING is not signable; P is.
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(P, 100, sp, e));
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(S, 140, ss, PTXShareRole::PENDING, e));
+    BOOST_CHECK(PTX_BLS_GetCurrentShare(P, out));      // CURRENT signs
+    BOOST_CHECK(!PTX_BLS_GetCurrentShare(S, out));     // PENDING refused
+
+    // stage 1: promote. P -> SUPERSEDED (must NOT sign), S -> CURRENT (signs).
+    BOOST_REQUIRE_EQUAL(PTX_BLS_Promote(S, P, 150), 1u);
+    BOOST_CHECK(!PTX_BLS_GetCurrentShare(P, out));     // SUPERSEDED refused (window 1)
+    BOOST_CHECK(PTX_BLS_GetCurrentShare(S, out));
+
+    // stage 2: revert. P -> CURRENT (signs again), S discarded (not signable).
+    BOOST_REQUIRE_EQUAL(PTX_BLS_UndoPromote(S, P), 1u);
+    BOOST_CHECK(PTX_BLS_GetCurrentShare(P, out));
+    BOOST_CHECK(!PTX_BLS_GetCurrentShare(S, out));     // gone -> refused
+
+    // stage 3: re-promote onto a fresh successor. P -> SUPERSEDED again (must NOT
+    // sign), S2 -> CURRENT. Confirms the refusal holds through a second window.
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(S2, 290, ss2, PTXShareRole::PENDING, e));
+    BOOST_REQUIRE_EQUAL(PTX_BLS_Promote(S2, P, 300), 1u);
+    BOOST_CHECK(!PTX_BLS_GetCurrentShare(P, out));     // SUPERSEDED refused (window 2)
+    BOOST_CHECK(PTX_BLS_GetCurrentShare(S2, out));
+    PTX_TEST_ClearSkShareSlot();
+}
+
 BOOST_AUTO_TEST_SUITE_END()

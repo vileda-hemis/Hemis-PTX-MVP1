@@ -159,6 +159,14 @@ std::set<uint256> PTX_BLS_MemoryOnlyShares();
 // at W2.3's first live rotation (measure FINALIZE→connect over real rotations).
 static const int PTX_PENDING_TTL_BLOCKS = 8;
 
+// KDD-070 P4: safety MARGIN added to DEFAULT_MAX_REORG_DEPTH (consensus/
+// consensus.h:35 = 100) before a SUPERSEDED_RETAINED share is safe to discard.
+// Once a promotion is buried DEFAULT_MAX_REORG_DEPTH + this margin below the tip
+// (120 blocks), no permitted reorg can reach it, so the retained predecessor can
+// be dropped. Named here beside PENDING_TTL; the sum is formed in the .cpp where
+// DEFAULT_MAX_REORG_DEPTH is in scope (keeps this header free of consensus.h).
+static const int PTX_SUPERSEDED_REORG_MARGIN = 20;
+
 // promote(successor): PENDING(successor_qh) -> CURRENT, and CURRENT(predecessor_qh)
 // -> SUPERSEDED_RETAINED with promotion_height stamped = connect_height (P4's
 // depth-discard basis). PURE over explicit inputs — ProcessBlock at block-connect
@@ -173,6 +181,39 @@ size_t PTX_BLS_Promote(const uint256& successor_qh, const uint256& predecessor_q
 // > TTL). Erases from DISK as well as memory (P2 defect (a) — never memory-only).
 // Returns the number expired. CURRENT/SUPERSEDED shares are untouched.
 size_t PTX_BLS_ExpirePending(int tip_height, CEvoDB* evoDb = nullptr);
+
+// ---------------------------------------------------------------------------
+// KDD-070 P4 — SUPERSEDED retention window: depth-discard + undo revert.
+// ---------------------------------------------------------------------------
+
+// Discard every SUPERSEDED_RETAINED share buried at least DEFAULT_MAX_REORG_DEPTH
+// + PTX_SUPERSEDED_REORG_MARGIN (120) blocks below the tip: DEPTH-based on
+// tip_height - promotion_height >= that sum (NOT height-based). Past this depth no
+// permitted reorg can undo the promotion, so the retained predecessor is dropped.
+// Erases from DISK as well as memory (P2 defect (a); same shape as ExpirePending).
+// Returns the number discarded. CURRENT/PENDING shares are untouched.
+size_t PTX_BLS_DiscardSuperseded(int tip_height, CEvoDB* evoDb = nullptr);
+
+// undo(successor, predecessor): the SLOT-SIDE revert of a promotion, invoked on
+// block-DISCONNECT (reorg). SUPERSEDED_RETAINED(predecessor_qh) -> CURRENT with
+// promotion_height cleared to -1; the reverted CURRENT(successor_qh) is DISCARDED.
+// PURE keyed function over explicit inputs — mirrors PTX_BLS_Promote, and is its
+// inverse. Mutates role IN PLACE (NOT via the guarded setter — that would refuse
+// on §C1 and would be a SECOND write path, §1 forbids it) and erases the successor
+// directly; re-persists via the RAW layer. IDEMPOTENT + KEY-ISOLATED: a call for a
+// quorum with no reversible promotion (successor not held/not CURRENT, or
+// predecessor not SUPERSEDED_RETAINED) is a clean NO-OP (returns 0, never an
+// error) — so a multi-block disconnect that unwinds a block promoting nothing, or
+// a second call, does no harm. Returns 1 if a promotion was reverted, else 0.
+//
+// SCOPE (KDD-070 = the share slot): this is the SHARE-SLOT half only. The
+// record-side revert (successor de-activated, predecessor SUPERSEDED->ACTIVE in
+// CPTXQuorumStore::UndoBlock) is consensus-adjacent and owed to whichever of
+// KDD-063 / W2.4 T-H lands first. Shaped to COMPOSE with that revert at the same
+// disconnect: keyed by quorum_hash, idempotent, no assumption about call order
+// relative to the record store.
+size_t PTX_BLS_UndoPromote(const uint256& successor_qh, const uint256& predecessor_qh,
+                           CEvoDB* evoDb = nullptr);
 
 // Sign msg with a raw 32-byte blst scalar (the GM's stored share).
 // Called by gm_bls_sign RPC handler on GM nodes.

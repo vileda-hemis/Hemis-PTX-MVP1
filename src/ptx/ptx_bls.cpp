@@ -4,6 +4,7 @@
 
 #include "ptx/ptx_bls.h"
 
+#include "consensus/consensus.h"   // KDD-070 P4: DEFAULT_MAX_REORG_DEPTH (discard basis)
 #include "crypto/sha256.h"
 #include "dbwrapper.h"
 #include "evo/evodb.h"
@@ -216,6 +217,75 @@ size_t PTX_BLS_ExpirePending(int tip_height, CEvoDB* evoDb)
         }
     }
     return expired;
+}
+
+// ---------------------------------------------------------------------------
+// KDD-070 P4 — SUPERSEDED retention window: depth-discard and undo revert.
+// ---------------------------------------------------------------------------
+
+size_t PTX_BLS_DiscardSuperseded(int tip_height, CEvoDB* evoDb)
+{
+    LOCK(cs_ptx_my_bls_sk);
+    // DEPTH-based: buried this far below the tip, no permitted reorg can reach
+    // the promotion, so the retained predecessor is safe to drop.
+    const int discard_depth = DEFAULT_MAX_REORG_DEPTH + PTX_SUPERSEDED_REORG_MARGIN;
+    size_t discarded = 0;
+    for (auto it = g_ptx_my_shares.begin(); it != g_ptx_my_shares.end(); ) {
+        if (it->second.role == PTXShareRole::SUPERSEDED_RETAINED &&
+            it->second.promotion_height >= 0 &&
+            (tip_height - it->second.promotion_height) >= discard_depth) {
+            LogPrintf("PTX P4: discarding SUPERSEDED share for quorum %s "
+                      "(buried %d >= %d blocks; beyond reorg reach)\n",
+                      it->first.ToString(),
+                      tip_height - it->second.promotion_height, discard_depth);
+            if (evoDb != nullptr)                    // erase from DISK too (P2 defect (a))
+                evoDb->GetRawDB().Erase(std::make_pair(DB_PTX_SKSHARE, it->first));
+            g_ptx_memory_only_shares.erase(it->first);
+            it = g_ptx_my_shares.erase(it);
+            ++discarded;
+        } else {
+            ++it;
+        }
+    }
+    return discarded;
+}
+
+size_t PTX_BLS_UndoPromote(const uint256& successor_qh, const uint256& predecessor_qh,
+                           CEvoDB* evoDb)
+{
+    LOCK(cs_ptx_my_bls_sk);
+    // Reversible ONLY if the successor is CURRENT (was promoted) AND the
+    // predecessor is SUPERSEDED_RETAINED (was superseded by that promotion). Any
+    // other state — a disconnect for a block that promoted nothing, an
+    // already-reverted pair (idempotency), a mismatched key (isolation) — is a
+    // clean NO-OP. Both guards are required: it is the successor-CURRENT check
+    // that makes a second call a no-op (the successor is gone after the first).
+    auto sit = g_ptx_my_shares.find(successor_qh);
+    if (sit == g_ptx_my_shares.end() || sit->second.role != PTXShareRole::CURRENT)
+        return 0;
+    auto pit = g_ptx_my_shares.find(predecessor_qh);
+    if (pit == g_ptx_my_shares.end() || pit->second.role != PTXShareRole::SUPERSEDED_RETAINED)
+        return 0;
+
+    // predecessor: SUPERSEDED_RETAINED -> CURRENT, promotion_height cleared.
+    // MUTATE IN PLACE (as Promote does) — routing the restore through the guarded
+    // setter would refuse (predecessor already present, §C1) and would be a
+    // SECOND write path (§1 forbids it).
+    pit->second.role             = PTXShareRole::CURRENT;
+    pit->second.promotion_height = -1;
+
+    // successor: the promotion that added this CURRENT is being unwound -> DISCARD.
+    g_ptx_memory_only_shares.erase(successor_qh);
+    g_ptx_my_shares.erase(sit);   // pit stays valid (distinct element)
+
+    // Persist the revert via the RAW layer: re-persist the restored predecessor,
+    // erase the discarded successor from DISK (else it reloads on next start).
+    if (evoDb != nullptr) {
+        if (!PTX_BLS_PersistShare(*evoDb, predecessor_qh, pit->second))
+            g_ptx_memory_only_shares.insert(predecessor_qh);
+        evoDb->GetRawDB().Erase(std::make_pair(DB_PTX_SKSHARE, successor_qh));
+    }
+    return 1;
 }
 
 bool PTX_BLS_PersistShare(CEvoDB& evoDb, const uint256& quorum_hash, const HeldShare& hs)
