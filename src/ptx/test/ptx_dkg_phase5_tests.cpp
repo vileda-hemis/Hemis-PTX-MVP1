@@ -20,6 +20,8 @@
 #include "test/test_Hemis.h"
 #include "ptx/ptx_dkg.h"
 #include "ptx/ptx_bls.h"
+#include "ptx/ptx_quorum_store.h"   // KDD-070 P2: records + PTX_WarnMissingSharesForNode
+#include "evo/evodb.h"              // KDD-070 P2: the in-memory evoDb from BasicTestingSetup
 #include "evo/specialtx_validation.h"
 #include "consensus/validation.h"
 #include "primitives/transaction.h"
@@ -190,6 +192,7 @@ static void PTX_TEST_ClearSkShareSlot()
 {
     LOCK(cs_ptx_my_bls_sk);
     g_ptx_my_shares.clear();
+    g_ptx_memory_only_shares.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -745,6 +748,260 @@ BOOST_AUTO_TEST_CASE(Slot_SelectionByKey_BothOrderings)
     BOOST_REQUIRE(PTX_BLS_GetCurrentShare(qb, gb));
     BOOST_CHECK_EQUAL_COLLECTIONS(ga, ga + 32, sa, sa + 32);
     BOOST_CHECK_EQUAL_COLLECTIONS(gb, gb + 32, sb, sb + 32);
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// ===========================================================================
+// KDD-070 P2 — persistence serializer, reconciliation, in_qual warn, wipe.
+// Pure functions (no evoDb) — the evoDb read/write wiring and the on-start
+// trigger are inspection-only (P2 CANNOT cover; bound to Package 3, ODC-032).
+// ===========================================================================
+
+// serializer round-trips all four fields byte-identically.
+// RED (inversion): drop/relocate any field in Serialize/Deserialize -> a field
+// mismatches after the round-trip.
+BOOST_AUTO_TEST_CASE(P2_SerializeHeldShare_RoundTrip)
+{
+    HeldShare in;
+    for (int i = 0; i < 32; ++i) in.bytes[i] = (uint8_t)(0x40 + i);
+    in.formation_height = 123456;
+    in.role             = PTXShareRole::SUPERSEDED_RETAINED;   // exercise a non-zero role
+    in.promotion_height = -7;
+
+    std::vector<uint8_t> blob = PTX_BLS_SerializeHeldShare(in);
+    BOOST_REQUIRE_EQUAL(blob.size(), 41u);
+    HeldShare out;
+    BOOST_REQUIRE(PTX_BLS_DeserializeHeldShare(blob, out));
+    BOOST_CHECK_EQUAL_COLLECTIONS(out.bytes, out.bytes + 32, in.bytes, in.bytes + 32);
+    BOOST_CHECK_EQUAL(out.formation_height, in.formation_height);
+    BOOST_CHECK(out.role == in.role);
+    BOOST_CHECK_EQUAL(out.promotion_height, in.promotion_height);
+    // wrong-size blob rejected.
+    BOOST_CHECK(!PTX_BLS_DeserializeHeldShare(std::vector<uint8_t>(40, 0), out));
+}
+
+// reconcile DROPS an orphan (held quorum_hash absent from the known set).
+// RED (inversion): a reconcile that keeps everything leaves the orphan -> the
+// post-count assertion fails.
+BOOST_AUTO_TEST_CASE(P2_Reconcile_DropsOrphan)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 live = QHk(0x11), orphan = QHk(0x22);
+    uint8_t s[32]; std::memset(s, 0x33, 32); std::string e;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(live, 1, s, e));
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(orphan, 2, s, e));
+
+    std::set<uint256> known{live};                      // orphan NOT known
+    BOOST_CHECK_EQUAL(PTX_BLS_ReconcileShares(known), 1u);  // exactly one dropped
+    uint8_t out[32];
+    BOOST_CHECK(PTX_BLS_GetCurrentShare(live, out));     // live kept
+    BOOST_CHECK(!PTX_BLS_GetCurrentShare(orphan, out));  // orphan gone
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// reconcile KEEPS a live share (quorum_hash present in the known set).
+// RED (inversion): a reconcile that drops present keys removes it -> Get fails.
+BOOST_AUTO_TEST_CASE(P2_Reconcile_KeepsLive)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 live = QHk(0x44);
+    uint8_t s[32]; std::memset(s, 0x55, 32); std::string e;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(live, 1, s, e));
+    std::set<uint256> known{live};
+    BOOST_CHECK_EQUAL(PTX_BLS_ReconcileShares(known), 0u);  // nothing dropped
+    uint8_t out[32];
+    BOOST_CHECK(PTX_BLS_GetCurrentShare(live, out));
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// reconcile with an EMPTY known set discards ALL — the init-order failure mode
+// in miniature (an unpopulated store would orphan every member, §3). This is
+// the CORRECT behaviour of the pure function; the ordering fix (running only
+// after the store is populated) is what prevents it in production.
+// RED (inversion): a reconcile that special-cases the empty set to keep-all
+// would leave shares held -> the count/Get assertions fail.
+BOOST_AUTO_TEST_CASE(P2_Reconcile_EmptySetDiscardsAll)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 a = QHk(0x66), b = QHk(0x77);
+    uint8_t s[32]; std::memset(s, 0x88, 32); std::string e;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(a, 1, s, e));
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(b, 2, s, e));
+    std::set<uint256> empty;
+    BOOST_CHECK_EQUAL(PTX_BLS_ReconcileShares(empty), 2u);  // ALL discarded
+    uint8_t out[32];
+    BOOST_CHECK(!PTX_BLS_GetCurrentShare(a, out));
+    BOOST_CHECK(!PTX_BLS_GetCurrentShare(b, out));
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// "holds nothing, in_qual": warns and does NOT throw. Returns one warning for a
+// quorum where this node is in_qual but no share is held.
+// RED (inversion): a warn that keys on membership-without-in_qual, or that skips
+// the held-check, returns the wrong count.
+BOOST_AUTO_TEST_CASE(P2_WarnMissing_InQualNoShare_LogsNoThrow)
+{
+    PTX_TEST_ClearSkShareSlot();
+    const std::string me = "node-me:aa";
+
+    CPTXQuorumRecord rec;
+    rec.quorum_hash = QHk(0x99);
+    PTXQuorumMemberRecord m; m.node_id = me; m.in_qual = true; m.share_index = 3;
+    rec.members.push_back(m);
+    std::vector<CPTXQuorumRecord> active{rec};
+
+    int warned = 0;
+    BOOST_REQUIRE_NO_THROW(warned = PTX_WarnMissingSharesForNode(active, me));
+    BOOST_CHECK_EQUAL(warned, 1);   // in_qual + no share held -> one warning
+
+    // holding the share suppresses the warning.
+    uint8_t s[32]; std::memset(s, 0xAB, 32); std::string e;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(rec.quorum_hash, 1, s, e));
+    BOOST_CHECK_EQUAL(PTX_WarnMissingSharesForNode(active, me), 0);
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// wipe clears ALL held shares (memory-only path, evoDb == nullptr).
+// RED (inversion): a wipe that clears nothing leaves shares held -> Get succeeds.
+BOOST_AUTO_TEST_CASE(P2_Wipe_ClearsAll)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 a = QHk(0xC0), b = QHk(0xC1);
+    uint8_t s[32]; std::memset(s, 0xCE, 32); std::string e;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(a, 1, s, e));
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(b, 2, s, e));
+    BOOST_CHECK_EQUAL(PTX_BLS_WipeShares(nullptr), 2u);   // both cleared
+    uint8_t out[32];
+    BOOST_CHECK(!PTX_BLS_GetCurrentShare(a, out));
+    BOOST_CHECK(!PTX_BLS_GetCurrentShare(b, out));
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// ===========================================================================
+// KDD-070 P2 — REAL persistence tests over the in-memory CEvoDB that
+// BasicTestingSetup provides (evoDb = CEvoDB(1<<20, fMemory, fWipe),
+// test_Hemis.cpp). These exercise the actual disk read/write/erase path.
+// ===========================================================================
+
+// Persist -> clear map -> LoadShares -> the share returns from disk, all fields.
+// RED (inversion): a PersistShare that no-ops, or a LoadShares that doesn't
+// repopulate, leaves the map empty -> GetCurrentShare fails.
+BOOST_AUTO_TEST_CASE(P2_Persist_Load_RoundTrip)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_TEST_ClearSkShareSlot();
+    uint256 qh = QHk(0xD0);
+    HeldShare hs;
+    std::memset(hs.bytes, 0xD1, 32);
+    hs.formation_height = 4242;
+    hs.role             = PTXShareRole::CURRENT;
+    hs.promotion_height = -1;
+    BOOST_REQUIRE(PTX_BLS_PersistShare(*evoDb, qh, hs));   // Write returned true
+
+    PTX_TEST_ClearSkShareSlot();                            // wipe the MAP only
+    BOOST_CHECK_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);       // 0 corrupt
+    uint8_t out[32];
+    BOOST_REQUIRE(PTX_BLS_GetCurrentShare(qh, out));        // reloaded from disk
+    BOOST_CHECK_EQUAL_COLLECTIONS(out, out + 32, hs.bytes, hs.bytes + 32);
+    PTX_BLS_WipeShares(evoDb.get());
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// Persist -> WipeShares(evoDb) -> LoadShares -> nothing (disk cleared).
+// RED (inversion): a wipe that clears memory but not disk -> LoadShares reloads
+// the share -> GetCurrentShare succeeds.
+BOOST_AUTO_TEST_CASE(P2_Persist_Wipe_Load_Nothing)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_TEST_ClearSkShareSlot();
+    uint256 qh = QHk(0xD2);
+    HeldShare hs; std::memset(hs.bytes, 0xD3, 32); hs.role = PTXShareRole::CURRENT;
+    BOOST_REQUIRE(PTX_BLS_PersistShare(*evoDb, qh, hs));
+
+    PTX_BLS_WipeShares(evoDb.get());          // erase memory + disk
+    PTX_TEST_ClearSkShareSlot();              // ensure map empty
+    BOOST_CHECK_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);
+    uint8_t out[32];
+    BOOST_CHECK(!PTX_BLS_GetCurrentShare(qh, out));   // nothing reloaded
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// Persist two -> reconcile(known={live}, evoDb) -> clear map -> LoadShares ->
+// only the live one; the ORPHAN IS GONE FROM DISK (would otherwise reload).
+// RED (inversion): a reconcile that erases only the map (not disk) -> the orphan
+// reloads on LoadShares -> GetCurrentShare(orphan) succeeds.
+BOOST_AUTO_TEST_CASE(P2_Persist_Reconcile_OrphanGoneFromDisk)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_TEST_ClearSkShareSlot();
+    uint256 live = QHk(0xE0), orphan = QHk(0xE1);
+    HeldShare a; std::memset(a.bytes, 0xEA, 32); a.role = PTXShareRole::CURRENT;
+    HeldShare b; std::memset(b.bytes, 0xEB, 32); b.role = PTXShareRole::CURRENT;
+    BOOST_REQUIRE(PTX_BLS_PersistShare(*evoDb, live, a));
+    BOOST_REQUIRE(PTX_BLS_PersistShare(*evoDb, orphan, b));
+    // populate the map to match a real start (LoadShares would have done this).
+    BOOST_REQUIRE_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);
+
+    std::set<uint256> known{live};
+    BOOST_CHECK_EQUAL(PTX_BLS_ReconcileShares(known, evoDb.get()), 1u);  // orphan dropped
+
+    PTX_TEST_ClearSkShareSlot();                        // wipe map; disk is the truth now
+    BOOST_CHECK_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);
+    uint8_t out[32];
+    BOOST_CHECK(PTX_BLS_GetCurrentShare(live, out));    // live still on disk
+    BOOST_CHECK(!PTX_BLS_GetCurrentShare(orphan, out)); // orphan ERASED from disk
+    PTX_BLS_WipeShares(evoDb.get());
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// (e) LoadShares REPORTS a corrupt/malformed on-disk blob (does not swallow it):
+// nonzero corrupt count, and the share is NOT loaded.
+// RED (inversion): a LoadShares that returns 0 / loads garbage -> the count
+// assertion (or the not-loaded assertion) fails.
+BOOST_AUTO_TEST_CASE(P2_LoadShares_CorruptReported)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_TEST_ClearSkShareSlot();
+    uint256 qh = QHk(0xF0);
+    // inject a malformed blob (wrong size) directly under the share prefix.
+    std::vector<uint8_t> bad(10, 0xFF);
+    BOOST_REQUIRE(evoDb->GetRawDB().Write(std::make_pair(PTX_BLS_ShareDBPrefix(), qh), bad));
+
+    BOOST_CHECK_EQUAL(PTX_BLS_LoadShares(*evoDb), 1);     // reported, not swallowed
+    uint8_t out[32];
+    BOOST_CHECK(!PTX_BLS_GetCurrentShare(qh, out));       // corrupt entry NOT loaded
+    PTX_BLS_WipeShares(evoDb.get());                      // cleans the corrupt entry too
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// (item 1) memory-only tracking: when a persist fails and the share is kept
+// (the (b) degraded path), the quorum is reported as memory-only — so a node
+// can report its degraded state without anyone having seen the ceremony-time
+// ERROR line. A durably-persisted share is NOT reported.
+// RED (inversion): a MarkMemoryOnly that no-ops, or a report that returns empty,
+// leaves the degraded quorum unreported.
+BOOST_AUTO_TEST_CASE(P2_MemoryOnly_Tracked_And_Reported)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 degraded = QHk(0xB1), durable = QHk(0xB2);
+    uint8_t s[32]; std::memset(s, 0x7A, 32); std::string e;
+
+    // Both shares are held; only `degraded` had its persist fail (the (b) path,
+    // simulated here by marking it — StoreSkShare calls MarkMemoryOnly on a
+    // PersistShare failure).
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(degraded, 1, s, e));
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(durable,  2, s, e));
+    PTX_BLS_MarkMemoryOnly(degraded);
+
+    std::set<uint256> mo = PTX_BLS_MemoryOnlyShares();
+    BOOST_CHECK_EQUAL(mo.size(), 1u);
+    BOOST_CHECK(mo.count(degraded) == 1);   // degraded reported
+    BOOST_CHECK(mo.count(durable)  == 0);   // durable NOT reported
+
+    // reconcile-discarding the degraded quorum clears its memory-only mark.
+    std::set<uint256> known{durable};
+    BOOST_CHECK_EQUAL(PTX_BLS_ReconcileShares(known), 1u);
+    BOOST_CHECK(PTX_BLS_MemoryOnlyShares().count(degraded) == 0);
     PTX_TEST_ClearSkShareSlot();
 }
 

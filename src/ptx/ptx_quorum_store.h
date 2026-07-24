@@ -224,6 +224,19 @@ private:
 
 extern std::unique_ptr<CPTXQuorumStore> ptxQuorumStore;
 
+// KDD-070 P2: startup reconciliation of held sk-shares against chain records.
+// ★ MUST be called AFTER chain load + store population (§3 ordering) — from
+// LoadTierTwo (init.cpp), NOT from store construction. Loads persisted shares,
+// discards orphans (quorum_hash not a record on the active chain), and warns for
+// "in_qual on-chain but no share held". Safe to no-op if the store/evoDb are null.
+void PTX_ReconcileHeldSharesOnStart();
+
+// Pure helper: warn once for each ACTIVE quorum where node_id is an in_qual
+// member but no share is held (ODC-035 degraded state). Logs, never throws.
+// Returns the number of warnings. Injectable for unit tests.
+int PTX_WarnMissingSharesForNode(const std::vector<CPTXQuorumRecord>& active,
+                                 const std::string& node_id);
+
 // ---------------------------------------------------------------------------
 // SG-3 — DKG signing material selection (the index-space reconciliation).
 //

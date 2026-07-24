@@ -12,8 +12,10 @@
 #include "logging.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h" // GetTxPayload
+#include "ptx/ptx_bls.h"     // KDD-070 P2: share store load/reconcile/held-set
 #include "ptx/ptx_dkg.h"
 #include "ptx/ptx_formation.h"
+#include "ptx/ptx_quorum.h"  // g_ptx_my_node_id
 #include "util/system.h" // error()
 #include "validation.h"  // LookupBlockIndex
 
@@ -380,4 +382,81 @@ PTXDKGSigningCtx PTX_SelectDKGSigningCtx(const std::vector<CPTXQuorumRecord>& ac
     ctx.group_pk = best->group_pk_bytes;
     ctx.active   = true;
     return ctx;
+}
+
+// ---------------------------------------------------------------------------
+// KDD-070 P2 — startup reconciliation orchestration (§3 ordering).
+// ---------------------------------------------------------------------------
+
+int PTX_WarnMissingSharesForNode(const std::vector<CPTXQuorumRecord>& active,
+                                 const std::string& node_id)
+{
+    if (node_id.empty()) return 0;
+    const std::set<uint256> held = PTX_BLS_HeldQuorumHashes();
+    int warned = 0;
+    for (const CPTXQuorumRecord& rec : active) {
+        for (const PTXQuorumMemberRecord& m : rec.members) {
+            if (m.node_id == node_id && m.in_qual && held.count(rec.quorum_hash) == 0) {
+                LogPrintf("PTX P2: WARNING: chain lists this node (%s) in_qual for ACTIVE "
+                          "quorum %s but NO share is held (degraded, ODC-035) — the quorum "
+                          "may fall below threshold; awaiting re-selection / W2.4\n",
+                          node_id, rec.quorum_hash.ToString());
+                ++warned;
+                break; // one warning per quorum
+            }
+        }
+    }
+    return warned;
+}
+
+void PTX_ReconcileHeldSharesOnStart()
+{
+    // ★ §3 ORDERING (load-bearing): this runs from LoadTierTwo (init.cpp), AFTER
+    // InitTierTwoPreChainLoad constructed ptxQuorumStore/evoDb (tiertwo/init.cpp:76)
+    // AND AFTER LoadChainTip (init.cpp) validated evoDb against the active tip.
+    // Running it before the store is populated would make EVERY held quorum_hash
+    // look orphaned (HasQuorumRecord=false) and wipe every member — the
+    // empty-known-set failure mode (Slot_Reconcile_EmptySetDiscardsAll).
+    if (ptxQuorumStore == nullptr || evoDb == nullptr) return;
+
+    // 1. Load persisted shares from disk into the in-memory store.
+    const int corrupt = PTX_BLS_LoadShares(*evoDb);
+    if (corrupt > 0)
+        LogPrintf("PTX P2: reconcile on start: %d CORRUPT persisted share(s) found (see ERROR "
+                  "lines above for the affected quorum_hashes)\n", corrupt);
+
+    // 1b. WIPE (KDD-070 P2): the -ptxwipeshares startup flag clears ALL held
+    // shares (memory + disk) and stops — for restore_fleet.sh after a bank-restore
+    // to a pre-formation snapshot. Load-then-wipe so the on-disk entries (now in
+    // memory) are erased. NOT RPC-reachable: a restart-gated flag, not a live call.
+    if (gArgs.GetBoolArg("-ptxwipeshares", false)) {
+        const size_t n = PTX_BLS_WipeShares(evoDb.get());
+        LogPrintf("PTX P2: -ptxwipeshares set — wiped %u held share(s); skipping reconcile\n",
+                  (unsigned)n);
+        return;
+    }
+
+    // 2. Reconcile: keep held shares whose quorum_hash is a record on the active
+    //    chain (any role); discard orphans. Build the known set from the held
+    //    keys checked against the store — deliberately NOT an empty set.
+    const std::set<uint256> held = PTX_BLS_HeldQuorumHashes();
+    std::set<uint256> known;
+    {
+        LOCK(cs_main); // HasQuorumRecord reads evoDb; keep chain access consistent
+        for (const uint256& qh : held)
+            if (ptxQuorumStore->HasQuorumRecord(qh)) known.insert(qh);
+    }
+    const size_t dropped = PTX_BLS_ReconcileShares(known, evoDb.get());
+    LogPrintf("PTX P2: reconcile on start: %u held, %u known-on-chain, %u orphan(s) discarded\n",
+              (unsigned)held.size(), (unsigned)known.size(), (unsigned)dropped);
+
+    // 3. "Holds nothing, in_qual" warning over ACTIVE quorums at the tip.
+    std::vector<CPTXQuorumRecord> active;
+    int tipHeight = 0;
+    {
+        LOCK(cs_main);
+        tipHeight = chainActive.Height();
+        if (tipHeight > 0) active = ptxQuorumStore->GetActiveQuorumsAtHeight(tipHeight);
+    }
+    PTX_WarnMissingSharesForNode(active, g_ptx_my_node_id);
 }

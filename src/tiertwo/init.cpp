@@ -37,6 +37,7 @@ std::string GetTierTwoHelpString(bool showDebug)
     strUsage += HelpMessageOpt("-gamemasteraddr=<n>", strprintf("Set external address:port to get to this gamemaster (example: %s). Only for Legacy Gamemasters", "128.127.106.235:49165"));
     strUsage += HelpMessageOpt("-budgetvotemode=<mode>", "Change automatic finalized budget voting behavior. mode=auto: Vote for only exact finalized budget match to my generated budget. (string, default: auto)");
     strUsage += HelpMessageOpt("-gmoperatorprivatekey=<bech32>", "Set the gamemaster operator private key. Only valid with -gamemaster=1. When set, the gamemaster acts as a deterministic gamemaster.");
+    strUsage += HelpMessageOpt("-ptxwipeshares", "On startup, wipe all persisted PTX DKG sk-shares (memory + disk) then continue. For restore_fleet.sh after a bank-restore to a pre-formation snapshot (KDD-070 P2). One-shot; requires a restart, not RPC-reachable.");
     if (showDebug) {
         strUsage += HelpMessageOpt("-pushversion", strprintf("Modifies the gmauth serialization if the version is lower than %d."
                                                              "testnet/regtest only; ", GMAUTH_NODE_VER_VERSION));
@@ -193,6 +194,13 @@ bool LoadTierTwo(int chain_active_height, bool load_cache_files)
             LogPrintf("Failed to clear network requests cache at %s", netRequestsDb.GetDbPath().string());
         }
     }
+
+    // KDD-070 P2 (§3 ORDERING): reconcile held sk-shares against chain records
+    // HERE — LoadTierTwo runs AFTER LoadChainTip (init.cpp) has validated evoDb
+    // against the active tip and AFTER InitTierTwoPreChainLoad constructed
+    // ptxQuorumStore. Placing it earlier (at store construction) would query an
+    // unpopulated store and orphan every held share (the empty-known-set wipe).
+    PTX_ReconcileHeldSharesOnStart();
 
     return true;
 }

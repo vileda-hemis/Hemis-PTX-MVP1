@@ -7,6 +7,7 @@
 #include "ptx/ptx_dkg_commitments.h"  // KDD-058-A: replicated minable-commitments store
 
 #include "evo/deterministicgms.h"  // CDeterministicGMList, CDeterministicGMCPtr (KDD-060)
+#include "evo/evodb.h"             // evoDb (KDD-070 P2 share persistence)
 #include "consensus/validation.h"  // CValidationState, REJECT_INVALID (Package 2 validator)
 
 #include "arith_uint256.h"
@@ -1331,6 +1332,27 @@ bool PTX_DKG_StoreSkShare(const PTXDKGSession& session, int formation_height)
         LogPrintf("PTX DKG: StoreSkShare: refusing sk_share overwrite for quorum_hash=%s (%s)\n",
                   session.quorum_hash.ToString(), set_err);
         return false;
+    }
+    // KDD-070 P2: persist to evoDb's RAW layer (store-pending at FINALIZE has no
+    // block transaction to ride). On a persist FAILURE we do NOT abort — the
+    // share is already usable in memory (signing reads the map, not disk); a
+    // local disk fault must not fail a global formation below t (KDD-070 (b)).
+    // We degrade to the pre-P2 memory-only baseline and warn LOUDLY: the share
+    // will not survive restart (ODC-035), surfaced on next start by the
+    // "in_qual but no share" warning. The map store above already succeeded.
+    if (evoDb != nullptr) {
+        HeldShare hs;
+        std::memcpy(hs.bytes, sk_bytes, 32);
+        hs.formation_height = formation_height;
+        hs.role             = PTXShareRole::CURRENT;
+        hs.promotion_height = -1;
+        if (!PTX_BLS_PersistShare(*evoDb, session.quorum_hash, hs)) {
+            PTX_BLS_MarkMemoryOnly(session.quorum_hash);   // trackable degraded state
+            LogPrintf("PTX DKG: ERROR: StoreSkShare: FAILED to persist sk_share for quorum %s "
+                      "to evoDb — share held in MEMORY ONLY, will NOT survive restart "
+                      "(ODC-035). Ceremony continues; this member is degraded.\n",
+                      session.quorum_hash.ToString());
+        }
     }
     LogPrintf("PTX DKG: StoreSkShare: sk_share written for ceremony quorum_hash=%s\n",
               session.quorum_hash.ToString());

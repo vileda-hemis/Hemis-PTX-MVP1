@@ -5,11 +5,18 @@
 #include "ptx/ptx_bls.h"
 
 #include "crypto/sha256.h"
+#include "dbwrapper.h"
+#include "evo/evodb.h"
 #include "logging.h"
 #include "random.h"
 
 #include <algorithm>
 #include <cstring>
+#include <memory>
+
+// KDD-070 P2: RAW-DB key prefix for persisted GM sk-shares (Dash
+// DB_QUORUM_SK_SHARE precedent). Keyed (prefix, quorum_hash) → 41-byte blob.
+static const std::string DB_PTX_SKSHARE = "ptxSk";
 
 const char*    PTX_BLS_DST = "BLS_SIG_HEMIS_PTX_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
 
@@ -18,6 +25,7 @@ const char*    PTX_BLS_DST = "BLS_SIG_HEMIS_PTX_BLS12381G2_XMD:SHA-256_SSWU_RO_N
 // PTX_BLS_GetCurrentShare. Guarded by cs_ptx_my_bls_sk. NOT bounded in size.
 std::map<uint256, HeldShare> g_ptx_my_shares;
 RecursiveMutex               cs_ptx_my_bls_sk;
+std::set<uint256>            g_ptx_memory_only_shares;   // KDD-070 P2 (b): persist-failed keys
 
 // ---------------------------------------------------------------------------
 // PTX_BLS_SetSkShare — §C1 replay guard (KDD-057; rationale updated KDD-069)
@@ -76,6 +84,150 @@ bool PTX_BLS_GetCurrentShare(const uint256& quorum_hash, uint8_t out[32])
         return false;
     std::memcpy(out, it->second.bytes, 32);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// KDD-070 P2 — persistence, reconciliation, wipe.
+// ---------------------------------------------------------------------------
+
+static void put_i32_le(std::vector<uint8_t>& b, int32_t v)
+{
+    uint32_t u = (uint32_t)v;
+    for (int i = 0; i < 4; ++i) b.push_back((uint8_t)((u >> (8 * i)) & 0xff));
+}
+static int32_t get_i32_le(const std::vector<uint8_t>& b, size_t off)
+{
+    uint32_t u = 0;
+    for (int i = 0; i < 4; ++i) u |= (uint32_t)b[off + i] << (8 * i);
+    return (int32_t)u;
+}
+
+std::vector<uint8_t> PTX_BLS_SerializeHeldShare(const HeldShare& hs)
+{
+    std::vector<uint8_t> b;
+    b.reserve(41);
+    b.insert(b.end(), hs.bytes, hs.bytes + 32);   // [0..31]
+    put_i32_le(b, hs.formation_height);           // [32..35]
+    b.push_back((uint8_t)hs.role);                // [36]
+    put_i32_le(b, hs.promotion_height);           // [37..40]
+    return b;
+}
+
+bool PTX_BLS_DeserializeHeldShare(const std::vector<uint8_t>& blob, HeldShare& out)
+{
+    if (blob.size() != 41) return false;
+    std::memcpy(out.bytes, blob.data(), 32);
+    out.formation_height = get_i32_le(blob, 32);
+    out.role             = (PTXShareRole)blob[36];
+    out.promotion_height = get_i32_le(blob, 37);
+    return true;
+}
+
+const std::string& PTX_BLS_ShareDBPrefix() { return DB_PTX_SKSHARE; }
+
+void PTX_BLS_MarkMemoryOnly(const uint256& quorum_hash)
+{
+    LOCK(cs_ptx_my_bls_sk);
+    g_ptx_memory_only_shares.insert(quorum_hash);
+}
+
+std::set<uint256> PTX_BLS_MemoryOnlyShares()
+{
+    LOCK(cs_ptx_my_bls_sk);
+    return g_ptx_memory_only_shares;
+}
+
+bool PTX_BLS_PersistShare(CEvoDB& evoDb, const uint256& quorum_hash, const HeldShare& hs)
+{
+    std::vector<uint8_t> blob = PTX_BLS_SerializeHeldShare(hs);
+    // GetRawDB().Write returns false on a DB write error — propagate it; the
+    // caller must not swallow it (memory-only persistence is the ODC-035 mode).
+    return evoDb.GetRawDB().Write(std::make_pair(DB_PTX_SKSHARE, quorum_hash), blob);
+}
+
+int PTX_BLS_LoadShares(CEvoDB& evoDb)
+{
+    LOCK(cs_ptx_my_bls_sk);
+    std::unique_ptr<CDBIterator> it(evoDb.GetRawDB().NewIterator());
+    int loaded = 0, corrupt = 0;
+    for (it->Seek(std::make_pair(DB_PTX_SKSHARE, uint256())); it->Valid(); it->Next()) {
+        std::pair<std::string, uint256> key;
+        if (!it->GetKey(key) || key.first != DB_PTX_SKSHARE) break;  // past the prefix range
+        std::vector<uint8_t> blob;
+        HeldShare hs;
+        if (it->GetValue(blob) && PTX_BLS_DeserializeHeldShare(blob, hs)) {
+            g_ptx_my_shares[key.second] = hs;
+            ++loaded;
+        } else {
+            // NOT swallowed: a corrupt on-disk share is an ERROR — the member
+            // HAD a share and it is now unreadable (distinct from never having
+            // had one). Naming the quorum_hash lets the "in_qual but no share"
+            // warning tell the two apart.
+            LogPrintf("PTX P2: ERROR: LoadShares: CORRUPT persisted share for quorum %s "
+                      "(unreadable/undeserializable) NOT loaded\n", key.second.ToString());
+            ++corrupt;
+        }
+    }
+    LogPrintf("PTX P2: LoadShares: %d share(s) loaded, %d CORRUPT\n", loaded, corrupt);
+    return corrupt;
+}
+
+size_t PTX_BLS_ReconcileShares(const std::set<uint256>& known_quorums, CEvoDB* evoDb)
+{
+    LOCK(cs_ptx_my_bls_sk);
+    size_t discarded = 0;
+    for (auto it = g_ptx_my_shares.begin(); it != g_ptx_my_shares.end(); ) {
+        if (known_quorums.count(it->first) == 0) {
+            LogPrintf("PTX P2: reconcile: discarding ORPHAN share for quorum %s "
+                      "(no record on the active chain)\n", it->first.ToString());
+            // Erase from DISK too, else the orphan reloads on the next start.
+            if (evoDb != nullptr)
+                evoDb->GetRawDB().Erase(std::make_pair(DB_PTX_SKSHARE, it->first));
+            g_ptx_memory_only_shares.erase(it->first);   // no longer held
+            it = g_ptx_my_shares.erase(it);
+            ++discarded;
+        } else {
+            ++it;   // live quorum — kept regardless of role
+        }
+    }
+    return discarded;
+}
+
+std::set<uint256> PTX_BLS_HeldQuorumHashes()
+{
+    LOCK(cs_ptx_my_bls_sk);
+    std::set<uint256> out;
+    for (const auto& kv : g_ptx_my_shares) out.insert(kv.first);
+    return out;
+}
+
+size_t PTX_BLS_WipeShares(CEvoDB* evoDb)
+{
+    LOCK(cs_ptx_my_bls_sk);
+    size_t n = g_ptx_my_shares.size();
+    int erased = 0;
+    if (evoDb != nullptr) {
+        // Iterate the RAW-DB prefix DIRECTLY and erase EVERY persisted share,
+        // including corrupt/undeserializable entries that LoadShares skipped —
+        // a map-driven wipe would leave those on disk. Collect-then-erase: do
+        // not mutate the DB while its iterator is live.
+        std::unique_ptr<CDBIterator> it(evoDb->GetRawDB().NewIterator());
+        std::vector<uint256> keys;
+        for (it->Seek(std::make_pair(DB_PTX_SKSHARE, uint256())); it->Valid(); it->Next()) {
+            std::pair<std::string, uint256> key;
+            if (!it->GetKey(key) || key.first != DB_PTX_SKSHARE) break;
+            keys.push_back(key.second);
+        }
+        for (const uint256& k : keys) {
+            evoDb->GetRawDB().Erase(std::make_pair(DB_PTX_SKSHARE, k));
+            ++erased;
+        }
+    }
+    g_ptx_my_shares.clear();
+    g_ptx_memory_only_shares.clear();
+    LogPrintf("PTX P2: wipe: cleared %u held share(s)%s (disk entries erased: %d)\n",
+              (unsigned)n, evoDb ? " (memory + disk)" : " (memory only)", erased);
+    return n;
 }
 
 // ---------------------------------------------------------------------------
