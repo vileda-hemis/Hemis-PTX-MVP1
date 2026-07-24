@@ -27,6 +27,7 @@
 #include "primitives/transaction.h"
 
 #include "bls/bls_wrapper.h"
+#include "fs.h"                     // KDD-070 P5: iterate src/rpc for the structural check
 #include "random.h"
 #include "sync.h"
 #include "uint256.h"
@@ -34,9 +35,20 @@
 #include <boost/test/unit_test.hpp>
 
 #include <cstring>
+#include <fstream>                  // KDD-070 P5: read source files for the structural check
 #include <map>
+#include <sstream>
 #include <string>
 #include <vector>
+
+// KDD-070 P5: absolute source-tree root, injected at build time
+// (-DPTX_SRCDIR=\"$(abs_top_srcdir)\" in Makefile.test.include). If a build ever
+// omits it, the fallback is an EMPTY SENTINEL — the test detects the empty path
+// and HARD-FAILS (BOOST_REQUIRE) with a "could not run" message, so a missing
+// define surfaces as a red test, NEVER as a silent skip or a vacuous pass.
+#ifndef PTX_SRCDIR
+#define PTX_SRCDIR ""
+#endif
 
 BOOST_FIXTURE_TEST_SUITE(ptx_dkg_phase5_tests, BasicTestingSetup)
 
@@ -1484,6 +1496,101 @@ BOOST_AUTO_TEST_CASE(P4_SupersededNeverSignable_AcrossCycle)
     BOOST_CHECK(!PTX_BLS_GetCurrentShare(P, out));     // SUPERSEDED refused (window 2)
     BOOST_CHECK(PTX_BLS_GetCurrentShare(S2, out));
     PTX_TEST_ClearSkShareSlot();
+}
+
+// ===========================================================================
+// KDD-070 P5 — structural §1 check: NO rpc-reachable mutator of g_ptx_my_shares.
+// ===========================================================================
+
+namespace {
+// slurp a whole file; empty string if it cannot be opened (the caller REQUIREs
+// non-empty so a bad path fails loud, never skips).
+std::string P5_slurp(const std::string& path)
+{
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return std::string();
+    std::stringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+// count non-overlapping occurrences of needle in hay.
+size_t P5_count(const std::string& hay, const std::string& needle)
+{
+    if (needle.empty()) return 0;
+    size_t n = 0, p = 0;
+    while ((p = hay.find(needle, p)) != std::string::npos) { ++n; p += needle.size(); }
+    return n;
+}
+} // namespace
+
+// §1 (widened by P4): g_ptx_my_shares has EIGHT mutators — one guarded
+// (PTX_BLS_SetSkShare) and seven not, including the undo revert (which must
+// bypass the §C1 setter). §1's guarantee is NO RPC-REACHABLE write path. This
+// asserts, over the COMPLETE mutator set, that none is referenced under src/rpc
+// (negative limb) AND that each is defined in ptx_bls.cpp (positive limb) — so a
+// rename fails LOUDLY instead of the negative check passing vacuously.
+// RED (inversion A, negative): a reference to any mutator added under src/rpc.
+// RED (inversion B, positive): a mutator renamed -> its name absent from
+// ptx_bls.cpp -> positive limb fails (the anti-vacuous guard).
+BOOST_AUTO_TEST_CASE(P5_ShareStore_NoRpcReachableMutator)
+{
+    const std::string src = PTX_SRCDIR;
+
+    // ★ ABSENT-DEFINE GUARD: if the build did not inject PTX_SRCDIR, `src` is the
+    // empty sentinel. HARD-FAIL here — the check COULD NOT RUN and MUST NOT be
+    // treated as passing. This is the vacuous-pass-via-build-system that P5
+    // exists to prevent; it surfaces as a red test, never a skip.
+    BOOST_REQUIRE_MESSAGE(!src.empty(),
+        "P5: PTX_SRCDIR was NOT injected by the build (-DPTX_SRCDIR absent) — the "
+        "structural §1 check COULD NOT RUN and MUST NOT be treated as passing; "
+        "fix Makefile.test.include (test_test_ptx_CPPFLAGS) before trusting a green run");
+
+    // the COMPLETE mutator set (P5 report item 1): every function that inserts,
+    // erases, role-changes, or clears g_ptx_my_shares.
+    const std::vector<std::string> mutators = {
+        "PTX_BLS_SetSkShare",       // :84  insert-material (GUARDED, §C1)
+        "PTX_BLS_Promote",          // :171 in-place role
+        "PTX_BLS_ExpirePending",    // :213 erase
+        "PTX_BLS_DiscardSuperseded",// :244 erase
+        "PTX_BLS_UndoPromote",      // :275 role restore + :279 erase (UNGUARDED revert)
+        "PTX_BLS_LoadShares",       // :310 insert (disk reload)
+        "PTX_BLS_ReconcileShares",  // :338 erase
+        "PTX_BLS_WipeShares",       // :377 clear
+    };
+
+    // read the defining TU — FAIL LOUD if the injected path is wrong (never skip).
+    const std::string bls = P5_slurp(src + "/src/ptx/ptx_bls.cpp");
+    BOOST_REQUIRE_MESSAGE(!bls.empty(),
+        "P5: cannot read src/ptx/ptx_bls.cpp under PTX_SRCDIR='" << src <<
+        "' — the structural check would be vacuous; is -DPTX_SRCDIR injected?");
+
+    // concatenate every source under src/rpc.
+    const fs::path rpcdir = fs::path(src) / "src" / "rpc";
+    BOOST_REQUIRE_MESSAGE(fs::is_directory(rpcdir),
+        "P5: src/rpc not found at '" << rpcdir.string() << "' — check would be vacuous");
+    std::string rpc_all;
+    size_t rpc_files = 0;
+    for (fs::recursive_directory_iterator it(rpcdir), end; it != end; ++it) {
+        if (!fs::is_regular_file(it->path())) continue;
+        const std::string ext = it->path().extension().string();
+        if (ext != ".cpp" && ext != ".h") continue;
+        rpc_all += P5_slurp(it->path().string());
+        ++rpc_files;
+    }
+    BOOST_REQUIRE_MESSAGE(rpc_files > 0 && !rpc_all.empty(),
+        "P5: read zero source under src/rpc — the negative check would be vacuous");
+
+    for (const std::string& m : mutators) {
+        // POSITIVE limb: the mutator is DEFINED in ptx_bls.cpp. A rename makes
+        // this fail loudly (anti-vacuous) rather than the negative limb passing.
+        BOOST_CHECK_MESSAGE(P5_count(bls, m + "(") > 0,
+            "P5 positive limb: mutator '" << m << "' not found in ptx_bls.cpp — "
+            "renamed? update the mutator list; do not let the rpc check go vacuous");
+        // NEGATIVE limb: the mutator name appears NOWHERE under src/rpc.
+        BOOST_CHECK_MESSAGE(P5_count(rpc_all, m) == 0,
+            "P5 negative limb: mutator '" << m << "' is referenced under src/rpc — "
+            "§1 forbids an rpc-reachable write path to g_ptx_my_shares");
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -239,7 +239,7 @@ test_test_ptx_SOURCES = \
   test/test_Hemis.h \
   test/test_Hemis.cpp \
   $(PTX_TESTS)
-test_test_ptx_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES) -I$(builddir)/test/ $(TESTDEFS) $(EVENT_FLAGS)
+test_test_ptx_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES) -I$(builddir)/test/ $(TESTDEFS) $(EVENT_FLAGS) -DPTX_SRCDIR=\"$(abs_top_srcdir)\"
 test_test_ptx_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
 test_test_ptx_LDADD = \
   $(LIBBITCOIN_SERVER)
