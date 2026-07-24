@@ -13,11 +13,11 @@
 
 const char*    PTX_BLS_DST = "BLS_SIG_HEMIS_PTX_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
 
-// GM-side BLS key share (written by PTX_DKG_StoreSkShare on ceremony completion).
-// Stored as 32-byte big-endian blst scalar. Guarded by cs_ptx_my_bls_sk.
-uint8_t        g_ptx_my_bls_sk_bytes[32] = {};
-bool           g_ptx_my_bls_sk_set       = false;
-RecursiveMutex cs_ptx_my_bls_sk;
+// GM-side BLS key-share store (KDD-070 P1): keyed by quorum_hash, written by
+// PTX_DKG_StoreSkShare on ceremony completion, read for signing by
+// PTX_BLS_GetCurrentShare. Guarded by cs_ptx_my_bls_sk. NOT bounded in size.
+std::map<uint256, HeldShare> g_ptx_my_shares;
+RecursiveMutex               cs_ptx_my_bls_sk;
 
 // ---------------------------------------------------------------------------
 // PTX_BLS_SetSkShare — §C1 replay guard (KDD-057; rationale updated KDD-069)
@@ -28,29 +28,53 @@ RecursiveMutex cs_ptx_my_bls_sk;
 // was removed with the trusted dealer, so this guard no longer defends against
 // a coordinator hijacking the slot — it now defends against CEREMONY REPLAY /
 // double-store (a member re-running a ceremony, or a future rotation/re-select
-// overwriting a live share).  No site writes g_ptx_my_bls_sk_bytes/_set
+// overwriting a live share).  No site writes g_ptx_my_shares
 // directly (a direct write would bypass the guard).
 //
-// refuse-unless-empty: a first-set (empty slot) stores the share; any overwrite
-// of an already-set share is REFUSED.  The share is written only on local
-// ceremony COMPLETION (StoreSkShare fires at phase==FINALIZE) and a
-// failed/aborted formation leaves the slot clean, so no legitimate write hits a
-// set slot now.  W2 rotation/disband/re-formation MUST add (a) an explicit
-// authorized-overwrite path and (b) an abort-clears-slot / clear mechanism
-// (KDD-070 slot mechanism); a plain overwrite is refused here and no runtime
-// clear exists today (clear == daemon restart, ODC-035).
+// refuse-unless-empty PER quorum_hash: a first-set for a key stores the share
+// (role CURRENT, P1); a second write to the SAME key is REFUSED.  Distinct
+// quorum_hashes coexist — the store is NOT bounded (KDD-040's one-per-GM is a
+// fact about today, relaxable by W2.5; not an invariant here).  The share is
+// written only on local ceremony COMPLETION (StoreSkShare fires at
+// phase==FINALIZE) and a failed/aborted formation leaves the key unset.  W2
+// rotation/disband/re-formation MUST add (a) an authorized clear/rotate path
+// (KDD-070 P3/P4) and (b) startup reconciliation + wipe (KDD-070 P2); a plain
+// overwrite of a set key is refused here and no runtime clear exists yet.
 // ---------------------------------------------------------------------------
 
-bool PTX_BLS_SetSkShare(const uint8_t sk_bytes[32], std::string& err)
+bool PTX_BLS_SetSkShare(const uint256& quorum_hash, int formation_height,
+                        const uint8_t sk_bytes[32], std::string& err)
 {
     LOCK(cs_ptx_my_bls_sk);
-    if (g_ptx_my_bls_sk_set) {
-        err = "sk-share already set; refusing silent overwrite (C1 replay guard: "
-              "rotation/disband/re-formation must use an authorized-overwrite path)";
+    if (g_ptx_my_shares.count(quorum_hash)) {
+        err = "sk-share already set for quorum " + quorum_hash.ToString() +
+              "; refusing overwrite (C1 replay/double-store guard, KDD-069/070 — "
+              "rotation/disband must use an authorized clear path)";
         return false;
     }
-    std::memcpy(g_ptx_my_bls_sk_bytes, sk_bytes, 32);
-    g_ptx_my_bls_sk_set = true;
+    HeldShare hs;
+    std::memcpy(hs.bytes, sk_bytes, 32);
+    hs.formation_height = formation_height;
+    hs.role             = PTXShareRole::CURRENT;   // P1: CURRENT only
+    hs.promotion_height = -1;
+    g_ptx_my_shares[quorum_hash] = hs;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// PTX_BLS_GetCurrentShare — the single read path for signing selection (§5).
+// Returns true + copies bytes iff a CURRENT-role share is held for quorum_hash.
+// Never returns another quorum's share; refuses a non-CURRENT role (PENDING /
+// SUPERSEDED become reachable in P3/P4 — the role check is written now).
+// ---------------------------------------------------------------------------
+
+bool PTX_BLS_GetCurrentShare(const uint256& quorum_hash, uint8_t out[32])
+{
+    LOCK(cs_ptx_my_bls_sk);
+    auto it = g_ptx_my_shares.find(quorum_hash);
+    if (it == g_ptx_my_shares.end() || it->second.role != PTXShareRole::CURRENT)
+        return false;
+    std::memcpy(out, it->second.bytes, 32);
     return true;
 }
 

@@ -1308,14 +1308,15 @@ bool PTX_DKG_ClosePhase4(PTXDKGSession& session)
 // ---------------------------------------------------------------------------
 // PTX_DKG_StoreSkShare — Phase 5 (Option A, KDD-057)
 //
-// Write site to g_ptx_my_bls_sk_bytes (DKG-produced share).  Routes through the
-// §C1 guarded setter PTX_BLS_SetSkShare (KDD-057): refuse-unless-empty — a set
+// Write site to the keyed share store g_ptx_my_shares (DKG-produced share, KDD-070
+// P1).  Routes through the §C1 guarded setter PTX_BLS_SetSkShare (KDD-057):
+// per-key refuse-unless-empty — a set
 // slot is NOT overwritten (returns false; ClosePhase5 maps that to ABORTED).
 // Safe at W1.3: fires only at phase==FINALIZE (local completion), and no W1.3
 // path re-forms into a set slot.
 // ---------------------------------------------------------------------------
 
-bool PTX_DKG_StoreSkShare(const PTXDKGSession& session)
+bool PTX_DKG_StoreSkShare(const PTXDKGSession& session, int formation_height)
 {
     if (session.phase != PTXDKGPhase::FINALIZE)
         return false;
@@ -1323,8 +1324,10 @@ bool PTX_DKG_StoreSkShare(const PTXDKGSession& session)
     uint8_t sk_bytes[32];
     blst_bendian_from_scalar(sk_bytes, &session.sk_share_i);
 
+    // KDD-070 P1: keyed by the ceremony's quorum_hash (role CURRENT). §C1
+    // refuse-unless-empty is now per-key — a set key is not overwritten.
     std::string set_err;
-    if (!PTX_BLS_SetSkShare(sk_bytes, set_err)) {
+    if (!PTX_BLS_SetSkShare(session.quorum_hash, formation_height, sk_bytes, set_err)) {
         LogPrintf("PTX DKG: StoreSkShare: refusing sk_share overwrite for quorum_hash=%s (%s)\n",
                   session.quorum_hash.ToString(), set_err);
         return false;
@@ -1416,7 +1419,7 @@ bool PTX_DKG_ClosePhase5(PTXDKGSession& session,
     if (session.phase != PTXDKGPhase::FINALIZE)
         return false;
 
-    if (!PTX_DKG_StoreSkShare(session)) {
+    if (!PTX_DKG_StoreSkShare(session, formation_height)) {
         session.phase = PTXDKGPhase::ABORTED;
         return false;
     }

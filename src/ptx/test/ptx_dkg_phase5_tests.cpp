@@ -182,14 +182,14 @@ static void AdvanceToFinalize(
     }
 }
 
-// §C1 (KDD-057): the sk-share slot is a process-global guarded by
-// refuse-unless-empty (PTX_BLS_SetSkShare). Tests that store a share must start
-// from an EMPTY slot — a prior test in the shared test binary may have left it
-// set, which the guard would now (correctly) refuse. Reset before each store.
+// §C1 (KDD-057; keyed KDD-070 P1): the sk-share store is a process-global map
+// guarded by per-key refuse-unless-empty (PTX_BLS_SetSkShare). Tests that store
+// must start from an EMPTY store — a prior test in the shared binary may have
+// left a key set, which the guard would (correctly) refuse. Clear before each.
 static void PTX_TEST_ClearSkShareSlot()
 {
     LOCK(cs_ptx_my_bls_sk);
-    g_ptx_my_bls_sk_set = false;
+    g_ptx_my_shares.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -205,14 +205,16 @@ BOOST_AUTO_TEST_CASE(P5_StoreSkShare_WritesCorrectBytes)
     AdvanceToFinalize(key_map, sessions);
 
     PTX_TEST_ClearSkShareSlot();
-    BOOST_REQUIRE(PTX_DKG_StoreSkShare(sessions[0]));
+    BOOST_REQUIRE(PTX_DKG_StoreSkShare(sessions[0], 1000));
 
-    // Read back bytes under the lock.
+    // Read back bytes from the keyed store under the lock (KDD-070 P1).
     uint8_t stored_bytes[32];
     {
         LOCK(cs_ptx_my_bls_sk);
-        BOOST_REQUIRE(g_ptx_my_bls_sk_set);
-        std::memcpy(stored_bytes, g_ptx_my_bls_sk_bytes, 32);
+        auto it = g_ptx_my_shares.find(sessions[0].quorum_hash);
+        BOOST_REQUIRE(it != g_ptx_my_shares.end());
+        BOOST_REQUIRE(it->second.role == PTXShareRole::CURRENT);
+        std::memcpy(stored_bytes, it->second.bytes, 32);
     }
 
     // Expected bytes: blst_bendian_from_scalar(sk_share_i).
@@ -470,20 +472,25 @@ BOOST_AUTO_TEST_CASE(P5_ReSelection_SecondStoreRefusedAborts)
     std::vector<PTXDKGSession> sessions;
     AdvanceToFinalize(key_map, sessions);
 
-    // First close on an EMPTY slot: stores, reaches DONE.
+    // First close on an EMPTY store: stores under sessions[0].quorum_hash, DONE.
     PTX_TEST_ClearSkShareSlot();
     CMutableTransaction tx_first;
     BOOST_REQUIRE(PTX_DKG_ClosePhase5(sessions[0], 1000, tx_first));
     BOOST_REQUIRE(sessions[0].phase == PTXDKGPhase::DONE);
-    BOOST_REQUIRE(g_ptx_my_bls_sk_set);
+    BOOST_REQUIRE(g_ptx_my_shares.count(sessions[0].quorum_hash) == 1);
 
-    // Second close WITHOUT clearing — models the same node re-selected into a
-    // new quorum while still holding its previous share.  §C1 refuses the
-    // overwrite, so the ceremony ABORTS at FINALIZE.
+    // Second close for the SAME quorum_hash (sessions[1] is another member of the
+    // same ceremony → same key) WITHOUT clearing: §C1 per-key refuse-unless-empty
+    // refuses the overwrite, so the ceremony ABORTS at FINALIZE. KDD-070 P1 note:
+    // the refusal is now SCOPED TO THE SAME quorum_hash (a same-quorum replay /
+    // double-store); a re-selection into a DIFFERENT quorum now SUCCEEDS (distinct
+    // key) — see Slot_TwoQuorumsCoexist_NoCrosstalk. This narrows the KDD-067
+    // burnout from process-lifetime to per-quorum.
+    BOOST_REQUIRE(sessions[1].quorum_hash == sessions[0].quorum_hash); // same ceremony
     CMutableTransaction tx_second;
     BOOST_CHECK_MESSAGE(!PTX_DKG_ClosePhase5(sessions[1], 2000, tx_second),
-                        "a re-selected member holding a prior share MUST fail to close "
-                        "(sk_share is refuse-unless-empty, §C1)");
+                        "a second store for the SAME quorum_hash MUST fail to close "
+                        "(sk_share is per-key refuse-unless-empty, §C1)");
     BOOST_CHECK_MESSAGE(sessions[1].phase == PTXDKGPhase::ABORTED,
                         "refused StoreSkShare MUST drive phase = ABORTED (the 2320 mechanism)");
 
@@ -580,36 +587,165 @@ BOOST_AUTO_TEST_CASE(C1_ReplayGuard_RefusesOverwriteOfSetShare)
 {
     PTX_TEST_ClearSkShareSlot();
 
-    // First set into an empty slot: accepted, bytes stored.
+    uint256 qh;
+    std::memset(qh.begin(), 0xA1, 32);   // a fixed quorum_hash key
+
+    // First set into an empty key: accepted, bytes stored (role CURRENT).
     uint8_t first[32];
     std::memset(first, 0x11, 32);
     std::string err1;
-    BOOST_REQUIRE(PTX_BLS_SetSkShare(first, err1));
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(qh, 100, first, err1));
     BOOST_CHECK(err1.empty());
     {
         LOCK(cs_ptx_my_bls_sk);
-        BOOST_REQUIRE(g_ptx_my_bls_sk_set);
-        BOOST_CHECK_EQUAL_COLLECTIONS(g_ptx_my_bls_sk_bytes, g_ptx_my_bls_sk_bytes + 32,
+        auto it = g_ptx_my_shares.find(qh);
+        BOOST_REQUIRE(it != g_ptx_my_shares.end());
+        BOOST_CHECK(it->second.role == PTXShareRole::CURRENT);
+        BOOST_CHECK_EQUAL_COLLECTIONS(it->second.bytes, it->second.bytes + 32,
                                       first, first + 32);
     }
 
-    // Second set into the now-SET slot with DIFFERENT bytes: REFUSED, err set,
+    // Second set into the now-SET key with DIFFERENT bytes: REFUSED, err set,
     // and the live share is UNCHANGED. (Guard stubbed → this set succeeds and
     // clobbers → the collection assertion below flips RED.)
     uint8_t second[32];
     std::memset(second, 0x22, 32);
     std::string err2;
-    BOOST_CHECK(!PTX_BLS_SetSkShare(second, err2));
+    BOOST_CHECK(!PTX_BLS_SetSkShare(qh, 200, second, err2));
     BOOST_CHECK(!err2.empty());
     {
         LOCK(cs_ptx_my_bls_sk);
-        BOOST_CHECK(g_ptx_my_bls_sk_set);
+        auto it = g_ptx_my_shares.find(qh);
+        BOOST_REQUIRE(it != g_ptx_my_shares.end());
         // Load-bearing: the original share survived the refused overwrite.
-        BOOST_CHECK_EQUAL_COLLECTIONS(g_ptx_my_bls_sk_bytes, g_ptx_my_bls_sk_bytes + 32,
+        BOOST_CHECK_EQUAL_COLLECTIONS(it->second.bytes, it->second.bytes + 32,
                                       first, first + 32);
     }
 
-    PTX_TEST_ClearSkShareSlot(); // leave the process-global clean for later tests
+    PTX_TEST_ClearSkShareSlot(); // leave the process-global store clean for later tests
+}
+
+// ===========================================================================
+// KDD-070 P1 — keyed share store (map<quorum_hash, HeldShare>), CURRENT-only,
+// keyed selection via PTX_BLS_GetCurrentShare. Each test RED-provable by
+// inversion (noted per case).
+// ===========================================================================
+
+namespace {
+uint256 QHk(uint8_t fill) { uint256 h; std::memset(h.begin(), fill, 32); return h; }
+}
+
+// set then get-by-key round-trips, and PartialSign with the retrieved bytes
+// equals PartialSign with the original — i.e. selection returns the RIGHT share.
+// RED (inversion): had GetCurrentShare returned different bytes, the two sigs
+// would differ and the equality check fails.
+BOOST_AUTO_TEST_CASE(Slot_SetThenGetPerKey_Signs)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 qh = QHk(0x5A);
+    uint8_t share[32]; std::memset(share, 0x3C, 32);
+    std::string err;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(qh, 100, share, err));
+
+    uint8_t got[32];
+    BOOST_REQUIRE(PTX_BLS_GetCurrentShare(qh, got));
+    BOOST_CHECK_EQUAL_COLLECTIONS(got, got + 32, share, share + 32);
+
+    uint256 msg = QHk(0xEE);
+    uint8_t sig_got[PTX_SIG_BYTES], sig_ref[PTX_SIG_BYTES];
+    BOOST_REQUIRE(PTX_BLS_PartialSign(got, msg, sig_got));
+    BOOST_REQUIRE(PTX_BLS_PartialSign(share, msg, sig_ref));
+    BOOST_CHECK_EQUAL_COLLECTIONS(sig_got, sig_got + PTX_SIG_BYTES,
+                                  sig_ref, sig_ref + PTX_SIG_BYTES);
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// signing an UNHELD quorum_hash returns false — never a wrong-key signature.
+// RED (inversion): a fallback-to-any-share implementation returns true here.
+BOOST_AUTO_TEST_CASE(Slot_SignUnheldQuorum_ReturnsFalse)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 held = QHk(0x01), unheld = QHk(0x02);
+    uint8_t share[32]; std::memset(share, 0x7F, 32);
+    std::string err;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(held, 100, share, err));
+
+    uint8_t out[32]; std::memset(out, 0xCC, 32);
+    BOOST_CHECK(!PTX_BLS_GetCurrentShare(unheld, out));           // not held → false
+    // out must be untouched (no wrong-key share leaked into it).
+    for (int i = 0; i < 32; ++i) BOOST_CHECK_EQUAL(out[i], 0xCC);
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// per-key refuse-unless-empty: a second write to the SAME key is refused while a
+// DIFFERENT key is accepted. RED (inversion): a global (unkeyed) guard would
+// refuse the second key too; a missing guard would accept the same-key rewrite.
+BOOST_AUTO_TEST_CASE(Slot_RefuseUnlessEmptyPerKey)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 qa = QHk(0xA0), qb = QHk(0xB0);
+    uint8_t s1[32]; std::memset(s1, 0x11, 32);
+    uint8_t s2[32]; std::memset(s2, 0x22, 32);
+    std::string e1, e2, e3;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(qa, 100, s1, e1));           // first set QA: ok
+    BOOST_CHECK(!PTX_BLS_SetSkShare(qa, 100, s2, e2));            // second set QA: refused
+    BOOST_CHECK(!e2.empty());
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(qb, 100, s2, e3));           // set QB (distinct key): ok
+    BOOST_CHECK(e3.empty());
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// two quorums coexist with NO cross-talk: GetCurrentShare(A) returns A's share,
+// (B) returns B's. RED (inversion): a single-slot or last-write-wins store
+// returns B for both.
+BOOST_AUTO_TEST_CASE(Slot_TwoQuorumsCoexist_NoCrosstalk)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 qa = QHk(0xAA), qb = QHk(0xBB);
+    uint8_t sa[32]; std::memset(sa, 0xA5, 32);
+    uint8_t sb[32]; std::memset(sb, 0x5B, 32);
+    std::string e;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(qa, 100, sa, e));
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(qb, 200, sb, e));
+
+    uint8_t ga[32], gb[32];
+    BOOST_REQUIRE(PTX_BLS_GetCurrentShare(qa, ga));
+    BOOST_REQUIRE(PTX_BLS_GetCurrentShare(qb, gb));
+    BOOST_CHECK_EQUAL_COLLECTIONS(ga, ga + 32, sa, sa + 32);      // A → A's share
+    BOOST_CHECK_EQUAL_COLLECTIONS(gb, gb + 32, sb, sb + 32);      // B → B's share
+    BOOST_CHECK(std::memcmp(ga, gb, 32) != 0);                    // and they differ
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// selection is by key regardless of insertion order (A-then-B vs B-then-A).
+// RED (inversion): an order-dependent (e.g. index-based) store returns the
+// wrong share under one of the two orderings.
+BOOST_AUTO_TEST_CASE(Slot_SelectionByKey_BothOrderings)
+{
+    uint256 qa = QHk(0x1A), qb = QHk(0x2B);
+    uint8_t sa[32]; std::memset(sa, 0x1A, 32);
+    uint8_t sb[32]; std::memset(sb, 0x2B, 32);
+    std::string e;
+    uint8_t ga[32], gb[32];
+
+    // Ordering 1: A then B.
+    PTX_TEST_ClearSkShareSlot();
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(qa, 1, sa, e));
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(qb, 2, sb, e));
+    BOOST_REQUIRE(PTX_BLS_GetCurrentShare(qa, ga));
+    BOOST_REQUIRE(PTX_BLS_GetCurrentShare(qb, gb));
+    BOOST_CHECK_EQUAL_COLLECTIONS(ga, ga + 32, sa, sa + 32);
+    BOOST_CHECK_EQUAL_COLLECTIONS(gb, gb + 32, sb, sb + 32);
+
+    // Ordering 2: B then A (fresh store).
+    PTX_TEST_ClearSkShareSlot();
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(qb, 2, sb, e));
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(qa, 1, sa, e));
+    BOOST_REQUIRE(PTX_BLS_GetCurrentShare(qa, ga));
+    BOOST_REQUIRE(PTX_BLS_GetCurrentShare(qb, gb));
+    BOOST_CHECK_EQUAL_COLLECTIONS(ga, ga + 32, sa, sa + 32);
+    BOOST_CHECK_EQUAL_COLLECTIONS(gb, gb + 32, sb, sb + 32);
+    PTX_TEST_ClearSkShareSlot();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

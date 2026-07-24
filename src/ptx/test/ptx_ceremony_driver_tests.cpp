@@ -102,13 +102,13 @@ static uint256 TestFormationHash()
     return uint256(buf);
 }
 
-// §C1 (KDD-057): the sk-share slot is process-global refuse-unless-empty.
-// The harness models 11 separate processes in one binary — clear before each
-// node's FINALIZE close (the phase5-TU precedent).
+// §C1 (KDD-057; keyed KDD-070 P1): the sk-share store is a process-global map
+// with per-key refuse-unless-empty. The harness models 11 separate processes in
+// one binary — clear before each node's FINALIZE close (the phase5-TU precedent).
 static void PTX_TEST_ClearSkShareSlot()
 {
     LOCK(cs_ptx_my_bls_sk);
-    g_ptx_my_bls_sk_set = false;
+    g_ptx_my_shares.clear();
 }
 
 // ---------------------------------------------------------------------------

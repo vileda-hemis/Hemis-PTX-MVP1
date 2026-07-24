@@ -10,8 +10,9 @@
 //     NEVER stored in PTXDKGSession; passed as a parameter at signing time.
 //   blst_scalar sk_share_i (ceremony arithmetic, blst) — the output of
 //     Phase 4/5 aggregation; held in PTXDKGSession during the ceremony, then
-//     written to g_ptx_my_bls_sk_bytes via the guarded setter PTX_BLS_SetSkShare
-//     in Phase 5 (PTX_DKG_StoreSkShare; KDD-057 Option A, §C1 replay guard).
+//     written to the keyed store g_ptx_my_shares via the guarded setter
+//     PTX_BLS_SetSkShare in Phase 5 (PTX_DKG_StoreSkShare; KDD-057 Option A,
+//     §C1 replay guard; keyed KDD-070 P1).
 //   These two key types serve different purposes with different lifetimes;
 //   conflating them is the silent-keying-bug risk from the impl plan's §6.
 
@@ -718,17 +719,18 @@ bool PTX_DKG_ClosePhase4(PTXDKGSession& session);
 // Phase 5 — finalize
 // ---------------------------------------------------------------------------
 
-// Write sk_share_i to g_ptx_my_bls_sk_bytes (Option A, KDD-057).
-// Serializes session.sk_share_i with blst_bendian_from_scalar → 32 bytes.
+// Write sk_share_i to the keyed share store g_ptx_my_shares (KDD-070 P1).
+// Serializes session.sk_share_i with blst_bendian_from_scalar → 32 bytes and
+// stores it under session.quorum_hash (role CURRENT), with formation_height.
 // Writes under cs_ptx_my_bls_sk lock.
 //
-// The SINGLE write site to g_ptx_my_bls_sk_bytes (DKG-produced share) post
-// KDD-069. Routes through the §C1 refuse-unless-empty guard (PTX_BLS_SetSkShare),
-// which now protects against ceremony replay / double-store (the gm_bls_keyset
-// RPC path was removed with the trusted dealer).
+// The SINGLE write site to the share store post KDD-069. Routes through the §C1
+// per-key refuse-unless-empty guard (PTX_BLS_SetSkShare), which now protects
+// against ceremony replay / double-store (the gm_bls_keyset RPC path was removed
+// with the trusted dealer).
 //
 // Pre: phase == FINALIZE, sk_share_i computed.
-bool PTX_DKG_StoreSkShare(const PTXDKGSession& session);
+bool PTX_DKG_StoreSkShare(const PTXDKGSession& session, int formation_height);
 
 // Construct the PTXDKG special transaction.
 // Sets nType = PTXDKG (11), nVersion = SAPLING.

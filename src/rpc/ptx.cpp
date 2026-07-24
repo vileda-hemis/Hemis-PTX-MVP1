@@ -283,7 +283,7 @@ UniValue ptx_roll(const JSONRPCRequest& request)
     // there is no key fan-out (KDD-069: the dealer's gm_bls_keyset path is gone).
 
     // Collect partial BLS signatures from each quorum member.
-    auto partial_sigs_raw = PTX_FanOutSign(round_id, round_seed, member_ids);
+    auto partial_sigs_raw = PTX_FanOutSign(round_id, round_seed, dkg_ctx.quorum_hash, member_ids);
 
     // Collect blst partial signatures and 1-indexed polynomial positions.
     std::vector<std::vector<uint8_t>> bls_sigs;
@@ -505,35 +505,41 @@ UniValue gm_reveal(const JSONRPCRequest& request)
 
 UniValue gm_bls_sign(const JSONRPCRequest& request)
 {
-    if (request.fHelp || request.params.size() < 1) {
+    if (request.fHelp || request.params.size() < 2) {
         throw std::runtime_error(
-            "gm_bls_sign round_seed_hex\n"
-            "\nSign round_seed with this node's BLS key share and return the partial signature.\n"
+            "gm_bls_sign round_seed_hex quorum_hash\n"
+            "\nSign round_seed with this node's CURRENT BLS key share for the named\n"
+            "quorum and return the partial signature (KDD-070 P1: keyed selection).\n"
             "\nArguments:\n"
             "1. round_seed_hex (str) 64-char hex round seed\n"
+            "2. quorum_hash    (str) 64-char hex quorum_hash — selects which share signs\n"
             "\nResult:\n"
             "{\n"
             "  \"sig_hex\" : \"hex\"  96-byte BLS partial signature\n"
             "}\n"
-            + HelpExampleRpc("gm_bls_sign", "\"aabb...\"")
+            + HelpExampleRpc("gm_bls_sign", "\"aabb...\", \"ccdd...\"")
         );
     }
 
     std::string seed_hex = request.params[0].get_str();
     if (!IsHex(seed_hex))
         throw JSONRPCError(RPC_INVALID_PARAMS, "round_seed_hex must be a hex string");
+    std::string qh_hex = request.params[1].get_str();
+    if (!IsHex(qh_hex))
+        throw JSONRPCError(RPC_INVALID_PARAMS, "quorum_hash must be a hex string");
 
-    uint256 round_seed = uint256S(seed_hex);
+    uint256 round_seed  = uint256S(seed_hex);
+    uint256 quorum_hash = uint256S(qh_hex);
 
+    // KDD-070 P1: select the CURRENT share for the named quorum by key. Only a
+    // CURRENT-role share signs (the only role in P1; the check is written now so
+    // P4's SUPERSEDED does not have to add it). Not held → hard-error naming the
+    // quorum — never a wrong-key signature, never a fallback.
     uint8_t sk_bytes[32];
-    bool    have_key = false;
-    {
-        LOCK(cs_ptx_my_bls_sk);
-        have_key = g_ptx_my_bls_sk_set;
-        if (have_key) memcpy(sk_bytes, g_ptx_my_bls_sk_bytes, 32);
-    }
-    if (!have_key)
-        throw JSONRPCError(RPC_MISC_ERROR, "BLS key not set: this node holds no DKG sk_share (complete a ceremony first)");
+    if (!PTX_BLS_GetCurrentShare(quorum_hash, sk_bytes))
+        throw JSONRPCError(RPC_MISC_ERROR,
+            "this node holds no CURRENT sk_share for quorum " + quorum_hash.ToString() +
+            " (complete/await a ceremony for it first)");
 
     uint8_t sig_buf[PTX_SIG_BYTES];
     if (!PTX_BLS_PartialSign(sk_bytes, round_seed, sig_buf))
@@ -1574,7 +1580,7 @@ static const CRPCCommand commands[] = {
     { "ptx",  "ptx_roll",                  &ptx_roll,                   true,   {"count","low","high","unique","exclude","game_id","caller_salt"} },
     { "ptx",  "gm_commit",                 &gm_commit,                  true,   {"round_id","round_seed_hex","members_json","commitment_hex"} },
     { "ptx",  "gm_reveal",                 &gm_reveal,                  true,   {"round_id","secret_hex"} },
-    { "ptx",  "gm_bls_sign",               &gm_bls_sign,                true,   {"round_seed_hex"} },
+    { "ptx",  "gm_bls_sign",               &gm_bls_sign,                true,   {"round_seed_hex","quorum_hash"} },
     { "ptx",  "ptx_debug_setnodefailmode", &ptx_debug_setnodefailmode,  true,   {"target_node_id","mode"} },
     { "ptx",  "ptx_debug_ptxdkgpopulate",  &ptx_debug_ptxdkgpopulate,   true,   {"payload","force"} },
     { "ptx",  "ptx_debug_selectquorum",    &ptx_debug_selectquorum,     true,   {"anchor_hash"} },

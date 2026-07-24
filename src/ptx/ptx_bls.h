@@ -24,13 +24,29 @@ extern const char* PTX_BLS_DST;
 // Compressed G2 point = 96 bytes. Must match CProbabilisticTxPayload quorum_sig.
 static const int PTX_SIG_BYTES = 96;
 
-// GM-side BLS key share storage. Defined in ptx_bls.cpp; written ONLY through
-// PTX_BLS_SetSkShare (the §C1 guarded setter) from its single write site,
-// PTX_DKG_StoreSkShare (ptx_dkg.cpp), on ceremony completion. Under
-// cs_ptx_my_bls_sk. No site writes these directly (that would bypass the guard).
-extern uint8_t        g_ptx_my_bls_sk_bytes[32];
-extern bool           g_ptx_my_bls_sk_set;
-extern RecursiveMutex cs_ptx_my_bls_sk;
+// GM-side BLS key-share store (KDD-070 P1) — a keyed multi-share map replacing
+// the single global. Keyed by quorum_hash: a GM may hold shares for more than
+// one quorum, so the count is NOT bounded (the "one quorum per GM" limit is
+// KDD-040's, a fact about today that W2.5 multi-quorum may relax — it is not an
+// invariant of this type). Written ONLY through PTX_BLS_SetSkShare (the §C1
+// guarded setter) from its single write site, PTX_DKG_StoreSkShare, on ceremony
+// completion. Read for signing ONLY through PTX_BLS_GetCurrentShare. Under
+// cs_ptx_my_bls_sk. No site touches the map directly.
+enum class PTXShareRole : uint8_t {
+    CURRENT             = 0,  // the servicing signer for its quorum
+    PENDING             = 1,  // rotation successor, not yet promoted (P3)
+    SUPERSEDED_RETAINED = 2,  // former CURRENT, retained for reorg undo (P4)
+};
+
+struct HeldShare {
+    uint8_t      bytes[32]         = {};   // 32-byte big-endian blst scalar
+    int          formation_height  = 0;    // height of the quorum's formation anchor
+    PTXShareRole role              = PTXShareRole::CURRENT;
+    int          promotion_height  = -1;   // set at promotion (P3); -1 until then
+};
+
+extern std::map<uint256, HeldShare> g_ptx_my_shares;  // key = quorum_hash
+extern RecursiveMutex               cs_ptx_my_bls_sk;
 
 // blst has no global init requirement — no BLS::Init() needed.
 
@@ -38,14 +54,23 @@ extern RecursiveMutex cs_ptx_my_bls_sk;
 // GM-side API
 // ---------------------------------------------------------------------------
 
-// §C1 replay guard (KDD-057; rationale updated KDD-069): the SINGLE guarded
-// write path for the GM-side sk-share. Post-069 the only write site is
-// PTX_DKG_StoreSkShare (the gm_bls_keyset RPC path was removed with the dealer);
-// the guard now protects against ceremony replay / double-store, not coordinator
-// hijack. refuse-unless-empty: first-set stores; overwrite of an already-set
-// share is REFUSED and err is set. No site may write g_ptx_my_bls_sk_bytes/_set
-// directly. Returns true on store, false (with err) on refusal.
-bool PTX_BLS_SetSkShare(const uint8_t sk_bytes[32], std::string& err);
+// §C1 replay/double-store guard (KDD-057; rationale amended KDD-069; keyed
+// KDD-070 P1): the SINGLE guarded write path for a GM-side sk-share. Post-069
+// the only write site is PTX_DKG_StoreSkShare (the gm_bls_keyset RPC path was
+// removed with the dealer); the guard protects against ceremony replay /
+// double-store, not coordinator hijack. refuse-unless-empty PER quorum_hash: a
+// first-set for a key stores (role CURRENT); a second write to the SAME key is
+// REFUSED (err set). Distinct quorum_hashes coexist. Returns true on store,
+// false (with err) on refusal.
+bool PTX_BLS_SetSkShare(const uint256& quorum_hash, int formation_height,
+                        const uint8_t sk_bytes[32], std::string& err);
+
+// Read the CURRENT-role share for quorum_hash for signing (the SINGLE read path
+// for the signing selection, §5). Returns true and copies 32 bytes into out iff
+// a share is held for quorum_hash AND its role is CURRENT; false otherwise (not
+// held, or held but not CURRENT — e.g. PENDING/SUPERSEDED in later packages).
+// Never returns another quorum's share. Under cs_ptx_my_bls_sk.
+bool PTX_BLS_GetCurrentShare(const uint256& quorum_hash, uint8_t out[32]);
 
 // Sign msg with a raw 32-byte blst scalar (the GM's stored share).
 // Called by gm_bls_sign RPC handler on GM nodes.

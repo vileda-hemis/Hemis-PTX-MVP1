@@ -53,6 +53,7 @@ void PTX_FanOutReveal(const std::string& round_id,
 std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
     const std::string& round_id,
     const uint256& round_seed,
+    const uint256& quorum_hash,
     const std::vector<std::string>& member_ids);
 
 #endif // HEMIS_PTX_FANOUT_H

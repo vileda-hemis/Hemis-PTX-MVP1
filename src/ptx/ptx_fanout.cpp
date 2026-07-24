@@ -262,6 +262,7 @@ void PTX_FanOutReveal(const std::string& round_id,
 std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
     const std::string& round_id,
     const uint256& round_seed,
+    const uint256& quorum_hash,
     const std::vector<std::string>& member_ids)
 {
     std::map<std::string, std::vector<uint8_t>> collected;
@@ -273,8 +274,11 @@ std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
             continue;
         }
 
+        // KDD-070 P1: gm_bls_sign takes (round_seed_hex, quorum_hash) — the
+        // quorum_hash selects which CURRENT share the member signs with.
         UniValue params(UniValue::VARR);
         params.push_back(round_seed.GetHex());
+        params.push_back(quorum_hash.GetHex());
 
         // Use raw HTTP call; parse sig_hex from body directly (not "accepted" pattern).
         raii_event_base base = obtain_event_base();
