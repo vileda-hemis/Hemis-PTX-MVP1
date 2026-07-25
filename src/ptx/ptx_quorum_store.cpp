@@ -29,6 +29,8 @@ std::unique_ptr<CPTXQuorumStore> ptxQuorumStore;
 //   ("pq_h", htobe32(UINT32_MAX - mined_height))   -> quorum_hash
 static const std::string DB_PTXDKG_QUORUM   = "pq_r";
 static const std::string DB_PTXDKG_BY_INV_H = "pq_h";
+//   ("pq_p", predecessor_qh)                        -> successor_qh (KDD-072 P-b5)
+static const std::string DB_PTXDKG_PRED     = "pq_p";
 
 // mined_height inversed + big-endian so evodb iterates most-recent-first
 // (llmq/quorums_blockprocessor BuildInversedHeightKey precedent).
@@ -131,6 +133,10 @@ bool CPTXQuorumStore::ProcessBlock(const CBlock& block, const CBlockIndex* pinde
                                              listRot, listForm, quorum11, state)) {
             return false;
         }
+        // V12d twin (KDD-072 P-b5): persist-boundary defense, the V9 pattern.
+        if (!CheckPredecessorUnrotated(payload.predecessor_quorum_hash, state)) {
+            return false;
+        }
     } else {
         const CDeterministicGMList dgmList = deterministicGMManager->GetListForBlock(pindexQuorum);
         const CDeterministicGMList formationPool =
@@ -212,6 +218,13 @@ bool CPTXQuorumStore::ProcessBlock(const CBlock& block, const CBlockIndex* pinde
                       "ACTIVE to supersede (V12 should have rejected this)\n",
                       __func__, payload.predecessor_quorum_hash.ToString());
         }
+        // KDD-072 P-b5: set the predecessor-uniqueness index (refuse-unless-
+        // absent; V12d rejected any second successor before this point).
+        if (!WriteSuccessorOf(payload.predecessor_quorum_hash, payload.quorum_hash)) {
+            LogPrintf("%s: WARNING: pq_p already set for predecessor %s "
+                      "(V12d should have rejected this)\n",
+                      __func__, payload.predecessor_quorum_hash.ToString());
+        }
         PTX_BLS_Promote(payload.quorum_hash, payload.predecessor_quorum_hash,
                         pindex->nHeight, &evoDb);
     }
@@ -258,6 +271,11 @@ bool CPTXQuorumStore::UndoBlock(const CBlock& block, const CBlockIndex* pindex)
         RestoreActiveOnUndo(payload.predecessor_quorum_hash);
         PTX_BLS_UndoPromote(payload.quorum_hash, payload.predecessor_quorum_hash,
                             &evoDb);
+        // KDD-072 P-b5: the reorg RE-ALLOW — erasing pq_p lets a different
+        // successor rotate this predecessor on the new branch (the V9
+        // erase-on-disconnect pattern). Idempotent; no ordering constraint
+        // with the two reverts above.
+        EraseSuccessorOf(payload.predecessor_quorum_hash);
     }
 
     // E-5 boundary: NO re-pend of the disconnected tx.  Re-submission policy
@@ -411,6 +429,45 @@ bool CPTXQuorumStore::RestoreActiveOnUndo(const uint256& quorum_hash)
     LogPrintf("%s: quorum supersede REVERTED (SUPERSEDED->ACTIVE). quorum_hash=%s\n",
               __func__, quorum_hash.ToString());
     return true;
+}
+
+bool CPTXQuorumStore::HasSuccessorOf(const uint256& predecessor_qh)
+{
+    uint256 successor;
+    return evoDb.Read(std::make_pair(DB_PTXDKG_PRED, predecessor_qh), successor);
+}
+
+bool CPTXQuorumStore::CheckPredecessorUnrotated(const uint256& predecessor_qh,
+                                                CValidationState& state)
+{
+    // KDD-072 P-b5 V12d — see the header contract (index primary, as-of
+    // secondary). One implementation; the validator and the connect guard
+    // both call this.
+    if (HasSuccessorOf(predecessor_qh)) {
+        return state.DoS(100, error("%s: predecessor %s already has a successor (pq_p set)",
+                                    __func__, predecessor_qh.ToString()),
+                         REJECT_INVALID, "ptxdkg-predecessor-already-rotated");
+    }
+    return true;
+}
+
+bool CPTXQuorumStore::WriteSuccessorOf(const uint256& predecessor_qh,
+                                       const uint256& successor_qh)
+{
+    // Refuse-unless-absent: a second write to the same predecessor is a defect
+    // (V12d should have rejected the payload before this point).
+    if (HasSuccessorOf(predecessor_qh)) {
+        return false;
+    }
+    evoDb.Write(std::make_pair(DB_PTXDKG_PRED, predecessor_qh), successor_qh);
+    LogPrintf("%s: predecessor-uniqueness index set. predecessor=%s successor=%s\n",
+              __func__, predecessor_qh.ToString(), successor_qh.ToString());
+    return true;
+}
+
+void CPTXQuorumStore::EraseSuccessorOf(const uint256& predecessor_qh)
+{
+    evoDb.Erase(std::make_pair(DB_PTXDKG_PRED, predecessor_qh));
 }
 
 bool CPTXQuorumStore::IsForming(const uint256& quorum_hash) const

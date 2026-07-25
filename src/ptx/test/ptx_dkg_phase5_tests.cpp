@@ -2563,4 +2563,70 @@ BOOST_AUTO_TEST_CASE(Pb3a_PredecessorNotActiveAsOf_Rejects)
     }
 }
 
+// ---------------------------------------------------------------------------
+// KDD-072 P-b5 — the predecessor-uniqueness index (pq_p, the PRIMARY guard)
+// ---------------------------------------------------------------------------
+
+// (P-b5) index lifecycle: absent -> write -> present -> erase -> absent. The
+// erase leg IS the reorg re-allow (UndoBlock erases pq_p so a different
+// successor may rotate the predecessor on the new branch).
+// RED (inversion B2): make EraseSuccessorOf a no-op -> the re-allow legs fail.
+BOOST_AUTO_TEST_CASE(Pb5_Index_WriteEraseReallow)
+{
+    BOOST_REQUIRE(evoDb);
+    CPTXQuorumStore store(*evoDb);
+    const uint256 pred = QHk(0xD1), succ = QHk(0xD2);
+
+    BOOST_CHECK(!store.HasSuccessorOf(pred));                 // absent
+    BOOST_CHECK(store.WriteSuccessorOf(pred, succ));          // write
+    BOOST_CHECK(store.HasSuccessorOf(pred));                  // present
+    store.EraseSuccessorOf(pred);                             // the reorg re-allow
+    BOOST_CHECK(!store.HasSuccessorOf(pred));                 // absent again
+    store.EraseSuccessorOf(pred);                             // idempotent no-op
+    BOOST_CHECK(!store.HasSuccessorOf(pred));
+    BOOST_CHECK(store.WriteSuccessorOf(pred, QHk(0xD3)));     // a DIFFERENT successor may now rotate
+}
+
+// (P-b5) connect-write refuse-unless-absent: a second write to the same
+// predecessor key is a DEFECT (V12d rejects the payload first), not an
+// overwrite. RED (inversion B1): allow the overwrite -> this row fails.
+BOOST_AUTO_TEST_CASE(Pb5_Write_RefusesUnlessAbsent)
+{
+    BOOST_REQUIRE(evoDb);
+    CPTXQuorumStore store(*evoDb);
+    const uint256 pred = QHk(0xD4);
+    BOOST_REQUIRE(store.WriteSuccessorOf(pred, QHk(0xD5)));
+    BOOST_CHECK(!store.WriteSuccessorOf(pred, QHk(0xD6)));    // refused
+    BOOST_CHECK(store.HasSuccessorOf(pred));                  // first write intact
+}
+
+// (P-b5) V12d — ONE implementation, both consensus sites call it: a
+// predecessor with an existing pq_p entry rejects with EXACTLY
+// ptxdkg-predecessor-already-rotated; an unrotated predecessor passes.
+// RED (inversion A): drop the HasSuccessorOf check -> the second-successor
+// case passes the check chain -> this row fails (proving V12d is the guard,
+// not incidental).
+BOOST_AUTO_TEST_CASE(Pb5_V12d_RejectsSecondSuccessor)
+{
+    BOOST_REQUIRE(evoDb);
+    CPTXQuorumStore store(*evoDb);
+    const uint256 pred = QHk(0xD7);
+    {   // unrotated: passes
+        CValidationState st;
+        BOOST_CHECK(store.CheckPredecessorUnrotated(pred, st));
+    }
+    BOOST_REQUIRE(store.WriteSuccessorOf(pred, QHk(0xD8)));   // first successor lands
+    {   // second successor: the distinct V12d rejection
+        CValidationState st;
+        BOOST_CHECK(!store.CheckPredecessorUnrotated(pred, st));
+        BOOST_CHECK_EQUAL(st.GetRejectReason(), "ptxdkg-predecessor-already-rotated");
+    }
+    // the reorg re-allow flows through the SAME check: erase -> passes again
+    store.EraseSuccessorOf(pred);
+    {
+        CValidationState st;
+        BOOST_CHECK(store.CheckPredecessorUnrotated(pred, st));
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

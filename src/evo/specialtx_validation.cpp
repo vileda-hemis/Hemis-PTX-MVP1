@@ -773,6 +773,15 @@ bool CheckPTXDKGTx(const CTransaction& tx, const CBlockIndex* pindexPrev,
             if (!PTX_DKG_CheckRotationAndResolve(predRec, pindexPrev->nHeight,
                                                  listRot, listForm, quorum11, state))
                 return false;
+            // V12d (KDD-072 P-b5): predecessor-uniqueness — at most one
+            // successor per predecessor, on the EXPLICIT pq_p index. ★ The
+            // index is the PRIMARY durable guard; a raced second rotation also
+            // fails V12b's as-of-ACTIVE above, but that rejection rides
+            // state-read semantics a refactor could change — pq_p cannot
+            // drift. Distinct reject from "not-active".
+            if (!ptxQuorumStore->CheckPredecessorUnrotated(
+                    payload.predecessor_quorum_hash, state))
+                return false;
         } else {
         // V4: snapshot the GM list at the formation block.  A missing snapshot
         // post-activation is local DB corruption — GetListForBlock throws and the

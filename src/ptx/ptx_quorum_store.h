@@ -281,6 +281,38 @@ public:
     // disconnecting successor's payload.  Caller: UndoBlock.
     bool RestoreActiveOnUndo(const uint256& quorum_hash);
 
+    // ------------------------------------------------------------------
+    // KDD-072 P-b5 — the predecessor-uniqueness index ("pq_p"): at most one
+    // successor per predecessor, as an EXPLICIT evodb key. ★ This index is the
+    // PRIMARY durable guard (KDD-072 §6): a racing second rotation also fails
+    // the V12b as-of-ACTIVE check, but that rejection depends on state-read
+    // semantics a refactor could change — pq_p is an existence key with no
+    // semantics to drift. Written at connect, erased at disconnect (a reorg
+    // that unwinds the first successor RE-ALLOWS a second, the V9 pattern).
+    // ------------------------------------------------------------------
+
+    // True iff a successor has already rotated this predecessor (pq_p set).
+    bool HasSuccessorOf(const uint256& predecessor_qh);
+
+    // V12d — ONE implementation, TWO consensus call sites (validator + the
+    // ProcessBlock guard, the CheckRotationAndResolve pattern): reject with
+    // "ptxdkg-predecessor-already-rotated" if pq_p exists. Distinct rejection
+    // from V12b's "not-active": an already-rotated predecessor is a different
+    // failure than a superseded one, even though the race trips both.
+    bool CheckPredecessorUnrotated(const uint256& predecessor_qh,
+                                   CValidationState& state);
+
+    // Connect-write, REFUSE-unless-absent (the ProcessBlock guard posture): a
+    // second write to the same predecessor key is a defect, not an overwrite.
+    // Returns false without writing if pq_p already exists.
+    bool WriteSuccessorOf(const uint256& predecessor_qh, const uint256& successor_qh);
+
+    // Undo-erase: idempotent (erase of an absent key is a no-op), payload-keyed,
+    // rides the same CurTransaction atomicity as the record ops. Joins
+    // RestoreActiveOnUndo + PTX_BLS_UndoPromote in UndoBlock's rotation block —
+    // no ordering constraint among the three.
+    void EraseSuccessorOf(const uint256& predecessor_qh);
+
     bool IsForming(const uint256& quorum_hash) const;
 
 private:

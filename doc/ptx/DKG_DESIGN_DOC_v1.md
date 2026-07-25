@@ -2077,6 +2077,8 @@ semantics), ODC-025 (cadence N, open).
 
 **Cross-ref:** KDD-072 §3/§5 (the hole and the substitution now exercised), ODC-042 (fleet-verified), KDD-073 (three-sites property held on-chain), KDD-070 §1/§8 (Promote no-op; the real promotion owed to P-b6), ODC-032 (the deferral this drill discharges for connect/disconnect), KDD-063 (the swap performed end-to-end), ODC-043 (observability gap surfaced here).
 
+> **[P-b5 SIBLING NOTE, 2026-07-25 — rides the P-b5 commit; owed, no number (the ODC-043-sibling pattern).]** The KDD-058-A minable-commitments store needs **predecessor-aware erase**: `EraseMined` erases by the mined tx's own quorum_hash, so when rotation #1 mines, a competing rotation #2 of the **same predecessor** (different anchor → different quorum_hash) stays in the store — and `GetMinableTx`'s keep-but-skip policy re-runs a **full `CheckPTXDKGTx` (incl. all premit sig verifies) on it at every block template, forever** (removal paths are erase-on-mined for its own quorum and the debug clear only). Not consensus (it can never mine — V12d/as-of reject it at generate-time revalidation); a per-template CPU + log-noise cost, unbounded in time. Fix is one loop in `EraseMined`: when a mined PTXDKG carries a predecessor, also erase held entries naming the **same predecessor**. Node-local mining policy, deliberately kept OUT of P-b5's consensus commit.
+
 ---
 
 **ODC-043 (2026-07-25). `ptx_quorum_info` does not surface the record-v2 lifecycle stamps — an observability gap, not a defect.**
