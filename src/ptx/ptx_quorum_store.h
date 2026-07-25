@@ -53,8 +53,12 @@ enum class PTXQuorumState : uint8_t {
     // EVENT-based (accepted-at-connect), not provenance-based: W2.2 formation
     // produces the same connect event and inherits this predicate unchanged.
     ACTIVE = 1,
-    // W2.3 rotation.  In the enum for schema stability; no producer, no writer.
-    ROTATING = 2,
+    // W2.3 rotation — KDD-063's "ROTATING->SUPERSEDED repurpose", landed at
+    // KDD-072 P-b4 (value 2 UNCHANGED — persisted bytes stable).  A quorum this
+    // state's record names was ACTIVE until its successor connected; the
+    // predicate keeps it as-of-active below superseded_height.  Producer:
+    // MarkSuperseded (ProcessBlock, successor connect).
+    SUPERSEDED = 2,
     // W2.4 disband.  No producer, no writer at W2.1.
     DISBANDED = 3,
 };
@@ -98,7 +102,12 @@ struct PTXQuorumMemberRecord {
 class CPTXQuorumRecord
 {
 public:
-    static const uint8_t CURRENT_VERSION = 1;
+    // KDD-072 P-b4 (ODC-042): v2 adds the state-transition height stamps that
+    // make the as-of-height predicate answerable. v1 records (written pre-P-b4)
+    // deserialize with both sentinels and can only be ACTIVE — no supersede or
+    // disband producer existed when they were written — so the ACTIVE arm
+    // answers them correctly. No migration.
+    static const uint8_t CURRENT_VERSION = 2;
 
     uint8_t nVersion{CURRENT_VERSION};
     uint256 quorum_hash;             // formation anchor block hash — the identity
@@ -122,21 +131,60 @@ public:
     int32_t last_rotation_height{-1};
     int32_t drift_offset{-1};        // assigned by W2.2 formation
     int32_t consecutive_inquorate_blocks{0};
+    // v2 (KDD-072 P-b4, ODC-042) — state-transition height stamps, PINDEX-
+    // DERIVED only (never wall-clock, never receive-order — the reindex-
+    // determinism guarantee). Sentinel -1 = transition never happened.
+    int32_t superseded_height{-1};   // stamped by MarkSuperseded (successor connect)
+    int32_t disbanded_height{-1};    // DORMANT: no producer until W2.4 wires
+                                     // MarkDisbanded's stamp — present now so
+                                     // W2.4 adds a producer, not a schema
+                                     // change under a live format (the P-b2
+                                     // present-but-unfed posture)
 
     CPTXQuorumRecord() : group_pk_bytes(48, 0) {}
 
     SERIALIZE_METHODS(CPTXQuorumRecord, obj)
     {
         READWRITE(obj.nVersion);
-        // v1 layout.  Future versions: keep this block verbatim, append new
-        // fields under `if (obj.nVersion >= 2) READWRITE(...)`.
+        // v1 layout.  Kept verbatim (the versioning contract); v2+ fields
+        // append below under the version conditional.
         READWRITE(obj.quorum_hash, obj.formation_height, obj.group_pk_bytes,
                   obj.vvec_hash, obj.members, obj.formed_size, obj.completed_size,
                   obj.state, obj.provenance, obj.accepted_txid, obj.mined_block_hash,
                   obj.mined_height, obj.last_rotation_height, obj.drift_offset,
                   obj.consecutive_inquorate_blocks);
+        if (obj.nVersion >= 2) {
+            READWRITE(obj.superseded_height, obj.disbanded_height);
+        }
     }
 };
+
+// ---------------------------------------------------------------------------
+// KDD-072 P-b4 (ODC-042) — THE AS-OF-HEIGHT PREDICATE.  Pure function; the
+// single source of "was this quorum active at height h" for every consumer.
+//
+// Semantics: "the store as it stands AFTER block h connects" — forced by the
+// formation driver's timing (it fires from NotifyUpdatedBlockTip, post-connect
+// of the anchor block), and the validator must agree with the driver or an
+// honest formation self-rejects (the ODC-042 split).
+//
+//   active_at(h) = mined_height <= h
+//               && (    state == ACTIVE
+//                    || (state == SUPERSEDED && superseded_height > h)
+//                    || (state == DISBANDED  && disbanded_height  > h) )
+//
+// ★ STRICT > on both stamp arms — a record superseded AT h is NOT active at h
+// (the driver at anchor h already saw the flip; >= would keep it active for
+// the validator only → pool divergence → chain split).  A stamped-state record
+// carrying the -1 sentinel (corrupt) answers inactive at every h — fail-safe.
+// The DISBANDED arm is VACUOUS at HEAD (no producer until W2.4) — written now
+// so W2.4 adds a producer, not a predicate change.
+// ---------------------------------------------------------------------------
+bool PTX_QuorumRecordActiveAt(const CPTXQuorumRecord& rec, int nHeight);
+
+// evodb key prefix accessor for the record store — the PTX_BLS_ShareDBPrefix
+// precedent (test seeding reaches the same key the store reads).
+const std::string& PTX_QuorumRecordDBPrefix();
 
 class CPTXQuorumStore
 {
@@ -211,9 +259,27 @@ public:
     // consecutive_inquorate_blocks == 30, KDD-047).  Rewrites the persisted
     // record's state (versioned layout unchanged).  NOTE: W2.4 must wire the
     // block-event driving this AND its disconnect-undo (state-mutation undo
-    // mechanism deliberately not designed at W2.1 — see design doc).
+    // mechanism deliberately not designed at W2.1 — see design doc).  ★ P-b4
+    // forward-bind: when wired, T-H must ALSO stamp disbanded_height (the
+    // record field exists, the predicate arm exists — W2.4 adds the producer).
     // Falsification bound to W2.4.
     bool MarkDisbanded(const uint256& quorum_hash, int disband_height);
+
+    // KDD-072 P-b4 (KDD-063 swap, connect half): predecessor ACTIVE->SUPERSEDED
+    // + superseded_height stamped = the successor's connect height (pindex-
+    // derived).  REFUSE-unless-ACTIVE (returns false; a double-flip or a flip
+    // of a missing/disbanded record is a no-op) — the UndoPromote idempotence
+    // posture.  Rewrites through evoDb's CurTransaction (block-atomic, the
+    // MarkDisbanded shape).  Caller: ProcessBlock on an accepted v2 rotation.
+    bool MarkSuperseded(const uint256& quorum_hash, int superseded_at_height);
+
+    // KDD-072 P-b4: the disconnect half — SUPERSEDED->ACTIVE, stamp cleared to
+    // -1.  REFUSE-unless-SUPERSEDED (idempotent no-op otherwise).  Restore-to-
+    // ACTIVE is unconditionally correct: V12 (P-b3) admits a successor only if
+    // its predecessor was ACTIVE at connect, so the pre-flip state is known
+    // without an undo journal — the revert is a pure function of the
+    // disconnecting successor's payload.  Caller: UndoBlock.
+    bool RestoreActiveOnUndo(const uint256& quorum_hash);
 
     bool IsForming(const uint256& quorum_hash) const;
 

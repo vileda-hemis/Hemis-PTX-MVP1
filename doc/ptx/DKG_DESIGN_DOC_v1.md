@@ -1922,6 +1922,16 @@ a fresh draw at the new anchor).
 **Cross-ref:** KDD-045 (§7.2 + its 2026-07-10 amendments), KDD-062 (§22 store
 semantics), ODC-025 (cadence N, open).
 
+> **[P-b4 discharge note, 2026-07-25 — appended, no prior line edited]** Two of
+> the three "Owed to W2.3" items above are DISCHARGED at KDD-072 P-b4:
+> **(1) ROTATING→SUPERSEDED repurpose** — enum value 2 renamed (persisted bytes
+> stable), producer = `MarkSuperseded` at successor-connect; **(2) the
+> old-ACTIVE→SUPERSEDED-at-connect transition + its undo** —
+> `MarkSuperseded`/`RestoreActiveOnUndo`, idempotent pair, stamps
+> `superseded_height` (record v2) for the ODC-042 as-of predicate. The third
+> item (**the rotation-validation arm** — members == predecessor's 11) remains
+> owed to KDD-072 **P-b3** (V12).
+
 **KDD:** KDD-063
 
 ---

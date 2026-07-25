@@ -2140,4 +2140,152 @@ BOOST_AUTO_TEST_CASE(Pb1_VersionFieldSerializesFirst)
     BOOST_CHECK_EQUAL(HexStr(ss).substr(0, 4), "3412");  // uint16 LE, first on the wire
 }
 
+// ---------------------------------------------------------------------------
+// KDD-072 P-b4 — ODC-042 as-of-height predicate + record v2 + supersede/revert
+// ---------------------------------------------------------------------------
+
+static CPTXQuorumRecord Pb4Rec(PTXQuorumState st, int mined, int sh = -1, int dh = -1)
+{
+    CPTXQuorumRecord r;
+    r.quorum_hash       = QHk(0xC1);
+    r.mined_height      = mined;
+    r.state             = static_cast<uint8_t>(st);
+    r.superseded_height = sh;
+    r.disbanded_height  = dh;
+    return r;
+}
+
+// (P-b4) ★ THE BOUNDARY — strict >. A record superseded AT h is NOT active at
+// h (the driver at anchor h already saw the flip; >= keeps it active for the
+// validator only → pool divergence → chain split). RED (inversion): flip > to
+// >= in the SUPERSEDED arm → the ==h case flips to active → this row fails.
+BOOST_AUTO_TEST_CASE(Pb4_Boundary_StrictGreater)
+{
+    BOOST_CHECK(!PTX_QuorumRecordActiveAt(Pb4Rec(PTXQuorumState::SUPERSEDED, 500, 900), 900)); // ==h: INACTIVE
+    BOOST_CHECK( PTX_QuorumRecordActiveAt(Pb4Rec(PTXQuorumState::SUPERSEDED, 500, 901), 900)); // ==h+1: active
+}
+
+// (P-b4) as-of sweep + mined gate: superseded at 900 → active at 899, inactive
+// at 900 and 901; not yet mined (h < mined_height) → inactive regardless.
+BOOST_AUTO_TEST_CASE(Pb4_AsOf_Sweep)
+{
+    const CPTXQuorumRecord r = Pb4Rec(PTXQuorumState::SUPERSEDED, 500, 900);
+    BOOST_CHECK( PTX_QuorumRecordActiveAt(r, 899));
+    BOOST_CHECK(!PTX_QuorumRecordActiveAt(r, 900));
+    BOOST_CHECK(!PTX_QuorumRecordActiveAt(r, 901));
+    BOOST_CHECK(!PTX_QuorumRecordActiveAt(Pb4Rec(PTXQuorumState::ACTIVE, 500), 499)); // mined gate
+    // stamped-state with corrupt sentinel: fail-safe inactive at every h
+    BOOST_CHECK(!PTX_QuorumRecordActiveAt(Pb4Rec(PTXQuorumState::SUPERSEDED, 500, -1), 1000));
+}
+
+// (P-b4) a v1 record (both stamp fields never on the wire) deserializes with
+// sentinels and answers through the ACTIVE arm — no migration. Also pins that
+// v1 streams are 8 bytes shorter (the two int32s absent).
+BOOST_AUTO_TEST_CASE(Pb4_V1Record_SentinelsActive)
+{
+    CPTXQuorumRecord in = Pb4Rec(PTXQuorumState::ACTIVE, 500, 777, 888);
+    CDataStream ssv2(SER_DISK, 0);
+    ssv2 << in;                                    // v2: stamps on the wire
+    in.nVersion = 1;
+    CDataStream ssv1(SER_DISK, 0);
+    ssv1 << in;                                    // v1: stamps skipped
+    BOOST_CHECK_EQUAL(ssv2.size() - ssv1.size(), (size_t)8);
+
+    CPTXQuorumRecord out;
+    ssv1 >> out;                                   // fresh object, v1 stream
+    BOOST_CHECK_EQUAL(out.nVersion, (uint8_t)1);
+    BOOST_CHECK_EQUAL(out.superseded_height, -1);  // sentinel, not 777
+    BOOST_CHECK_EQUAL(out.disbanded_height, -1);   // sentinel, not 888
+    BOOST_CHECK(PTX_QuorumRecordActiveAt(out, 500)); // ACTIVE arm answers v1
+}
+
+// (P-b4) record-v2 round-trip: both stamps serialize and reload.
+// RED (inversion): drop the v2 conditional → both reload as sentinels.
+BOOST_AUTO_TEST_CASE(Pb4_V2RoundTrip_BothStamps)
+{
+    CPTXQuorumRecord in = Pb4Rec(PTXQuorumState::SUPERSEDED, 500, 123, 456);
+    CDataStream ss(SER_DISK, 0);
+    ss << in;
+    CPTXQuorumRecord out;
+    ss >> out;
+    BOOST_CHECK_EQUAL(out.superseded_height, 123);
+    BOOST_CHECK_EQUAL(out.disbanded_height, 456);
+    BOOST_CHECK_EQUAL(out.nVersion, (uint8_t)2);
+}
+
+// (P-b4) MarkSuperseded flips + stamps + bumps to v2; refuse-unless-ACTIVE
+// rejects a double-flip. Store-level via the in-memory evoDb (P2 pattern;
+// seeded through the same key the store reads — PTX_QuorumRecordDBPrefix).
+// RED (inversion): remove the ACTIVE check → the double-flip returns true.
+BOOST_AUTO_TEST_CASE(Pb4_MarkSuperseded_FlipsStampsRefuses)
+{
+    BOOST_REQUIRE(evoDb);
+    CPTXQuorumStore store(*evoDb);
+    const uint256 qh = QHk(0xC4);
+    CPTXQuorumRecord seed = Pb4Rec(PTXQuorumState::ACTIVE, 880);
+    seed.quorum_hash = qh;
+    evoDb->Write(std::make_pair(PTX_QuorumRecordDBPrefix(), qh), seed); // CEvoDB::Write returns void
+
+    BOOST_CHECK(store.MarkSuperseded(qh, 950));
+    CPTXQuorumRecord rec;
+    BOOST_REQUIRE(store.GetQuorumRecord(qh, rec));
+    BOOST_CHECK(rec.state == static_cast<uint8_t>(PTXQuorumState::SUPERSEDED));
+    BOOST_CHECK_EQUAL(rec.superseded_height, 950);
+    BOOST_CHECK_EQUAL(rec.nVersion, (uint8_t)2);
+
+    BOOST_CHECK(!store.MarkSuperseded(qh, 951));            // double-flip refused
+    BOOST_CHECK(!store.MarkSuperseded(QHk(0xC5), 950));     // missing record refused
+}
+
+// (P-b4) the revert: SUPERSEDED→ACTIVE, stamp cleared; refuse-unless-SUPERSEDED
+// makes a second revert (or a revert of a never-flipped record) a no-op.
+// RED (inversion): remove the SUPERSEDED check → the second revert returns true.
+BOOST_AUTO_TEST_CASE(Pb4_Restore_RevertsClearsIdempotent)
+{
+    BOOST_REQUIRE(evoDb);
+    CPTXQuorumStore store(*evoDb);
+    const uint256 qh = QHk(0xC6);
+    CPTXQuorumRecord seed = Pb4Rec(PTXQuorumState::ACTIVE, 880);
+    seed.quorum_hash = qh;
+    evoDb->Write(std::make_pair(PTX_QuorumRecordDBPrefix(), qh), seed); // CEvoDB::Write returns void
+
+    BOOST_REQUIRE(store.MarkSuperseded(qh, 950));
+    BOOST_CHECK(store.RestoreActiveOnUndo(qh));
+    CPTXQuorumRecord rec;
+    BOOST_REQUIRE(store.GetQuorumRecord(qh, rec));
+    BOOST_CHECK(rec.state == static_cast<uint8_t>(PTXQuorumState::ACTIVE));
+    BOOST_CHECK_EQUAL(rec.superseded_height, -1);
+    // replay determinism: flip again after revert → same stamp shape
+    BOOST_CHECK(store.MarkSuperseded(qh, 950));
+    BOOST_REQUIRE(store.GetQuorumRecord(qh, rec));
+    BOOST_CHECK_EQUAL(rec.superseded_height, 950);
+    BOOST_CHECK(store.RestoreActiveOnUndo(qh));
+    BOOST_CHECK(!store.RestoreActiveOnUndo(qh));            // idempotent no-op
+}
+
+// (P-b4) happy path bit-identical: for ACTIVE records (every record on every
+// zero-rotation chain) the predicate reduces exactly to the pre-P-b4 filter
+// (state==ACTIVE, mined_height<=h) at every height.
+BOOST_AUTO_TEST_CASE(Pb4_HappyPath_BitIdentical)
+{
+    for (int mined : {100, 500, 900}) {
+        const CPTXQuorumRecord r = Pb4Rec(PTXQuorumState::ACTIVE, mined);
+        for (int h : {99, 100, 101, 499, 500, 501, 899, 900, 10000}) {
+            const bool old_filter = (mined <= h); // pre-P-b4: ACTIVE + mined gate
+            BOOST_CHECK_EQUAL(PTX_QuorumRecordActiveAt(r, h), old_filter);
+        }
+    }
+}
+
+// (P-b4) the DISBANDED arm — vacuous at HEAD (no producer feeds
+// disbanded_height; W2.4 T-H owes the stamp), but the schema + predicate are
+// in place so W2.4 adds a producer, not a format/predicate change. Same strict
+// boundary as SUPERSEDED; -1 sentinel fail-safe inactive.
+BOOST_AUTO_TEST_CASE(Pb4_DisbandedArm_VacuousButCorrect)
+{
+    BOOST_CHECK(!PTX_QuorumRecordActiveAt(Pb4Rec(PTXQuorumState::DISBANDED, 500, -1, -1), 1000)); // unfed: inactive
+    BOOST_CHECK( PTX_QuorumRecordActiveAt(Pb4Rec(PTXQuorumState::DISBANDED, 500, -1, 900), 899)); // as-of active
+    BOOST_CHECK(!PTX_QuorumRecordActiveAt(Pb4Rec(PTXQuorumState::DISBANDED, 500, -1, 900), 900)); // strict boundary
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -38,6 +38,26 @@ static std::pair<std::string, uint32_t> BuildPTXInversedHeightKey(int nMinedHeig
                           htobe32(std::numeric_limits<uint32_t>::max() - nMinedHeight));
 }
 
+const std::string& PTX_QuorumRecordDBPrefix() { return DB_PTXDKG_QUORUM; }
+
+// KDD-072 P-b4 (ODC-042) — the as-of-height predicate.  See the header contract
+// (semantics, the STRICT-> boundary, and why >= is a chain split).
+bool PTX_QuorumRecordActiveAt(const CPTXQuorumRecord& rec, int nHeight)
+{
+    if (rec.mined_height > nHeight)
+        return false;
+    switch (static_cast<PTXQuorumState>(rec.state)) {
+        case PTXQuorumState::ACTIVE:
+            return true;
+        case PTXQuorumState::SUPERSEDED:
+            return rec.superseded_height > nHeight;  // STRICT: superseded AT h is NOT active at h
+        case PTXQuorumState::DISBANDED:
+            return rec.disbanded_height > nHeight;   // vacuous at HEAD (no producer until W2.4)
+        default:
+            return false; // FORMING is never persisted; unknown state fail-safe
+    }
+}
+
 // Find the block's PTXDKG (<= 1 guaranteed by CheckPTXDKGBlockRules).
 static CTransactionRef FindPTXDKGInBlock(const CBlock& block)
 {
@@ -156,6 +176,23 @@ bool CPTXQuorumStore::ProcessBlock(const CBlock& block, const CBlockIndex* pinde
     // T-E consumption hook: no-op until W2.2 produces FORMING entries.
     ConsumeFormingOnConnect(rec.quorum_hash);
 
+    // KDD-072 P-b4 — ROTATION CONNECT (inspection-only until a v2 rotation can
+    // land, which is post-P-b3; ODC-032: block events are not unit-simulable).
+    // Record flip is block-atomic via CurTransaction; the share-slot promote is
+    // DELIBERATELY not atomic with it — KDD-070 covers the gap with idempotence
+    // + key-isolation + startup reconciliation (do not force cross-store
+    // atomicity; it fights that design).
+    if (payload.nVersion >= PTXDKGPayload::ROTATION_VERSION &&
+        !payload.predecessor_quorum_hash.IsNull()) {
+        if (!MarkSuperseded(payload.predecessor_quorum_hash, pindex->nHeight)) {
+            LogPrintf("%s: WARNING: rotation connected but predecessor %s was not "
+                      "ACTIVE to supersede (V12 should have rejected this)\n",
+                      __func__, payload.predecessor_quorum_hash.ToString());
+        }
+        PTX_BLS_Promote(payload.quorum_hash, payload.predecessor_quorum_hash,
+                        pindex->nHeight, &evoDb);
+    }
+
     LogPrintf("%s: persisted PTXDKG quorum record. quorum_hash=%s anchor_height=%d "
               "mined_height=%d formed=%d completed=%d txid=%s\n", __func__,
               rec.quorum_hash.ToString(), rec.formation_height, rec.mined_height,
@@ -186,6 +223,18 @@ bool CPTXQuorumStore::UndoBlock(const CBlock& block, const CBlockIndex* pindex)
     {
         LOCK(cs);
         recordCache.erase(payload.quorum_hash);
+    }
+
+    // KDD-072 P-b4 — ROTATION DISCONNECT (inspection-only until post-P-b3; the
+    // bf-fleet invalidateblock cycle is the verification, ODC-032).  Both
+    // reverts are pure functions of the disconnecting payload's predecessor;
+    // both are idempotent no-ops for a non-rotation block (guard false / the
+    // UndoPromote key-isolation contract).
+    if (payload.nVersion >= PTXDKGPayload::ROTATION_VERSION &&
+        !payload.predecessor_quorum_hash.IsNull()) {
+        RestoreActiveOnUndo(payload.predecessor_quorum_hash);
+        PTX_BLS_UndoPromote(payload.quorum_hash, payload.predecessor_quorum_hash,
+                            &evoDb);
     }
 
     // E-5 boundary: NO re-pend of the disconnected tx.  Re-submission policy
@@ -228,8 +277,14 @@ std::vector<CPTXQuorumRecord> CPTXQuorumStore::GetActiveQuorumsAtHeight(int nHei
     std::vector<CPTXQuorumRecord> ret;
     for (const uint256& qh : hashes) {
         CPTXQuorumRecord rec;
-        if (GetQuorumRecord(qh, rec) &&
-            rec.state == static_cast<uint8_t>(PTXQuorumState::ACTIVE)) {
+        // KDD-072 P-b4 (ODC-042): the AS-OF-HEIGHT predicate replaces the raw
+        // current-state filter.  All six reconstruction consumers (V5, the
+        // connect guard, the formation pool, signing-ctx, debug builder,
+        // eligibility RPC) read through this one method, so the fix repairs
+        // every site uniformly — the KDD-073 no-divergence property for the
+        // record-read path.  On a zero-rotation chain every record is ACTIVE
+        // and this reduces bit-identically to the old filter.
+        if (GetQuorumRecord(qh, rec) && PTX_QuorumRecordActiveAt(rec, nHeight)) {
             ret.push_back(rec);
         }
     }
@@ -286,6 +341,52 @@ bool CPTXQuorumStore::MarkDisbanded(const uint256& quorum_hash, int disband_heig
     recordCache[quorum_hash] = rec;
     LogPrintf("%s: quorum DISBANDED at height %d. quorum_hash=%s\n",
               __func__, disband_height, quorum_hash.ToString());
+    return true;
+}
+
+bool CPTXQuorumStore::MarkSuperseded(const uint256& quorum_hash, int superseded_at_height)
+{
+    // KDD-072 P-b4 (KDD-063 swap, connect half).  Refuse-unless-ACTIVE: a
+    // double-flip / missing record / disbanded record is a clean no-op false.
+    LOCK(cs);
+    CPTXQuorumRecord rec;
+    if (!GetQuorumRecord(quorum_hash, rec)) {
+        return false;
+    }
+    if (rec.state != static_cast<uint8_t>(PTXQuorumState::ACTIVE)) {
+        return false;
+    }
+    rec.nVersion          = CPTXQuorumRecord::CURRENT_VERSION; // v2 on rewrite
+    rec.state             = static_cast<uint8_t>(PTXQuorumState::SUPERSEDED);
+    rec.superseded_height = superseded_at_height; // pindex-derived ONLY
+    evoDb.Write(std::make_pair(DB_PTXDKG_QUORUM, quorum_hash), rec);
+    recordCache[quorum_hash] = rec;
+    LogPrintf("%s: quorum SUPERSEDED at height %d. quorum_hash=%s\n",
+              __func__, superseded_at_height, quorum_hash.ToString());
+    return true;
+}
+
+bool CPTXQuorumStore::RestoreActiveOnUndo(const uint256& quorum_hash)
+{
+    // KDD-072 P-b4: the disconnect half.  Refuse-unless-SUPERSEDED (idempotent
+    // no-op otherwise).  Restore-to-ACTIVE is unconditionally correct — V12
+    // admits a successor only over an ACTIVE predecessor, so the pre-flip
+    // state needs no undo journal.
+    LOCK(cs);
+    CPTXQuorumRecord rec;
+    if (!GetQuorumRecord(quorum_hash, rec)) {
+        return false;
+    }
+    if (rec.state != static_cast<uint8_t>(PTXQuorumState::SUPERSEDED)) {
+        return false;
+    }
+    rec.nVersion          = CPTXQuorumRecord::CURRENT_VERSION;
+    rec.state             = static_cast<uint8_t>(PTXQuorumState::ACTIVE);
+    rec.superseded_height = -1;
+    evoDb.Write(std::make_pair(DB_PTXDKG_QUORUM, quorum_hash), rec);
+    recordCache[quorum_hash] = rec;
+    LogPrintf("%s: quorum supersede REVERTED (SUPERSEDED->ACTIVE). quorum_hash=%s\n",
+              __func__, quorum_hash.ToString());
     return true;
 }
 

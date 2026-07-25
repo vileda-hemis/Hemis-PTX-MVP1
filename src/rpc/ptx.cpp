@@ -938,7 +938,7 @@ static UniValue QuorumRecordToJson(const CPTXQuorumRecord& rec)
     switch (static_cast<PTXQuorumState>(rec.state)) {
         case PTXQuorumState::FORMING:   ret.pushKV("state", "forming");   break;
         case PTXQuorumState::ACTIVE:    ret.pushKV("state", "active");    break;
-        case PTXQuorumState::ROTATING:  ret.pushKV("state", "rotating");  break;
+        case PTXQuorumState::SUPERSEDED: ret.pushKV("state", "superseded"); break; // KDD-063 repurpose (P-b4)
         case PTXQuorumState::DISBANDED: ret.pushKV("state", "disbanded"); break;
         default:                        ret.pushKV("state", strprintf("unknown(%d)", rec.state));
     }
