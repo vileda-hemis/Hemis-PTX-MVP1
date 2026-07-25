@@ -2006,6 +2006,39 @@ semantics), ODC-025 (cadence N, open).
 
 ---
 
+**ODC-042 (2026-07-25). ★ D-SG1a-2 becomes a LIVE consensus bug at first supersede — the as-of-height state read must land before or with V12. (P-b recon finding; consensus-correctness tier with V11/ODC-041.)**
+
+**Substance.** P-b introduces the first state mutation ever applied to quorum records (predecessor ACTIVE→SUPERSEDED at successor-connect, KDD-063/072). `GetActiveQuorumsAtHeight` (ptx_quorum_store.cpp:199-237) filters records on **CURRENT** state (height-filtered only by `mined_height`); V5 builds its fresh-formation pool from `GetActiveQuorumsAtHeight(anchor height)` (specialtx_validation.cpp:741-747), and the anchor lags pindexPrev by up to N−1 blocks. A rotation connecting inside that window flips its predecessor SUPERSEDED → the validator's pool frees the predecessor's 11 members that the formation-time pool excluded (D-SG1a-1) → selection diverges → an honest formation self-rejects — and more generally **the same block validates differently depending on when it is evaluated relative to an unrelated rotation's connect. That is a chain split** — the SG-1a self-poisoning class (the store's own comment records the live-caught precedent, ptx_quorum_store.cpp:86-93).
+
+**Boundaries, stated precisely.** Sequential connect and reindex are SAFE (mutations replay in connect order, so current state == as-of state during in-order replay); the anchor-lag window and reorg edges are NOT.
+
+**Fix (packaged P-b4).** Stamp `superseded_height` in `CPTXQuorumRecord` (additive under the record's own version idiom, ptx_quorum_store.h:131-132 — record v2); as-of predicate = `state == ACTIVE || superseded_height > h`; the record-side revert clears state→ACTIVE + stamp→−1 (payload-derivable at UndoBlock, deterministic — V12 guarantees the predecessor was ACTIVE at connect; no undo journal). ★ **ORDERING CONSTRAINT — the point of the entry: this fix MUST land BEFORE OR WITH V12 (P-b3), never after** — V12 inherits the as-of obligation the moment it performs a predecessor lookup, and the first supersede on any chain opens the window. bf-fleet verifiable (rotation connect + `invalidateblock` reorg — the ODC-032 unit gap closed by the fleet for exactly this shape).
+
+**Cross-ref:** KDD-072 §5/§6 (V12 inherits D-SG1a-2), KDD-063 (the swap transition), KDD-070 P4 (the slot-side revert this composes with), D-SG1a-2 (specialtx_validation.cpp:737-740 — the recorded obligation this entry escalates), ODC-032 (why the connect/disconnect arm is fleet-only), KDD-073 (the sites that consume this read).
+
+**ODC:** ODC-042
+
+---
+
+**KDD-073 (2026-07-25). The three-reconstruction-sites constraint on V12 — substitution is not one edit. (P-b recon finding; binding constraint on P-b3's build.)**
+
+**Constraint.** KDD-072 §5's V12 substitution (`quorum11 := predecessor.members`, skip V4+V5) must land ATOMICALLY at every selection-reconstruction site, not only the validator. The sites at HEAD: **(1)** the V5 validator (specialtx_validation.cpp:741-749); **(2)** the store connect guard (ptx_quorum_store.cpp:94-127 — the same BuildPool+Select re-run as a persist-boundary guard); **(3)** the debug builder (rpc/ptx.cpp:675) if rotations become debug-injectable. **Ground:** the store's comment (ptx_quorum_store.cpp:86-93) records the live-caught battery_sg1 precedent — one site pool-aware, another raw → a VALID payload passed populate+assembler and was REJECTED at connect ("11 committed, 4 matched"), a self-poisoning divergence. V12 re-creates exactly that topology if substitution lands validator-only: **a valid rotation passes CheckPTXDKGTx and dies in ProcessBlock.**
+
+**Test obligation (binding on P-b3).** The falsification must exercise **CONNECT, not just validation** — a rotation accepted by CheckPTXDKGTx must also connect through ProcessBlock's guard; a validator-only test proves nothing about the constraint this entry records. Also binds the member-materialization helper (predecessor.members → `CDeterministicGMCPtr` at a pinned block, **record order preserved** for share_index continuity per SG-3/KDD-061): ONE shared function used by validator + store guard + driver — the KDD-060 one-function contract extended to rotation.
+
+**Cross-ref:** KDD-072 §5, KDD-060 (one-function selection contract), SG-1a/D-SG1a-1 (the divergence class + recorded lesson), KDD-061 (share_index continuity), ODC-042 (the as-of-height read these same sites consume).
+
+**KDD:** KDD-073
+
+---
+
+**KDD-072 P-b recon notes (2026-07-25 — appended; deliberately NOT new entries).**
+
+- ★ **The §3 hole test is P-b's load-bearing security test**, RED-proven by inversion: strip `predecessor_quorum_hash` from the Phase 4 sign-hash → the §3 re-cast attack SUCCEEDS (a formation's premits validate as a rotation) → restore the binding → it FAILS (`ptxdkg-bad-premit-sig`). A test showing only the happy rotation path proves nothing about the hole.
+- **Open check (KDD-072 item-4 adjunct):** the KDD-058-A minable-commitments store may need predecessor-aware dedup — two rotations naming one predecessor can both enter the replicated store; the loser is consensus-rejected at connect (V12-ACTIVE + the §6 index) so this is NOT a consensus risk, but the losing commitment may sit re-offered in every assembler until eviction. Efficiency/hygiene check owed to the P-b plan.
+
+---
+
 ## Appendix: Register cross-reference
 
 *Program status / roadmap (to first testnet), including live fleet-state snapshots and pre-testnet blockers, lives in the tracked `doc/ptx/PTX_ROADMAP.md`. This register tracks decisions; the roadmap tracks status.*
@@ -2071,6 +2104,8 @@ semantics), ODC-025 (cadence N, open).
 | KDD-035 | *(pointer — not a DKG-register decision)* PTX wallet/RPC feature. Registered in the tracked `doc/ptx/ptxbea-api-reference.md` + `ptxbea-operator-guide.md`; source `rpc/ptx.cpp`, `ptx/ptx_wallet.h`. Not registered here. | — | Pointer added 2026-07-23 |
 | KDD-036 | *(pointer — not a DKG-register decision)* PTX wallet/RPC feature. Registered in the tracked `doc/ptx/ptxbea-api-reference.md`; source `rpc/ptx.cpp`, `ptx/ptx_wallet.h`. Not registered here. | — | Pointer added 2026-07-23 |
 | ODC-023 | *(pointer — not a DKG-register decision)* ptxbea known-limitation. Registered in the tracked `doc/ptx/ptxbea-known-limitations.md` (+ api-reference, operator-guide). Not registered here. | — | Pointer added 2026-07-23 |
+| ODC-042 | ★ D-SG1a-2 LIVE at first supersede — P-b's ACTIVE→SUPERSEDED is the first state mutation on quorum records; `GetActiveQuorumsAtHeight` reads CURRENT state while V5's pool query runs at the anchor (lags pindexPrev ≤ N−1) → a rotation connecting in the window frees 11 members into the validator's pool that formation excluded → honest formation self-rejects; same block validates differently by evaluation timing → chain split (SG-1a class). Fix: `superseded_height` in record v2 + as-of predicate `ACTIVE ∨ superseded_height > h`; revert payload-derivable at UndoBlock. ★ MUST land before/with V12 (P-b4 ≤ P-b3), never after. Sequential reindex safe; anchor-lag + reorg windows not. bf-fleet verifiable | §— (entry above) | Recorded 2026-07-25 (consensus-correctness; tier V11/ODC-041) |
+| KDD-073 | Three-reconstruction-sites constraint on V12 — KDD-072 §5 substitution must land atomically at the V5 validator + the store connect guard (ptx_quorum_store.cpp:94-127) + the debug builder if rotations become injectable, via ONE shared materialization helper (predecessor.members → GM ptrs at a pinned block, record-order share_index per SG-3/KDD-061); ground = the ptx_quorum_store.cpp:86-93 battery_sg1 lesson (validator-only substitution → valid rotation passes CheckPTXDKGTx, dies in ProcessBlock). Test obligation: falsification must exercise CONNECT, not just validation | §— (entry above) | Recorded 2026-07-25 (binding constraint on P-b3) |
 
 ---
 
