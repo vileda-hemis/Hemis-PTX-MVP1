@@ -2028,6 +2028,8 @@ semantics), ODC-025 (cadence N, open).
 
 **ODC:** ODC-042
 
+> **[FLEET-VERIFIED 2026-07-25 — appended, no prior line edited]** ODC-042's fix is **verified on a real chain**, not only in unit fixtures. In the KDD-072 P-b drill (below), a fresh formation anchored at **h960** was built while ac5c28 was ACTIVE, then **rebuilt byte-identically after** ac5c28 was superseded at **h1010**, and **connected clean at h1015** — two disjoint ACTIVE quorums resulting. The as-of predicate answered `ACTIVE-as-of-960` for a record whose *current* state is SUPERSEDED, at both the builder and the validator, with the store connect guard agreeing (no connect-time reject). **Pre-P-b4 code self-rejects this**: a raw current-state read frees ac5c28's 11 members at 960, redraws a different selection, and V10 rejects the committed list. The chain-split fix is now verified where it lives. Status: **fix landed (P-b4, 75f3c74) and FLEET-VERIFIED (drill 2026-07-25)**.
+
 ---
 
 **KDD-073 (2026-07-25). The three-reconstruction-sites constraint on V12 — substitution is not one edit. (P-b recon finding; binding constraint on P-b3's build.)**
@@ -2046,6 +2048,44 @@ semantics), ODC-025 (cadence N, open).
 
 - ★ **The §3 hole test is P-b's load-bearing security test**, RED-proven by inversion: strip `predecessor_quorum_hash` from the Phase 4 sign-hash → the §3 re-cast attack SUCCEEDS (a formation's premits validate as a rotation) → restore the binding → it FAILS (`ptxdkg-bad-premit-sig`). A test showing only the happy rotation path proves nothing about the hole.
 - **Open check (KDD-072 item-4 adjunct):** the KDD-058-A minable-commitments store may need predecessor-aware dedup — two rotations naming one predecessor can both enter the replicated store; the loser is consensus-rejected at connect (V12-ACTIVE + the §6 index) so this is NOT a consensus risk, but the losing commitment may sit re-offered in every assembler until eviction. Efficiency/hygiene check owed to the P-b plan.
+
+---
+
+**KDD-072 P-b DRILL RESULT (2026-07-25). First fleet exercise of the rotation consensus arc — all five predictions confirmed, zero surprises.**
+
+*Substrate:* bf fleet on the **`bbe5e0e` debug binary**, restored from reset point `bf-N22-conv1-24f9de3-q8of11-ac5c28`. A v2 rotation of **ac5c28** (anchor h800) was injected through the P-b3b debug arm — which resolves members via the **same** `PTX_DKG_ResolveRotationQuorum` V12 runs — mined at **h1010**, reverted, replayed, then the ODC-042 scenario, then a clean restore. Every observable below is from a real chain.
+
+**Why this drill matters:** P-b1/P-b2/P-b4/P-b3a each shipped **dormant**, deferring their block-driven verification to exactly this point (ODC-032: connect/disconnect triggers are not unit-simulable). This is the payment.
+
+**P1 CONFIRMED — V12 accepts + MarkSuperseded.** `populated: true` (validate-before-inject ⇒ `CheckPTXDKGTx` accepted a v2 rotation), committed members = ac5c28's exact 11 in share_index order. At connect: `MarkSuperseded: quorum SUPERSEDED at height 1010`; ac5c28 → `state: superseded`, record upgraded to **v2** on rewrite; successor `cecea35e…` ACTIVE. **The store connect guard agreed with V5/V12** — no connect-time reject, i.e. the KDD-073 shared-code property held on-chain and the battery_sg1 window never opened.
+
+**P2 CONFIRMED — Promote is a key-isolation NO-OP.** Zero promote log lines; `PTX_BLS_Promote` returns 0 silently when no PENDING share exists. Correct: a PENDING share is created only by a real ceremony FINALIZE, and **KDD-070 §1 forbids any RPC path to seed one**.
+
+**P4 CONFIRMED — the reorg-revert path, the arc's weakest-covered piece, fired and cleaned.** `invalidateblock` → `RestoreActiveOnUndo: quorum supersede REVERTED (SUPERSEDED->ACTIVE)` + `UndoBlock: erased PTXDKG quorum record on disconnect … height=1010`; ac5c28 ACTIVE, `superseded_height` cleared, successor gone.
+
+**P5 CONFIRMED — replay determinism on a real reorg.** `reconsiderblock` re-connected and re-flipped to the **identical height 1010** (20:40:00 original, 20:43:22 replay).
+
+**★ P3 — RECORD-VS-SLOT DIVERGENCE: A DRILL ARTIFACT, NOT A SYSTEM PROPERTY.** After the injected rotation connected, the chain showed: the **ACTIVE successor holding no signing shares at all** (`gm04 → "holds no CURRENT sk_share for quorum cecea35e…"`) while the **SUPERSEDED predecessor still signs** (gm04/gm18 return valid partials for ac5c28). ★ **This is CORRECT for debug injection and a future reader finding this state cold must not read it as a bug:** the successor ran **no ceremony**, so no member ever derived its shares; and the predecessor was never promoted because there was no PENDING share to promote (P2). **A REAL rotation (P-b6) does not produce this** — the ceremony derives the successor's shares (stored PENDING at FINALIZE) and `PTX_BLS_Promote` flips PENDING→CURRENT while retiring the predecessor's to SUPERSEDED_RETAINED. The divergence is an artifact of injecting a rotation without a ceremony, nothing more.
+
+**★ ODC-042 VERIFIED ON A REAL CHAIN (the step that pays for the fix).** Fresh formation anchored **h960**: members drawn were **disjoint** from ac5c28's 11 (KDD-040 pool exclusion working — 22 GMs = 11 + 11); **rebuilt identically after** the h1010 supersede; **connected at h1015**. Final state: two disjoint ACTIVE quorums (11/11 each) plus ac5c28 superseded. See the ODC-042 fleet-verified note above.
+
+**Design note for P-b6 (not actionable now):** the drill supplied all 11 operator SKs, so the successor committed **11/11**, "healing" ac5c28's 3 non-qual members (gm14/gm17/gm11). A real ceremony re-derives QUAL organically and **may commit fewer than the predecessor's full set** — **P-b6 must treat a successor forming with less than the full predecessor set as NORMAL, not failure** (the >= t rule governs, exactly as at fresh formation).
+
+**★ COVERAGE BOUNDARY, honestly stated.** The drill proves the block-wiring **FIRES, REVERTS, and REPLAYS** on real connect/disconnect. It does **NOT** prove: the real rotation **trigger** (nothing feeds `session.predecessor_quorum_hash`), the ceremony-driven **PENDING→CURRENT promotion**, or **drift/deadline** behaviour. All three are **P-b6**.
+
+**Reset-point hygiene:** restore returned the fleet to **h936, ac5c28 ACTIVE 11/8, shares reloaded byte-identically** (`a7b5309c…` = the snapshot baseline); the bank tar's md5 was unchanged throughout. The drill **fully unwinds and is repeatable**; the reset point is uncontaminated. Operational findings from the drill are consolidated in `BF_FLEET_NOTES.md` (restore-owed set), and the RPC observability gap is registered as ODC-043.
+
+**Cross-ref:** KDD-072 §3/§5 (the hole and the substitution now exercised), ODC-042 (fleet-verified), KDD-073 (three-sites property held on-chain), KDD-070 §1/§8 (Promote no-op; the real promotion owed to P-b6), ODC-032 (the deferral this drill discharges for connect/disconnect), KDD-063 (the swap performed end-to-end), ODC-043 (observability gap surfaced here).
+
+---
+
+**ODC-043 (2026-07-25). `ptx_quorum_info` does not surface the record-v2 lifecycle stamps — an observability gap, not a defect.**
+
+`superseded_height` and `disbanded_height` exist in `CPTXQuorumRecord` v2 (KDD-072 P-b4) and `MarkSuperseded` logs the height at connect, but **`ptx_quorum_info` displays neither**. The P-b drill (2026-07-25) had to verify the supersede height from a `debug.log` line rather than the RPC. ★ **Why it matters before P-b6:** rotations under the real trigger run **unattended** — log-only visibility means grepping 22 nodes' logs to answer *"when was this quorum superseded?"*, the first question a rotation drill or a post-incident review asks. **Fix:** expose both fields in `ptx_quorum_info` — display-only; the values are already persisted, consensus-correct, and reindex-deterministic. **NOT a defect:** nothing behaves wrongly, the data is simply unreachable through the interface a verifier uses. Small; worth landing before P-b6 so its rotations are observable through the RPC surface rather than the logs.
+
+**Cross-ref:** KDD-072 P-b4 (the fields), the P-b drill result (where the gap surfaced), P-b6 (the consumer), KDD-062 (the record store).
+
+**ODC:** ODC-043
 
 ---
 
@@ -2116,6 +2156,8 @@ semantics), ODC-025 (cadence N, open).
 | ODC-023 | *(pointer — not a DKG-register decision)* ptxbea known-limitation. Registered in the tracked `doc/ptx/ptxbea-known-limitations.md` (+ api-reference, operator-guide). Not registered here. | — | Pointer added 2026-07-23 |
 | ODC-042 | ★ D-SG1a-2 LIVE at first supersede — P-b's ACTIVE→SUPERSEDED is the first state mutation on quorum records; `GetActiveQuorumsAtHeight` reads CURRENT state while V5's pool query runs at the anchor (lags pindexPrev ≤ N−1) → a rotation connecting in the window frees 11 members into the validator's pool that formation excluded → honest formation self-rejects; same block validates differently by evaluation timing → chain split (SG-1a class). Fix: `superseded_height` in record v2 + as-of predicate `ACTIVE ∨ superseded_height > h`; revert payload-derivable at UndoBlock. ★ MUST land before/with V12 (P-b4 ≤ P-b3), never after. Sequential reindex safe; anchor-lag + reorg windows not. bf-fleet verifiable | §— (entry above) | Recorded 2026-07-25 (consensus-correctness; tier V11/ODC-041) |
 | KDD-073 | Three-reconstruction-sites constraint on V12 — KDD-072 §5 substitution must land atomically at the V5 validator + the store connect guard (ptx_quorum_store.cpp:94-127) + the debug builder if rotations become injectable, via ONE shared materialization helper (predecessor.members → GM ptrs at a pinned block, record-order share_index per SG-3/KDD-061); ground = the ptx_quorum_store.cpp:86-93 battery_sg1 lesson (validator-only substitution → valid rotation passes CheckPTXDKGTx, dies in ProcessBlock). Test obligation: falsification must exercise CONNECT, not just validation | §— (entry above) | Recorded 2026-07-25 (binding constraint on P-b3) |
+| KDD-072 P-b DRILL | First fleet verification of the rotation arc (2026-07-25, bf/bbe5e0e): all 5 predictions confirmed — V12+MarkSuperseded on connect, Promote key-isolation no-op, RestoreActiveOnUndo clean revert, identical replay; ★ ODC-042 verified on a real chain (formation anchored h960 connected at h1015 post-supersede, members unchanged); P3 record-vs-slot divergence documented as a DEBUG-INJECTION ARTIFACT (a real rotation via P-b6 does not produce it); coverage boundary: proves the wiring fires/reverts/replays, NOT the trigger, ceremony-driven promotion, or drift | §— (entry above) | Drill complete 2026-07-25; fleet-verified |
+| ODC-043 | `ptx_quorum_info` does not surface record-v2 `superseded_height` / `disbanded_height` — observability gap surfaced by the P-b drill (supersede verified from a log line, not the RPC). Display-only RPC addition; values already persisted + consensus-correct. Useful before P-b6, whose rotations run unattended. NOT a defect | §— (entry above) | Owed (small), registered 2026-07-25 |
 
 ---
 
