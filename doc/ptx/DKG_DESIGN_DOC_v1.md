@@ -2087,6 +2087,8 @@ semantics), ODC-025 (cadence N, open).
 
 **ODC:** ODC-043
 
+> **[SIBLING NOTE, 2026-07-25 — appended with the ODC-043 code commit; same gap, one method over, no new number.]** `ptx_quorum_list` builds its **own** summary object and does not share `QuorumRecordToJson`, so it does not gain the stamps from the ODC-043 fix. Why it matters: the as-of predicate legitimately returns a **SUPERSEDED** record from `GetActiveQuorumsAtHeight(h)` when `h < superseded_height` — so the "active at h" list can correctly contain a `superseded`-state record, and **without the stamp shown, a reader sees a superseded quorum in an "active" list and misreads it as a bug** (it is the ODC-042 as-of semantics working). Owed: surface `superseded_height` in the list summary too (or route the list through the shared builder). Small, same observability class as ODC-043, useful before P-b6's unattended rotations.
+
 ---
 
 ## Appendix: Register cross-reference

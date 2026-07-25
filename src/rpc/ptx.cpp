@@ -1000,6 +1000,15 @@ static UniValue QuorumRecordToJson(const CPTXQuorumRecord& rec)
     ret.pushKV("last_rotation_height", rec.last_rotation_height);
     ret.pushKV("drift_offset",      rec.drift_offset);
     ret.pushKV("consecutive_inquorate_blocks", rec.consecutive_inquorate_blocks);
+    // ODC-043: the record-v2 lifecycle stamps (KDD-072 P-b4) — they answer WHEN
+    // a state transition happened, where `state` above answers only WHAT. Emitted
+    // RAW INCLUDING THE -1 SENTINEL, matching last_rotation_height / drift_offset
+    // directly above (this object mirrors the record's declaration order and has
+    // exactly one not-applicable convention: show the sentinel, never omit, never
+    // null). An ACTIVE record shows -1; a SUPERSEDED record shows its height.
+    // v1 records deserialize with both sentinels, so this is safe for every record.
+    ret.pushKV("superseded_height", rec.superseded_height);
+    ret.pushKV("disbanded_height",  rec.disbanded_height);
     UniValue members(UniValue::VARR);
     for (const PTXQuorumMemberRecord& m : rec.members) {
         UniValue mv(UniValue::VOBJ);
