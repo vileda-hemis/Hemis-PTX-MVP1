@@ -181,6 +181,7 @@ def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser,
       PTX_NODE_ID: ${{{cnid}:-{cname}}}
     command:
       - -externalip={cip}
+      - -staking=0
 """)
         for p in caller_peers:
             lines.append(f"      - -addnode={gm_ip(subnet_base, p)}\n")
