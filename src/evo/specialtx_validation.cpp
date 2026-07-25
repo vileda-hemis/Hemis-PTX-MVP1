@@ -628,10 +628,26 @@ bool CheckPTXDKGTx(const CTransaction& tx, const CBlockIndex* pindexPrev,
     // path, before the V1-V8 bifurcation below, so every node gates version
     // identically regardless of context. Mirrors the ProReg/CFinalCommitment
     // pattern (this file :198/:342/:539). nVersion==0 or > CURRENT is invalid.
-    if (payload.nVersion == 0 || payload.nVersion > PTXDKGPayload::CURRENT_VERSION)
+    // KDD-072 P-b3b — THE FLIP, one token: the bound is ROTATION_VERSION (v1
+    // and v2 both accepted, nothing above). CURRENT_VERSION stays 1 — it is
+    // the FRESH-EMISSION version (BuildPTXDKGTx: fresh->1, rotation->2); a
+    // literal CURRENT_VERSION bump would make every fresh formation emit
+    // v2-with-zero-predecessor and die on the reject below (the breaker the
+    // P-b3b recon caught; RED-pinned by Pb3b_FreshStillEmitsV1).
+    if (payload.nVersion == 0 || payload.nVersion > PTXDKGPayload::ROTATION_VERSION)
         return state.DoS(100, error("%s: PTXDKG payload version %d invalid (max %d)", __func__,
-                                    (int)payload.nVersion, (int)PTXDKGPayload::CURRENT_VERSION),
+                                    (int)payload.nVersion, (int)PTXDKGPayload::ROTATION_VERSION),
                          REJECT_INVALID, "bad-ptxdkg-version");
+
+    // KDD-072 P-b3b — v2-without-predecessor: STRUCTURAL depth (fires on the
+    // CheckBlock/null-pindexPrev path AND ahead of the contextual section —
+    // the P-a version-gate pattern). BuildPTXDKGTx never emits this shape
+    // (v2 <=> non-zero predecessor); a payload carrying it is malformed and
+    // must never reach the fresh V4/V5 draw.
+    if (payload.nVersion >= PTXDKGPayload::ROTATION_VERSION &&
+        payload.predecessor_quorum_hash.IsNull())
+        return state.DoS(100, error("%s: v2 PTXDKG without a predecessor", __func__),
+                         REJECT_INVALID, "ptxdkg-v2-without-predecessor");
 
     // group_pk_bytes must decompress to a valid G1 point.
     blst_p1_affine group_pk;
@@ -725,10 +741,14 @@ bool CheckPTXDKGTx(const CTransaction& tx, const CBlockIndex* pindexPrev,
         // formation runs V4+V5 unchanged. V10 and V6-V8 below consume the
         // substituted quorum11 verbatim (no rotation branch in them).
         std::vector<CDeterministicGMCPtr> quorum11;
-        const bool fRotation =
-            payload.nVersion >= PTXDKGPayload::ROTATION_VERSION &&
-            !payload.predecessor_quorum_hash.IsNull();
-        if (fRotation) {
+        if (payload.nVersion >= PTXDKGPayload::ROTATION_VERSION) {
+            // Defense-in-depth twin of the structural reject above: a v2
+            // payload NEVER reaches the fresh V4/V5 draw. Unreachable through
+            // the public sequence (the structural depth fires first);
+            // inspection-only guard against a future structural refactor.
+            if (payload.predecessor_quorum_hash.IsNull())
+                return state.DoS(100, error("%s: v2 PTXDKG without a predecessor (contextual)", __func__),
+                                 REJECT_INVALID, "ptxdkg-v2-without-predecessor");
             // V12a: the predecessor record must exist on this chain's store.
             CPTXQuorumRecord predRec;
             if (ptxQuorumStore == nullptr ||

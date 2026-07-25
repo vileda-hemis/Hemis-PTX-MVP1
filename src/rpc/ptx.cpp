@@ -653,14 +653,20 @@ static CMutableTransaction PTX_Debug_BuildPTXDKGTxFromChain(const uint256& quoru
                                                             const std::vector<CBLSSecretKey>& operator_sks,
                                                             const std::set<std::string>& exclude,
                                                             const std::vector<std::string>* members_override,
-                                                            int n_premits)
+                                                            int n_premits,
+                                                            const uint256& predecessor)
 {
     CDeterministicGMList dgmList;
     // SG-1a: the builder mirrors V5's CONSENSUS pool (eligible minus active,
     // PTX_Formation_BuildPool) — with the V5 swap, a raw-list selection could
     // never build an acceptable PTXDKG once any ACTIVE quorum exists (its
     // premit signers would include excluded members).
+    // KDD-072 P-b3b rotation arm: with a predecessor, the members come from
+    // P-b3a's SHARED resolver (the exact function V12 and the store guard
+    // run) — the drill tests the real path, not a debug facsimile.
     std::vector<CPTXQuorumRecord> activeAtAnchor;
+    CDeterministicGMList listForm;
+    CPTXQuorumRecord predRec;
     {
         LOCK(cs_main);
         const CBlockIndex* pindexQuorum = LookupBlockIndex(quorum_hash);
@@ -673,11 +679,32 @@ static CMutableTransaction PTX_Debug_BuildPTXDKGTxFromChain(const uint256& quoru
             activeAtAnchor =
                 ptxQuorumStore->GetActiveQuorumsAtHeight(pindexQuorum->nHeight);
         }
+        if (!predecessor.IsNull()) {
+            if (ptxQuorumStore == nullptr ||
+                !ptxQuorumStore->GetQuorumRecord(predecessor, predRec)) {
+                throw JSONRPCError(RPC_INVALID_PARAMETER,
+                    "predecessor_quorum_hash: no quorum record found");
+            }
+            const CBlockIndex* pindexPred = LookupBlockIndex(predRec.quorum_hash);
+            if (pindexPred == nullptr) {
+                throw JSONRPCError(RPC_INVALID_PARAMETER,
+                    "predecessor_quorum_hash: formation anchor not found");
+            }
+            listForm = deterministicGMManager->GetListForBlock(pindexPred);
+        }
     }
-    const CDeterministicGMList formationPool =
-        PTX_Formation_BuildPool(dgmList, activeAtAnchor);
-    const std::vector<CDeterministicGMCPtr> quorum11 =
-        PTX_DKG_SelectQuorumFromList(formationPool, quorum_hash);
+    std::vector<CDeterministicGMCPtr> quorum11;
+    if (!predecessor.IsNull()) {
+        std::string err;
+        if (!PTX_DKG_ResolveRotationQuorum(predRec, dgmList, listForm, quorum11, err)) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                strprintf("rotation members unresolvable: %s", err));
+        }
+    } else {
+        const CDeterministicGMList formationPool =
+            PTX_Formation_BuildPool(dgmList, activeAtAnchor);
+        quorum11 = PTX_DKG_SelectQuorumFromList(formationPool, quorum_hash);
+    }
     if (quorum11.empty()) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, "no eligible GMs at anchor");
     }
@@ -688,6 +715,12 @@ static CMutableTransaction PTX_Debug_BuildPTXDKGTxFromChain(const uint256& quoru
     }
 
     PTXDKGPayload pl;
+    // KDD-072 P-b3b: a rotation is v2 and names its predecessor; the premit
+    // signing below flips to the P-b2 predecessor preimage AUTOMATICALLY
+    // (both sites already sign GetSignHash(pl.predecessor_quorum_hash)).
+    pl.nVersion = predecessor.IsNull() ? PTXDKGPayload::CURRENT_VERSION
+                                       : PTXDKGPayload::ROTATION_VERSION;
+    pl.predecessor_quorum_hash = predecessor;
     pl.quorum_hash      = quorum_hash;
     memcpy(pl.group_pk_bytes, group_pk, 48);
     pl.vvec_hash        = vvec_hash;
@@ -762,6 +795,10 @@ UniValue ptx_debug_ptxdkgpopulate(const JSONRPCRequest& request)
             "       \"operator_keys\": [\"bls-sk-..\", ..]  (array, optional) REAL mode: members from the\n"
             "                                     canonical selection at the anchor; premits signed by\n"
             "                                     these operator secrets (bech32, bls::DecodeSecret)\n"
+            "       \"predecessor_quorum_hash\": \"hex\" (string, optional, real mode) KDD-072 P-b3b:\n"
+            "                                     build a v2 ROTATION of this quorum — members from the\n"
+            "                                     P-b3a shared resolver, premits over the predecessor\n"
+            "                                     sign-hash, nVersion=2\n"
             "       \"exclude\": [\"node_id\", ..]  (array, optional, real mode) drop these members from\n"
             "                                     the committed list (under-strength / gapped-index rows)\n"
             "       \"members_override\": [..]     (array, optional, real mode) replace the committed\n"
@@ -821,6 +858,19 @@ UniValue ptx_debug_ptxdkgpopulate(const JSONRPCRequest& request)
         }
         for (size_t i = 0; i < v_ex.size(); i++) exclude.insert(v_ex[i].get_str());
     }
+    // KDD-072 P-b3b rotation arm: optional predecessor (real mode only).
+    uint256 predecessor_qh;
+    const UniValue& v_pred = find_value(spec, "predecessor_quorum_hash");
+    if (!v_pred.isNull()) {
+        if (operator_sks.empty()) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                "predecessor_quorum_hash requires operator_keys mode");
+        }
+        predecessor_qh = uint256S(v_pred.get_str());
+        if (predecessor_qh.IsNull()) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "predecessor_quorum_hash must be non-zero");
+        }
+    }
     std::vector<std::string> members_override;
     bool fMembersOverride = false;
     const UniValue& v_mo = find_value(spec, "members_override");
@@ -878,7 +928,8 @@ UniValue ptx_debug_ptxdkgpopulate(const JSONRPCRequest& request)
               quorum_hash, formation_height, group_pk, vvec_hash, n_members, n_premits)
         : PTX_Debug_BuildPTXDKGTxFromChain(
               quorum_hash, formation_height, group_pk, vvec_hash, operator_sks,
-              exclude, fMembersOverride ? &members_override : nullptr, n_premits);
+              exclude, fMembersOverride ? &members_override : nullptr, n_premits,
+              predecessor_qh);
     const CTransactionRef tx = MakeTransactionRef(mtx);
 
     UniValue ret(UniValue::VOBJ);

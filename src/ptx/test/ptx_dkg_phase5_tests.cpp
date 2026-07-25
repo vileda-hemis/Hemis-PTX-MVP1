@@ -1675,7 +1675,7 @@ BOOST_AUTO_TEST_CASE(Pa_VersionAboveCurrent_Rejected)
     CMutableTransaction mtx = PTX_DKG_BuildPTXDKGTx(sessions[0], 1000);
     PTXDKGPayload payload;
     BOOST_REQUIRE(GetTxPayload(mtx, payload));
-    payload.nVersion = PTXDKGPayload::CURRENT_VERSION + 1;
+    payload.nVersion = PTXDKGPayload::ROTATION_VERSION + 1; // P-b3b: v2 accepted now; v3 is the reject bound
     SetTxPayload(mtx, payload);
     CTransaction tx(mtx);
     CValidationState state;
@@ -1855,12 +1855,11 @@ BOOST_AUTO_TEST_CASE(Pb1_V2Stream_TruncatedAtV1Length_Throws)
         });
 }
 
-// (P-b1 row 5) the :631 gate still REJECTS v2 — chain acceptance is DEFERRED to
-// P-b3, landing in the same commit as V12 (no window where a rotation-shaped
-// payload is accepted with its predecessor silently ignored). This row is
-// REPLACED in P-b3 when the gate flips. RED (inversion D): flip the gate bound
-// to ROTATION_VERSION -> v2 passes the structural section -> fail.
-BOOST_AUTO_TEST_CASE(Pb1_GateStillRejectsV2)
+// (P-b3b — REPLACES Pb1_GateStillRejectsV2, as its comment promised since
+// P-b1) v2 is now ACCEPTED through the structural section: the gate bound is
+// ROTATION_VERSION, and a rotation-shaped v2 payload (predecessor set) passes.
+// RED (inversion A): revert the bound to CURRENT_VERSION -> v2 rejected -> fail.
+BOOST_AUTO_TEST_CASE(Pb3b_GateAcceptsV2_RotationShaped)
 {
     std::map<uint256, CBLSSecretKey> key_map;
     std::vector<PTXDKGSession> sessions;
@@ -1874,8 +1873,54 @@ BOOST_AUTO_TEST_CASE(Pb1_GateStillRejectsV2)
     CTransaction tx(mtx);
     CValidationState state;
     LOCK(cs_main);
+    BOOST_CHECK_MESSAGE(CheckPTXDKGTx(tx, nullptr, state), state.GetRejectReason());
+}
+
+// (P-b3b) v2-WITHOUT-predecessor is REJECTED at the STRUCTURAL depth (the
+// null-pindexPrev path — proving CheckBlock catches it before any contextual
+// machinery; the contextual twin inside the V12 branch head is defense-in-depth
+// against a structural refactor, unreachable through the public sequence).
+// RED (inversion B): remove the structural check -> this malformed payload
+// passes the whole structural section (contextual skipped at nullptr) -> fail.
+BOOST_AUTO_TEST_CASE(Pb3b_V2WithoutPredecessor_Rejected)
+{
+    std::map<uint256, CBLSSecretKey> key_map;
+    std::vector<PTXDKGSession> sessions;
+    AdvanceToFinalize(key_map, sessions);
+    CMutableTransaction mtx = PTX_DKG_BuildPTXDKGTx(sessions[0], 1000);
+    PTXDKGPayload payload;
+    BOOST_REQUIRE(GetTxPayload(mtx, payload));
+    payload.nVersion = PTXDKGPayload::ROTATION_VERSION;
+    payload.predecessor_quorum_hash.SetNull();   // the malformed shape
+    SetTxPayload(mtx, payload);
+    CTransaction tx(mtx);
+    CValidationState state;
+    LOCK(cs_main);
     BOOST_CHECK(!CheckPTXDKGTx(tx, nullptr, state));
-    BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-ptxdkg-version");
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "ptxdkg-v2-without-predecessor");
+}
+
+// (P-b3b) ★ THE BREAKER-CHECK: a fresh formation still emits LITERAL v1 and
+// still validates. This is the row that would have caught the literal
+// CURRENT_VERSION-bump bug the recon found (fresh would emit
+// v2-with-zero-predecessor and die on the reject above). The LITERAL 1 matters:
+// asserting ==CURRENT_VERSION would silently follow a bump.
+// RED (inversion C): bump CURRENT_VERSION to 2 -> fresh emits v2 -> both checks fail.
+BOOST_AUTO_TEST_CASE(Pb3b_FreshStillEmitsV1AndValidates)
+{
+    std::map<uint256, CBLSSecretKey> key_map;
+    std::vector<PTXDKGSession> sessions;
+    PTX_TEST_ClearSkShareSlot();
+    AdvanceToFinalize(key_map, sessions);
+    CMutableTransaction mtx = PTX_DKG_BuildPTXDKGTx(sessions[0], 1000);
+    PTXDKGPayload payload;
+    BOOST_REQUIRE(GetTxPayload(mtx, payload));
+    BOOST_CHECK_EQUAL(payload.nVersion, (uint16_t)1);           // LITERAL, not ==CURRENT_VERSION
+    BOOST_CHECK(payload.predecessor_quorum_hash.IsNull());
+    CTransaction tx(mtx);
+    CValidationState state;
+    LOCK(cs_main);
+    BOOST_CHECK_MESSAGE(CheckPTXDKGTx(tx, nullptr, state), state.GetRejectReason());
 }
 
 // (P-b1 row 6) nVersion occupies the LEADING bytes of the stream — the invariant
