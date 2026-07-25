@@ -357,6 +357,12 @@ struct PTXDKGPayload {
     // the first 2 bytes of the old quorum_hash read as nVersion. Cost is a fleet
     // re-form (ODC-038, ODC-034 interim remedy); see KDD-072 §10.
     static const uint16_t CURRENT_VERSION = 1;
+    // KDD-072 P-b1: the rotation layout. predecessor_quorum_hash is ON THE WIRE
+    // only at nVersion >= ROTATION_VERSION. CURRENT_VERSION stays 1 and the
+    // specialtx_validation gate still REJECTS v2 — deliberately: chain
+    // acceptance of v2 lands WITH V12 (P-b3), so no window exists where a
+    // rotation-shaped payload is accepted but its predecessor silently ignored.
+    static const uint16_t ROTATION_VERSION = 2;
 
     uint16_t                           nVersion{CURRENT_VERSION};
     uint256                            quorum_hash;
@@ -365,6 +371,11 @@ struct PTXDKGPayload {
     std::vector<std::string>           member_node_ids;    // effective-QUAL, share_index order
     int                                formation_height{0};
     std::map<uint256, PTXDKGPhase4Msg> premit_commitments; // ≥ t entries (W1.2: structural only)
+    // KDD-072 §4 (v2+ only): != 0 marks a rotation and names its predecessor
+    // quorum (backward link only — zero is never a valid formation anchor, so
+    // no separate is-rotation flag). Default-zero: a v1 deserialize never
+    // touches it, so the rotation signal is vacuously off for v1 payloads.
+    uint256                            predecessor_quorum_hash;
 
     SERIALIZE_METHODS(PTXDKGPayload, obj)
     {
@@ -373,6 +384,12 @@ struct PTXDKGPayload {
         READWRITE(Using<PTXFixedBytesFormatter<48>>(obj.group_pk_bytes));
         READWRITE(obj.vvec_hash, obj.member_node_ids,
                   obj.formation_height, obj.premit_commitments);
+        // v1 block above is FROZEN verbatim (byte-exactness guarded by
+        // Pb1_V1Stream_ByteExact_Golden); v2+ fields append below, the
+        // providertx.h:53-60 idiom.
+        if (obj.nVersion >= ROTATION_VERSION) {
+            READWRITE(obj.predecessor_quorum_hash);
+        }
     }
 };
 

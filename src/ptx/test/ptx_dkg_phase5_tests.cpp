@@ -1735,4 +1735,167 @@ BOOST_AUTO_TEST_CASE(Pa_OldLayoutMisparses_BreakEnforced)
         "deserializer — the KDD-072 P-a wire break is NOT enforced");
 }
 
+// ---------------------------------------------------------------------------
+// KDD-072 P-b1 — payload v2 predecessor field (format only; gate deferred P-b3)
+// ---------------------------------------------------------------------------
+
+// (P-b1 row 2) v1 byte-exactness golden. The hex below was CAPTURED FROM HEAD
+// BEFORE the P-b1 edit by executing this row against the pre-edit serializer
+// (build discipline: this row lands green at pre-edit HEAD first, then the edit
+// must keep it green). Layout: nVersion(2 LE) | quorum_hash(32) | group_pk(48) |
+// vvec_hash(32) | member_node_ids(compact=0) | formation_height(4 LE) |
+// premit_commitments(compact=0) = 120 bytes. RED (inversion): serialize the
+// predecessor unconditionally -> the v1 stream grows 32 bytes -> mismatch.
+BOOST_AUTO_TEST_CASE(Pb1_V1Stream_ByteExact_Golden)
+{
+    PTXDKGPayload in;
+    in.nVersion = 1;
+    std::memset(in.quorum_hash.begin(), 0x22, 32);
+    std::memset(in.group_pk_bytes, 0x33, 48);
+    in.vvec_hash = QHk(0x44);
+    in.formation_height = 880;
+    // member_node_ids + premit_commitments deliberately EMPTY: every byte of the
+    // golden is fixed-width or a compactsize(0), so the vector is fully
+    // determined by the v1 layout and nothing else.
+
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << in;
+
+    const std::string golden =
+        std::string("0100") +
+        std::string(64, '2') +                 // quorum_hash: 32 x 0x22
+        [] { std::string s; for (int i = 0; i < 48; i++) s += "33"; return s; }() +
+        std::string(64, '4') +                 // vvec_hash: 32 x 0x44
+        "00" + "70030000" + "00";
+    BOOST_CHECK_EQUAL(HexStr(ss), golden);
+    BOOST_CHECK_EQUAL(ss.size(), (size_t)120);
+}
+
+// (P-b1 row 1) v2 round-trip: predecessor_quorum_hash is genuinely on the wire
+// at ROTATION_VERSION and survives serialize->deserialize; the stream is exactly
+// 32 bytes longer than the v1 golden (152 = 120 + 32). RED (inversion B): drop
+// the conditional READWRITE -> predecessor deserializes to zero != 0x77-fill.
+BOOST_AUTO_TEST_CASE(Pb1_V2RoundTrip_PredecessorIntact)
+{
+    PTXDKGPayload in;
+    in.nVersion = PTXDKGPayload::ROTATION_VERSION;
+    std::memset(in.quorum_hash.begin(), 0x22, 32);
+    std::memset(in.group_pk_bytes, 0x33, 48);
+    in.vvec_hash = QHk(0x44);
+    in.formation_height = 880;
+    in.predecessor_quorum_hash = QHk(0x77);
+
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << in;
+    BOOST_CHECK_EQUAL(ss.size(), (size_t)152);           // v1 golden + 32
+
+    PTXDKGPayload out;
+    ss >> out;
+    const uint16_t rot = PTXDKGPayload::ROTATION_VERSION; // local avoids ODR-use (tree never defines it out-of-line)
+    BOOST_CHECK_EQUAL(out.nVersion, rot);
+    BOOST_CHECK(out.quorum_hash == in.quorum_hash);
+    BOOST_CHECK(out.predecessor_quorum_hash == QHk(0x77)); // survived the wire
+    BOOST_CHECK_EQUAL(out.formation_height, 880);
+}
+
+// (P-b1 row 3) a v1 stream deserialized into a FRESH payload (the production
+// shape — GetTxPayload default-constructs) leaves predecessor_quorum_hash ZERO:
+// the rotation signal is vacuously off for every v1 payload. RED (inversion A):
+// make the predecessor read unconditional -> the 120-byte v1 stream exhausts
+// mid-read and this row throws instead of passing.
+BOOST_AUTO_TEST_CASE(Pb1_V1Deser_PredecessorDefaultsZero)
+{
+    PTXDKGPayload in;
+    in.nVersion = 1;
+    std::memset(in.quorum_hash.begin(), 0x22, 32);
+    std::memset(in.group_pk_bytes, 0x33, 48);
+    in.vvec_hash = QHk(0x44);
+    in.formation_height = 880;
+    in.predecessor_quorum_hash = QHk(0x77);  // set on the OBJECT — must NOT serialize at v1
+
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << in;
+    BOOST_CHECK_EQUAL(ss.size(), (size_t)120);           // predecessor NOT written at v1
+
+    PTXDKGPayload out;                                    // fresh, default-zero
+    ss >> out;
+    BOOST_CHECK(out.predecessor_quorum_hash.IsNull());    // rotation signal off
+    BOOST_CHECK(out.quorum_hash == in.quorum_hash);
+}
+
+// (P-b1 row 4) a v2 header on a v1-length stream FAILS deserialization — a
+// malformed v2 cannot silently parse as "no predecessor". Right-reason check
+// (build item 7, resolved from source): CBaseDataStream::read (streams.h:262-269)
+// THROWS std::ios_base::failure("CDataStream::read(): end of data") on
+// exhaustion — the bounds check precedes the memcpy, so a short buffer can NEVER
+// yield a default-zero uint256. Exception TYPE and MESSAGE are both asserted so
+// this row fails if that contract ever changes. RED (inversion B): drop the
+// conditional read -> the truncated stream parses clean -> no exception -> fail.
+BOOST_AUTO_TEST_CASE(Pb1_V2Stream_TruncatedAtV1Length_Throws)
+{
+    PTXDKGPayload in;
+    in.nVersion = PTXDKGPayload::ROTATION_VERSION;
+    std::memset(in.quorum_hash.begin(), 0x22, 32);
+    std::memset(in.group_pk_bytes, 0x33, 48);
+    in.vvec_hash = QHk(0x44);
+    in.formation_height = 880;
+    in.predecessor_quorum_hash = QHk(0x77);
+
+    CDataStream full(SER_NETWORK, PROTOCOL_VERSION);
+    full << in;                                           // 152 bytes
+    std::vector<unsigned char> raw(full.begin(), full.begin() + 120); // v1 length
+    CDataStream truncated(raw, SER_NETWORK, PROTOCOL_VERSION);
+
+    PTXDKGPayload out;
+    BOOST_CHECK_EXCEPTION(truncated >> out, std::ios_base::failure,
+        [](const std::ios_base::failure& e) {
+            return std::string(e.what()).find("end of data") != std::string::npos;
+        });
+}
+
+// (P-b1 row 5) the :631 gate still REJECTS v2 — chain acceptance is DEFERRED to
+// P-b3, landing in the same commit as V12 (no window where a rotation-shaped
+// payload is accepted with its predecessor silently ignored). This row is
+// REPLACED in P-b3 when the gate flips. RED (inversion D): flip the gate bound
+// to ROTATION_VERSION -> v2 passes the structural section -> fail.
+BOOST_AUTO_TEST_CASE(Pb1_GateStillRejectsV2)
+{
+    std::map<uint256, CBLSSecretKey> key_map;
+    std::vector<PTXDKGSession> sessions;
+    AdvanceToFinalize(key_map, sessions);
+    CMutableTransaction mtx = PTX_DKG_BuildPTXDKGTx(sessions[0], 1000);
+    PTXDKGPayload payload;
+    BOOST_REQUIRE(GetTxPayload(mtx, payload));
+    payload.nVersion = PTXDKGPayload::ROTATION_VERSION;
+    payload.predecessor_quorum_hash = QHk(0x77);
+    SetTxPayload(mtx, payload);
+    CTransaction tx(mtx);
+    CValidationState state;
+    LOCK(cs_main);
+    BOOST_CHECK(!CheckPTXDKGTx(tx, nullptr, state));
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-ptxdkg-version");
+}
+
+// (P-b1 row 6) nVersion occupies the LEADING bytes of the stream — the invariant
+// the whole conditional-parse scheme depends on, pinned by a NAMED test
+// independent of the golden vector (a reorder fails HERE by name, not via a hex
+// mismatch someone might "fix" by recapturing the golden). 0x1234 is
+// distinguishable from every fill pattern; LE on the wire -> leading bytes 3412.
+// RED (inversion C): move READWRITE(obj.nVersion) after quorum_hash -> the
+// leading bytes are 0x22-fill -> fail.
+BOOST_AUTO_TEST_CASE(Pb1_VersionFieldSerializesFirst)
+{
+    PTXDKGPayload in;
+    in.nVersion = 0x1234;
+    std::memset(in.quorum_hash.begin(), 0x22, 32);
+    std::memset(in.group_pk_bytes, 0x33, 48);
+    in.vvec_hash = QHk(0x44);
+    in.formation_height = 880;
+    in.predecessor_quorum_hash = QHk(0x77);   // 0x1234 >= 2: serialized, harmless here
+
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << in;
+    BOOST_CHECK_EQUAL(HexStr(ss).substr(0, 4), "3412");  // uint16 LE, first on the wire
+}
+
 BOOST_AUTO_TEST_SUITE_END()
