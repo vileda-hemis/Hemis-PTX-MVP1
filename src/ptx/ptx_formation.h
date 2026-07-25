@@ -70,6 +70,20 @@ CDeterministicGMList PTX_Formation_BuildPool(
 bool PTX_Formation_SelectAtAnchor(const CBlockIndex* pindexAnchor,
                                   std::vector<PTXDKGMember>& membersOut);
 
+// KDD-072 P-b3a — the DRIVER-side rotation member sourcing (present-but-unfed:
+// the P-b6 rotation trigger is the only future caller; nothing invokes this at
+// HEAD). Same-set members from the predecessor record via the SHARED
+// PTX_DKG_ResolveRotationQuorum + PTX_DKG_MembersFromQuorum — the identical
+// resolution V12 and the store guard run, so a ceremony this starts produces
+// exactly the membership the chain will validate. Returns false (rotation must
+// NOT start) on any unresolvable member or key change — the reject-not-exclude
+// policy, one decision for all sites.
+bool PTX_Formation_SelectRotationMembers(
+        const CPTXQuorumRecord& predecessor,
+        const CDeterministicGMList& listAtRotationAnchor,
+        const CDeterministicGMList& listAtFormationAnchor,
+        std::vector<PTXDKGMember>& membersOut);
+
 // ---------------------------------------------------------------------------
 // W2.2 SG-1b-i — the pure schedule core (boundary + anchor). PURITY IS
 // ENFORCED BY SIGNATURE: (height/pindex, params) in, (fires?, anchor) out —

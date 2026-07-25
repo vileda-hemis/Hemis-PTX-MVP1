@@ -7,6 +7,7 @@
 #include "ptx/ptx_dkg_commitments.h"  // KDD-058-A: replicated minable-commitments store
 
 #include "evo/deterministicgms.h"  // CDeterministicGMList, CDeterministicGMCPtr (KDD-060)
+#include "ptx/ptx_quorum_store.h"  // KDD-072 P-b3a: CPTXQuorumRecord + PTX_QuorumRecordActiveAt (V12)
 #include "evo/evodb.h"             // evoDb (KDD-070 P2 share persistence)
 #include "consensus/validation.h"  // CValidationState, REJECT_INVALID (Package 2 validator)
 
@@ -16,6 +17,7 @@
 #include "primitives/transaction.h"
 #include "random.h"
 #include "compat/endian.h"
+#include "util/system.h"  // error(), strprintf (P-b3a V12 rejects)
 
 #include <algorithm>
 #include <cassert>
@@ -129,11 +131,13 @@ std::vector<CDeterministicGMCPtr> PTX_DKG_SelectQuorumFromList(
 // PTXDKGMember.
 // ---------------------------------------------------------------------------
 
-std::vector<PTXDKGMember> PTX_DKG_BuildMemberVectorFromList(
-        const CDeterministicGMList& list,
-        const uint256& formation_block_hash)
+std::vector<PTXDKGMember> PTX_DKG_MembersFromQuorum(
+        const std::vector<CDeterministicGMCPtr>& quorum)
 {
-    auto quorum = PTX_DKG_SelectQuorumFromList(list, formation_block_hash);
+    // KDD-072 P-b3a: THE one selection→member mapper. Fresh formations (via
+    // BuildMemberVectorFromList) and rotations (via the driver's rotation
+    // wrapper) both materialize PTXDKGMember here — byte-identical by
+    // construction, the KDD-073 requirement.
     std::vector<PTXDKGMember> result;
     result.reserve(quorum.size());
     for (const auto& dgm : quorum) {
@@ -146,6 +150,90 @@ std::vector<PTXDKGMember> PTX_DKG_BuildMemberVectorFromList(
         result.push_back(std::move(m));
     }
     return result;
+}
+
+std::vector<PTXDKGMember> PTX_DKG_BuildMemberVectorFromList(
+        const CDeterministicGMList& list,
+        const uint256& formation_block_hash)
+{
+    return PTX_DKG_MembersFromQuorum(
+            PTX_DKG_SelectQuorumFromList(list, formation_block_hash));
+}
+
+// ---------------------------------------------------------------------------
+// PTX_DKG_ResolveRotationQuorum (KDD-072 P-b3a) — see the header contract:
+// record order preserved, REJECT-not-exclude policy, anchor/formation key
+// agreement.
+// ---------------------------------------------------------------------------
+
+bool PTX_DKG_ResolveRotationQuorum(
+        const CPTXQuorumRecord& predecessor,
+        const CDeterministicGMList& listAtRotationAnchor,
+        const CDeterministicGMList& listAtFormationAnchor,
+        std::vector<CDeterministicGMCPtr>& quorum_out,
+        std::string& err_out)
+{
+    quorum_out.clear();
+    for (const auto& m : predecessor.members) {  // record order == share_index order (SG-3)
+        const CDeterministicGMCPtr atRot  = listAtRotationAnchor.GetGM(m.proTxHash);
+        const CDeterministicGMCPtr atForm = listAtFormationAnchor.GetGM(m.proTxHash);
+        if (atRot == nullptr || atForm == nullptr) {
+            err_out = strprintf("predecessor member %s (share_index %d) unresolvable at the %s anchor",
+                                m.proTxHash.ToString(), (int)m.share_index,
+                                atRot == nullptr ? "rotation" : "formation");
+            quorum_out.clear();
+            return false;
+        }
+        // ProUpReg between formation and rotation anchor: REJECT. Premits are
+        // verified against the anchor-time key; requiring the two lists to
+        // AGREE is what makes "which block's key" a non-question — driver and
+        // validator resolve through this same check.
+        // ProUpReg between formation and rotation anchor: REJECT. Premits are
+        // verified against the anchor-time key; requiring the two lists to
+        // AGREE is what makes "which block's key" a non-question — driver and
+        // validator resolve through this same check.
+        if (!(atRot->pdgmState->pubKeyOperator == atForm->pdgmState->pubKeyOperator)) {
+            err_out = strprintf("predecessor member %s (share_index %d) operator key changed "
+                                "between formation and rotation anchor (ProUpReg)",
+                                m.proTxHash.ToString(), (int)m.share_index);
+            quorum_out.clear();
+            return false;
+        }
+        quorum_out.push_back(atRot);
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// PTX_DKG_CheckRotationAndResolve (KDD-072 P-b3a) — V12b + V12c, THE shared
+// consensus core for the validator and the store connect guard.
+// ---------------------------------------------------------------------------
+
+bool PTX_DKG_CheckRotationAndResolve(
+        const CPTXQuorumRecord& predecessor,
+        int nPrevHeight,
+        const CDeterministicGMList& listAtRotationAnchor,
+        const CDeterministicGMList& listAtFormationAnchor,
+        std::vector<CDeterministicGMCPtr>& quorum_out,
+        CValidationState& state)
+{
+    // V12b: ACTIVE as-of nPrevHeight through the P-b4 predicate — NEVER raw
+    // rec.state (a raw read re-opens the ODC-042 divergence the predicate
+    // closed: a rotation landing between this payload's anchor and its
+    // validation would flip the answer).
+    if (!PTX_QuorumRecordActiveAt(predecessor, nPrevHeight)) {
+        return state.DoS(100, error("%s: rotation predecessor %s not ACTIVE as-of height %d",
+                                    __func__, predecessor.quorum_hash.ToString(), nPrevHeight),
+                         REJECT_INVALID, "ptxdkg-rotation-predecessor-not-active");
+    }
+    // V12c: same-set resolve + the reject-not-exclude policy.
+    std::string err;
+    if (!PTX_DKG_ResolveRotationQuorum(predecessor, listAtRotationAnchor,
+                                       listAtFormationAnchor, quorum_out, err)) {
+        return state.DoS(100, error("%s: %s", __func__, err.c_str()),
+                         REJECT_INVALID, "ptxdkg-rotation-member-unresolvable");
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------

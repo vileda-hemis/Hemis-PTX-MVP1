@@ -22,6 +22,7 @@
 #include "ptx/ptx_bls.h"
 #include "ptx/ptx_quorum_store.h"   // KDD-070 P2: records + PTX_WarnMissingSharesForNode
 #include "evo/deterministicgms.h"   // KDD-072 P-b2: GM ptrs for the VerifyPremits harness
+#include "ptx/ptx_formation.h"      // KDD-072 P-b3a: driver rotation wrapper
 #include "evo/evodb.h"              // KDD-070 P2: the in-memory evoDb from BasicTestingSetup
 #include "evo/specialtx_validation.h"
 #include "consensus/validation.h"
@@ -2286,6 +2287,235 @@ BOOST_AUTO_TEST_CASE(Pb4_DisbandedArm_VacuousButCorrect)
     BOOST_CHECK(!PTX_QuorumRecordActiveAt(Pb4Rec(PTXQuorumState::DISBANDED, 500, -1, -1), 1000)); // unfed: inactive
     BOOST_CHECK( PTX_QuorumRecordActiveAt(Pb4Rec(PTXQuorumState::DISBANDED, 500, -1, 900), 899)); // as-of active
     BOOST_CHECK(!PTX_QuorumRecordActiveAt(Pb4Rec(PTXQuorumState::DISBANDED, 500, -1, 900), 900)); // strict boundary
+}
+
+// ---------------------------------------------------------------------------
+// KDD-072 P-b3a — the KDD-073 atomic core: shared materialization + V12 checks
+// ---------------------------------------------------------------------------
+
+// MakeGM-shape fixture (validation_tests precedent) — real BLS operator keys,
+// distinct score identities.
+static std::shared_ptr<CDeterministicGM> Pb3aGM(uint64_t id, const CBLSSecretKey& opSk)
+{
+    std::vector<unsigned char> pb(32, 0);
+    pb[0] = (unsigned char)id; pb[1] = 0xB3;
+    uint256 proTx(pb);
+    auto dgm = std::make_shared<CDeterministicGM>(id);
+    dgm->proTxHash          = proTx;
+    dgm->collateralOutpoint = COutPoint(proTx, 0);
+    auto st = std::make_shared<CDeterministicGMState>();
+    std::vector<unsigned char> cb(32, 0x11);
+    cb[0] = (unsigned char)id;
+    st->UpdateConfirmedHash(proTx, uint256(cb));
+    st->pubKeyOperator.Set(opSk.GetPublicKey());
+    uint160 k20; memcpy(k20.begin(), proTx.begin(), 20);
+    st->keyIDOwner  = CKeyID(k20);
+    st->keyIDVoting = st->keyIDOwner;
+    st->node_id     = "gm" + std::to_string(id) + ":8080";
+    dgm->pdgmState = st;
+    return dgm;
+}
+
+struct Pb3aWorld {
+    std::vector<std::shared_ptr<CDeterministicGM>> dgms;   // all 14 (non-const for rekey rebuild)
+    CDeterministicGMList list;                   // the anchor list
+    std::map<uint256, CBLSSecretKey> sks;        // proTxHash -> operator sk
+    std::vector<PTXDKGMember> fresh;             // the fresh 11 (score order)
+    CPTXQuorumRecord rec;                        // predecessor record of the fresh 11
+    uint256 fbh;                                 // formation anchor hash
+};
+
+static Pb3aWorld Pb3aMakeWorld()
+{
+    Pb3aWorld w;
+    w.fbh = QHk(0xB0);
+    for (uint64_t id = 1; id <= 14; id++) {
+        CBLSSecretKey sk; sk.MakeNewKey();
+        auto dgm = Pb3aGM(id, sk);
+        w.dgms.push_back(dgm);
+        w.sks[dgm->proTxHash] = sk;
+        w.list.AddGM(dgm);
+    }
+    w.fresh = PTX_DKG_BuildMemberVectorFromList(w.list, w.fbh);
+    BOOST_REQUIRE_EQUAL(w.fresh.size(), (size_t)11);
+    w.rec.quorum_hash     = w.fbh;               // record identity = formation anchor
+    w.rec.mined_height    = 100;
+    w.rec.state           = static_cast<uint8_t>(PTXQuorumState::ACTIVE);
+    w.rec.formed_size     = 11;
+    for (size_t i = 0; i < w.fresh.size(); i++) {
+        PTXQuorumMemberRecord m;
+        m.node_id     = w.fresh[i].node_id;
+        m.proTxHash   = w.fresh[i].proTxHash;
+        m.share_index = (uint8_t)(i + 1);        // the connect-time rank rule
+        m.in_qual     = true;
+        w.rec.members.push_back(m);
+    }
+    return w;
+}
+
+// (P-b3a) ★ MATERIALIZATION EQUALITY — the byte-identical guarantee. The
+// rotation path (ResolveRotationQuorum → MembersFromQuorum) must reproduce the
+// driver's fresh materialization (BuildMemberVectorFromList) field-by-field in
+// share_index order; both flow through the SAME mapper, so this row pins the
+// order+resolution half. RED (inversion 1): resolve in reverse record order →
+// every field pairwise mismatches.
+BOOST_AUTO_TEST_CASE(Pb3a_MaterializationEquality)
+{
+    Pb3aWorld w = Pb3aMakeWorld();
+    std::vector<CDeterministicGMCPtr> quorum;
+    std::string err;
+    BOOST_REQUIRE_MESSAGE(
+        PTX_DKG_ResolveRotationQuorum(w.rec, w.list, w.list, quorum, err), err);
+    const std::vector<PTXDKGMember> rot = PTX_DKG_MembersFromQuorum(quorum);
+
+    BOOST_REQUIRE_EQUAL(rot.size(), w.fresh.size());
+    for (size_t i = 0; i < rot.size(); i++) {
+        BOOST_CHECK(rot[i].proTxHash == w.fresh[i].proTxHash);
+        BOOST_CHECK(rot[i].confirmedHash == w.fresh[i].confirmedHash);
+        BOOST_CHECK(rot[i].confirmedHashWithProRegTxHash ==
+                    w.fresh[i].confirmedHashWithProRegTxHash);
+        BOOST_CHECK_EQUAL(rot[i].node_id, w.fresh[i].node_id);
+        BOOST_CHECK(rot[i].pubKeyOperator == w.fresh[i].pubKeyOperator);
+    }
+}
+
+// (P-b3a) V12 accepts a valid same-set rotation and the substituted quorum11
+// flows through V6-V8 (VerifyPremits with the P-b2 predecessor sign-hash) and
+// the V10 containment shape. RED (inversion 1 reverses order — VerifyPremits
+// still passes by map lookup, the EQUALITY row is the order catcher; inversion
+// 3 makes the as-of leg fail).
+BOOST_AUTO_TEST_CASE(Pb3a_V12_AcceptsValidRotation)
+{
+    Pb3aWorld w = Pb3aMakeWorld();
+
+    // The rotation payload: v2, predecessor = the record, premits signed over
+    // the predecessor sign-hash by each member's ANCHOR-TIME operator key.
+    PTXDKGPayload pl;
+    pl.nVersion = PTXDKGPayload::ROTATION_VERSION;
+    pl.quorum_hash = QHk(0xE1);                          // rotation anchor
+    pl.predecessor_quorum_hash = w.rec.quorum_hash;
+    std::memset(pl.group_pk_bytes, 0x33, 48);
+    pl.vvec_hash = QHk(0x44);
+    pl.formation_height = 500;
+    for (const auto& m : w.rec.members) pl.member_node_ids.push_back(m.node_id);
+    for (const auto& m : w.rec.members) {
+        PTXDKGPhase4Msg p4;
+        p4.quorum_hash = pl.quorum_hash;
+        p4.proTxHash   = m.proTxHash;
+        std::memcpy(p4.group_pk_bytes, pl.group_pk_bytes, 48);
+        p4.vvec_hash   = pl.vvec_hash;
+        p4.sig = w.sks.at(m.proTxHash).Sign(p4.GetSignHash(pl.predecessor_quorum_hash));
+        pl.premit_commitments[m.proTxHash] = p4;
+    }
+
+    // V12b+V12c (the shared core both consensus sites call):
+    std::vector<CDeterministicGMCPtr> quorum11;
+    CValidationState st;
+    BOOST_REQUIRE_MESSAGE(
+        PTX_DKG_CheckRotationAndResolve(w.rec, 500, w.list, w.list, quorum11, st),
+        st.GetRejectReason());
+    BOOST_REQUIRE_EQUAL(quorum11.size(), (size_t)11);
+
+    // V10 shape: committed ⊆ substituted selection, no dups.
+    {
+        std::set<std::string> selected;
+        for (const auto& d : quorum11) selected.insert(d->pdgmState->node_id);
+        std::set<std::string> seen;
+        for (const auto& nid : pl.member_node_ids) {
+            BOOST_CHECK(selected.count(nid) == 1);
+            BOOST_CHECK(seen.insert(nid).second);
+        }
+    }
+    // V6-V8 verbatim over the substituted quorum11 — the P-b2 sign-hash now
+    // verified against a REAL non-zero predecessor for the first time.
+    CValidationState st2;
+    BOOST_CHECK_MESSAGE(PTX_DKG_VerifyPremits(quorum11, pl, st2), st2.GetRejectReason());
+}
+
+// (P-b3a) ★ MISSING-MEMBER REJECT — one policy, both sites. A predecessor
+// member absent from the rotation-anchor list rejects the WHOLE rotation
+// (never member-exclusion): the shared resolver refuses, so the V12-shaped
+// call AND the driver wrapper both reject from the same decision.
+// RED (inversion 4): skip-absent-instead-of-reject → resolve "succeeds" with
+// 10 members and both limbs fail.
+BOOST_AUTO_TEST_CASE(Pb3a_MissingMember_RejectsBothSites)
+{
+    Pb3aWorld w = Pb3aMakeWorld();
+    // Rebuild the rotation-anchor list WITHOUT the first selected member.
+    CDeterministicGMList listMissing;
+    for (const auto& d : w.dgms) {
+        if (d->proTxHash == w.rec.members[0].proTxHash) continue;
+        listMissing.AddGM(d);
+    }
+    // V12-shaped: the shared core rejects with the named reason.
+    std::vector<CDeterministicGMCPtr> q;
+    CValidationState st;
+    BOOST_CHECK(!PTX_DKG_CheckRotationAndResolve(w.rec, 500, listMissing, w.list, q, st));
+    BOOST_CHECK_EQUAL(st.GetRejectReason(), "ptxdkg-rotation-member-unresolvable");
+    // Driver-shaped: the rotation does not start — same helper, same verdict.
+    std::vector<PTXDKGMember> members;
+    BOOST_CHECK(!PTX_Formation_SelectRotationMembers(w.rec, listMissing, w.list, members));
+    BOOST_CHECK(members.empty());
+}
+
+// (P-b3a) ★ ProUpReg KEY-ROTATION REJECT — the fork-hiding seam. A predecessor
+// member whose operator key differs between the formation-anchor and
+// rotation-anchor lists rejects the rotation at BOTH sites; requiring the two
+// lists to AGREE is what pins "which block's key" for premit verification
+// (driver and validator resolve through the same equality). RED (inversion 2):
+// drop the key-equality check → both limbs fail.
+BOOST_AUTO_TEST_CASE(Pb3a_KeyRotation_RejectsBothSites)
+{
+    Pb3aWorld w = Pb3aMakeWorld();
+    // Rotation-anchor list where member[0] has a ProUpReg'd (new) operator key.
+    CBLSSecretKey newSk; newSk.MakeNewKey();
+    CDeterministicGMList listRekeyed;
+    for (size_t di = 0; di < w.dgms.size(); di++) {
+        const auto& d = w.dgms[di];
+        if (d->proTxHash == w.rec.members[0].proTxHash) {
+            auto re = Pb3aGM((uint64_t)di + 1, newSk);   // ids are creation-order 1..14
+            // same identity, new key: keep proTxHash/confirmed identity
+            re->proTxHash = d->proTxHash;
+            auto st2 = std::make_shared<CDeterministicGMState>(*d->pdgmState);
+            st2->pubKeyOperator.Set(newSk.GetPublicKey());
+            re->pdgmState = st2;
+            listRekeyed.AddGM(re);
+        } else {
+            listRekeyed.AddGM(d);
+        }
+    }
+    std::vector<CDeterministicGMCPtr> q;
+    CValidationState st;
+    BOOST_CHECK(!PTX_DKG_CheckRotationAndResolve(w.rec, 500, listRekeyed, w.list, q, st));
+    BOOST_CHECK_EQUAL(st.GetRejectReason(), "ptxdkg-rotation-member-unresolvable");
+    std::vector<PTXDKGMember> members;
+    BOOST_CHECK(!PTX_Formation_SelectRotationMembers(w.rec, listRekeyed, w.list, members));
+}
+
+// (P-b3a) predecessor NOT ACTIVE as-of → V12b rejects — and proves V12 reads
+// P-b4's AS-OF predicate, not raw current state: the same SUPERSEDED record IS
+// accepted at a height below its stamp. RED (inversion 3): swap the predicate
+// for raw state==ACTIVE → the below-stamp leg wrongly rejects.
+BOOST_AUTO_TEST_CASE(Pb3a_PredecessorNotActiveAsOf_Rejects)
+{
+    Pb3aWorld w = Pb3aMakeWorld();
+    w.rec.state             = static_cast<uint8_t>(PTXQuorumState::SUPERSEDED);
+    w.rec.superseded_height = 1000;
+
+    std::vector<CDeterministicGMCPtr> q;
+    {   // at/after the stamp: not active as-of → reject
+        CValidationState st;
+        BOOST_CHECK(!PTX_DKG_CheckRotationAndResolve(w.rec, 1000, w.list, w.list, q, st));
+        BOOST_CHECK_EQUAL(st.GetRejectReason(), "ptxdkg-rotation-predecessor-not-active");
+    }
+    {   // below the stamp: ACTIVE as-of (P-b4 semantics) → V12b passes and the
+        // resolve succeeds — raw current-state would wrongly reject here
+        CValidationState st;
+        BOOST_CHECK_MESSAGE(
+            PTX_DKG_CheckRotationAndResolve(w.rec, 999, w.list, w.list, q, st),
+            st.GetRejectReason());
+        BOOST_CHECK_EQUAL(q.size(), (size_t)11);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

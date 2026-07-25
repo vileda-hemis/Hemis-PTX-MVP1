@@ -719,6 +719,41 @@ bool CheckPTXDKGTx(const CTransaction& tx, const CBlockIndex* pindexPrev,
                                         payload.quorum_hash.ToString()),
                              REJECT_INVALID, "ptxdkg-duplicate-formation");
 
+        // ---- V12 vs V4+V5: the KDD-072 §5 SUBSTITUTION branch (P-b3a) ----
+        // A rotation names its predecessor; its quorum11 IS the predecessor's
+        // recorded 11 (same-set re-DKG, KDD-045/063) — no fresh draw. A fresh
+        // formation runs V4+V5 unchanged. V10 and V6-V8 below consume the
+        // substituted quorum11 verbatim (no rotation branch in them).
+        std::vector<CDeterministicGMCPtr> quorum11;
+        const bool fRotation =
+            payload.nVersion >= PTXDKGPayload::ROTATION_VERSION &&
+            !payload.predecessor_quorum_hash.IsNull();
+        if (fRotation) {
+            // V12a: the predecessor record must exist on this chain's store.
+            CPTXQuorumRecord predRec;
+            if (ptxQuorumStore == nullptr ||
+                !ptxQuorumStore->GetQuorumRecord(payload.predecessor_quorum_hash, predRec))
+                return state.DoS(100, error("%s: rotation predecessor %s unknown", __func__,
+                                            payload.predecessor_quorum_hash.ToString()),
+                                 REJECT_INVALID, "ptxdkg-rotation-predecessor-unknown");
+            // The predecessor's formation anchor supplies the formation-time
+            // DGM list for the key-agreement check (ResolveRotationQuorum).
+            const CBlockIndex* pindexPred = LookupBlockIndex(predRec.quorum_hash);
+            if (pindexPred == nullptr)
+                return state.DoS(100, error("%s: rotation predecessor anchor %s unknown", __func__,
+                                            predRec.quorum_hash.ToString()),
+                                 REJECT_INVALID, "ptxdkg-rotation-predecessor-anchor-unknown");
+            const CDeterministicGMList listRot =
+                deterministicGMManager->GetListForBlock(pindexQuorum);
+            const CDeterministicGMList listForm =
+                deterministicGMManager->GetListForBlock(pindexPred);
+            // V12b (ACTIVE as-of pindexPrev, the P-b4 predicate) + V12c
+            // (same-set resolve, reject-not-exclude policy) — THE shared core;
+            // the store connect guard runs this exact function (KDD-073).
+            if (!PTX_DKG_CheckRotationAndResolve(predRec, pindexPrev->nHeight,
+                                                 listRot, listForm, quorum11, state))
+                return false;
+        } else {
         // V4: snapshot the GM list at the formation block.  A missing snapshot
         // post-activation is local DB corruption — GetListForBlock throws and the
         // throw PROPAGATES (no try/catch; converting it to a reject would be wrong
@@ -734,10 +769,9 @@ bool CheckPTXDKGTx(const CTransaction& tx, const CBlockIndex* pindexPrev,
         // (PTX_Formation_BuildPool, D-SG1a-1 full formed-11 exclusion) or an
         // honest second formation would self-reject the moment quorum #2
         // exists. At zero ACTIVE records the pool equals the eligible list
-        // byte-identically (proven at the SG-1a gate). Forward-bind D-SG1a-2:
-        // when W2.3/W2.4 add state mutations, GetActiveQuorumsAtHeight must
-        // answer state-AS-OF-HEIGHT here — consensus obligation on their
-        // owed-lists. Null store = unit-test env only (= zero ACTIVE records).
+        // byte-identically (proven at the SG-1a gate). D-SG1a-2 DISCHARGED at
+        // P-b4: GetActiveQuorumsAtHeight answers state-AS-OF-HEIGHT through
+        // PTX_QuorumRecordActiveAt. Null store = unit-test env only.
         std::vector<CPTXQuorumRecord> activeAtAnchor;
         if (ptxQuorumStore) {
             activeAtAnchor =
@@ -745,12 +779,13 @@ bool CheckPTXDKGTx(const CTransaction& tx, const CBlockIndex* pindexPrev,
         }
         const CDeterministicGMList formationPool =
             PTX_Formation_BuildPool(dgmList, activeAtAnchor);
-        std::vector<CDeterministicGMCPtr> quorum11 =
+        quorum11 =
             PTX_DKG_SelectQuorumFromList(formationPool, payload.quorum_hash);
         if (quorum11.size() != 11)
             return state.DoS(100, error("%s: PTXDKG quorum underfull (%d of 11) at anchor",
                                         __func__, (int)quorum11.size()),
                              REJECT_INVALID, "ptxdkg-quorum-underfull");
+        }
 
         // V10 (W2.1 C4): committed member containment — every member_node_ids
         // entry must hold a rank in the canonical selection, no duplicates.

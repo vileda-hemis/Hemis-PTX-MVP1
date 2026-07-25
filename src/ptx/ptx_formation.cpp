@@ -93,6 +93,29 @@ bool PTX_Formation_SelectAtAnchor(const CBlockIndex* pindexAnchor,
     return membersOut.size() == 11;
 }
 
+bool PTX_Formation_SelectRotationMembers(
+        const CPTXQuorumRecord& predecessor,
+        const CDeterministicGMList& listAtRotationAnchor,
+        const CDeterministicGMList& listAtFormationAnchor,
+        std::vector<PTXDKGMember>& membersOut)
+{
+    // KDD-072 P-b3a (dormant until the P-b6 trigger): resolve through the SAME
+    // shared core as V12/the store guard, then materialize through the SAME
+    // mapper as the fresh path. All-or-nothing: any unresolvable member or
+    // key change means the rotation does not start.
+    membersOut.clear();
+    std::vector<CDeterministicGMCPtr> quorum;
+    std::string err;
+    if (!PTX_DKG_ResolveRotationQuorum(predecessor, listAtRotationAnchor,
+                                       listAtFormationAnchor, quorum, err)) {
+        LogPrintf("PTX formation: rotation of %s NOT started: %s\n",
+                  predecessor.quorum_hash.ToString(), err);
+        return false;
+    }
+    membersOut = PTX_DKG_MembersFromQuorum(quorum);
+    return membersOut.size() == predecessor.members.size();
+}
+
 namespace {
 
 // W2.2 SG-1c-i — the ceremony runner (Model B: the thread OWNS the session).

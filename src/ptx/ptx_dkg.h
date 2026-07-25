@@ -42,6 +42,7 @@
 // Kept out of this header to avoid dragging evo/chain transitive deps into every TU.
 class CDeterministicGM;
 class CDeterministicGMList;
+class CPTXQuorumRecord;   // KDD-072 P-b3a: rotation resolution (fwd — store includes stay one-way)
 class CValidationState;
 
 // ---------------------------------------------------------------------------
@@ -542,6 +543,56 @@ std::vector<std::shared_ptr<const CDeterministicGM>> PTX_DKG_SelectQuorumFromLis
 std::vector<PTXDKGMember> PTX_DKG_BuildMemberVectorFromList(
         const CDeterministicGMList& list,
         const uint256& formation_block_hash);
+
+// ---------------------------------------------------------------------------
+// KDD-072 P-b3a — the KDD-073 atomic core (shared across the three
+// reconstruction sites: V5/V12 validator, store connect guard, formation
+// driver). ONE materialization, ONE policy — sites cannot diverge because
+// they call the same functions.
+// ---------------------------------------------------------------------------
+
+// The selection→member mapper, extracted from BuildMemberVectorFromList so the
+// FRESH path and the ROTATION path materialize PTXDKGMember through the same
+// code (byte-identical by construction, not by discipline).
+std::vector<PTXDKGMember> PTX_DKG_MembersFromQuorum(
+        const std::vector<std::shared_ptr<const CDeterministicGM>>& quorum);
+
+// Same-set rotation resolution + the missing-member/key-rotation POLICY
+// (KDD-072 P-b3 recon decision: REJECT THE ROTATION, never exclude a member —
+// a same-set re-DKG that drops a member is a different quorum than attested).
+// Iterates predecessor.members in RECORD ORDER (= share_index order, the SG-3
+// score-order Lagrange basis; the successor's connect-time share_index = i+1
+// must reproduce predecessor ranks or KDD-061 recovery breaks). For each
+// member: must resolve by proTxHash in BOTH the rotation-anchor and the
+// formation-anchor DGM lists, and the operator key must be IDENTICAL in both
+// (a ProUpReg between formation and rotation anchor rejects — premits are
+// checked against the anchor-time key, and key-equality is what makes driver
+// and validator provably agree on which key that is). On success quorum_out
+// holds the rotation-anchor entries in record order.
+bool PTX_DKG_ResolveRotationQuorum(
+        const CPTXQuorumRecord& predecessor,
+        const CDeterministicGMList& listAtRotationAnchor,
+        const CDeterministicGMList& listAtFormationAnchor,
+        std::vector<std::shared_ptr<const CDeterministicGM>>& quorum_out,
+        std::string& err_out);
+
+// V12b + V12c composed — THE function both consensus sites call (validator
+// CheckPTXDKGTx and the store connect guard). V12a (predecessor record fetch)
+// stays with the caller (it needs the record to find the formation anchor).
+//   V12b: predecessor ACTIVE as-of nPrevHeight via PTX_QuorumRecordActiveAt
+//         (the P-b4 predicate — NEVER raw rec.state; that re-opens ODC-042)
+//         → "ptxdkg-rotation-predecessor-not-active"
+//   V12c: same-set resolve + policy via PTX_DKG_ResolveRotationQuorum
+//         → "ptxdkg-rotation-member-unresolvable"
+// On success quorum_out substitutes the fresh draw: V10 and V6-V8 run
+// verbatim against it.
+bool PTX_DKG_CheckRotationAndResolve(
+        const CPTXQuorumRecord& predecessor,
+        int nPrevHeight,
+        const CDeterministicGMList& listAtRotationAnchor,
+        const CDeterministicGMList& listAtFormationAnchor,
+        std::vector<std::shared_ptr<const CDeterministicGM>>& quorum_out,
+        CValidationState& state);
 
 // Contextual premit verification — V6–V8 of CheckPTXDKGTx (KDD-059/060, Package 2).
 // ACCOUNTABILITY, not correctness: confirms that >= t members of the

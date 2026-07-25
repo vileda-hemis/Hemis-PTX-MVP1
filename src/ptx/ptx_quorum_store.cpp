@@ -102,20 +102,43 @@ bool CPTXQuorumStore::ProcessBlock(const CBlock& block, const CBlockIndex* pinde
                                     payload.quorum_hash.ToString()),
                          REJECT_INVALID, "ptxdkg-quorum-hash-not-found");
     }
-    const CDeterministicGMList dgmList = deterministicGMManager->GetListForBlock(pindexQuorum);
-    // SG-1a: the connect-time materialization/containment guard reconstructs
-    // through the SAME KDD-040 pool as V5 and formation (the one-function
-    // contract now includes the pool). THE MISSED-SITE LESSON (2026-07-13,
-    // caught live by battery_sg1 row v5(y)): with V5 pool-aware and this
-    // guard raw, a valid PTXDKG passed populate + assembler and was REJECTED
-    // at connect ("11 committed, 4 matched") — a self-poisoning divergence.
-    // All THREE reconstruction sites (V5, debug builder, this guard) must
-    // share PTX_Formation_BuildPool.
-    const CDeterministicGMList formationPool =
-        PTX_Formation_BuildPool(dgmList,
-                                GetActiveQuorumsAtHeight(pindexQuorum->nHeight));
-    const std::vector<CDeterministicGMCPtr> quorum11 =
-        PTX_DKG_SelectQuorumFromList(formationPool, payload.quorum_hash);
+    // SG-1a / KDD-073: this guard reconstructs through the SAME functions as
+    // V5/V12 and formation (the one-function contract). THE MISSED-SITE LESSON
+    // (2026-07-13, battery_sg1 row v5(y)): with V5 pool-aware and this guard
+    // raw, a valid PTXDKG passed populate + assembler and was REJECTED at
+    // connect — a self-poisoning divergence. P-b3a extends the lesson to
+    // rotation: this guard branches EXACTLY as V12 does, through the same
+    // PTX_DKG_CheckRotationAndResolve, or a valid rotation dies here after
+    // passing validation (the same battery_sg1 shape).
+    std::vector<CDeterministicGMCPtr> quorum11;
+    if (payload.nVersion >= PTXDKGPayload::ROTATION_VERSION &&
+        !payload.predecessor_quorum_hash.IsNull()) {
+        CPTXQuorumRecord predRec;
+        if (!GetQuorumRecord(payload.predecessor_quorum_hash, predRec)) {
+            return state.DoS(100, error("%s: rotation predecessor %s vanished post-check", __func__,
+                                        payload.predecessor_quorum_hash.ToString()),
+                             REJECT_INVALID, "ptxdkg-rotation-predecessor-unknown");
+        }
+        const CBlockIndex* pindexPred = LookupBlockIndex(predRec.quorum_hash);
+        if (pindexPred == nullptr) {
+            return state.DoS(100, error("%s: rotation predecessor anchor %s vanished post-check",
+                                        __func__, predRec.quorum_hash.ToString()),
+                             REJECT_INVALID, "ptxdkg-rotation-predecessor-anchor-unknown");
+        }
+        const CDeterministicGMList listRot  = deterministicGMManager->GetListForBlock(pindexQuorum);
+        const CDeterministicGMList listForm = deterministicGMManager->GetListForBlock(pindexPred);
+        if (!PTX_DKG_CheckRotationAndResolve(predRec, pindex->nHeight - 1,
+                                             listRot, listForm, quorum11, state)) {
+            return false;
+        }
+    } else {
+        const CDeterministicGMList dgmList = deterministicGMManager->GetListForBlock(pindexQuorum);
+        const CDeterministicGMList formationPool =
+            PTX_Formation_BuildPool(dgmList,
+                                    GetActiveQuorumsAtHeight(pindexQuorum->nHeight));
+        quorum11 =
+            PTX_DKG_SelectQuorumFromList(formationPool, payload.quorum_hash);
+    }
 
     // Materialize per-member share_index (KDD-061: recovery-x = committed
     // formation share_index, score-order, gaps preserved).  The full
