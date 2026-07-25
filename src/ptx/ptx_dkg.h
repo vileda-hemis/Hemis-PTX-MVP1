@@ -325,10 +325,19 @@ struct PTXDKGPhase4Msg {
     uint256       proTxHash;
     uint8_t       group_pk_bytes[48]; // blst_p1_affine_compress output
     uint256       vvec_hash;          // SHA256 over effective-QUAL vvec[0] compressed bytes
-    CBLSSignature sig;                // operator key sig over GetSignHash()
+    CBLSSignature sig;                // operator key sig over GetSignHash(predecessor)
 
-    // SHA256( quorum_hash[32] || proTxHash[32] || group_pk_bytes[48] || vvec_hash[32] )
-    uint256 GetSignHash() const;
+    // KDD-072 P-b2 — the §3 fix: the predecessor rides the SIGN-HASH PREIMAGE,
+    // not the message serialization (wire form unchanged, §4).
+    //   predecessor zero:     SHA256( quorum_hash[32] || proTxHash[32] ||
+    //                                 group_pk_bytes[48] || vvec_hash[32] )        (144 B, v1-identical)
+    //   predecessor non-zero: SHA256( ... || predecessor_quorum_hash[32] )         (176 B)
+    // ONE implementation, four callers passing their own view: BuildPhase4Msg /
+    // ReceivePhase4Msg / transport R4 pass the SESSION's predecessor;
+    // VerifyPremits V7g passes the PAYLOAD's. A view mismatch fails the sig —
+    // that divergence IS the §3 security property. No default arg: every caller
+    // must choose its view explicitly.
+    uint256 GetSignHash(const uint256& predecessor) const;
 
     SERIALIZE_METHODS(PTXDKGPhase4Msg, obj)
     {
@@ -454,6 +463,14 @@ struct PTXDKGSession {
     blst_scalar    sk_share_i;
     blst_p1_affine group_pk;
     bool           phase4_computed{false}; // guard: prevents double-compute
+
+    // KDD-072 P-b2 (DORMANT until the P-b6 rotation trigger feeds it): != 0
+    // marks this ceremony as a rotation of the named predecessor quorum.
+    // Default-zero = fresh formation. Readers: BuildPhase4Msg / ReceivePhase4Msg
+    // (sign-hash view), transport R4 (ptx_dkg_net SignHashOf), BuildPTXDKGTx
+    // (payload nVersion + predecessor), ClosePhase5 (PENDING role, KDD-070 §8).
+    // Sole setter site: StartFormationAtAnchor (ptx_formation.cpp).
+    uint256        predecessor_quorum_hash;
 
     // SG-2a — session-state lock (Resolution A).  EXTERNAL / coarse: the pure
     // PTX_DKG_Receive*/Close*/Build*/Compute* functions stay lock-AGNOSTIC (so

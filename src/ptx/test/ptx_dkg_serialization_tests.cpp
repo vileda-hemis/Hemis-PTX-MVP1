@@ -288,15 +288,17 @@ BOOST_AUTO_TEST_CASE(s4_phase4_roundtrip)
     memset(msg.group_pk_bytes, 0xAB, 48);
     buf.assign(32, 0x66);
     msg.vvec_hash = uint256(buf);
-    msg.sig = sk.Sign(msg.GetSignHash());
+    // KDD-072 P-b2: fresh (zero-predecessor) view — this row is wire-form
+    // stability; the predecessor rides the sign-hash, never the serialization.
+    msg.sig = sk.Sign(msg.GetSignHash(uint256()));
 
     auto bytes = SerBytes(msg);
     PTXDKGPhase4Msg out = DeserBytes<PTXDKGPhase4Msg>(bytes);
 
     BOOST_CHECK(SerBytes(out) == bytes);
-    BOOST_CHECK(out.GetSignHash() == msg.GetSignHash());
+    BOOST_CHECK(out.GetSignHash(uint256()) == msg.GetSignHash(uint256()));
     BOOST_CHECK(memcmp(out.group_pk_bytes, msg.group_pk_bytes, 48) == 0);
-    BOOST_CHECK(out.sig.VerifyInsecure(sk.GetPublicKey(), out.GetSignHash()));
+    BOOST_CHECK(out.sig.VerifyInsecure(sk.GetPublicKey(), out.GetSignHash(uint256())));
 }
 
 // ---------------------------------------------------------------------------

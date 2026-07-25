@@ -624,7 +624,10 @@ static CMutableTransaction PTX_Debug_BuildPTXDKGTxFromSpec(const uint256& quorum
         p.vvec_hash = vvec_hash;
         CBLSSecretKey throwaway;
         throwaway.MakeNewKey();
-        p.sig = throwaway.Sign(p.GetSignHash());
+        // KDD-072 P-b2: sign over the payload's predecessor view (zero for the
+        // v1 debug shape) — keeps this builder lockstep with the validator's
+        // preimage if a rotation arm is ever added here (KDD-073 site #3).
+        p.sig = throwaway.Sign(p.GetSignHash(pl.predecessor_quorum_hash));
         pl.premit_commitments[p.proTxHash] = p;
     }
     CMutableTransaction tx;
@@ -716,7 +719,7 @@ static CMutableTransaction PTX_Debug_BuildPTXDKGTxFromChain(const uint256& quoru
         p.proTxHash   = dgm->proTxHash;
         memcpy(p.group_pk_bytes, group_pk, 48);
         p.vvec_hash   = vvec_hash;
-        p.sig         = it->second.Sign(p.GetSignHash());
+        p.sig         = it->second.Sign(p.GetSignHash(pl.predecessor_quorum_hash)); // KDD-072 P-b2: payload view (zero = v1)
         pl.premit_commitments[p.proTxHash] = p;
         built++;
     }

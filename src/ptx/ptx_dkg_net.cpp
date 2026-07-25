@@ -184,6 +184,19 @@ const PTXDKGMember* FindMember(const PTXDKGSession& session, const uint256& proT
     return nullptr;
 }
 
+// KDD-072 P-b2: per-type sign-hash for the R4 envelope verify. Phase 0-3
+// preimages are session-independent; Phase 4 binds the RESOLVED session's
+// predecessor (the receiver's own view) — a premit signed over a different
+// rotation view fails R4 exactly as it fails Receive check 7. The overload set
+// exists because ProcessBatchT's call is templated over Msg and cannot pass an
+// argument for only one type; a new phase msg type without an overload here is
+// a COMPILE error, not a silent v1 fallback.
+uint256 SignHashOf(const PTXDKGPhase0Msg& m, const PTXDKGSession&)   { return m.GetSignHash(); }
+uint256 SignHashOf(const PTXDKGPhase1Msg& m, const PTXDKGSession&)   { return m.GetSignHash(); }
+uint256 SignHashOf(const PTXDKGPhase2Msg& m, const PTXDKGSession&)   { return m.GetSignHash(); }
+uint256 SignHashOf(const PTXDKGPhase3Msg& m, const PTXDKGSession&)   { return m.GetSignHash(); }
+uint256 SignHashOf(const PTXDKGPhase4Msg& m, const PTXDKGSession& s) { return m.GetSignHash(s.predecessor_quorum_hash); }
+
 } // anonymous namespace
 
 template <typename Msg>
@@ -247,7 +260,9 @@ void CPTXCeremonyTransport::ProcessBatchT(int phase, int invType, std::map<uint2
 
         // R4 — operator-key sig fails → drop + ban(100), never relayed
         // (handler :473-480).  The EXPENSIVE check, deliberately LAST.
-        if (!msg.sig.VerifyInsecure(member->pubKeyOperator, msg.GetSignHash())) {
+        // KDD-072 P-b2: per-type SignHashOf — Phase 4 verifies against the
+        // resolved session's predecessor view.
+        if (!msg.sig.VerifyInsecure(member->pubKeyOperator, SignHashOf(msg, *session))) {
             LogPrintf("PTX: transport reject phase=%d bad-sig %s peer=%d\n",
                       phase, member->proTxHash.ToString(), from);
             if (penaltyHook) penaltyHook(from, 100);

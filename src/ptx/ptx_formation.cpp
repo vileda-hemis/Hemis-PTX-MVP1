@@ -352,6 +352,12 @@ void StartFormationAtAnchor(const CBlockIndex* pindexNew,
                   anchorHash.ToString());
         return;
     }
+    // KDD-072 P-b2 — THE predecessor setter site (present-but-unfed): this
+    // fresh-formation path always sets zero. The P-b6 rotation trigger is the
+    // only future feeder of a non-zero value, and it must set it HERE, before
+    // the runner starts (the field feeds the Phase 4 sign-hash, the payload
+    // version, and the KDD-070 PENDING role).
+    session->predecessor_quorum_hash.SetNull();
     if (session->my_idx < 0) {
         // FULLY PASSIVE: no FORMING, no thread, no transport touch —
         // resolve() on this node keeps returning nullptr (R2 drop).

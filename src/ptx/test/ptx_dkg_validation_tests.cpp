@@ -103,18 +103,21 @@ static Quorum MakeQuorum(int n)
     return q;
 }
 
-// A premit signed by signSk over GetSignHash(), with the given inner proTxHash and
-// agreement fields.
+// A premit signed by signSk over GetSignHash(predecessor), with the given inner
+// proTxHash and agreement fields. Default zero predecessor = the fresh (v1)
+// preimage every existing row expects (KDD-072 P-b2 — test-helper default only;
+// the production method has no default by design).
 static PTXDKGPhase4Msg MakePremit(const uint256& inner, const uint256& qh,
                                   const uint8_t gpk[48], const uint256& vvec,
-                                  const CBLSSecretKey& signSk)
+                                  const CBLSSecretKey& signSk,
+                                  const uint256& predecessor = uint256())
 {
     PTXDKGPhase4Msg p;
     p.quorum_hash = qh;
     p.proTxHash   = inner;
     memcpy(p.group_pk_bytes, gpk, 48);
     p.vvec_hash   = vvec;
-    p.sig         = signSk.Sign(p.GetSignHash());
+    p.sig         = signSk.Sign(p.GetSignHash(predecessor));
     return p;
 }
 

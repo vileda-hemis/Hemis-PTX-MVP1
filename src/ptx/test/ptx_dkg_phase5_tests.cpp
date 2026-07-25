@@ -21,6 +21,7 @@
 #include "ptx/ptx_dkg.h"
 #include "ptx/ptx_bls.h"
 #include "ptx/ptx_quorum_store.h"   // KDD-070 P2: records + PTX_WarnMissingSharesForNode
+#include "evo/deterministicgms.h"   // KDD-072 P-b2: GM ptrs for the VerifyPremits harness
 #include "evo/evodb.h"              // KDD-070 P2: the in-memory evoDb from BasicTestingSetup
 #include "evo/specialtx_validation.h"
 #include "consensus/validation.h"
@@ -1883,6 +1884,247 @@ BOOST_AUTO_TEST_CASE(Pb1_GateStillRejectsV2)
 // distinguishable from every fill pattern; LE on the wire -> leading bytes 3412.
 // RED (inversion C): move READWRITE(obj.nVersion) after quorum_hash -> the
 // leading bytes are 0x22-fill -> fail.
+// ---------------------------------------------------------------------------
+// KDD-072 P-b2 — Phase 4 sign-hash predecessor binding (dormant; trigger P-b6)
+// ---------------------------------------------------------------------------
+
+// Wrap REAL ceremony members (genuine operator keys, genuine premits) as the
+// canonical quorum vector and run PTX_DKG_VerifyPremits over them — the
+// validation_tests MakeGM shape, but sourced from the fixture ceremony so the
+// §3 vectors are real signatures, not synthetic ones.
+static bool PTX_TEST_VerifyPremitsOverMembers(const std::vector<PTXDKGMember>& members,
+                                              const PTXDKGPayload& payload,
+                                              CValidationState& state)
+{
+    std::vector<CDeterministicGMCPtr> gms;
+    uint64_t id = 0;
+    for (const auto& m : members) {
+        auto dgm = std::make_shared<CDeterministicGM>(id++);
+        dgm->proTxHash = m.proTxHash;
+        auto st = std::make_shared<CDeterministicGMState>();
+        st->pubKeyOperator.Set(m.pubKeyOperator);
+        st->node_id = m.node_id;
+        dgm->pdgmState = st;
+        gms.push_back(dgm);
+    }
+    return PTX_DKG_VerifyPremits(gms, payload, state);
+}
+
+// (P-b2) fresh sign-hash golden. The hex was CAPTURED BY EXECUTION at pre-edit
+// HEAD (this row lands green against the parameterless pre-P-b2 GetSignHash
+// first; the P-b2 edit must reproduce it byte-for-byte for a zero predecessor).
+// Preimage: SHA256( quorum_hash[32] || proTxHash[32] || group_pk[48] ||
+// vvec_hash[32] ) = 144 bytes — a v1 sign-hash must not move by one bit.
+// RED (inversion): append the predecessor unconditionally (even when zero) ->
+// the fresh preimage becomes 176 bytes -> mismatch. Note this golden is the
+// ONLY row that catches a uniform preimage drift — sign and verify move
+// together everywhere else.
+BOOST_AUTO_TEST_CASE(Pb2_FreshSignHash_Golden)
+{
+    PTXDKGPhase4Msg m;
+    std::memset(m.quorum_hash.begin(), 0x22, 32);
+    std::memset(m.proTxHash.begin(), 0x55, 32);
+    std::memset(m.group_pk_bytes, 0x33, 48);
+    m.vvec_hash = QHk(0x44);
+    BOOST_CHECK_EQUAL(m.GetSignHash(uint256()).GetHex(),
+        "761090b80c3c5421e12e902929a2990aafb5bddddb96a16a44e22e8250b3aa3d");
+}
+
+// (P-b2) rotation sign-hash vector: SHA256 over the 176-byte preimage with the
+// predecessor appended LAST. Independently derived (sha256 of the fixed byte
+// pattern); no pre-edit truth exists for the v2 preimage — it is new.
+// RED (inversion): strip the predecessor from the preimage -> equals the fresh
+// hash instead.
+BOOST_AUTO_TEST_CASE(Pb2_RotationSignHash_Vector)
+{
+    PTXDKGPhase4Msg m;
+    std::memset(m.quorum_hash.begin(), 0x22, 32);
+    std::memset(m.proTxHash.begin(), 0x55, 32);
+    std::memset(m.group_pk_bytes, 0x33, 48);
+    m.vvec_hash = QHk(0x44);
+    BOOST_CHECK_EQUAL(m.GetSignHash(QHk(0x77)).GetHex(),
+        "d75ea8cfc618d0c66df57dcb44e40b7170fc7fbf110fee31377d6a88a25de506");
+    // and the two preimages are distinct (predecessor genuinely bound):
+    BOOST_CHECK(m.GetSignHash(QHk(0x77)) != m.GetSignHash(uint256()));
+}
+
+// (P-b2) ★ THE §3 HOLE TEST — a legitimately-formed, legitimately-premitted
+// FORMATION cannot be re-cast as a rotation. CONTROL first (the same payload
+// passes VerifyPremits before the re-cast — everything else is valid), then the
+// ATTACK (two-field re-cast only: nVersion + predecessor). VerifyPremits is
+// called DIRECTLY (pure fn) so the version gate cannot mask the property, and
+// the reject reason must be EXACTLY ptxdkg-bad-premit-sig — V7a-V7f all pass by
+// construction (same premits, same quorum, same keys; quorum_hash/group_pk/vvec
+// untouched by the re-cast), so V7g is the isolated cause.
+// RED (inversion A): strip the predecessor from V7g's recompute -> the attack
+// payload VERIFIES (signed v1, checked v1) -> "attack succeeded" -> fail.
+BOOST_AUTO_TEST_CASE(Pb2_HoleTest_RecastFormationFails)
+{
+    std::map<uint256, CBLSSecretKey> key_map;
+    std::vector<PTXDKGSession> sessions;
+    PTX_TEST_ClearSkShareSlot();
+    AdvanceToFinalize(key_map, sessions);
+    CMutableTransaction mtx = PTX_DKG_BuildPTXDKGTx(sessions[0], 1000);
+    PTXDKGPayload payload;
+    BOOST_REQUIRE(GetTxPayload(mtx, payload));
+
+    // The canonical quorum11 as VerifyPremits wants it: the session's members
+    // materialized as DGM ptrs is a validation-side concern (P-b3); here the
+    // pure function only needs proTxHash->operator-key agreement, which the
+    // test harness provides via the session member set.
+    std::vector<PTXDKGMember> members = sessions[0].members;
+
+    // CONTROL: the genuine v1 payload verifies (proves the vectors are valid
+    // before the re-cast — the isolation baseline).
+    {
+        CValidationState st;
+        BOOST_REQUIRE_MESSAGE(PTX_TEST_VerifyPremitsOverMembers(members, payload, st),
+            "control failed: genuine formation premits did not verify — vectors invalid");
+    }
+
+    // ATTACK: two-field re-cast. Nothing else changes.
+    payload.nVersion = PTXDKGPayload::ROTATION_VERSION;
+    payload.predecessor_quorum_hash = QHk(0xAA);
+    {
+        CValidationState st;
+        const bool verified = PTX_TEST_VerifyPremitsOverMembers(members, payload, st);
+        BOOST_CHECK_MESSAGE(!verified,
+            "attack succeeded: formation premits verified as a rotation — the "
+            "KDD-072 §3 unsigned-predecessor hole is OPEN");
+        BOOST_CHECK_EQUAL(st.GetRejectReason(), "ptxdkg-bad-premit-sig");
+    }
+}
+
+// (P-b2) genuine rotation verifies + marker-strip fails (KDD-072 §7 second
+// disposition). Premits SIGNED over a predecessor (all 11 sessions share the
+// view — the honest-rotation shape) -> the matching v2 payload PASSES; the
+// marker-stripped variant (predecessor zeroed, nVersion=1 — an attacker hiding
+// the rotation) FAILS V7g (signed 176-byte preimage, checked 144).
+// RED (inversion A strips V7g -> stripped variant passes; inversion B strips
+// the Build side -> the genuine-pass limb fails).
+BOOST_AUTO_TEST_CASE(Pb2_GenuineRotation_VerifiesAndMarkerStripFails)
+{
+    std::map<uint256, CBLSSecretKey> key_map;
+    std::vector<PTXDKGSession> sessions;
+    PTX_TEST_ClearSkShareSlot();
+    AdvanceToPremit(key_map, sessions);
+
+    const uint256 pred = QHk(0x66);
+    for (int i = 0; i < 11; i++)
+        sessions[i].predecessor_quorum_hash = pred;   // shared honest view
+
+    for (int i = 0; i < 11; i++) {
+        BOOST_REQUIRE(PTX_DKG_ComputeSkShare(sessions[i]));
+        BOOST_REQUIRE(PTX_DKG_ComputeGroupPk(sessions[i]));
+    }
+    std::vector<PTXDKGPhase4Msg> p4msgs(11);
+    for (int s = 0; s < 11; s++)
+        p4msgs[s] = PTX_DKG_BuildPhase4Msg(sessions[s], key_map.at(PtxOf(sessions, s)));
+    for (int r = 0; r < 11; r++)
+        for (int s = 0; s < 11; s++)
+            BOOST_REQUIRE(PTX_DKG_ReceivePhase4Msg(sessions[r], p4msgs[s]));
+    for (int i = 0; i < 11; i++)
+        BOOST_REQUIRE(PTX_DKG_ClosePhase4(sessions[i]));
+
+    CMutableTransaction mtx = PTX_DKG_BuildPTXDKGTx(sessions[0], 1000);
+    PTXDKGPayload payload;
+    BOOST_REQUIRE(GetTxPayload(mtx, payload));
+    const uint16_t rot = PTXDKGPayload::ROTATION_VERSION; // local avoids ODR-use
+    BOOST_CHECK_EQUAL(payload.nVersion, rot);             // Phase-5 consumer emitted v2
+    BOOST_CHECK(payload.predecessor_quorum_hash == pred);
+
+    std::vector<PTXDKGMember> members = sessions[0].members;
+    {   // genuine rotation: premits attest this predecessor -> verifies
+        CValidationState st;
+        BOOST_CHECK(PTX_TEST_VerifyPremitsOverMembers(members, payload, st));
+    }
+    {   // marker-strip: hide the rotation -> V7g must fail
+        PTXDKGPayload stripped = payload;
+        stripped.nVersion = PTXDKGPayload::CURRENT_VERSION;
+        stripped.predecessor_quorum_hash.SetNull();
+        CValidationState st;
+        BOOST_CHECK_MESSAGE(!PTX_TEST_VerifyPremitsOverMembers(members, stripped, st),
+            "marker-strip succeeded: rotation premits verified as a plain formation");
+        BOOST_CHECK_EQUAL(st.GetRejectReason(), "ptxdkg-bad-premit-sig");
+    }
+}
+
+// (P-b2) Receive check-7 divergence: a peer signing over a DIFFERENT predecessor
+// than my session's view is rejected at the ceremony hot path (the transport R4
+// twin verifies the same preimage via SignHashOf). Control: a matching-view
+// peer is accepted. RED (inversion C): strip the predecessor from Receive
+// check 7 -> the divergent premit is accepted -> fail.
+BOOST_AUTO_TEST_CASE(Pb2_Receive_DivergentPredecessorRejected)
+{
+    std::map<uint256, CBLSSecretKey> key_map;
+    std::vector<PTXDKGSession> sessions;
+    PTX_TEST_ClearSkShareSlot();
+    AdvanceToPremit(key_map, sessions);
+
+    // My view: rotation of 0x66. Peers: one matching, one divergent (0x99).
+    sessions[0].predecessor_quorum_hash = QHk(0x66);
+    sessions[1].predecessor_quorum_hash = QHk(0x66);   // matching peer
+    sessions[2].predecessor_quorum_hash = QHk(0x99);   // divergent peer
+
+    for (int i = 0; i < 3; i++) {
+        BOOST_REQUIRE(PTX_DKG_ComputeSkShare(sessions[i]));
+        BOOST_REQUIRE(PTX_DKG_ComputeGroupPk(sessions[i]));
+    }
+    PTXDKGPhase4Msg match = PTX_DKG_BuildPhase4Msg(sessions[1], key_map.at(PtxOf(sessions, 1)));
+    PTXDKGPhase4Msg diverge = PTX_DKG_BuildPhase4Msg(sessions[2], key_map.at(PtxOf(sessions, 2)));
+
+    BOOST_CHECK(PTX_DKG_ReceivePhase4Msg(sessions[0], match));     // same view: accepted
+    BOOST_CHECK(!PTX_DKG_ReceivePhase4Msg(sessions[0], diverge));  // divergent: rejected
+    BOOST_CHECK_EQUAL(sessions[0].phase4_premit_msgs.count(PtxOf(sessions, 2)), 0u);
+}
+
+// (P-b2) Phase-5 dormant consumers, fresh path UNCHANGED + rotation path feeds
+// KDD-070: ClosePhase5 on a fresh session stores CURRENT and emits v1 (the
+// pre-P-b2 behaviour, byte-guarded elsewhere); on a rotation session it stores
+// role=PENDING and emits v2+predecessor. RED (inversion D): remove the role/
+// version derivation -> the rotation limb stores CURRENT / emits v1 -> fail.
+BOOST_AUTO_TEST_CASE(Pb2_ClosePhase5_RotationStoresPendingEmitsV2)
+{
+    std::map<uint256, CBLSSecretKey> key_map;
+    std::vector<PTXDKGSession> sessions;
+    PTX_TEST_ClearSkShareSlot();
+    AdvanceToPremit(key_map, sessions);
+
+    const uint256 pred = QHk(0x66);
+    for (int i = 0; i < 11; i++)
+        sessions[i].predecessor_quorum_hash = pred;
+    for (int i = 0; i < 11; i++) {
+        BOOST_REQUIRE(PTX_DKG_ComputeSkShare(sessions[i]));
+        BOOST_REQUIRE(PTX_DKG_ComputeGroupPk(sessions[i]));
+    }
+    std::vector<PTXDKGPhase4Msg> p4msgs(11);
+    for (int s = 0; s < 11; s++)
+        p4msgs[s] = PTX_DKG_BuildPhase4Msg(sessions[s], key_map.at(PtxOf(sessions, s)));
+    for (int r = 0; r < 11; r++)
+        for (int s = 0; s < 11; s++)
+            BOOST_REQUIRE(PTX_DKG_ReceivePhase4Msg(sessions[r], p4msgs[s]));
+    for (int i = 0; i < 11; i++)
+        BOOST_REQUIRE(PTX_DKG_ClosePhase4(sessions[i]));
+
+    CMutableTransaction tx_out;
+    // AddAndRelay inside ClosePhase5 will REFUSE the v2 commitment (the gate
+    // still rejects v2 until P-b3) — logged, non-fatal by design; the store
+    // and the returned tx are what this row asserts.
+    BOOST_REQUIRE(PTX_DKG_ClosePhase5(sessions[0], 1000, tx_out));
+
+    {   // role: PENDING, not CURRENT (KDD-070 §8 store-pending at FINALIZE)
+        LOCK(cs_ptx_my_bls_sk);
+        auto it = g_ptx_my_shares.find(sessions[0].quorum_hash);
+        BOOST_REQUIRE(it != g_ptx_my_shares.end());
+        BOOST_CHECK(it->second.role == PTXShareRole::PENDING);
+    }
+    PTXDKGPayload out;
+    BOOST_REQUIRE(GetTxPayload(CMutableTransaction(tx_out), out));
+    const uint16_t rot = PTXDKGPayload::ROTATION_VERSION; // local avoids ODR-use
+    BOOST_CHECK_EQUAL(out.nVersion, rot);
+    BOOST_CHECK(out.predecessor_quorum_hash == pred);
+}
+
 BOOST_AUTO_TEST_CASE(Pb1_VersionFieldSerializesFirst)
 {
     PTXDKGPayload in;

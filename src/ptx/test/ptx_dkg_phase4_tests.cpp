@@ -504,7 +504,10 @@ BOOST_AUTO_TEST_CASE(P4_RejectBadGroupPkDecompress)
 
     // Corrupt group_pk_bytes and re-sign so sig check passes but decompress fails.
     std::memset(msg.group_pk_bytes, 0xFF, 48); // invalid compressed G1 point
-    msg.sig = key_map.at(PtxOf(sessions, 0)).Sign(msg.GetSignHash());
+    // KDD-072 P-b2: sign over the receiver's (fresh, zero-predecessor) view so
+    // check 7 passes and the decompress gate (check 8) is what rejects.
+    msg.sig = key_map.at(PtxOf(sessions, 0)).Sign(
+        msg.GetSignHash(sessions[1].predecessor_quorum_hash));
 
     BOOST_CHECK(!PTX_DKG_ReceivePhase4Msg(sessions[1], msg));
     BOOST_CHECK_EQUAL(sessions[1].phase4_premit_msgs.count(PtxOf(sessions, 0)), 0u);

@@ -210,8 +210,12 @@ bool PTX_DKG_VerifyPremits(const std::vector<CDeterministicGMCPtr>& quorum11,
 
         // V7g: chiabls BasicSchemeMPL basic verify over the premit sign-hash — the
         // exact path the ceremony sign/receive use (NOT VerifySecureAggregated;
-        // PTX has no aggregate sig).
-        if (!p4.sig.VerifyInsecure(pk, p4.GetSignHash()))
+        // PTX has no aggregate sig). KDD-072 P-b2: the PAYLOAD's predecessor view
+        // — for a v1 payload the field is zero (never serialized) and the preimage
+        // is the pre-P-b2 144 bytes; for a rotation the premits must have been
+        // SIGNED over this exact predecessor or they fail here (§3: a formation's
+        // premits cannot be re-cast as a rotation).
+        if (!p4.sig.VerifyInsecure(pk, p4.GetSignHash(payload.predecessor_quorum_hash)))
             return state.DoS(100, false, REJECT_INVALID, "ptxdkg-bad-premit-sig");
     }
 
@@ -1060,11 +1064,18 @@ bool PTX_DKG_ClosePhase3(PTXDKGSession& session)
 }
 
 // ---------------------------------------------------------------------------
-// PTXDKGPhase4Msg::GetSignHash
-// SHA256( quorum_hash[32] || proTxHash[32] || group_pk_bytes[48] || vvec_hash[32] )
+// PTXDKGPhase4Msg::GetSignHash — KDD-072 P-b2 (§3 fix)
+// predecessor zero:     SHA256( quorum_hash[32] || proTxHash[32] ||
+//                               group_pk_bytes[48] || vvec_hash[32] )   — 144 B,
+//                       byte-identical to the pre-P-b2 preimage (golden-guarded
+//                       by Pb2_FreshSignHash_Golden).
+// predecessor non-zero: the above || predecessor_quorum_hash[32]        — 176 B.
+// Append-iff-non-zero: the fresh path takes no layout change; distinct lengths
+// give clean domain separation. See the header contract for the four callers
+// and their views.
 // ---------------------------------------------------------------------------
 
-uint256 PTXDKGPhase4Msg::GetSignHash() const
+uint256 PTXDKGPhase4Msg::GetSignHash(const uint256& predecessor) const
 {
     uint256 result;
     CSHA256 h;
@@ -1072,6 +1083,9 @@ uint256 PTXDKGPhase4Msg::GetSignHash() const
     h.Write(proTxHash.begin(), proTxHash.size());
     h.Write(group_pk_bytes, 48);
     h.Write(vvec_hash.begin(), vvec_hash.size());
+    if (!predecessor.IsNull()) {
+        h.Write(predecessor.begin(), predecessor.size());
+    }
     h.Finalize(result.begin());
     return result;
 }
@@ -1197,7 +1211,9 @@ PTXDKGPhase4Msg PTX_DKG_BuildPhase4Msg(const PTXDKGSession& session,
     }
     vh.Finalize(msg.vvec_hash.begin());
 
-    msg.sig = operator_sk.Sign(msg.GetSignHash());
+    // KDD-072 P-b2: sign over the SESSION's predecessor view (zero = fresh =
+    // pre-P-b2 preimage; non-zero = this member attests "rotation of X").
+    msg.sig = operator_sk.Sign(msg.GetSignHash(session.predecessor_quorum_hash));
     return msg;
 }
 
@@ -1238,8 +1254,10 @@ bool PTX_DKG_ReceivePhase4Msg(PTXDKGSession& session, const PTXDKGPhase4Msg& msg
     // 6
     if (session.phase4_premit_msgs.count(msg.proTxHash))
         return false;
-    // 7
-    if (!msg.sig.VerifyInsecure(sender->pubKeyOperator, msg.GetSignHash()))
+    // 7 — KDD-072 P-b2: verified against THIS session's predecessor view. A
+    // peer signing over a different rotation view (or none) fails here — the
+    // safe direction: divergent views cannot co-premit.
+    if (!msg.sig.VerifyInsecure(sender->pubKeyOperator, msg.GetSignHash(session.predecessor_quorum_hash)))
         return false;
     // 8
     blst_p1_affine tmp;
@@ -1376,7 +1394,15 @@ CMutableTransaction PTX_DKG_BuildPTXDKGTx(const PTXDKGSession& session,
     const uint256& my_proTxHash = session.members[session.my_idx].proTxHash;
 
     PTXDKGPayload payload;
-    payload.nVersion         = PTXDKGPayload::CURRENT_VERSION; // KDD-072 P-a — EXPLICIT, not default-reliant
+    // KDD-072 P-a/P-b2 — EXPLICIT, not default-reliant. Version and predecessor
+    // both derive from the SAME session field the Phase 4 premits were signed
+    // over (one source, no skew): fresh -> v1 (byte-identical emission, no
+    // predecessor serialized); rotation -> v2 + the attested predecessor.
+    // DORMANT in P-b2: nothing feeds a non-zero predecessor until P-b6.
+    payload.nVersion         = session.predecessor_quorum_hash.IsNull()
+                                   ? PTXDKGPayload::CURRENT_VERSION
+                                   : PTXDKGPayload::ROTATION_VERSION;
+    payload.predecessor_quorum_hash = session.predecessor_quorum_hash;
     payload.quorum_hash      = session.quorum_hash;
     payload.formation_height = formation_height;
 
@@ -1444,7 +1470,14 @@ bool PTX_DKG_ClosePhase5(PTXDKGSession& session,
     if (session.phase != PTXDKGPhase::FINALIZE)
         return false;
 
-    if (!PTX_DKG_StoreSkShare(session, formation_height)) {
+    // KDD-072 P-b2 / KDD-070 §8: a rotation successor's share is stored PENDING
+    // at FINALIZE (promoted at the successor's block-connect, P-b4/P-b6); a
+    // fresh formation stores CURRENT as before. Derived from the same session
+    // field as the sign-hash and the payload version. DORMANT in P-b2.
+    const PTXShareRole role = session.predecessor_quorum_hash.IsNull()
+                                  ? PTXShareRole::CURRENT
+                                  : PTXShareRole::PENDING;
+    if (!PTX_DKG_StoreSkShare(session, formation_height, role)) {
         session.phase = PTXDKGPhase::ABORTED;
         return false;
     }
