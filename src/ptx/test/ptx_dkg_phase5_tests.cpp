@@ -23,6 +23,7 @@
 #include "ptx/ptx_quorum_store.h"   // KDD-070 P2: records + PTX_WarnMissingSharesForNode
 #include "evo/deterministicgms.h"   // KDD-072 P-b2: GM ptrs for the VerifyPremits harness
 #include "ptx/ptx_formation.h"      // KDD-072 P-b3a: driver rotation wrapper
+#include "chainparams.h"          // KDD-072 P-b6a: ptxFormation params for the due-rule stub
 #include "evo/evodb.h"              // KDD-070 P2: the in-memory evoDb from BasicTestingSetup
 #include "evo/specialtx_validation.h"
 #include "consensus/validation.h"
@@ -2627,6 +2628,125 @@ BOOST_AUTO_TEST_CASE(Pb5_V12d_RejectsSecondSuccessor)
         CValidationState st;
         BOOST_CHECK(store.CheckPredecessorUnrotated(pred, st));
     }
+}
+
+// ---------------------------------------------------------------------------
+// KDD-072 P-b6a — ceremony-start rotation wiring (dormant: due-rule stubbed)
+// ---------------------------------------------------------------------------
+
+// (P-b6a) ★ THE DORMANCY PIN: the due-rule stub returns due=false for EVERY
+// anchor, so no rotation can start on any node. While this holds,
+// StartFormationAtAnchor's else-arm is the only reachable path and fresh
+// formation behaviour is byte-identical to pre-P-b6a.
+// RED (inversion A): make the stub return due=true -> this row fails, and the
+// whole rotation path becomes live — which is exactly what P-b6b will do
+// deliberately, with a policy, not a constant.
+BOOST_AUTO_TEST_CASE(Pb6a_RotationDue_StubbedDisabled)
+{
+    BOOST_REQUIRE(evoDb);
+    CPTXQuorumStore store(*evoDb);
+    const Consensus::PTXFormationParams& params = Params().GetConsensus().ptxFormation;
+    // Every input shape the production call site can present — all disabled.
+    const PTXRotationDecision d = PTX_Formation_RotationDueAt(nullptr, store, params);
+    BOOST_CHECK(!d.due);
+    BOOST_CHECK(d.predecessor_quorum_hash.IsNull());
+}
+
+// (P-b6a) GIVEN a rotation decision, the ceremony-start SEQUENCE the branch
+// performs is correct end-to-end: resolver members -> InitSession -> the
+// predecessor bound on the session -> ClosePhase5 derives role=PENDING and
+// emits a v2 payload naming the predecessor. This is the branch's body proven
+// as a composition (the `if` itself needs cs_main + a real chain — ODC-032,
+// fleet-owed like every prior connect-path). The members are asserted EQUAL to
+// the shared resolver's output, so the ceremony runs over exactly what V12 and
+// the store guard will reconstruct.
+// RED (inversion B): bind SetNull instead of the predecessor -> the session is
+// fresh -> v1 payload, no predecessor, role CURRENT -> the wiring is inert.
+BOOST_AUTO_TEST_CASE(Pb6a_GivenDue_WiringFeedsPendingAndV2)
+{
+    Pb3aWorld w = Pb3aMakeWorld();
+    PTX_TEST_ClearSkShareSlot();
+
+    // What the branch does, in order: resolve same-set members via the SHARED
+    // resolver (P-b3a), then bind the predecessor onto the session.
+    std::vector<PTXDKGMember> rotMembers;
+    BOOST_REQUIRE(PTX_Formation_SelectRotationMembers(w.rec, w.list, w.list, rotMembers));
+    {   // == the resolver's own output (the KDD-073 shared-code property)
+        std::vector<CDeterministicGMCPtr> q;
+        std::string err;
+        BOOST_REQUIRE(PTX_DKG_ResolveRotationQuorum(w.rec, w.list, w.list, q, err));
+        const std::vector<PTXDKGMember> direct = PTX_DKG_MembersFromQuorum(q);
+        BOOST_REQUIRE_EQUAL(rotMembers.size(), direct.size());
+        for (size_t i = 0; i < rotMembers.size(); i++) {
+            BOOST_CHECK(rotMembers[i].proTxHash == direct[i].proTxHash);
+            BOOST_CHECK(rotMembers[i].pubKeyOperator == direct[i].pubKeyOperator);
+        }
+    }
+
+    // Drive the 11 same-set members through a REAL ceremony with the
+    // predecessor bound — the rotation ceremony P-b6b's trigger will start.
+    const uint256 rotAnchor = QHk(0xE7);
+    std::vector<PTXDKGSession> sessions(11);
+    for (int i = 0; i < 11; i++) {
+        BOOST_REQUIRE(PTX_DKG_InitSession(sessions[i], rotMembers, rotAnchor,
+                                          rotMembers[i].proTxHash));
+        sessions[i].predecessor_quorum_hash = w.rec.quorum_hash;  // the branch's binding
+        BOOST_REQUIRE(PTX_DKG_GenerateLocalContrib(sessions[i]));
+    }
+    std::vector<PTXDKGPhase0Msg> p0(11);
+    for (int i = 0; i < 11; i++)
+        p0[i] = PTX_DKG_BuildPhase0Msg(sessions[i], w.sks.at(rotMembers[i].proTxHash));
+    for (int r = 0; r < 11; r++)
+        for (int t = 0; t < 11; t++)
+            BOOST_REQUIRE(PTX_DKG_ReceivePhase0Msg(sessions[r], p0[t]));
+    for (int i = 0; i < 11; i++) BOOST_REQUIRE(PTX_DKG_ClosePhase0(sessions[i]));
+    std::vector<PTXDKGPhase1Msg> p1(11);
+    for (int i = 0; i < 11; i++)
+        p1[i] = PTX_DKG_BuildPhase1Msg(sessions[i], w.sks.at(rotMembers[i].proTxHash));
+    for (int r = 0; r < 11; r++)
+        for (int t = 0; t < 11; t++)
+            BOOST_REQUIRE(PTX_DKG_ReceivePhase1Msg(sessions[r], p1[t]));
+    // Decrypt from EVERY sender incl. self, then close each phase in its own
+    // pass across all sessions — the fixture's proven order (AdvanceToComplaint
+    // / AdvanceToPremit); ComputeSkShare's C6 completeness check requires a
+    // received share for every effective-QUAL member, self included.
+    for (int r = 0; r < 11; r++)
+        for (int t = 0; t < 11; t++)
+            PTX_DKG_DecryptMyShare(sessions[r], rotMembers[t].proTxHash,
+                                   w.sks.at(rotMembers[r].proTxHash));
+    for (int i = 0; i < 11; i++) BOOST_REQUIRE(PTX_DKG_ClosePhase1(sessions[i]));
+    for (int i = 0; i < 11; i++) BOOST_REQUIRE(PTX_DKG_ClosePhase2(sessions[i]));
+    for (int i = 0; i < 11; i++) BOOST_REQUIRE(PTX_DKG_ClosePhase3(sessions[i]));
+    for (int i = 0; i < 11; i++) {
+        BOOST_REQUIRE(sessions[i].phase == PTXDKGPhase::PREMIT);
+        BOOST_REQUIRE(PTX_DKG_ComputeSkShare(sessions[i]));
+        BOOST_REQUIRE(PTX_DKG_ComputeGroupPk(sessions[i]));
+    }
+    std::vector<PTXDKGPhase4Msg> p4(11);
+    for (int i = 0; i < 11; i++)
+        p4[i] = PTX_DKG_BuildPhase4Msg(sessions[i], w.sks.at(rotMembers[i].proTxHash));
+    for (int r = 0; r < 11; r++)
+        for (int t = 0; t < 11; t++)
+            BOOST_REQUIRE(PTX_DKG_ReceivePhase4Msg(sessions[r], p4[t]));
+    for (int i = 0; i < 11; i++) BOOST_REQUIRE(PTX_DKG_ClosePhase4(sessions[i]));
+
+    CMutableTransaction tx_out;
+    BOOST_REQUIRE(PTX_DKG_ClosePhase5(sessions[0], 1200, tx_out));
+
+    // ★ The payoff: a REAL rotation ceremony stores PENDING (so the connect-time
+    // Promote finally has something to promote — the drill's P3 boundary) and
+    // emits v2 naming the predecessor.
+    {
+        LOCK(cs_ptx_my_bls_sk);
+        auto it = g_ptx_my_shares.find(rotAnchor);
+        BOOST_REQUIRE(it != g_ptx_my_shares.end());
+        BOOST_CHECK(it->second.role == PTXShareRole::PENDING);
+    }
+    PTXDKGPayload out;
+    BOOST_REQUIRE(GetTxPayload(CMutableTransaction(tx_out), out));
+    const uint16_t rot = PTXDKGPayload::ROTATION_VERSION; // local avoids ODR-use
+    BOOST_CHECK_EQUAL(out.nVersion, rot);
+    BOOST_CHECK(out.predecessor_quorum_hash == w.rec.quorum_hash);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

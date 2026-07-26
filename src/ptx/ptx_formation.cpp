@@ -93,6 +93,23 @@ bool PTX_Formation_SelectAtAnchor(const CBlockIndex* pindexAnchor,
     return membersOut.size() == 11;
 }
 
+PTXRotationDecision PTX_Formation_RotationDueAt(
+        const CBlockIndex* pindexAnchor,
+        CPTXQuorumStore& store,
+        const Consensus::PTXFormationParams& params)
+{
+    // ★ P-b6a STUB — DISABLED BY CONSTRUCTION. Returns {due=false} for every
+    // anchor, so no rotation ceremony can start on any node. P-b6b replaces
+    // THIS BODY with the trigger policy (Option A boundary-lockstep / Option B
+    // deadline+drift / the tie-break middle — an open decision, deliberately
+    // not taken here). The ceremony-start path below is fully wired and inert
+    // until this returns true.
+    (void)pindexAnchor;
+    (void)store;
+    (void)params;
+    return PTXRotationDecision{};   // due=false, predecessor null
+}
+
 bool PTX_Formation_SelectRotationMembers(
         const CPTXQuorumRecord& predecessor,
         const CDeterministicGMList& listAtRotationAnchor,
@@ -314,6 +331,12 @@ void StartFormationAtAnchor(const CBlockIndex* pindexNew,
     std::vector<PTXDKGMember> members;
     uint256 anchorHash;
     int anchorHeight = 0;
+    // KDD-072 P-b6a: null on the fresh path (the overwhelming majority, and the
+    // ONLY path reachable while RotationDueAt is stubbed false); set to the
+    // predecessor when a rotation is due. Bound into the session below — that
+    // one field then feeds the Phase-4 sign-hash (P-b2), the v2 payload +
+    // predecessor (P-b2), and the KDD-070 PENDING share role (ClosePhase5).
+    uint256 rotationPredecessor;
     {
         LOCK(cs_main);
         const CBlockIndex* pindexAnchor =
@@ -357,11 +380,49 @@ void StartFormationAtAnchor(const CBlockIndex* pindexNew,
             return;
         }
 
-        // Selection at the anchor (SG-1a).  pool < 11 => deterministic skip.
-        if (!PTX_Formation_SelectAtAnchor(pindexAnchor, members)) {
-            LogPrintf("PTX formation: pool below threshold at anchor %s — deterministic skip\n",
-                      anchorHash.ToString());
-            return;
+        // KDD-072 P-b6a — THE ROTATION BRANCH. The decision is P-b6b's policy;
+        // the stub returns due=false today, so the else-arm below is the only
+        // reachable path and the fresh behaviour is byte-identical to pre-P-b6a.
+        const PTXRotationDecision decision =
+                PTX_Formation_RotationDueAt(pindexAnchor, *ptxQuorumStore, params);
+        if (decision.due) {
+            // ROTATION: members come from the predecessor record through the
+            // SHARED resolver (P-b3a) — the identical resolution V12 and the
+            // store connect guard run, so this ceremony produces exactly the
+            // membership the chain will validate. Any unresolvable member or
+            // ProUpReg'd key means the rotation must NOT start (reject-not-
+            // exclude, one policy for all sites).
+            CPTXQuorumRecord predRec;
+            if (!ptxQuorumStore->GetQuorumRecord(decision.predecessor_quorum_hash, predRec)) {
+                LogPrintf("PTX formation: rotation due for %s but no record — not starting\n",
+                          decision.predecessor_quorum_hash.ToString());
+                return;
+            }
+            const CBlockIndex* pindexPred = LookupBlockIndex(predRec.quorum_hash);
+            if (pindexPred == nullptr) {
+                LogPrintf("PTX formation: rotation predecessor anchor %s not found — not starting\n",
+                          predRec.quorum_hash.ToString());
+                return;
+            }
+            const CDeterministicGMList listRot =
+                    deterministicGMManager->GetListForBlock(pindexAnchor);
+            const CDeterministicGMList listForm =
+                    deterministicGMManager->GetListForBlock(pindexPred);
+            if (!PTX_Formation_SelectRotationMembers(predRec, listRot, listForm, members)) {
+                // SelectRotationMembers logs the specific member/key reason.
+                return;
+            }
+            rotationPredecessor = decision.predecessor_quorum_hash;
+            LogPrintf("PTX formation: ROTATION of %s at anchor %s — %d same-set members\n",
+                      rotationPredecessor.ToString(), anchorHash.ToString(), (int)members.size());
+        } else {
+            // FRESH FORMATION (unchanged): selection at the anchor (SG-1a).
+            // pool < 11 => deterministic skip.
+            if (!PTX_Formation_SelectAtAnchor(pindexAnchor, members)) {
+                LogPrintf("PTX formation: pool below threshold at anchor %s — deterministic skip\n",
+                          anchorHash.ToString());
+                return;
+            }
         }
     }
 
@@ -375,12 +436,13 @@ void StartFormationAtAnchor(const CBlockIndex* pindexNew,
                   anchorHash.ToString());
         return;
     }
-    // KDD-072 P-b2 — THE predecessor setter site (present-but-unfed): this
-    // fresh-formation path always sets zero. The P-b6 rotation trigger is the
-    // only future feeder of a non-zero value, and it must set it HERE, before
-    // the runner starts (the field feeds the Phase 4 sign-hash, the payload
-    // version, and the KDD-070 PENDING role).
-    session->predecessor_quorum_hash.SetNull();
+    // KDD-072 P-b2 setter site, FED by P-b6a's rotation branch above: null on
+    // the fresh path (and always, while RotationDueAt is stubbed false), the
+    // predecessor when a rotation is due. This single field is the whole
+    // rotation binding — everything downstream reads it and needed NO change:
+    // the Phase-4 sign-hash (P-b2), the v2 payload + predecessor (P-b2), and
+    // the KDD-070 PENDING share role at ClosePhase5.
+    session->predecessor_quorum_hash = rotationPredecessor;
     if (session->my_idx < 0) {
         // FULLY PASSIVE: no FORMING, no thread, no transport touch —
         // resolve() on this node keeps returning nullptr (R2 drop).

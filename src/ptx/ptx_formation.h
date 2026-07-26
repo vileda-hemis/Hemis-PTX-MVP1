@@ -85,6 +85,38 @@ bool PTX_Formation_SelectRotationMembers(
         std::vector<PTXDKGMember>& membersOut);
 
 // ---------------------------------------------------------------------------
+// KDD-072 P-b6a — the ROTATION DECISION seam (STUBBED DISABLED).
+//
+// "Is a rotation due at this anchor, and of which quorum?" P-b6a wires the
+// ceremony-start path that CONSUMES this answer; the answer itself is P-b6b's
+// trigger POLICY. The stub returns {due=false} unconditionally, so NO rotation
+// fires autonomously at HEAD — the whole rotation path is dormant behind this
+// one function, exactly as the predecessor field was dormant behind its setter.
+//
+// ★ The signature is the REAL one so P-b6b fills the BODY, not the call site:
+// (anchor, store, params) is everything any of the candidate policies needs —
+// age from the record (formation_height/mined_height, both fed), the ACTIVE set
+// from the store, and N from params. Option B (deadline/stagger) would
+// additionally need a drift_offset producer; Option A (boundary lockstep) and
+// the tie-break middle need nothing further.
+//
+// ★ NOT CONSENSUS: V12 validates a rotation's CORRECTNESS (predecessor exists,
+// ACTIVE as-of, same-set resolve, uniqueness) and NEVER its timing — verified
+// from source at the P-b6 recon. A node that decides "due" early merely
+// produces a valid rotation early; it cannot split the chain. That is what
+// lets this policy stay node-local and simple.
+// ---------------------------------------------------------------------------
+struct PTXRotationDecision {
+    bool    due{false};
+    uint256 predecessor_quorum_hash;  // meaningful only when due
+};
+
+PTXRotationDecision PTX_Formation_RotationDueAt(
+        const CBlockIndex* pindexAnchor,
+        CPTXQuorumStore& store,
+        const Consensus::PTXFormationParams& params);
+
+// ---------------------------------------------------------------------------
 // W2.2 SG-1b-i — the pure schedule core (boundary + anchor). PURITY IS
 // ENFORCED BY SIGNATURE: (height/pindex, params) in, (fires?, anchor) out —
 // no wall-clock, no FORMING reads, no fInitialDownload parameter (the IBD
