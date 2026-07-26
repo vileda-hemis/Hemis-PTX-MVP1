@@ -2178,6 +2178,30 @@ semantics), ODC-025 (cadence N, open).
 
 ---
 
+**ODC-045 (2026-07-26). ★ THE CAN-NEVER-ROTATE HOLE — permanent member departure defeats rotation permanently. A SECURITY-PROPERTY GAP, disposition OPEN.**
+
+**Substance.** P-b3a's `PTX_DKG_ResolveRotationQuorum` applies **reject-not-exclude**: if any predecessor member is absent from the DGM list at the rotation anchor — **deregistered, collateral spent, or operator key changed (ProUpReg)** — the **whole rotation is rejected**. P-b6a's driver propagates that refusal by simply not starting the ceremony (`if (!PTX_Formation_SelectRotationMembers(...)) return;`). Together they create a state **no existing trigger catches**:
+- A quorum that **permanently** loses a member **can NEVER rotate.** Every boundary `RotationDueAt` reports due; every boundary the resolver rejects; the ceremony never starts — **indefinitely**, logging a failed rotation each time.
+- It **keeps signing** (if >= t of its in_qual remain available), so it is **NOT idle** -> **KDD-074 retirement will not remove it**.
+- It is **not below t**, so **§7.3/KDD-047 disband will not either** (even once built).
+- ★ **It never refreshes its key -> an UNBOUNDED key-compromise window.** This defeats KDD-045's core security purpose: the rotation interval is supposed to bound how long a stolen share stays useful (*"shares stolen before a rotation are shares of a DEAD key — worthless"*). For a can-never-rotate quorum that bound becomes **infinite** — a stolen share stays live for the quorum's entire remaining existence.
+
+★ **This is a SECURITY-PROPERTY GAP, not a liveness annoyance.** The unbounded-compromise-window is precisely the condition KDD-045 exists to prevent. The failed-rotation log spam is the visible symptom; the security regression is the finding.
+
+**How it was found:** while surfacing W2.4 Decision 2's inputs (top-up policy). ★ **Decision 2's obvious question DISSOLVED under source examination:** an under-strength-but-producing quorum needs **no special handling** — it signs (threshold is `formed_size/2+1 = 6`, unchanged by attrition) and **heals at its next rotation**, because V12 substitutes the predecessor's **full recorded 11 including non-qual members** and a full re-DKG derives fresh shares. The arc-closing drill proved this end-to-end: an **8/11** quorum rotated to a successor committing **11/11**, with all three previously-non-qual members in_qual and signing. *(Caveat recorded: headroom shrinks as in_qual approaches t — at k=6 the quorum needs all six members to answer every roll.)* **The REAL Decision 2 is this can-never-rotate gap, which does not dissolve.**
+
+**DISPOSITION: OPEN — four candidates, none chosen. Coupled to Decision 3 (rotation x retirement/disband precedence) and to be decided fresh.**
+- **(a) Top-up / changed-set re-DKG** — replace the departed member from the pool. The literal "top-up"; largest build (a changed-set ceremony, which the design has so far avoided). ★ **Open sub-question, not settled here:** the recon flagged a conflict with §7.1 batch-only formation, **but replacing ONE deregistered member is not the partial-reformation attack §7.1 rejected** (that argument targets *re-assembling a failed quorum's survivors*). Whether §7.1's reasoning applies to single-member replacement is **undecided**.
+- **(b) Force retire/disband a can-never-rotate quorum** — reuses machinery already built; *"rotation impossible"* is **chain-computable** (the resolver's inputs — the predecessor record and two DGM lists — are all on-chain, so every node computes the same answer). ★ **Open sub-questions:** is "can't rotate" a **clean terminal condition, or transient** (e.g. mid-ProUpReg, where the key may settle)? And does a **multi-quorum GM departure make it correlated** across quorums — in which case it needs KDD-074's rate-limit shape?
+- **(c) Relax reject-not-exclude** — rotate with the survivors (changed set). Cheapest to state, but **breaks the same-set invariant V12 enforces** and would reopen the KDD-073 three-sites substitution atomicity — the opposite direction from the arc's design.
+- **(d) Accept and do nothing** — zero build; the quorum runs unrotated until it goes idle (KDD-074) or falls below t (§7.3). The honest null option, but it leaves the security gap unaddressed.
+
+**Cross-ref:** KDD-072 P-b3a (`ResolveRotationQuorum` reject-not-exclude — the cause), KDD-072 P-b6a (not-start propagation), KDD-045 (the security purpose defeated — the rotation-bounds-compromise argument), KDD-074 (retirement — does **not** catch this: the quorum isn't idle), §7.3/KDD-047 (disband — does **not** catch it: the quorum isn't below t), §7.1 (batch-only formation — the (a) tension, possibly inapplicable), KDD-073 (the same-set atomicity (c) would reopen), W2.4 Decision 3 (precedence — coupled).
+
+**ODC:** ODC-045
+
+---
+
 ## Appendix: Register cross-reference
 
 *Program status / roadmap (to first testnet), including live fleet-state snapshots and pre-testnet blockers, lives in the tracked `doc/ptx/PTX_ROADMAP.md`. This register tracks decisions; the roadmap tracks status.*
