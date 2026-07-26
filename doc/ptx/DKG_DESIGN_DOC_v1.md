@@ -2214,6 +2214,10 @@ semantics), ODC-025 (cadence N, open).
 
 **ODC:** ODC-045
 
+> **[SEVERITY AMENDMENT + DISPOSITION, 2026-07-26 — appended.]** ★ **The hole is worse than recorded above: a can-never-rotate quorum can STARVE THE WHOLE FLEET'S ROTATIONS.** Found while tracing disposition (b) against KDD-075's enforcement site. `RotationDueAt` selects **one** due quorum per boundary, lowest-hash-first — and a can-never-rotate quorum **stays due forever** (it never rotates, so its age never resets). If it hashes lowest among the due set it **wins the tie-break every boundary**, the driver's resolve fails, no ceremony starts, and the boundary is consumed — **the healthy due quorums behind it are never selected, indefinitely**. With L quorums, one departed member in the lowest-hashing quorum **halts the fleet's entire rotation schedule**. Severity accordingly rises from *"unbounded self-key-staleness (one quorum)"* to *"fleet-wide rotation starvation."* Disposition (d) (do nothing) is correspondingly less tenable than the entry above implies.
+>
+> **DISPOSITION DECIDED -> (b), recorded as KDD-076:** forced reform on rotation-impossible, as the **third terminal-eligibility** in KDD-075's yield clause. ★ **The yield dissolves BOTH failure modes by the same one-comparison mechanism** — a rotation-impossible quorum is removed from the due set, so the tie-break selects the healthy quorum (starvation gone) and the impossible quorum proceeds to forced reform, whose fresh draw mints a fresh keypair (the unbounded-compromise window gone). See KDD-076 for the sub-question resolutions and policy knobs.
+
 ---
 
 **KDD-075 (2026-07-26). W2.4 Decision 3, Item 1 — THE PRECEDENCE PRINCIPLE: terminal-eligibility yields rotation at ceremony-start. ONE rule, not two arbitrations.**
@@ -2239,6 +2243,25 @@ semantics), ODC-025 (cadence N, open).
 **Cross-ref:** KDD-074 (retirement + rate limit; the limiter interaction the keying closes; item 2 inherits this principle), ODC-045 (disposition — item 2), KDD-072 P-b6b (`RotationDueAt` — the enforcement site; the age-only due test), P-b4/ODC-042 (as-of predicate; the RETIRED arm this implies), V12b (the rejection Hazard B would have triggered), §7.3 (n_disband), ODC-034 (the saturation Hazard A would have left unsolved), KDD-074 naming flag (the enum half, still held).
 
 **KDD:** KDD-075
+
+---
+
+**KDD-076 (2026-07-26). W2.4 Decision 3, Item 2 — ODC-045 disposition: (b) FORCED REFORM ON ROTATION-IMPOSSIBLE, the third terminal-eligibility under KDD-075.**
+
+**Decision.** A quorum whose rotation is **impossible** — `PTX_DKG_ResolveRotationQuorum` rejects (member deregistered / collateral spent / operator key changed vs the formation anchor) — while **due to rotate** is **terminal-eligible for forced reform**, joining idle->retire and inquorate->disband as the third clause of KDD-075's yield-at-ceremony-start. It is removed from the rotation due set, queues through the KDD-074 rate limiter, transitions under the same refuse-unless-ACTIVE + as-of-stamp + undo-twin pattern, and its members dissolve to the pool; the reforming fresh draw produces a **fresh keypair — exactly the key-refresh the can-never-rotate quorum was being denied**. Estimated ~0.3-0.5 P-b4 units; alternatives (a)/(c)/(d) rejected — (a) largest and carries the unresolved §7.1 sub-question, (c) breaks V12's same-set invariant (KDD-073), (d) leaves both the unbounded key and the starvation (ODC-045 amendment) standing.
+
+**The three (b) sub-questions, resolved from source before deciding:**
+- **Terminal-vs-transient: DISSOLVES.** The resolver predicate is **stateless** — a pure function of (record, DGM list at rotation anchor, DGM list at formation anchor), re-evaluated fresh each boundary. No classification is ever needed: deregistration is terminal by identity (a re-registration is a **new proTxHash**; the departed identity never returns), and ProUpReg is terminal-in-practice but **self-healing in principle** (agreement is against the **immutable formation-anchor list**, so only a ProUpReg *back* to the exact formation-time key restores it — pathological, but if it happens the predicate simply passes and the quorum rotates). Both directions handled by construction.
+- **Correlation: INHERITED-SOLVED.** Today KDD-040's one-quorum-per-GM bounds a departure to one quorum. At W2.5's relaxed bound, one GM's departure makes several quorums rotation-impossible at once — and they join the **same terminal-eligibility set the KDD-074 rate limiter already drains one-per-window**, identically to correlated-idle. Nothing new to build.
+- **Chain-computability: CONFIRMED.** The predicate's inputs are the store record and `GetListForBlock(...)` at two heights — all deterministic chain state, already accessed in consensus code (four existing sites in specialtx_validation.cpp). Every node computes the identical answer: **observation, not accusation — safe consensus by the same argument as KDD-074 retirement.**
+
+★ **POLICY KNOBS (decided):** eligibility = **DUE AND IMPOSSIBLE** — the security clock starts at a **missed rotation**, not at member-absence (impossibility before due-ness costs nothing; the key would have lived to the boundary anyway) — **plus a grace of M boundaries (M small, 1-2)** before forced reform fires: the §7.3 anti-eager principle, giving the pathological self-heal room to resolve before a reform is spent, mirroring n_disband's transient-tolerance. M is tunable policy, like N_retire and the window.
+
+**How it slots into KDD-075 (nothing new invented):** one more eligibility term in the same yield comparison, one more member of the same rate-limited queue, the same transition machinery. ★ And the yield does **double duty** here: removing the impossible quorum from the due set is itself the fix for the starvation finding (ODC-045 amendment) — the tie-break can no longer select a quorum that cannot start.
+
+**Cross-ref:** ODC-045 (+ its severity amendment — both failure modes dissolved here), KDD-075 (the spine this hangs off; item 2 of Decision 3), KDD-074 (rate limiter + transition pattern inherited), KDD-072 P-b3a (the resolver = the predicate, reused unchanged), KDD-040 (why correlation is bounded today), §7.1/§7.3 (reform path; anti-eager grace), KDD-074 naming flag ("forced **reform**" — the flag's reading, still held for items 3-4).
+
+**KDD:** KDD-076
 
 ---
 
