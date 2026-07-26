@@ -2095,6 +2095,26 @@ semantics), ODC-025 (cadence N, open).
 
 ---
 
+**KDD-072 ARC-CLOSING DRILL (2026-07-26). Autonomous rotation verified end-to-end on bf — the last deferred verification class in the arc, closed. KDD-072 COMPLETE.**
+
+*Substrate:* bf fleet, `bfe6030` (P-b6b) debug binary, restored from `bf-N22-conv1`. No debug injection — the rotation fired **autonomously**.
+
+**Verified end-to-end.** The trigger fired itself (twice — h960, h1040); the h1040 ceremony converged over the wire to **`PREMIT→FINALIZE qual=11`**; members stored **PENDING** at FINALIZE (`StoreSkShare`); the successor `95350179…` connected at h1067 → **MarkSuperseded**(ac5c28) + **Promote** (PENDING→CURRENT); the successor is **ACTIVE and SIGNING** (gm04/gm18/gm11 return valid partials) while the predecessor is **retired and no longer signable** — KDD-070 §5's two-live-keys bound enforced live. The P3 record-vs-slot divergence the P-b debug drill documented as an injection artifact is **resolved**: a real rotation yields a working, signing successor with the old key gone.
+
+**★ The h960/h1040 discriminator (why confirming the mesh first mattered).** h960 aborted at **HASH_COMMIT (phase 0)** on an unsettled mesh (~24 blocks post-restore) — upstream of *all* rotation-specific code (predecessor sign-hash at phase 4, PENDING role at phase 5), the known SG-2b post-restore convergence tail. h1040 converged on a **confirmed-settled mesh** (21 established member sessions, held throughout). The difference proves the h960 abort was **environmental, not a rotation-convergence defect** — and demonstrates **autonomous rotation-ceremony convergence, which the fresh-formation stand-up did NOT prove** (rotation did not exist until bfe6030). Confirming the mesh settled *before* h1040 is what made the two causes distinguishable; a second abort on a settled mesh would have been the serious signal, and it did not occur.
+
+**Healing organic and complete.** The successor committed **11/11**, including ac5c28's original 3 non-qual members (gm14/gm17/gm11). A full re-DKG derives fresh shares independent of the predecessor's, so a member holding no predecessor share participates fully and lands in_qual — the corrected "healing" note vindicated on a real chain.
+
+**ODC-043 confirmed live:** `ptx_quorum_info` surfaced `superseded_height 1067` via RPC (no log grep); `last_rotation_height 1067` stamped on the successor. **P-b5:** a second rotation of ac5c28 was rejected (`ptxdkg-rotation-predecessor-not-active` — V12b firing first in the post-mine sequence, since ac5c28 is superseded by then; pq_p IS set but masked by the earlier guard, and its first-reject role is the racing case, unit-proven `Pb5_V12d`). Both guards correct: as-of primary in the natural post-mine sequence, pq_p the durable backstop.
+
+**★ THIS CLOSES THE LAST DEFERRED VERIFICATION CLASS IN KDD-072. Every piece of the rotation arc is now fleet-proven; rotation is autonomous.**
+
+**Coverage recorded honestly:** DiscardSuperseded-at-depth (`maxreorg+MARGIN=120`, ~h1187) pending — unit-proven and structurally on the every-block path (the height-only sweep signature); **no residues and no stranded PENDING this run** (all 11 completed, so residue-retire and ExpirePending had nothing to sweep — the residue case needs a member who *missed* the rotation); the reorg re-allow not re-run (fleet-proven at the P-b debug drill 2026-07-25). Restore clean and lossless (h936, ac5c28 ACTIVE 8/11, gm04 share `a7b5309c…` reloaded byte-identical); reset point uncontaminated; bank tar md5 `58b3e914` unchanged throughout. Evidence: `autonomous_rotation_evidence.txt`.
+
+**Cross-ref:** P-b6a/P-b6b (the trigger + sweeps this exercised), the P-b debug drill 2026-07-25 (the injection predecessor this completes), ODC-042 (fleet-verified there), ODC-043 (confirmed live here), P-b5 (uniqueness), KDD-070 §5/§8 (promotion + two-live-keys bound), KDD-045 (re-DKG healing), ODC-038 (live fleet untouched throughout).
+
+---
+
 ## Appendix: Register cross-reference
 
 *Program status / roadmap (to first testnet), including live fleet-state snapshots and pre-testnet blockers, lives in the tracked `doc/ptx/PTX_ROADMAP.md`. This register tracks decisions; the roadmap tracks status.*
