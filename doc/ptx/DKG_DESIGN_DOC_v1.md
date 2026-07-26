@@ -2115,6 +2115,32 @@ semantics), ODC-025 (cadence N, open).
 
 ---
 
+**ODC-044 (2026-07-26). `MarkDisbanded` repeats the ODC-042 bug — a state mutation without an as-of stamp. Known defect, W2.4's first fix.**
+
+`CPTXQuorumStore::MarkDisbanded` (ptx_quorum_store.cpp:274-289) sets `rec.state = DISBANDED` and zeroes `consecutive_inquorate_blocks`, but **never writes `rec.disbanded_height`** — it logs the height only. So the as-of predicate's DISBANDED arm (`state == DISBANDED && disbanded_height > h`, built vacuous in P-b6b) reads the **−1 sentinel → the record answers inactive at every height**. This is the exact ODC-042 hazard P-b4 fixed for supersede: **a consensus state mutation without a pindex-derived as-of stamp splits the chain** (the as-of read diverges from the record's actual transition height across the anchor-lag/reorg windows). Currently latent — `MarkDisbanded` has zero production callers — so it cannot fire until W2.4 wires a producer; but wiring the producer *without* the stamp fix would ship the split.
+
+**Fix (W2.4's first job, the MarkSuperseded/P-b4 pattern):** (a) stamp `rec.disbanded_height = disband_height` (pindex-derived, reindex-deterministic, block-atomic — exactly as `MarkSuperseded` stamps `superseded_height`); (b) add the **disband undo twin** — a `DISBANDED→ACTIVE` revert on disconnect; (c) wire the `consecutive_inquorate_blocks` counter producer; (d) disband share-cleanup — the P-b6b residue-retire keys on `state==SUPERSEDED`, so a disbanded quorum's role-CURRENT shares (keypair abandoned per §7.3) are not swept; widen the sweep to DISBANDED or add a pass.
+
+★ **Size honesty — the disband path is slightly MORE than the supersede path, not an exact copy.** For supersede, P-b4's `RestoreActiveOnUndo` **already existed**, so the ODC-042 fix there was *only* the stamp. Disband has **no** pre-built undo — its `DISBANDED→ACTIVE` twin is built **from scratch** — so the disband path is stamp **+** producer **+** a new undo **+** the share-sweep widening: **three-to-four pieces where supersede needed one.** "P-b4 pattern" applies to the *shape* (pindex-derived stamp, undo-on-disconnect, reindex-determinism), not the full *extent*. Flagged so the W2.4 builder isn't surprised the "small" package has more than one moving part.
+
+**NOT a design question** — the field, the as-of arm, and the fix pattern all exist; this is the stub not following the pattern P-b4 established. Caught by the W2.4 recon reading `MarkDisbanded` against the ODC-042 fix.
+
+**Cross-ref:** ODC-042 (the pattern this repeats), KDD-072 P-b4 (`MarkSuperseded`/`RestoreActiveOnUndo` — the template), P-b6b (the vacuous DISBANDED arm + the residue sweep that misses DISBANDED), KDD-047/§7.3 (the disband trigger that will feed it), the transition table T-H (:1839).
+
+**ODC:** ODC-044
+
+---
+
+**W2.4 SCOPE NOTE (2026-07-26 — recon finding; corrects the stale roadmap framing, no new number).** `PTX_ROADMAP.md` frames W2.3 rotation as "the largest remaining item, gated by W2.4" — **stale: rotation is complete and fleet-proven** (KDD-072, autonomous rotation verified b885c33). The roadmap's "W2.4 owes the record-side undo revert (predecessor SUPERSEDED→ACTIVE)" is likewise **discharged** — that is `RestoreActiveOnUndo`, landed in P-b4. **W2.4 is now the keystone remaining consensus item, and it is SMALLER than the roadmap implies:**
+- **Disband wiring: small** — the P-b4 forward-hook pattern (with ODC-044's size caveat: stamp + undo-from-scratch + counter producer + sweep-widening). The `disbanded_height` field and the as-of DISBANDED arm are already built.
+- **Top-up is NOT a build.** §7.3 explicitly rejects re-assembling a disbanded quorum's survivors (it reintroduces the partial-reformation attack surface batch-only formation eliminates); disband **dissolves members to the general pool → fresh batch-of-11 formation** (the fresh-draw path the rotation arc left working). `InitSession` is set-agnostic so a changed-set ceremony is *technically* runnable, but the design doesn't call for one. The KDD-045 §7.2 "under-strength top-up vs run-to-rotation" question is **policy, not ceremony code** (run-under-strength composes with the arc's proven rotation; disband-early dissolves to pool).
+- **★ THE ONE REAL DESIGN QUESTION — the tier-setter:** the disband *state transition* is consensus (`MarkDisbanded` writes persisted record state; the as-of arm exists), but its *trigger* — "inquorate (≤5 available) for n_disband=30 consecutive blocks" — is a signing-availability property the chain cannot directly observe. **Is per-quorum signing failure recorded on-chain so `consecutive_inquorate_blocks` increments deterministically (→ disband is validated consensus, byte-identical across nodes, ODC-042-class as-of rigour required), or is inquorate observed node-locally (→ nodes could diverge on consensus record state — a split)?** No inquorate-counter producer exists yet; this is genuinely undecided and sets whether W2.4 is a consensus or policy package. `n_disband=30` itself is explicitly tunable policy (§7.3), independent of this.
+- **The three open decisions for the build session** (like P-b6b's three, inputs not resolved): **(1)** inquorate detection — deterministic on-chain signal vs node-local (the tier-setter above); **(2)** KDD-045 §7.2 top-up policy — run-under-strength-to-rotation vs disband-early; **(3)** rotation×disband precedence — the SUPERSEDED-vs-DISBANDED single-enum state collision (a quorum can't be both), and whether a doomed mid-rotation ceremony blocks or runs independent of disband. The rotation arc is fleet-proven and must not break.
+
+**Cross-ref:** §7.3/KDD-047 (disband design), KDD-045 §7.2 (top-up open question), ODC-044 (the MarkDisbanded fix), ODC-034 (pool saturation — disband is what frees the pool), KDD-072 (rotation, done), the transition table T-H.
+
+---
+
 ## Appendix: Register cross-reference
 
 *Program status / roadmap (to first testnet), including live fleet-state snapshots and pre-testnet blockers, lives in the tracked `doc/ptx/PTX_ROADMAP.md`. This register tracks decisions; the roadmap tracks status.*
