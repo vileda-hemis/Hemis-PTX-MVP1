@@ -2265,6 +2265,26 @@ semantics), ODC-025 (cadence N, open).
 
 ---
 
+**[W2.4 DECISION 3 — ITEMS 3+4 RESOLVED; DECISION 3 CLOSED; W2.4 DESIGN SETTLED. 2026-07-26.]**
+
+**ITEM 4 — the mid-rotation race: ACCEPTED AS ARBITRATED, nothing to build.** The residual case — a quorum healthy at ceremony-start that **becomes** terminal-eligible during the ~107-block in-flight window — is safe in **both** orders, deterministically:
+- **Order A (successor connects first):** predecessor -> SUPERSEDED; the retire-writer's refuse-unless-ACTIVE guard skips; rotation wins; nothing wasted. The successor starts with its own zeroed counter — correct, it is a new quorum on its own clock.
+- **Order B (retirement fires first):** predecessor -> REFORMED; the arriving successor PTXDKG fails **V12b's as-of check on every node** — no split. Cost: one wasted converged ceremony, and the quorum reforms from the pool — **a correct outcome for a quorum idle enough to cross N_retire mid-window.**
+
+★ **The suppress-during-rotation alternative is STRUCTURALLY UNBUILDABLE as consensus:** the ceremony is P2P/off-chain until the PTXDKG mines; `IsForming` is node-local and never persisted; **consensus cannot see an in-flight ceremony, so no consensus rule can key on one.** The only lever that exists is policy arithmetic.
+
+★ **Distinction bound into the record — this is NOT Hazard B:** Hazard B = eligible-**at-START** -> **PREVENTED** by KDD-075's yield (the ceremony never starts). Item 4 = became-eligible-**AFTER** a legitimate start -> **ARBITRATED** (first-transition-wins + V12b, both orders deterministic and consensus-safe). Different case, different resolution, both safe. **Policy note:** size **N_retire above interval + typical ceremony span** so the Order-B wasted ceremony stays rare. Nothing to build; nothing buildable beyond sizing.
+
+**ITEM 3 — the state is `REFORMED` (was `RETIRED`), enum value 4.** The naming flag under KDD-074 is **RESOLVED as it predicted**. Rationale: "retire" imports a member-consequence the idle case lacks (members dissolve to pool **blameless**, keep tickets, immediately re-selectable — the instance ends, the members don't); `DISSOLVED` collides with §7.3's disband vocabulary; `REFORMED` has mechanic-precedent (§9.1's "reform cycle") **and the register has since committed to it** (KDD-076 is titled "FORCED REFORM" and speaks reform throughout). ★ **The scope clincher:** the state now receives **three terminal-eligibility routes** — idle->reform, rotation-impossible->forced-reform, and the general blameless-instance-end — all sharing *"instance ends, pool redraws."* **A state three eligibilities enter needs the OUTCOME name, not one cause's mislabeled consequence.** `REFORMED` names the outcome; `RETIRED` mislabeled a consequence that doesn't exist.
+
+**Re-labeling by amendment (originals byte-unchanged):** every `RETIRED` in **KDD-074** (the decided state), **KDD-075** (the yield's retirement references), and **KDD-076** (the transition target) is to be read as **`REFORMED`**; "retirement" as an event name likewise reads "reform" where it denotes the idle-quorum transition (the *trigger* remains retire-on-absence in KDD-074's sense — the signal keeps its name; the resulting *state* is REFORMED). The rename lands **now, while free** — no code written, no persisted records carry the value; the build writes `REFORMED = 4` from the start and no migration ever exists.
+
+★ **DECISION 3 IS CLOSED — all four items:** (1) precedence = terminal-eligibility yields rotation at ceremony-start, KDD-075. (2) ODC-045 disposition = (b) forced reform on rotation-impossible, KDD-076. (3) the state is REFORMED, this note. (4) the mid-rotation race is accepted as arbitrated, this note. **With it, W2.4's DESIGN IS SETTLED. What remains of W2.4 is BUILD, not design:** the retirement/reform mechanism (attribution field, chain-derived idle counter, REFORMED transition + as-of arm + stamp + undo twin, rate limiter, KDD-075 yield clause, KDD-076 due-AND-impossible + grace-M) — with §7.3/KDD-047 disband-on-failure remaining separately owed (KDD-074) outside W2.4's build scope.
+
+**Cross-ref:** KDD-074 (+ naming flag — resolved here), KDD-075 (item 1; Hazard B, distinguished from item 4 above), KDD-076 (item 2; the reform vocabulary), ODC-045 (+ severity amendment), V12b (Order B's deterministic reject), §7.3/§9.1 (vocabulary precedents), ODC-034 (what the build finally unlocks).
+
+---
+
 ## Appendix: Register cross-reference
 
 *Program status / roadmap (to first testnet), including live fleet-state snapshots and pre-testnet blockers, lives in the tracked `doc/ptx/PTX_ROADMAP.md`. This register tracks decisions; the roadmap tracks status.*
