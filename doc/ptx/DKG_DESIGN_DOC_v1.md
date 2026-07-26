@@ -2216,6 +2216,32 @@ semantics), ODC-025 (cadence N, open).
 
 ---
 
+**KDD-075 (2026-07-26). W2.4 Decision 3, Item 1 — THE PRECEDENCE PRINCIPLE: terminal-eligibility yields rotation at ceremony-start. ONE rule, not two arbitrations.**
+
+**Decision.** A quorum **yields its rotation at CEREMONY-START if it is eligible for a TERMINAL transition** — retirement (idle >= N_retire) **or** disband (inquorate >= n_disband, future/owed). Rotation starts **only** for a quorum that is neither — healthy, demanded, quorate. Rotation is a *refresh*; you don't refresh a quorum that is leaving (idle -> retire) or that cannot complete the refresh anyway (inquorate -> the ceremony aborts sub-threshold at ClosePhase0's t-gate, ptx_dkg.cpp:501).
+
+**Enforcement point: `RotationDueAt`, at ceremony-start** — where all three triggers evaluate the **same `CPTXQuorumRecord` simultaneously** (the due-loop already iterates full records carrying the idle counter; the yield is one comparison in that loop, no new plumbing). ★ **Why ceremony-start and not state-change time:** rotation's *decision* and its *state change* are ~107 blocks apart (ceremony start -> successor connect, measured on the arc drill h960->h1067), while retirement's are simultaneous. Any arbitration at state-change time therefore races across that gap (Hazard B below); at ceremony-start there is no gap to race across.
+
+★ **THE KEYING — correctness-critical, verbatim into the build:** the yield keys on **ELIGIBILITY** (idle past N_retire / inquorate past n_disband), **NOT on "the terminal transition fired."** A retirement-eligible quorum yields its rotation **even if the KDD-074 rate-limiter defers its actual retirement this window** — it stays ACTIVE-but-not-rotating, queued, re-evaluated (and re-yielding) each boundary until its retirement turn. **Keying on "fired" reopens Hazard A through the limiter:** a rate-deferred quorum would read as not-retired -> rotate -> mint a successor with a zeroed counter -> never retire. Keying on eligibility closes it. **Residual, ACCEPTED:** bounded key-staleness while queued — a yielding quorum holds its old key a few windows longer, bounded by queue depth × window. ★ **Honest clause: not necessarily SMALL.** During a CORRELATED-idle event (the demand-lull case the KDD-074 rate-limiter exists for), many quorums become retirement-eligible at once and queue behind one-per-window — **the queue depth IS the correlated-eligible count, which is large exactly when it matters**; the last-in-queue quorum holds its old key for (queue-length × window). Bounded (contrast ODC-045's *unbounded* can-never-rotate) and self-resolving (the queue drains as demand returns or quorums retire), and acceptable — the stale keys belong to idle quorums nobody is asking to sign — but the record must not imply the staleness is always small.
+
+**The two hazards this dissolves (both source-confirmed before locking):**
+- **Hazard A — the counter-reset loop.** `RotationDueAt` keys on **age alone** (`nHeight - formation_height >= interval`, no demand term), so an idle quorum still rotates on schedule; a successor is a **new record** (`formation_height` = its own anchor, `consecutive_inquorate_blocks{0}`), so under rotation-wins a perpetually-idle quorum rotates every interval, **resets its idle counter each time, never retires — ODC-034 pool saturation never resolves.** Yield-at-start dissolves it: an eligible quorum never mints the counter-resetting successor.
+- **Hazard B — V12b kills a healthy rotation.** If retirement fired inside the ~107-block in-flight window, the predecessor goes non-ACTIVE and the arriving successor PTXDKG fails V12b (`ptxdkg-rotation-predecessor-not-active`) — **a converged 11-member ceremony destroyed by a lifecycle transition.** Yield-at-start dissolves it: an eligible quorum never opens the window, so no in-flight rotation exists to kill.
+
+★ **CORRECTION recorded (source over intent):** the initially-proposed *"rotation wins over disband"* was **WRONG.** ClosePhase0's t-gate (`phase0_commits.size() < t -> ABORTED`) means an inquorate quorum **cannot complete a rotation ceremony** — there is nothing for rotation-wins to protect, and blocking disband behind an abort-guaranteed ceremony would actively delay the correct outcome. The symmetric yield handles disband identically to retirement, and the source supports it.
+
+**Disband note:** disband remains owed/future (KDD-074), but the precedence rule is defined NOW so it slots in without revisiting — a disband-eligible quorum yields rotation at start, same clause, same keying. This is the transition-rule half of what Decision 3 exists to settle; the enum-value half (the RETIRED->REFORMED rename flag) lands with Decision 3's remaining items.
+
+**Mechanics note (why no explicit arbiter is needed):** `MarkSuperseded` already refuses unless ACTIVE (ptx_quorum_store.cpp:407); the retire-writer carries the same guard (KDD-074's ODC-044-pattern transition). With yield-at-start preventing the races that matter, **first-transition-wins via refuse-unless-ACTIVE is sufficient arbitration** — no new rule, no new state.
+
+**One clarification bound into the record:** "yields" means *no rotation* — the boundary's else-arm still attempts a **fresh formation** at that anchor (`SelectAtAnchor`; deterministic skip if pool < 11). Harmless — a fresh formation binds no predecessor and cannot be V12b-killed — but the yield must not be misread as "no ceremony of any kind."
+
+**Cross-ref:** KDD-074 (retirement + rate limit; the limiter interaction the keying closes; item 2 inherits this principle), ODC-045 (disposition — item 2), KDD-072 P-b6b (`RotationDueAt` — the enforcement site; the age-only due test), P-b4/ODC-042 (as-of predicate; the RETIRED arm this implies), V12b (the rejection Hazard B would have triggered), §7.3 (n_disband), ODC-034 (the saturation Hazard A would have left unsolved), KDD-074 naming flag (the enum half, still held).
+
+**KDD:** KDD-075
+
+---
+
 ## Appendix: Register cross-reference
 
 *Program status / roadmap (to first testnet), including live fleet-state snapshots and pre-testnet blockers, lives in the tracked `doc/ptx/PTX_ROADMAP.md`. This register tracks decisions; the roadmap tracks status.*
