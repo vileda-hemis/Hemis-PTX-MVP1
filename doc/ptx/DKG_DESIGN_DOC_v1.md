@@ -2141,6 +2141,43 @@ semantics), ODC-025 (cadence N, open).
 
 ---
 
+**KDD-074 (2026-07-26). W2.4 RETIREMENT trigger — retire-on-absence. A SECOND lifecycle event, ALONGSIDE §7.3/KDD-047 disband, which remains DETERMINED and OWED.**
+
+★ **Read this first: this entry does NOT decide, replace, amend, or reduce the need for disband.** PTX has **two distinct lifecycle events with two distinct triggers**:
+
+| Event | Trigger | Catches | Status |
+|---|---|---|---|
+| **DISBAND** (§7.3/KDD-047) | inquorate — ≤5 available for n_disband=30 blocks | a **failing** quorum (incl. dead-but-busy: routed rolls, failing them) | **DECIDED, DEFERRED — unbuilt** |
+| **RETIREMENT** (this entry) | no PTX tx with `quorum_hash == X` for N blocks | an **idle** quorum (liveness-churn) | **DECIDED — W2.4 builds this** |
+
+**W2.4 ships RETIREMENT. W2.4 does NOT ship §7.3 disband.** A malfunctioning-but-demanded quorum is exactly what disband exists to catch, and retire-on-absence catches it only on the wrong (idle) timer — later, and for the wrong reason. Anyone reading this entry as "the disband problem is solved" has misread it.
+
+**Decision (retirement).** A quorum is retired when **no PTX transaction carrying `quorum_hash == X` has confirmed for N blocks** — deterministic, chain-computed absence. Retirement writes a consensus transition to a new **`RETIRED` state (enum value 4)**, distinct from `DISBANDED`, with the ODC-044 treatment (pindex-derived as-of stamp + disconnect undo twin), **rate-limited to one quorum per window, least-recently-active first**. Retired members dissolve to the pool and reform via the existing fresh batch-of-11 path (§7.1/§7.3).
+
+**1 — Why retirement can be built now, and disband cannot.** Absence is an **observation**; failure is an **accusation**. A success artifact is self-proving (a threshold signature verifies); **there is no proof of a non-signature**, so "member X was asked and didn't answer" can only be *asserted* — and the only asserter is the coordinator, the node-local observer whose judgement must not reach consensus state. ★ **This codebase already made that mistake and fixed it:** the `ptx_roll` comment records caller-side PoSe updates causing *"a consensus split at every settlement boundary"*, fixed by making the tracker *"consensus-derived from the chain."* Absence needs no accuser: every node computes the same answer from chain data. **That is why retirement is buildable today and disband is not — not because disband matters less.**
+
+**2 — Why RETIRED is distinct from DISBANDED.** Different causes, different consequences: an idle quorum's members are blameless and must face no §8 consequence; a failed quorum's may. Collapsing them destroys the "why did this quorum leave" answer (the observability principle of ODC-043). Enum values 0–3 are used, so **value 4 is free**.
+
+**3 — ★ Why the rate limit is REQUIRED.** Absence is **globally correlated** — demand is shared, so a lull, caller outage, or router fault makes every quorum idle at once, all crossing N together: 35–40 concurrent 60+-block reform cycles, the *"empty-pool-reform-failure"* of §9.1, and a total service outage. Failure is uncorrelated per quorum; absence is not. §7.3 already rejected this class — *"n_disband=5 was explicitly rejected as an eager failure-detector vulnerable to converting transient network events into self-inflicted cascades"* — and a demand lull is exactly a self-healing blip. One-per-window, least-recently-active (the KDD-072 P-b6b tie-break shape, built and proven) caps the cascade at one reform. **Per-quorum retirement is cheap** (an in-flight round is coordinator-side in memory — nothing stranded; members keep tickets, stay re-selectable); **the cost is entirely aggregate, and the limiter contains it.**
+
+**4 — ★ THE DISBAND DEFERRAL AND ITS REAL COST — NOT a free elective.** Failure-detection is a **determined, required** trigger (§7.3/KDD-047), deferred because it is hard, not because it is optional. Its cost is **undiminished by this decision**, and this decision **adds one**:
+- **(a) Accountability machinery is exactly as large later as now.** Unprovable accusations need a complaint/justify-class mechanism (accusation + defence + penalty for false accusation). Nothing here shrinks it.
+- **(b) The failure signal still does not exist.** `RecordWithhold`/`RecordAbstain`/`RecordInvalidCommit` have **zero production callers**; the `ptx_roll` comment marks proper withhold handling *"a future iteration item."* A new consensus tx surface to carry failed-round reports is still owed.
+- **(c) The unverified-success-artifact gap it would build on is still owed** — consensus checks `quorum_sig_hash.IsNull()` only; `PTX_BLS_Verify` exists but is **never called in validation**, so the on-chain threshold signature is structurally checked, never cryptographically verified.
+- **(d) ★ NEW COST CREATED BY THIS DECISION:** shipping retirement introduces a **trigger-precedence question that does not exist today** — a quorum both idle-for-N and failing-for-M: which fires, and does one pre-empt the other? Disband's future build must resolve it. **This decision makes disband slightly harder, not easier.**
+
+**What IS free is narrow and stated exactly:** the RETIRED/DISBANDED enum split means disband's future **schema addition** costs nothing (no migration, no state-value conflict). That is the only "free later" claim this entry makes.
+
+**Rationale.** Retirement is the smallest safe path **to liveness-churn** — deterministic and accountability-free. It is **not** a path to failure-detection and must not be scored as one. Build the mechanism whose trigger is provable; leave the mechanism whose trigger is an accusation until it can be made safe.
+
+**Consequences / owed.** N and the rate-limit window are **tunable policy** (like `n_disband=30`); N must be generous — on a low-demand dev fleet (bf) every quorum is idle almost always. Requires the **`quorum_hash` attribution field** on the PTX payload (additive under the KDD-072 P-a idiom) — without it the signal is uncomputable; shared benefit with the success path and routing auditability. **Still owed after W2.4:** §7.3/KDD-047 disband-on-failure (with (a)–(d) above), and the unverified-`quorum_sig` gap.
+
+**Cross-ref:** KDD-047/§7.3 (disband — **not amended by this entry**; determined, unbuilt, still required), ODC-044 (the stamp+undo pattern this transition needs), ODC-034 (pool saturation — retirement is what frees the pool), KDD-072 P-b6b (tie-break shape reused as the rate limit), KDD-072 P-a (additive-versioning idiom for the attribution field), §9.1 (reform cost, empty-pool risk), §7.1/§7.3 (dissolve-to-pool + fresh batch-of-11 — already built).
+
+**KDD:** KDD-074
+
+---
+
 ## Appendix: Register cross-reference
 
 *Program status / roadmap (to first testnet), including live fleet-state snapshots and pre-testnet blockers, lives in the tracked `doc/ptx/PTX_ROADMAP.md`. This register tracks decisions; the roadmap tracks status.*
