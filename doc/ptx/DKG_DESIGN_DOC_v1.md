@@ -2176,6 +2176,20 @@ semantics), ODC-025 (cadence N, open).
 
 **KDD:** KDD-074
 
+> **[NAMING FLAG, 2026-07-26 — appended; recorded, NOT applied. The rename is a Decision-3 item.]** ★ **The state named `RETIRED` above is probably misnamed, and the misnaming works against the entry's own distinction.**
+>
+> **The drift:** this mechanism was framed throughout its design discussion as *"**reform** on idle"*, and became *"**retire** on idle" / `RETIRED`* when written up here. The words are not equivalent. **"Retire" imports a member-consequence the idle case does not have.** In the idle case the **quorum instance ends and a fresh one reforms from the pool**; the **members are untouched** — blameless, tickets carried forward, immediately re-selectable (§7.3's dissolve-to-pool semantics). Nothing about the *members* is retired.
+>
+> ★ **Why this is not pedantry:** KDD-074's `RETIRED`-vs-`DISBANDED` split **exists precisely to encode the consequence difference** — idle members face no §8 consequence, failed members might (§2 of this entry). A state named `RETIRED` **undercuts the very distinction it was created to carry**: a reader encountering it infers the members were stood down, which is the `DISBANDED`-flavoured consequence the split explicitly denies. The name must carry *no-member-consequence* semantics, or the split communicates the opposite of its purpose.
+>
+> **Candidates (the exact word is a Decision-3 choice, not made here):** `REFORMED`, `DISSOLVED`, `RECYCLED`. Two inputs on the wording, recorded so the choice is informed:
+> - **`REFORMED` has precedent tied to this exact mechanic** — §9.1 already speaks of the *"60+-block **reform** cycle"* and *"empty-pool-**reform**-failure risk"*, i.e. reform is the established word for what follows dissolution.
+> - ★ **`DISSOLVED` collides.** §7.3 uses *"On **disband** — **dissolve** to general pool"* — dissolve is already **disband's** vocabulary, so reusing it for the idle state would blur exactly the two states this split separates.
+>
+> **It also sharpens ODC-045's disposition (b).** *"Force-**reform** a can-never-rotate quorum"* reads correctly and reveals why (b) works: a fresh draw produces a **fresh keypair**, which is precisely the key-refresh the can-never-rotate quorum is being denied — reformation *is* the remedy for its unbounded-compromise window. *"Force-**retire**"* implied mere removal and obscured that. The reframe strengthens (b) on the merits; it does not decide it.
+>
+> **HELD for Decision 3 — deliberately not applied now.** The rename touches the enum, and the enum is simultaneously in play for Decision 3's **three-way precedence** (`SUPERSEDED` / `DISBANDED` / this state) and for ODC-045's disposition. Changing the name here and the semantics there would split one decision across two commits. ★ **Recorded now because the rename is currently FREE** — doc plus unwritten code, no persisted records carry the value, so no migration — **and that window closes the moment Decision 3's build lands the enum.** The mechanic KDD-074 decided is unchanged and correct; only the label is in question.
+
 ---
 
 **ODC-045 (2026-07-26). ★ THE CAN-NEVER-ROTATE HOLE — permanent member departure defeats rotation permanently. A SECURITY-PROPERTY GAP, disposition OPEN.**
