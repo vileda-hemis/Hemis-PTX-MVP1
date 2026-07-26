@@ -127,6 +127,18 @@ size_t PTX_BLS_ReconcileShares(const std::set<uint256>& known_quorums, CEvoDB* e
 // the startup orchestration to build the known set from the quorum store.
 std::set<uint256> PTX_BLS_HeldQuorumHashes();
 
+// KDD-072 P-b6b: the CURRENT-role subset of the held keys. The residue sweep
+// (store-side — it needs record state this TU cannot see) asks "which shares
+// claim to be live?" and then checks each against its record.
+std::set<uint256> PTX_BLS_HeldCurrentQuorumHashes();
+
+// KDD-072 P-b6b: retire ONE share by key — memory + disk, the same erase both
+// depth sweeps perform. TERMINAL: the share is DELETED, never moved to
+// SUPERSEDED_RETAINED (that role exists for the undo, and a residue has no undo
+// role — UndoPromote requires a promotion pair that never existed for it).
+// Returns true if a share was held and erased.
+bool PTX_BLS_RetireShare(const uint256& quorum_hash, CEvoDB* evoDb);
+
 // Clear all held shares. Always clears the in-memory map; if evoDb != nullptr,
 // ERASES all persisted RAW-DB entries by iterating the DB_PTX_SKSHARE prefix
 // DIRECTLY (so corrupt/undeserializable entries cannot survive). Returns the

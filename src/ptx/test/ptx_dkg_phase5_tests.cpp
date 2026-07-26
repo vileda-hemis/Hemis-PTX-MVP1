@@ -2749,4 +2749,194 @@ BOOST_AUTO_TEST_CASE(Pb6a_GivenDue_WiringFeedsPendingAndV2)
     BOOST_CHECK(out.predecessor_quorum_hash == w.rec.quorum_hash);
 }
 
+// ---------------------------------------------------------------------------
+// KDD-072 P-b6b — trigger policy (age + tie-break) and the three tip sweeps
+// ---------------------------------------------------------------------------
+
+// Seed an ACTIVE record with a chosen identity/age into the store's evodb.
+static void Pb6bSeedActive(const uint256& qh, int formation_height, int mined_height)
+{
+    BOOST_REQUIRE(evoDb);
+    CPTXQuorumRecord r;
+    r.quorum_hash      = qh;
+    r.formation_height = formation_height;
+    r.mined_height     = mined_height;
+    r.state            = static_cast<uint8_t>(PTXQuorumState::ACTIVE);
+    evoDb->Write(std::make_pair(PTX_QuorumRecordDBPrefix(), qh), r);
+    evoDb->Write(std::make_pair(std::string("pq_h"),
+                 htobe32(std::numeric_limits<uint32_t>::max() - mined_height)), qh);
+}
+
+// A CBlockIndex standing in for the anchor (only nHeight is read).
+static CBlockIndex Pb6bAnchor(int height)
+{
+    CBlockIndex idx;
+    idx.nHeight = height;
+    return idx;
+}
+
+// (P-b6b) THE AGE TEST at its boundary: not due one block short of N, due at
+// exactly N. RED (inversion A: drop the tie-break/age arm) — see the tie-break
+// row for the collision proof.
+BOOST_AUTO_TEST_CASE(Pb6b_Trigger_AgeTestBoundary)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_BLS_WipeShares(evoDb.get());
+    CPTXQuorumStore store(*evoDb);
+    const Consensus::PTXFormationParams& params = Params().GetConsensus().ptxFormation;
+    const int N = params.nFormationInterval;
+
+    const uint256 qh = QHk(0xA1);
+    Pb6bSeedActive(qh, /*formation*/ 1000, /*mined*/ 1005);
+
+    CBlockIndex early = Pb6bAnchor(1000 + N - 1);           // one short
+    BOOST_CHECK(!PTX_Formation_RotationDueAt(&early, store, params).due);
+
+    CBlockIndex due = Pb6bAnchor(1000 + N);                  // exactly N
+    const PTXRotationDecision d = PTX_Formation_RotationDueAt(&due, store, params);
+    BOOST_CHECK(d.due);
+    BOOST_CHECK(d.predecessor_quorum_hash == qh);
+}
+
+// (P-b6b) ★ THE TIE-BREAK: two ACTIVE quorums BOTH due at the same anchor —
+// only the LOWEST quorum_hash starts; the other waits for the next boundary.
+// One PTXDKG can ever be accepted per anchor (V9 keys on quorum_hash == the
+// anchor hash), so without this both ceremonies would race for one slot and
+// the loser's full 11-member ceremony would be wasted.
+// RED (inversion A): return the first due quorum instead of the lowest -> the
+// decision becomes seed/iteration-order dependent and this row fails.
+BOOST_AUTO_TEST_CASE(Pb6b_Trigger_TieBreakLowestHashOnly)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_BLS_WipeShares(evoDb.get());
+    CPTXQuorumStore store(*evoDb);
+    const Consensus::PTXFormationParams& params = Params().GetConsensus().ptxFormation;
+    const int N = params.nFormationInterval;
+
+    const uint256 lo = QHk(0x11), hi = QHk(0x99);
+    Pb6bSeedActive(lo, 2000, 2005);
+    Pb6bSeedActive(hi, 2000, 2006);                          // both same age
+
+    CBlockIndex anchor = Pb6bAnchor(2000 + N);               // both due
+    const PTXRotationDecision d = PTX_Formation_RotationDueAt(&anchor, store, params);
+    BOOST_REQUIRE(d.due);
+    BOOST_CHECK(d.predecessor_quorum_hash == lo);            // lowest starts
+    BOOST_CHECK(!(d.predecessor_quorum_hash == hi));         // the other waits
+}
+
+// (P-b6b) (a) ExpirePending: a PENDING past TTL is erased; within TTL survives.
+BOOST_AUTO_TEST_CASE(Pb6b_Sweep_ExpirePending)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_BLS_WipeShares(evoDb.get());
+    const uint256 qh = QHk(0xB1);
+    uint8_t sk[32]; std::memset(sk, 0x5A, 32);
+    std::string err;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(qh, /*formation_height*/ 100, sk,
+                                     PTXShareRole::PENDING, err));
+    PTX_BLS_ExpirePending(100 + PTX_PENDING_TTL_BLOCKS, evoDb.get());   // within TTL
+    BOOST_CHECK_EQUAL(PTX_BLS_HeldQuorumHashes().count(qh), 1u);
+    PTX_BLS_ExpirePending(100 + PTX_PENDING_TTL_BLOCKS + 1, evoDb.get()); // past TTL
+    BOOST_CHECK_EQUAL(PTX_BLS_HeldQuorumHashes().count(qh), 0u);
+}
+
+// (P-b6b) DiscardSuperseded: a SUPERSEDED_RETAINED past depth erased; within
+// depth survives.
+BOOST_AUTO_TEST_CASE(Pb6b_Sweep_DiscardSuperseded)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_BLS_WipeShares(evoDb.get());
+    const uint256 qh = QHk(0xB2);
+    {
+        LOCK(cs_ptx_my_bls_sk);
+        HeldShare hs; std::memset(hs.bytes, 0x6B, 32);
+        hs.formation_height = 500;
+        hs.role             = PTXShareRole::SUPERSEDED_RETAINED;
+        hs.promotion_height = 600;
+        g_ptx_my_shares[qh] = hs;
+    }
+    const int depth = DEFAULT_MAX_REORG_DEPTH + PTX_SUPERSEDED_REORG_MARGIN;
+    PTX_BLS_DiscardSuperseded(600 + depth - 1, evoDb.get());   // within
+    BOOST_CHECK_EQUAL(PTX_BLS_HeldQuorumHashes().count(qh), 1u);
+    PTX_BLS_DiscardSuperseded(600 + depth, evoDb.get());       // at depth
+    BOOST_CHECK_EQUAL(PTX_BLS_HeldQuorumHashes().count(qh), 0u);
+}
+
+// (P-b6b) ★ (b) THE RESIDUE RETIRE — the KDD-070 §5 bound, enforced.
+// Three shares, one sweep: a CURRENT share whose record is SUPERSEDED past 120
+// is DELETED; one within 120 survives; one whose record is ACTIVE is UNTOUCHED.
+// ★ RED (inversion B): drop the state==SUPERSEDED guard -> the ACTIVE quorum's
+// live working share is retired too — the catastrophe the guard prevents, which
+// is what makes it load-bearing rather than incidental.
+BOOST_AUTO_TEST_CASE(Pb6b_Sweep_ResidueRetire)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_BLS_WipeShares(evoDb.get());
+    CPTXQuorumStore store(*evoDb);
+    const int depth = DEFAULT_MAX_REORG_DEPTH + PTX_SUPERSEDED_REORG_MARGIN;
+    const int tip   = 5000;
+
+    const uint256 deep = QHk(0xC1);   // SUPERSEDED, buried past depth -> retire
+    const uint256 near = QHk(0xC2);   // SUPERSEDED, within depth      -> survive
+    const uint256 live = QHk(0xC3);   // ACTIVE                        -> untouched
+    {
+        CPTXQuorumRecord r;
+        r.quorum_hash = deep; r.mined_height = 100;
+        r.state = static_cast<uint8_t>(PTXQuorumState::SUPERSEDED);
+        r.superseded_height = tip - depth;            // exactly at the bound
+        evoDb->Write(std::make_pair(PTX_QuorumRecordDBPrefix(), deep), r);
+        r.quorum_hash = near; r.superseded_height = tip - depth + 1;  // one short
+        evoDb->Write(std::make_pair(PTX_QuorumRecordDBPrefix(), near), r);
+        CPTXQuorumRecord a;
+        a.quorum_hash = live; a.mined_height = 100;
+        a.state = static_cast<uint8_t>(PTXQuorumState::ACTIVE);
+        evoDb->Write(std::make_pair(PTX_QuorumRecordDBPrefix(), live), a);
+    }
+    uint8_t sk[32]; std::memset(sk, 0x7C, 32);
+    std::string e1, e2, e3;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(deep, 100, sk, PTXShareRole::CURRENT, e1));
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(near, 100, sk, PTXShareRole::CURRENT, e2));
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(live, 100, sk, PTXShareRole::CURRENT, e3));
+
+    const size_t retired = store.RetireSupersededResidues(tip);
+    BOOST_CHECK_EQUAL(retired, 1u);
+    BOOST_CHECK_EQUAL(PTX_BLS_HeldQuorumHashes().count(deep), 0u); // DELETED
+    BOOST_CHECK_EQUAL(PTX_BLS_HeldQuorumHashes().count(near), 1u); // survives
+    BOOST_CHECK_EQUAL(PTX_BLS_HeldQuorumHashes().count(live), 1u); // untouched
+}
+
+// (P-b6b) ★ THE SWEEP-PLACEMENT PIN. The sweep entry point takes a TIP HEIGHT
+// and nothing else — no block, no tx — so it CANNOT be gated on block contents.
+// Here a residue is retired by a tip advance with NO PTXDKG anywhere in play,
+// which is exactly the stranded case a ProcessBlock-sited sweep could never
+// serve (that path early-returns on any block carrying no PTXDKG).
+// RED: no inversion is expressible in the test — the signature is the proof;
+// re-siting the call behind the FindPTXDKGInBlock gate would leave this row
+// green while breaking production, which is WHY the constraint is enforced by
+// the type rather than by a test (stated plainly rather than claimed as
+// coverage).
+BOOST_AUTO_TEST_CASE(Pb6b_Sweep_FiresOnPlainTipAdvance)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_BLS_WipeShares(evoDb.get());
+    const int depth = DEFAULT_MAX_REORG_DEPTH + PTX_SUPERSEDED_REORG_MARGIN;
+    const int tip   = 7000;
+    const uint256 qh = QHk(0xD9);
+    {
+        CPTXQuorumRecord r;
+        r.quorum_hash = qh; r.mined_height = 10;
+        r.state = static_cast<uint8_t>(PTXQuorumState::SUPERSEDED);
+        r.superseded_height = tip - depth;
+        evoDb->Write(std::make_pair(PTX_QuorumRecordDBPrefix(), qh), r);
+    }
+    uint8_t sk[32]; std::memset(sk, 0x8D, 32);
+    std::string err;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(qh, 10, sk, PTXShareRole::CURRENT, err));
+
+    // No block. No PTXDKG. Only a height — the whole point.
+    CPTXQuorumStore store(*evoDb);
+    BOOST_CHECK_EQUAL(store.RetireSupersededResidues(tip), 1u);
+    BOOST_CHECK_EQUAL(PTX_BLS_HeldQuorumHashes().count(qh), 0u);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

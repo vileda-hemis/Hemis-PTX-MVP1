@@ -197,6 +197,27 @@ size_t PTX_BLS_Promote(const uint256& successor_qh, const uint256& predecessor_q
     return 1;
 }
 
+std::set<uint256> PTX_BLS_HeldCurrentQuorumHashes()
+{
+    LOCK(cs_ptx_my_bls_sk);
+    std::set<uint256> out;
+    for (const auto& kv : g_ptx_my_shares)
+        if (kv.second.role == PTXShareRole::CURRENT) out.insert(kv.first);
+    return out;
+}
+
+bool PTX_BLS_RetireShare(const uint256& quorum_hash, CEvoDB* evoDb)
+{
+    LOCK(cs_ptx_my_bls_sk);
+    auto it = g_ptx_my_shares.find(quorum_hash);
+    if (it == g_ptx_my_shares.end()) return false;
+    if (evoDb != nullptr)                    // erase from DISK too (P2 defect (a))
+        evoDb->GetRawDB().Erase(std::make_pair(DB_PTX_SKSHARE, quorum_hash));
+    g_ptx_memory_only_shares.erase(quorum_hash);
+    g_ptx_my_shares.erase(it);
+    return true;
+}
+
 size_t PTX_BLS_ExpirePending(int tip_height, CEvoDB* evoDb)
 {
     LOCK(cs_ptx_my_bls_sk);

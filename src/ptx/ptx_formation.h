@@ -111,6 +111,26 @@ struct PTXRotationDecision {
     uint256 predecessor_quorum_hash;  // meaningful only when due
 };
 
+// KDD-072 P-b6b — THE TIP SWEEPS, one entry point, three passes.
+//
+// ★ SIGNATURE IS THE PLACEMENT DECISION: this takes a TIP HEIGHT and NOTHING
+// ELSE — no block, no tx. The conditions it enforces are DEPTH conditions that
+// advance with every block (a PENDING aging past its TTL, a residual CURRENT
+// share aging past maxreorg+margin), so it MUST run on every tip advance.
+// It is called from PTX_Formation_NotifyUpdatedBlockTip (every block, has the
+// tip, has the IBD guard) and deliberately NOT from
+// CPTXQuorumStore::ProcessBlock, which early-returns on any block carrying no
+// PTXDKG — sweeps there would fire only on rotation blocks, which is
+// self-defeating for exactly the case that needs them most: a STRANDED PENDING
+// whose successor never mined, so no PTXDKG block will ever arrive to trigger
+// its expiry. Taking no block argument makes that mis-placement unbuildable.
+//
+// Three passes (see each function's contract): PENDING TTL expiry (KDD-070 §7),
+// SUPERSEDED_RETAINED depth discard (§6), and the CURRENT-residue retirement
+// (§5's two-live-keys bound — CPTXQuorumStore::RetireSupersededResidues).
+// All are cheap linear walks over a map holding a handful of entries.
+void PTX_Formation_RunTipSweeps(int tip_height);
+
 PTXRotationDecision PTX_Formation_RotationDueAt(
         const CBlockIndex* pindexAnchor,
         CPTXQuorumStore& store,

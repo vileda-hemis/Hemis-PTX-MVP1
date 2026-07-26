@@ -10,6 +10,8 @@
 #include "consensus/params.h"
 #include "logging.h"
 #include "net.h" // g_connman (KDD-065 member-connection hooks)
+#include "evo/evodb.h"                // KDD-072 P-b6b: evoDb for the tip sweeps
+#include "ptx/ptx_bls.h"                // KDD-072 P-b6b: ExpirePending / DiscardSuperseded
 #include "ptx/ptx_ceremony_driver.h"
 #include "ptx/ptx_dkg_net.h"
 #include "streams.h"
@@ -98,16 +100,59 @@ PTXRotationDecision PTX_Formation_RotationDueAt(
         CPTXQuorumStore& store,
         const Consensus::PTXFormationParams& params)
 {
-    // ★ P-b6a STUB — DISABLED BY CONSTRUCTION. Returns {due=false} for every
-    // anchor, so no rotation ceremony can start on any node. P-b6b replaces
-    // THIS BODY with the trigger policy (Option A boundary-lockstep / Option B
-    // deadline+drift / the tie-break middle — an open decision, deliberately
-    // not taken here). The ceremony-start path below is fully wired and inert
-    // until this returns true.
-    (void)pindexAnchor;
-    (void)store;
-    (void)params;
-    return PTXRotationDecision{};   // due=false, predecessor null
+    // KDD-072 P-b6b — THE TRIGGER POLICY: age test + lowest-hash tie-break.
+    //
+    // ★ NODE-LOCAL POLICY, NOT CONSENSUS. V12 validates a rotation's
+    // CORRECTNESS (predecessor exists, ACTIVE as-of pindexPrev, same-set
+    // resolve, predecessor-uniqueness) and NEVER its timing — there is no
+    // "was it due?" check anywhere in the validator. A node whose policy
+    // differs, or that rotates early, merely produces a VALID rotation early;
+    // it cannot split the chain. That is what lets this stay simple.
+    //
+    // ★ THE TIE-BREAK, and why it exists: one PTXDKG can ever be accepted per
+    // ANCHOR (V9 keys uniqueness on quorum_hash, and the quorum_hash IS the
+    // anchor block hash; V11 requires that anchor to be a boundary). So if two
+    // due quorums both started at the same boundary, both ceremonies would
+    // produce payloads with the same quorum_hash and only ONE could be
+    // accepted — the loser's full 11-member ceremony wasted. Deterministic
+    // lowest-quorum_hash-first makes the collision impossible, and needs NO
+    // drift_offset producer (the deadline/stagger alternative would). The
+    // deferred quorum simply becomes due again at the next boundary.
+    if (pindexAnchor == nullptr) return PTXRotationDecision{};
+
+    const std::vector<CPTXQuorumRecord> active =
+            store.GetActiveQuorumsAtHeight(pindexAnchor->nHeight);
+
+    // Of the ACTIVE quorums, which are DUE at this anchor? Age is measured from
+    // the quorum's own formation anchor, so a quorum is due once a full
+    // interval has elapsed since it formed.
+    const uint256* lowest = nullptr;
+    for (const CPTXQuorumRecord& rec : active) {
+        if (pindexAnchor->nHeight - rec.formation_height < params.nFormationInterval)
+            continue;                                     // not yet due
+        if (lowest == nullptr || rec.quorum_hash < *lowest)
+            lowest = &rec.quorum_hash;                    // tie-break: lowest hash wins
+    }
+    if (lowest == nullptr) return PTXRotationDecision{};   // none due
+
+    PTXRotationDecision d;
+    d.due = true;
+    d.predecessor_quorum_hash = *lowest;
+    return d;
+}
+
+void PTX_Formation_RunTipSweeps(int tip_height)
+{
+    // See the header contract for WHY this takes only a height (the placement
+    // decision is enforced by the signature). Null store/evoDb = unit-test
+    // environment; the pure share sweeps still run.
+    if (evoDb != nullptr) {
+        PTX_BLS_ExpirePending(tip_height, evoDb.get());      // KDD-070 §7 TTL
+        PTX_BLS_DiscardSuperseded(tip_height, evoDb.get());  // KDD-070 §6 depth
+    }
+    if (ptxQuorumStore != nullptr) {
+        ptxQuorumStore->RetireSupersededResidues(tip_height); // KDD-070 §5 bound
+    }
 }
 
 bool PTX_Formation_SelectRotationMembers(
@@ -502,6 +547,13 @@ void PTX_Formation_NotifyUpdatedBlockTip(const CBlockIndex* pindexNew,
 
     const Consensus::PTXFormationParams& params =
             Params().GetConsensus().ptxFormation;
+
+    // KDD-072 P-b6b — THE TIP SWEEPS, on EVERY block (boundary or not), past
+    // the IBD guard above. Placed here rather than in ProcessBlock precisely
+    // because a stranded PENDING's successor never mines: no PTXDKG block will
+    // ever arrive to trigger its expiry, so a connect-path sweep would never
+    // fire for the case that needs it most. See PTX_Formation_RunTipSweeps.
+    PTX_Formation_RunTipSweeps(pindexNew->nHeight);
 
     if (!PTX_Formation_IsBoundary(pindexNew->nHeight, params)) {
         // ------------------------------------------------------------------

@@ -313,6 +313,39 @@ public:
     // no ordering constraint among the three.
     void EraseSuccessorOf(const uint256& predecessor_qh);
 
+    // ------------------------------------------------------------------
+    // KDD-072 P-b6b — THE CURRENT-RESIDUE RETIREMENT (the KDD-070 §5 bound,
+    // enforced).
+    //
+    // THE RESIDUE: a member that held a quorum's CURRENT share but did NOT
+    // complete its rotation ceremony gets no PENDING successor share, so
+    // PTX_BLS_Promote no-ops for them (key isolation) and their old share stays
+    // role-CURRENT for a quorum the chain has marked SUPERSEDED — indefinitely,
+    // across restarts (CURRENT has no TTL; depth-discard covers only
+    // SUPERSEDED_RETAINED; startup reconciliation keeps it because the
+    // superseded record IS still on the active chain).
+    //
+    // ★ WHY THIS IS WORSE THAN WHAT §5 FORBIDS: KDD-070 §5 bounds "two live
+    // keys for the same membership" to maxreorg+margin blocks and refuses to
+    // sign a SUPERSEDED share — but that guard keys on the ROLE, and a residue
+    // is role-CURRENT, so the refusal never fires on it. §5's bound was
+    // therefore unenforced for this case. This sweep restores it using exactly
+    // the depth §6 already justifies (DEFAULT_MAX_REORG_DEPTH +
+    // PTX_SUPERSEDED_REORG_MARGIN = 120).
+    //
+    // ★ IRREVERSIBILITY (deliberate): the share is DELETED, not retained. If
+    // the supersede is later reorged out, the member holds nothing for the
+    // restored quorum — correct, because they had missed that rotation and hold
+    // no successor share either; and the 120-block depth means no permitted
+    // reorg can reach the supersede by the time this fires.
+    //
+    // STORE-SIDE by necessity: the test is "is this share's quorum SUPERSEDED,
+    // and how deep?", which reads CPTXQuorumRecord.superseded_height — record
+    // state ptx_bls.cpp deliberately cannot see (it is pure over HeldShare).
+    // Returns the number retired.
+    // ------------------------------------------------------------------
+    size_t RetireSupersededResidues(int tip_height);
+
     bool IsForming(const uint256& quorum_hash) const;
 
 private:

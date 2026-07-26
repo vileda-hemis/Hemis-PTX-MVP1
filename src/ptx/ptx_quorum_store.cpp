@@ -6,6 +6,7 @@
 
 #include "chain.h"
 #include "compat/endian.h"
+#include "consensus/consensus.h"   // KDD-072 P-b6b: DEFAULT_MAX_REORG_DEPTH (residue depth)
 #include "consensus/validation.h"
 #include "evo/deterministicgms.h"
 #include "evo/evodb.h"
@@ -195,6 +196,15 @@ bool CPTXQuorumStore::ProcessBlock(const CBlock& block, const CBlockIndex* pinde
     rec.accepted_txid    = tx->GetHash();
     rec.mined_block_hash = pindex->GetBlockHash();
     rec.mined_height     = pindex->nHeight;
+    // KDD-072 P-b6b: stamp the SUCCESSOR's last_rotation_height — "this quorum
+    // came into being by rotating its predecessor, at this height". A fresh
+    // formation keeps the -1 sentinel. Pre-write field assignment: no second
+    // evodb round-trip, block-atomic with the record, pindex-derived (the
+    // reindex-determinism rule). Surfaced by ptx_quorum_info since ODC-043.
+    if (payload.nVersion >= PTXDKGPayload::ROTATION_VERSION &&
+        !payload.predecessor_quorum_hash.IsNull()) {
+        rec.last_rotation_height = pindex->nHeight;
+    }
 
     evoDb.Write(std::make_pair(DB_PTXDKG_QUORUM, rec.quorum_hash), rec);
     evoDb.Write(BuildPTXInversedHeightKey(rec.mined_height), rec.quorum_hash);
@@ -429,6 +439,39 @@ bool CPTXQuorumStore::RestoreActiveOnUndo(const uint256& quorum_hash)
     LogPrintf("%s: quorum supersede REVERTED (SUPERSEDED->ACTIVE). quorum_hash=%s\n",
               __func__, quorum_hash.ToString());
     return true;
+}
+
+size_t CPTXQuorumStore::RetireSupersededResidues(int tip_height)
+{
+    // See the header contract (why this exists, why DELETED, why store-side).
+    const int retire_depth = DEFAULT_MAX_REORG_DEPTH + PTX_SUPERSEDED_REORG_MARGIN;
+    size_t retired = 0;
+    for (const uint256& qh : PTX_BLS_HeldCurrentQuorumHashes()) {
+        CPTXQuorumRecord rec;
+        if (!GetQuorumRecord(qh, rec)) continue;   // orphan — reconciliation's job
+        // ★ THE LIVE-SHARE PROTECTION: only a CURRENT share whose record is
+        // SUPERSEDED is a residue. Without these guards the sweep would retire
+        // a LIVE quorum's working share (RED-proven, P-b6b INV-B2).
+        if (rec.state != static_cast<uint8_t>(PTXQuorumState::SUPERSEDED)) continue;
+        // ★ AND the sentinel: an unstamped record is never retired. NOTE (proven
+        // by inversion, P-b6b): these two checks are REDUNDANT across every
+        // reachable record state — an ACTIVE record always carries -1 (and
+        // RestoreActiveOnUndo explicitly clears the stamp), so either check alone
+        // blocks the live-share catastrophe. Dropping BOTH retires a live
+        // quorum's working share. Both are kept: the state test states the
+        // intent, the sentinel is the fail-safe.
+        if (rec.superseded_height < 0) continue;
+        if (tip_height - rec.superseded_height < retire_depth) continue;
+        if (PTX_BLS_RetireShare(qh, &evoDb)) {
+            LogPrintf("%s: retired residual CURRENT share for SUPERSEDED quorum %s "
+                      "(superseded at %d, buried %d >= %d blocks; KDD-070 section-5 "
+                      "two-live-keys bound)\n", __func__, qh.ToString(),
+                      rec.superseded_height, tip_height - rec.superseded_height,
+                      retire_depth);
+            ++retired;
+        }
+    }
+    return retired;
 }
 
 bool CPTXQuorumStore::HasSuccessorOf(const uint256& predecessor_qh)
