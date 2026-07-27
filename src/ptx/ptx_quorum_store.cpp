@@ -5,6 +5,7 @@
 #include "ptx/ptx_quorum_store.h"
 
 #include "chain.h"
+#include "chainparams.h"           // W2.4 W4-f: the params gate at the producer hook
 #include "compat/endian.h"
 #include "consensus/consensus.h"   // KDD-072 P-b6b: DEFAULT_MAX_REORG_DEPTH (residue depth)
 #include "consensus/validation.h"
@@ -76,6 +77,27 @@ bool CPTXQuorumStore::ProcessBlock(const CBlock& block, const CBlockIndex* pinde
                                    CValidationState& state, bool fJustCheck)
 {
     AssertLockHeld(cs_main);
+
+    // W2.4 W4-f — THE REFORM PRODUCER, ahead of the no-PTXDKG early-return
+    // (reform is boundary-driven, not tx-driven; the early-return below must
+    // not starve it — the P-b6b placement lesson, connect-side).  Connect
+    // writes only (!fJustCheck), block-atomic via the surrounding evoDb
+    // CurTransaction.  Dormant wherever the params gate is {0} (main/test).
+    if (!fJustCheck) {
+        const auto w4fReadBlock = [](const CBlockIndex* p2, CBlock& out) {
+            return ReadBlockFromDisk(out, p2);
+        };
+        const auto w4fImpossibleAt = [](const CPTXQuorumRecord& r, const CBlockIndex* pb) {
+            const CBlockIndex* pForm = LookupBlockIndex(r.quorum_hash);
+            if (pForm == nullptr) return false;   // fail-safe: not impossible
+            const CDeterministicGMList listRot  = deterministicGMManager->GetListForBlock(pb);
+            const CDeterministicGMList listForm = deterministicGMManager->GetListForBlock(pForm);
+            std::string why;
+            return PTX_Formation_RotationImpossible(r, listRot, listForm, why);
+        };
+        MaybeReformAtBoundary(pindex, Params().GetConsensus().ptxFormation,
+                              w4fReadBlock, w4fImpossibleAt);
+    }
 
     const CTransactionRef tx = FindPTXDKGInBlock(block);
     if (tx == nullptr) {
@@ -251,6 +273,16 @@ bool CPTXQuorumStore::ProcessBlock(const CBlock& block, const CBlockIndex* pinde
 bool CPTXQuorumStore::UndoBlock(const CBlock& block, const CBlockIndex* pindex)
 {
     AssertLockHeld(cs_main);
+
+    // W2.4 W4-f — reform disconnect, ahead of the early-return (a reform
+    // block carries no PTXDKG).  The stamp is the undo journal; a non-reform
+    // height matches nothing (idempotent no-op).  No ordering constraint
+    // with the P-b4/P-b5 composition below (disjoint records/keys).
+    // Null-guarded: this hook runs BEFORE the early-return that used to
+    // shield null-pindex disconnect calls (unit harnesses exercise them).
+    if (pindex != nullptr) {
+        RestoreReformedAtHeight(pindex->nHeight);
+    }
 
     const CTransactionRef tx = FindPTXDKGInBlock(block);
     if (tx == nullptr) {
@@ -494,6 +526,125 @@ bool CPTXQuorumStore::RestoreReformedOnUndo(const uint256& quorum_hash)
     LogPrintf("%s: quorum reform REVERTED (REFORMED->ACTIVE). quorum_hash=%s\n",
               __func__, quorum_hash.ToString());
     return true;
+}
+
+// W2.4 W4-f — the DURABLE record-hash snapshot at height (the pq_h walk of
+// GetActiveQuorumsAtHeight, unfiltered).  NEVER the recordCache: the cache is
+// read-through and empty after restart — a cache scan would silently miss
+// pre-restart stamps and break reindex-determinism.
+static std::vector<uint256> W4f_SnapshotHashes(CEvoDB& evoDb, int nHeight)
+{
+    std::vector<uint256> hashes;
+    LOCK(evoDb.cs);
+    auto dbIt = evoDb.GetCurTransaction().NewIteratorUniquePtr();
+    if (!dbIt) return hashes;   // defensive: no iterator, empty snapshot
+    const auto firstKey = BuildPTXInversedHeightKey(nHeight);
+    dbIt->Seek(firstKey);
+    while (dbIt->Valid()) {
+        std::pair<std::string, uint32_t> curKey;
+        if (!dbIt->GetKey(curKey) || std::get<0>(curKey) != DB_PTXDKG_BY_INV_H) break;
+        uint256 qh;
+        if (!dbIt->GetValue(qh)) break;
+        hashes.push_back(qh);
+        dbIt->Next();
+    }
+    return hashes;
+}
+
+size_t CPTXQuorumStore::MaybeReformAtBoundary(
+        const CBlockIndex* pindex,
+        const Consensus::PTXFormationParams& params,
+        const std::function<bool(const CBlockIndex*, CBlock&)>& read_block,
+        const std::function<bool(const CPTXQuorumRecord&, const CBlockIndex*)>& impossible_at)
+{
+    // The gate (all default 0): nothing eligible, nothing selected — dormant.
+    if (pindex == nullptr) return 0;
+    if (params.nRetireWindow <= 0 && params.nReformGrace <= 0) return 0;
+    if (params.nReformRateWindow <= 0) return 0;   // limiter selects nothing
+    if (params.nFormationInterval <= 0 ||
+        pindex->nHeight <= 0 ||
+        pindex->nHeight % params.nFormationInterval != 0) {
+        return 0;                                   // boundaries only
+    }
+
+    const std::vector<CPTXQuorumRecord> active =
+            GetActiveQuorumsAtHeight(pindex->nHeight);
+    if (active.empty()) return 0;
+
+    // One shared backward pass over the idle window: qh -> last attributed
+    // roll height (the same authenticated attributions the idle scan reads).
+    std::map<uint256, int> last_attributed;
+    if (params.nRetireWindow > 0) {
+        const CBlockIndex* p = pindex;
+        for (int i = 0; i < params.nRetireWindow && p != nullptr; ++i, p = p->pprev) {
+            CBlock block;
+            if (!read_block(p, block)) break;      // fail-safe: partial map only
+            for (const auto& tx : block.vtx) {
+                if (!tx->IsProbabilisticTx()) continue;
+                CProbabilisticTxPayload payload;
+                if (!GetTxPayload(*tx, payload)) continue;
+                auto it = last_attributed.find(payload.quorum_hash);
+                if (it == last_attributed.end() || it->second < p->nHeight) {
+                    last_attributed[payload.quorum_hash] = p->nHeight;
+                }
+            }
+        }
+    }
+
+    // The eligible candidates, LRA-keyed: an idle-eligible has no in-window
+    // activity by definition, so its LRA is record antiquity (mined_height);
+    // a forced-reform eligible (may be busy) gets its real last-attributed.
+    std::vector<std::pair<uint256, int>> candidates;
+    for (const CPTXQuorumRecord& rec : active) {
+        if (!PTX_Formation_TerminalEligible(rec, pindex, params,
+                                            read_block, impossible_at)) {
+            continue;
+        }
+        const auto it = last_attributed.find(rec.quorum_hash);
+        candidates.emplace_back(rec.quorum_hash,
+                                it != last_attributed.end() ? it->second
+                                                            : rec.mined_height);
+    }
+    if (candidates.empty()) return 0;
+
+    // The most recent reform fleet-wide (the one-per-window input): walk the
+    // full record snapshot for the max reformed_height stamp.
+    int last_reform_height = -1;
+    for (const uint256& qh : W4f_SnapshotHashes(evoDb, pindex->nHeight)) {
+        CPTXQuorumRecord r;
+        if (!GetQuorumRecord(qh, r)) continue;
+        if (r.reformed_height > last_reform_height) {
+            last_reform_height = r.reformed_height;
+        }
+    }
+
+    uint256 selected;
+    if (!PTX_Formation_SelectReformCandidate(candidates, pindex->nHeight,
+                                             params.nReformRateWindow,
+                                             last_reform_height, selected)) {
+        return 0;                                   // rate-limited out
+    }
+    return MarkReformed(selected, pindex->nHeight) ? 1 : 0;
+}
+
+size_t CPTXQuorumStore::RestoreReformedAtHeight(int height)
+{
+    // The stamp is the undo journal: collect matches under cs, then restore
+    // through the guarded writer (idempotent; at most one by construction).
+    std::vector<uint256> matches;
+    for (const uint256& qh : W4f_SnapshotHashes(evoDb, height)) {
+        CPTXQuorumRecord r;
+        if (!GetQuorumRecord(qh, r)) continue;
+        if (r.reformed_height == height &&
+            r.state == static_cast<uint8_t>(PTXQuorumState::REFORMED)) {
+            matches.push_back(qh);
+        }
+    }
+    size_t n = 0;
+    for (const uint256& qh : matches) {
+        if (RestoreReformedOnUndo(qh)) ++n;
+    }
+    return n;
 }
 
 size_t CPTXQuorumStore::RetireSupersededResidues(int tip_height)

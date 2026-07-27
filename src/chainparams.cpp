@@ -688,7 +688,7 @@ public:
 
         // PTX formation cadence (W2.2 SG-1b): dev test-N = 80, M-coupled
         // (~1.7x the ceremony floor M~47; SG-1b plan-gate decision 1).
-        consensus.ptxFormation = {"regtest", 80};
+        consensus.ptxFormation = {"regtest", 80, 200, 1, 40}; // W4-f un-stub: reform gate LIVE (drill chains only)
 
         // Tier two
         nFulfilledRequestExpireTime = 60 * 60; // fulfilled requests expire in 1 hour
@@ -974,7 +974,7 @@ public:
 
         // PTX formation cadence (W2.2 SG-1b): dev test-N = 80, M-coupled
         // (~1.7x the ceremony floor M~47; SG-1b plan-gate decision 1).
-        consensus.ptxFormation = {"ptxbea", 80};
+        consensus.ptxFormation = {"ptxbea", 80, 200, 1, 40};  // W4-f un-stub: reform gate LIVE (drill chains only)
 
         nFulfilledRequestExpireTime = 60 * 60;
 

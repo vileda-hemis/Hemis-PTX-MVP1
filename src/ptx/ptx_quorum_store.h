@@ -11,6 +11,7 @@
 #include "uint256.h"
 
 #include <cstring>
+#include <functional>   // W2.4 W4-f: injected eligibility sources
 #include <map>
 #include <memory>
 #include <string>
@@ -20,6 +21,7 @@ class CBlock;
 class CBlockIndex;
 class CEvoDB;
 class CValidationState;
+namespace Consensus { struct PTXFormationParams; }  // W2.4 W4-f (the ptx_formation.h idiom)
 
 // ---------------------------------------------------------------------------
 // W2.1 quorum registry + PTXDKG persistence (evodb).
@@ -383,6 +385,36 @@ public:
     // Returns the number retired.
     // ------------------------------------------------------------------
     size_t RetireSupersededResidues(int tip_height);
+
+    // ------------------------------------------------------------------
+    // W2.4 W4-f — THE REFORM PRODUCER (the un-stub; KDD-074/075/076 live).
+    // ------------------------------------------------------------------
+    // Called from ProcessBlock (connect, !fJustCheck, BEFORE the no-PTXDKG
+    // early-return — reform is not tx-driven) at FORMATION BOUNDARIES only
+    // (height % interval == 0 — the same one evaluation point as the yield
+    // and the rotation trigger, KDD-075).  Evaluates the ACTIVE set through
+    // the shared TerminalEligible, orders candidates least-recently-active
+    // (in-window last-attributed height; an idle-eligible has none by
+    // definition, so LRA collapses to mined_height — record antiquity),
+    // drains ONE through SelectReformCandidate, MarkReformed's it.  The
+    // eligibility sources are injected (the W4-d/e posture); ProcessBlock
+    // passes disk + resolver lambdas, tests inject.  Returns reforms fired
+    // (0 or 1).  Gate-off params make this a no-op (dormant on main/test).
+    size_t MaybeReformAtBoundary(
+            const CBlockIndex* pindex,
+            const Consensus::PTXFormationParams& params,
+            const std::function<bool(const CBlockIndex*, CBlock&)>& read_block,
+            const std::function<bool(const CPTXQuorumRecord&, const CBlockIndex*)>& impossible_at);
+
+    // W4-f disconnect: THE STAMP IS THE UNDO JOURNAL — restore every record
+    // whose reformed_height equals the disconnecting height (at most one by
+    // construction: one reform per boundary through the limiter).  Runs from
+    // UndoBlock on EVERY disconnect (cheap record walk; a non-reform height
+    // matches nothing — idempotent no-op).  Joins the P-b4/P-b5 disconnect
+    // composition with no ordering constraint (disjoint records/keys); the
+    // downstream fresh formation needs NO reach-in — it disconnects first
+    // (tip-first unwind) via its own record erase.
+    size_t RestoreReformedAtHeight(int height);
 
     bool IsForming(const uint256& quorum_hash) const;
 

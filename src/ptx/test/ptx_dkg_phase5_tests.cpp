@@ -3487,9 +3487,25 @@ BOOST_AUTO_TEST_CASE(W4d_Dormancy_Structural)
         prod += P5_slurp(src + f);
     BOOST_REQUIRE(!prod.empty());
 
-    for (const std::string& fn : fns)   // negative limb: zero refs elsewhere
-        BOOST_CHECK_MESSAGE(P5_count(prod, fn) == 0,
-                            "production reference to " << fn << " before W4-e");
+    // Negative limbs, W4-f-adjusted: RotationImpossible's dormancy EXPIRED at
+    // W4-f — the store's producer lambda is its one sanctioned consumer
+    // (pinned to exactly one ref, in ptx_quorum_store.cpp).  The other three
+    // stay at zero production refs (their consumers live inside the
+    // formation TU, which this scan excludes by design).
+    const std::string store_cpp2 = P5_slurp(src + "/src/ptx/ptx_quorum_store.cpp");
+    BOOST_REQUIRE(!store_cpp2.empty());
+    for (const std::string& fn : fns) {
+        const size_t in_prod  = P5_count(prod, fn);
+        const size_t in_store = P5_count(store_cpp2, fn);
+        if (fn == "PTX_Formation_RotationImpossible") {
+            BOOST_CHECK_MESSAGE(in_store == 1 && in_prod == in_store,
+                "RotationImpossible: expected exactly the one sanctioned "
+                "store-TU consumer (W4-f producer), got " << in_prod);
+        } else {
+            BOOST_CHECK_MESSAGE(in_prod == 0,
+                "production reference to " << fn << " outside the formation TU");
+        }
+    }
 }
 
 // ===========================================================================
@@ -3645,6 +3661,135 @@ BOOST_AUTO_TEST_CASE(W4e_LimiterSelectsOneLRA)
     // Gate posture: disabled limiter or no candidates selects nothing.
     BOOST_CHECK(!PTX_Formation_SelectReformCandidate(cands, 1000, 0, -1, sel));
     BOOST_CHECK(!PTX_Formation_SelectReformCandidate({}, 1000, 200, -1, sel));
+}
+
+// ===========================================================================
+// W2.4 W4-f — the block-driven reform producer + the un-stub.  The mechanism
+// FIRES here: eligibility (W4-d) -> limiter (W4-e) -> MarkReformed (W4-c),
+// connect-side, boundary-cadence; the stamp is the undo journal.
+// ===========================================================================
+
+static Consensus::PTXFormationParams W4fParams()
+{
+    Consensus::PTXFormationParams p{};
+    p.name = "w4f";
+    p.nFormationInterval = 80;
+    p.nRetireWindow      = 50;
+    p.nReformGrace       = 0;
+    p.nReformRateWindow  = 40;
+    return p;
+}
+
+// The producer fires: an idle-eligible ACTIVE quorum at a boundary is
+// MarkReformed'd, stamped with the boundary height.  Cadence and both gate
+// postures pinned.  RED: limiter bypassed -> the rate-0 row fires anyway;
+// boundary gate dropped -> the non-boundary row fires.
+BOOST_AUTO_TEST_CASE(W4f_ProducerFiresAtBoundary)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_BLS_WipeShares(evoDb.get());
+    CPTXQuorumStore store(*evoDb);
+    const Consensus::PTXFormationParams params = W4fParams();
+
+    const uint256 qh = QHk(0xFA);
+    Pb6bSeedActive(qh, /*formation*/ 1, /*mined*/ 5);
+    std::vector<CBlockIndex> chain = W4dChain(160);
+    auto emptyReader = [](const CBlockIndex*, CBlock& out) { out = CBlock(); return true; };
+    auto neverImpossible = [](const CPTXQuorumRecord&, const CBlockIndex*) { return false; };
+
+    // Non-boundary: nothing fires (159 % 80 != 0).
+    BOOST_CHECK_EQUAL(store.MaybeReformAtBoundary(&chain[159], params, emptyReader, neverImpossible), 0u);
+
+    // Limiter disabled (rate window 0): nothing fires even though eligible.
+    Consensus::PTXFormationParams noRate = params;
+    noRate.nReformRateWindow = 0;
+    BOOST_CHECK_EQUAL(store.MaybeReformAtBoundary(&chain[160], noRate, emptyReader, neverImpossible), 0u);
+
+    // Eligibility disabled (both arms 0): nothing fires.
+    Consensus::PTXFormationParams noElig = params;
+    noElig.nRetireWindow = 0; noElig.nReformGrace = 0;
+    BOOST_CHECK_EQUAL(store.MaybeReformAtBoundary(&chain[160], noElig, emptyReader, neverImpossible), 0u);
+
+    // The boundary, gate live: THE REFORM FIRES.
+    BOOST_CHECK_EQUAL(store.MaybeReformAtBoundary(&chain[160], params, emptyReader, neverImpossible), 1u);
+    CPTXQuorumRecord rec;
+    BOOST_REQUIRE(store.GetQuorumRecord(qh, rec));
+    BOOST_CHECK_EQUAL((int)rec.state, (int)PTXQuorumState::REFORMED);
+    BOOST_CHECK_EQUAL(rec.reformed_height, 160);
+    BOOST_CHECK(!PTX_QuorumRecordActiveAt(rec, 500));   // gone from the as-of view
+}
+
+// LRA on real records: among idle-eligibles (no in-window activity by
+// definition) the LRA collapses to record antiquity — the OLDER mined record
+// reforms first.  RED: limiter-bypass picks iteration order instead.
+BOOST_AUTO_TEST_CASE(W4f_LRAPicksOldestRecord)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_BLS_WipeShares(evoDb.get());
+    CPTXQuorumStore store(*evoDb);
+    const Consensus::PTXFormationParams params = W4fParams();
+
+    const uint256 qhA = QHk(0xA5), qhB = QHk(0xB5);
+    Pb6bSeedActive(qhA, 1, /*mined*/ 5);
+    Pb6bSeedActive(qhB, 1, /*mined*/ 3);   // OLDER — least recently active
+    std::vector<CBlockIndex> chain = W4dChain(160);
+    auto emptyReader = [](const CBlockIndex*, CBlock& out) { out = CBlock(); return true; };
+    auto neverImpossible = [](const CPTXQuorumRecord&, const CBlockIndex*) { return false; };
+
+    BOOST_CHECK_EQUAL(store.MaybeReformAtBoundary(&chain[160], params, emptyReader, neverImpossible), 1u);
+    CPTXQuorumRecord a, b;
+    BOOST_REQUIRE(store.GetQuorumRecord(qhA, a));
+    BOOST_REQUIRE(store.GetQuorumRecord(qhB, b));
+    BOOST_CHECK_EQUAL((int)b.state, (int)PTXQuorumState::REFORMED);  // B reformed
+    BOOST_CHECK_EQUAL((int)a.state, (int)PTXQuorumState::ACTIVE);    // A queued
+}
+
+// The undo: the stamp is the journal — only the matching height reverts,
+// idempotent.  RED: height-keying dropped -> the wrong-height row reverts.
+BOOST_AUTO_TEST_CASE(W4f_UndoRevertsAtHeight)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_BLS_WipeShares(evoDb.get());
+    CPTXQuorumStore store(*evoDb);
+    const Consensus::PTXFormationParams params = W4fParams();
+
+    const uint256 qh = QHk(0xFC);
+    Pb6bSeedActive(qh, 1, 5);
+    std::vector<CBlockIndex> chain = W4dChain(160);
+    auto emptyReader = [](const CBlockIndex*, CBlock& out) { out = CBlock(); return true; };
+    auto neverImpossible = [](const CPTXQuorumRecord&, const CBlockIndex*) { return false; };
+    BOOST_REQUIRE_EQUAL(store.MaybeReformAtBoundary(&chain[160], params, emptyReader, neverImpossible), 1u);
+
+    BOOST_CHECK_EQUAL(store.RestoreReformedAtHeight(159), 0u);   // wrong height: no-op
+    BOOST_CHECK_EQUAL(store.RestoreReformedAtHeight(160), 1u);   // THE revert
+    CPTXQuorumRecord rec;
+    BOOST_REQUIRE(store.GetQuorumRecord(qh, rec));
+    BOOST_CHECK_EQUAL((int)rec.state, (int)PTXQuorumState::ACTIVE);
+    BOOST_CHECK_EQUAL(rec.reformed_height, -1);
+    BOOST_CHECK_EQUAL(store.RestoreReformedAtHeight(160), 0u);   // idempotent
+}
+
+// ★ The un-stub is drill-chain-only, and the wiring exists — both pinned
+// structurally (the P5 idiom).  Main/test/ptxtest keep the 2-initializer
+// (gate {0}) form; regtest/ptxbea carry the 5-initializer live form;
+// ProcessBlock calls the producer, UndoBlock the revert.
+BOOST_AUTO_TEST_CASE(W4f_UnstubAndWiring_Structural)
+{
+    const std::string src = PTX_SRCDIR;
+    BOOST_REQUIRE_MESSAGE(!src.empty(), "W4f: PTX_SRCDIR not injected");
+
+    const std::string cp = P5_slurp(src + "/src/chainparams.cpp");
+    BOOST_REQUIRE(!cp.empty());
+    BOOST_CHECK(P5_count(cp, "ptxFormation = {\"main\", 1440};") == 1);      // mainnet DORMANT
+    BOOST_CHECK(P5_count(cp, "ptxFormation = {\"test\", 1440};") == 1);      // testnet DORMANT
+    BOOST_CHECK(P5_count(cp, "ptxFormation = {\"ptxtest\", 80};") == 1);     // ptxtest DORMANT
+    BOOST_CHECK(P5_count(cp, "ptxFormation = {\"regtest\", 80, 200, 1, 40}") == 1);  // drill LIVE
+    BOOST_CHECK(P5_count(cp, "ptxFormation = {\"ptxbea\", 80, 200, 1, 40}") == 1);   // drill LIVE
+
+    const std::string st = P5_slurp(src + "/src/ptx/ptx_quorum_store.cpp");
+    BOOST_REQUIRE(!st.empty());
+    BOOST_CHECK(P5_count(st, "MaybeReformAtBoundary(pindex, Params().GetConsensus().ptxFormation") == 1);
+    BOOST_CHECK(P5_count(st, "RestoreReformedAtHeight(pindex->nHeight);") == 1);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

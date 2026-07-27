@@ -1387,7 +1387,12 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
     // W2.1 C1: persist the accepted PTXDKG as an ACTIVE quorum record (evodb;
     // LLMQ mined-commitment pattern).  Checks run under fJustCheck; the write
     // is !fJustCheck only.  Undo mirror in UndoSpecialTxsInBlock.
-    if (!ptxQuorumStore->ProcessBlock(block, pindex, state, fJustCheck)) {
+    // Null tolerance is unit-test-environment-only (the SelectAtAnchor
+    // precedent): production constructs the store at tiertwo/init before
+    // validation.  Pre-W4-f the null-this call was latent UB that happened
+    // not to crash (both methods only touched the block argument before
+    // their early-returns); the W4-f hooks touch member state, surfacing it.
+    if (ptxQuorumStore && !ptxQuorumStore->ProcessBlock(block, pindex, state, fJustCheck)) {
         // pass the state returned by the function above
         return false;
     }
@@ -1493,7 +1498,7 @@ bool UndoSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex)
     // W2.1 C1: reverse of connect order — the PTXDKG quorum record is written
     // last at connect, so it is erased first at disconnect.  Explicit-erase of
     // both evodb keys; NO re-pend (E-5 — re-submission is W2.2 formation's).
-    if (!ptxQuorumStore->UndoBlock(block, pindex)) {
+    if (ptxQuorumStore && !ptxQuorumStore->UndoBlock(block, pindex)) {  // null: test-env only (see connect side)
         return false;
     }
     if (!deterministicGMManager->UndoBlock(block, pindex)) {
