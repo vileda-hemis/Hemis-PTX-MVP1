@@ -61,6 +61,14 @@ enum class PTXQuorumState : uint8_t {
     SUPERSEDED = 2,
     // W2.4 disband.  No producer, no writer at W2.1.
     DISBANDED = 3,
+    // W2.4 reform (KDD-074/075/076, Decision-3 closure).  The BLAMELESS
+    // terminal state: the quorum INSTANCE ended (idle past N_retire, or
+    // rotation-impossible while due — KDD-076) and its members dissolved to
+    // the pool with no §8 consequence.  DISTINCT from DISBANDED (failed) by
+    // design: the two carry different member consequences and different
+    // futures.  Producer: MarkReformed — DORMANT until W4-f wires the
+    // block-driven transition.
+    REFORMED = 4,
 };
 
 // Formation provenance — RESERVED, always UNSET at W2.1 (Confirmation 2).
@@ -107,7 +115,11 @@ public:
     // deserialize with both sentinels and can only be ACTIVE — no supersede or
     // disband producer existed when they were written — so the ACTIVE arm
     // answers them correctly. No migration.
-    static const uint8_t CURRENT_VERSION = 2;
+    // v3 (W2.4 W4-c): + reformed_height, same additive contract — v1/v2 records
+    // deserialize with the -1 sentinel and are never REFORMED (no producer
+    // existed when they were written), so every arm answers them correctly.
+    // No migration.
+    static const uint8_t CURRENT_VERSION = 3;
 
     uint8_t nVersion{CURRENT_VERSION};
     uint256 quorum_hash;             // formation anchor block hash — the identity
@@ -140,6 +152,13 @@ public:
                                      // W2.4 adds a producer, not a schema
                                      // change under a live format (the P-b2
                                      // present-but-unfed posture)
+    // v3 (W2.4 W4-c, KDD-074/075/076) — same contract as the v2 stamps:
+    // pindex-derived only, sentinel -1 = never reformed.  Stamped by
+    // MarkReformed IN THE SAME WRITE that sets state == REFORMED (the ODC-044
+    // lesson: MarkDisbanded sets state but never stamps — its as-of arm reads
+    // the sentinel and answers inactive-at-every-height; this writer must
+    // never reproduce that).
+    int32_t reformed_height{-1};     // stamped by MarkReformed (DORMANT until W4-f)
 
     CPTXQuorumRecord() : group_pk_bytes(48, 0) {}
 
@@ -155,6 +174,9 @@ public:
                   obj.consecutive_inquorate_blocks);
         if (obj.nVersion >= 2) {
             READWRITE(obj.superseded_height, obj.disbanded_height);
+        }
+        if (obj.nVersion >= 3) {
+            READWRITE(obj.reformed_height);
         }
     }
 };
@@ -280,6 +302,22 @@ public:
     // without an undo journal — the revert is a pure function of the
     // disconnecting successor's payload.  Caller: UndoBlock.
     bool RestoreActiveOnUndo(const uint256& quorum_hash);
+
+    // W2.4 W4-c (KDD-074/075/076): ACTIVE->REFORMED, reformed_height STAMPED
+    // in the same write (the ODC-044 lesson — never state-without-stamp).
+    // REFUSE-unless-ACTIVE (the MarkSuperseded posture): first-transition-wins
+    // arbitration per KDD-075's mechanics note.  DORMANT: no production caller
+    // until W4-f wires the rate-limited block-driven producer.
+    bool MarkReformed(const uint256& quorum_hash, int reform_height);
+
+    // W2.4 W4-c: the disconnect twin — REFORMED->ACTIVE, stamp cleared to -1.
+    // REFUSE-unless-REFORMED (idempotent no-op otherwise).  Restore-to-ACTIVE
+    // is unconditionally correct: MarkReformed refuses unless ACTIVE, so the
+    // pre-flip state is known without an undo journal (the P-b4 argument).
+    // The undo surface is this revert ALONE — idleness is DERIVED at boundary
+    // time, never stored, so there is no counter to undo (the W2.4 planning
+    // recon's derive-don't-store decision).  Caller: UndoBlock (W4-f).
+    bool RestoreReformedOnUndo(const uint256& quorum_hash);
 
     // ------------------------------------------------------------------
     // KDD-072 P-b5 — the predecessor-uniqueness index ("pq_p"): at most one

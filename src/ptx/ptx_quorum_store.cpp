@@ -56,6 +56,8 @@ bool PTX_QuorumRecordActiveAt(const CPTXQuorumRecord& rec, int nHeight)
             return rec.superseded_height > nHeight;  // STRICT: superseded AT h is NOT active at h
         case PTXQuorumState::DISBANDED:
             return rec.disbanded_height > nHeight;   // vacuous at HEAD (no producer until W2.4)
+        case PTXQuorumState::REFORMED:
+            return rec.reformed_height > nHeight;    // W4-c: same STRICT contract; vacuous until W4-f
         default:
             return false; // FORMING is never persisted; unknown state fail-safe
     }
@@ -437,6 +439,59 @@ bool CPTXQuorumStore::RestoreActiveOnUndo(const uint256& quorum_hash)
     evoDb.Write(std::make_pair(DB_PTXDKG_QUORUM, quorum_hash), rec);
     recordCache[quorum_hash] = rec;
     LogPrintf("%s: quorum supersede REVERTED (SUPERSEDED->ACTIVE). quorum_hash=%s\n",
+              __func__, quorum_hash.ToString());
+    return true;
+}
+
+bool CPTXQuorumStore::MarkReformed(const uint256& quorum_hash, int reform_height)
+{
+    // W2.4 W4-c (KDD-074/075/076).  Refuse-unless-ACTIVE: the MarkSuperseded
+    // posture — first-transition-wins (KDD-075 mechanics note), and a missing
+    // record / double-flip is a clean no-op false.
+    LOCK(cs);
+    CPTXQuorumRecord rec;
+    if (!GetQuorumRecord(quorum_hash, rec)) {
+        return false;
+    }
+    if (rec.state != static_cast<uint8_t>(PTXQuorumState::ACTIVE)) {
+        return false;
+    }
+    rec.nVersion        = CPTXQuorumRecord::CURRENT_VERSION; // v3 on rewrite
+    rec.state           = static_cast<uint8_t>(PTXQuorumState::REFORMED);
+    // THE STAMP, in the SAME write as the state flip — the ODC-044 lesson.
+    // Without it the as-of arm reads the -1 sentinel and the record answers
+    // inactive-at-every-height (MarkDisbanded's live bug, deliberately NOT
+    // reproduced here and deliberately NOT fixed there — it is disband's,
+    // owed with its producer).
+    rec.reformed_height = reform_height; // pindex-derived ONLY
+    evoDb.Write(std::make_pair(DB_PTXDKG_QUORUM, quorum_hash), rec);
+    recordCache[quorum_hash] = rec;
+    LogPrintf("%s: quorum REFORMED at height %d. quorum_hash=%s\n",
+              __func__, reform_height, quorum_hash.ToString());
+    return true;
+}
+
+bool CPTXQuorumStore::RestoreReformedOnUndo(const uint256& quorum_hash)
+{
+    // W2.4 W4-c: the disconnect twin.  Refuse-unless-REFORMED (idempotent
+    // no-op otherwise).  Restore-to-ACTIVE is unconditionally correct:
+    // MarkReformed refuses unless ACTIVE, so the pre-flip state is known
+    // without an undo journal (the P-b4 argument).  The whole undo surface:
+    // idleness is derived, never stored — nothing else to revert.
+    LOCK(cs);
+    CPTXQuorumRecord rec;
+    if (!GetQuorumRecord(quorum_hash, rec)) {
+        return false;
+    }
+    if (rec.state != static_cast<uint8_t>(PTXQuorumState::REFORMED)) {
+        return false;
+    }
+    rec.nVersion        = CPTXQuorumRecord::CURRENT_VERSION;
+    rec.state           = static_cast<uint8_t>(PTXQuorumState::ACTIVE);
+    rec.reformed_height = -1;
+    evoDb.Write(std::make_pair(DB_PTXDKG_QUORUM, quorum_hash), rec);
+    recordCache[quorum_hash] = rec;
+    LogPrintf("%s: quorum reform REVERTED (REFORMED->ACTIVE). quorum_hash=%s\n",
               __func__, quorum_hash.ToString());
     return true;
 }

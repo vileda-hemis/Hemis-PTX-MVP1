@@ -2232,6 +2232,10 @@ BOOST_AUTO_TEST_CASE(Pb4_AsOf_Sweep)
 BOOST_AUTO_TEST_CASE(Pb4_V1Record_SentinelsActive)
 {
     CPTXQuorumRecord in = Pb4Rec(PTXQuorumState::ACTIVE, 500, 777, 888);
+    in.nVersion = 2;                               // EXPLICIT v2 (W4-c: default is
+                                                   // now v3; this test pins the
+                                                   // v2-vs-v1 delta, so it must
+                                                   // serialize a v2 stream)
     CDataStream ssv2(SER_DISK, 0);
     ssv2 << in;                                    // v2: stamps on the wire
     in.nVersion = 1;
@@ -2252,6 +2256,7 @@ BOOST_AUTO_TEST_CASE(Pb4_V1Record_SentinelsActive)
 BOOST_AUTO_TEST_CASE(Pb4_V2RoundTrip_BothStamps)
 {
     CPTXQuorumRecord in = Pb4Rec(PTXQuorumState::SUPERSEDED, 500, 123, 456);
+    in.nVersion = 2;                               // EXPLICIT v2 (W4-c: see above)
     CDataStream ss(SER_DISK, 0);
     ss << in;
     CPTXQuorumRecord out;
@@ -2279,7 +2284,9 @@ BOOST_AUTO_TEST_CASE(Pb4_MarkSuperseded_FlipsStampsRefuses)
     BOOST_REQUIRE(store.GetQuorumRecord(qh, rec));
     BOOST_CHECK(rec.state == static_cast<uint8_t>(PTXQuorumState::SUPERSEDED));
     BOOST_CHECK_EQUAL(rec.superseded_height, 950);
-    BOOST_CHECK_EQUAL(rec.nVersion, (uint8_t)2);
+    const uint8_t curv = CPTXQuorumRecord::CURRENT_VERSION; // local copy: BOOST_CHECK_EQUAL
+                                                             // ODR-uses its args (the P-b1 lesson)
+    BOOST_CHECK_EQUAL(rec.nVersion, curv);                   // vN on rewrite (W4-c: was literal 2)
 
     BOOST_CHECK(!store.MarkSuperseded(qh, 951));            // double-flip refused
     BOOST_CHECK(!store.MarkSuperseded(QHk(0xC5), 950));     // missing record refused
@@ -3100,6 +3107,186 @@ BOOST_AUTO_TEST_CASE(W4b_NoContextStructuralOnly)
     LOCK(cs_main);
     CValidationState state;
     BOOST_CHECK(CheckSpecialTxNoContext(CTransaction(forged), state));
+}
+
+// ===========================================================================
+// W2.4 W4-c — REFORMED state machinery, FULLY DORMANT (producer = W4-f).
+// The P-b1 pattern: zero behaviour change; every piece RED-proven by inversion.
+// ===========================================================================
+
+// Seed an ACTIVE record at nVersion=2 (an OLD record — also proves the
+// writers upgrade v2 records cleanly on rewrite).
+static uint256 W4cSeedActive(uint8_t fill)
+{
+    CPTXQuorumRecord r;
+    r.nVersion     = 2;
+    r.quorum_hash  = QHk(fill);
+    r.state        = static_cast<uint8_t>(PTXQuorumState::ACTIVE);
+    r.mined_height = 1;
+    evoDb->Write(std::make_pair(PTX_QuorumRecordDBPrefix(), r.quorum_hash), r);
+    return r.quorum_hash;
+}
+
+// The as-of 4th arm: STRICT > — a record reformed AT h is NOT active at h
+// (byte-same contract as P-b4's superseded arm).  RED: > flipped to >= makes
+// ActiveAt(reformed_height) answer true.
+BOOST_AUTO_TEST_CASE(W4c_AsOfBoundary)
+{
+    CPTXQuorumRecord r;
+    r.state           = static_cast<uint8_t>(PTXQuorumState::REFORMED);
+    r.mined_height    = 1;
+    r.reformed_height = 100;
+    BOOST_CHECK(PTX_QuorumRecordActiveAt(r, 99));     // before: active
+    BOOST_CHECK(!PTX_QuorumRecordActiveAt(r, 100));   // AT the stamp: NOT active (strict)
+    BOOST_CHECK(!PTX_QuorumRecordActiveAt(r, 101));   // after: not active
+}
+
+// ★ THE ODC-044 PIN — MarkReformed stamps IN THE SAME WRITE as the state
+// flip.  RED (the load-bearing inversion): reproduce MarkDisbanded's bug
+// (state set, stamp never written) → the arm reads the -1 sentinel → the
+// record answers inactive-at-EVERY-height → the active-before-reform check
+// fails.  That failing test is ODC-044's bug, caught this time.
+BOOST_AUTO_TEST_CASE(W4c_MarkReformedStampsFromBirth)
+{
+    const uint256 qh = W4cSeedActive(0xD1);
+    CPTXQuorumStore store(*evoDb);
+    BOOST_REQUIRE(store.MarkReformed(qh, 100));
+
+    CPTXQuorumRecord rec;
+    BOOST_REQUIRE(store.GetQuorumRecord(qh, rec));
+    BOOST_CHECK_EQUAL((int)rec.state, (int)PTXQuorumState::REFORMED);
+    BOOST_CHECK_EQUAL(rec.reformed_height, 100);      // THE STAMP
+    BOOST_CHECK_EQUAL((int)rec.nVersion, 3);          // v2 record upgraded on rewrite
+    BOOST_CHECK(PTX_QuorumRecordActiveAt(rec, 50));   // as-of: active BEFORE reform
+    BOOST_CHECK(!PTX_QuorumRecordActiveAt(rec, 100)); // not AT it
+
+    // Refuse-unless-ACTIVE: the double-flip is a clean no-op false.
+    BOOST_CHECK(!store.MarkReformed(qh, 200));
+    BOOST_REQUIRE(store.GetQuorumRecord(qh, rec));
+    BOOST_CHECK_EQUAL(rec.reformed_height, 100);      // first stamp untouched
+}
+
+// The undo twin: REFORMED->ACTIVE, stamp back to sentinel; idempotent.
+// RED: an undo that restores state but not the stamp leaves stale as-of data.
+BOOST_AUTO_TEST_CASE(W4c_UndoRestores)
+{
+    const uint256 qh = W4cSeedActive(0xD2);
+    CPTXQuorumStore store(*evoDb);
+
+    // Undo of a never-reformed (ACTIVE) record: refuse, no-op.
+    BOOST_CHECK(!store.RestoreReformedOnUndo(qh));
+
+    BOOST_REQUIRE(store.MarkReformed(qh, 100));
+    BOOST_REQUIRE(store.RestoreReformedOnUndo(qh));
+
+    CPTXQuorumRecord rec;
+    BOOST_REQUIRE(store.GetQuorumRecord(qh, rec));
+    BOOST_CHECK_EQUAL((int)rec.state, (int)PTXQuorumState::ACTIVE);
+    BOOST_CHECK_EQUAL(rec.reformed_height, -1);       // sentinel restored
+    BOOST_CHECK(PTX_QuorumRecordActiveAt(rec, 500));  // fully active again
+
+    // Idempotent: a second undo is a clean no-op false.
+    BOOST_CHECK(!store.RestoreReformedOnUndo(qh));
+}
+
+// The additive-versioning pin: a v2 record round-trips BYTE-IDENTICAL (the
+// new field is not written for v2 — old records unchanged on disk), and
+// deserializes with the -1 sentinel; a v3 record carries the field.
+// RED: serializing reformed_height unconditionally changes v2 bytes.
+BOOST_AUTO_TEST_CASE(W4c_AdditiveRecordVersioning)
+{
+    CPTXQuorumRecord v2;
+    v2.nVersion    = 2;
+    v2.quorum_hash = QHk(0xD3);
+    v2.state       = static_cast<uint8_t>(PTXQuorumState::ACTIVE);
+    v2.reformed_height = 777;   // must NOT reach the wire at v2
+
+    CDataStream s2(SER_DISK, PROTOCOL_VERSION);
+    s2 << v2;
+    const std::vector<char> v2bytes(s2.begin(), s2.end());
+
+    CPTXQuorumRecord v2back;
+    CDataStream s2r(v2bytes, SER_DISK, PROTOCOL_VERSION);
+    s2r >> v2back;
+    BOOST_CHECK_EQUAL(v2back.reformed_height, -1);    // sentinel, not 777
+
+    CDataStream s2again(SER_DISK, PROTOCOL_VERSION);
+    s2again << v2back;
+    BOOST_CHECK(std::vector<char>(s2again.begin(), s2again.end()) == v2bytes);
+
+    CPTXQuorumRecord v3;
+    v3.nVersion        = 3;
+    v3.quorum_hash     = QHk(0xD4);
+    v3.reformed_height = 888;
+    CDataStream s3(SER_DISK, PROTOCOL_VERSION);
+    s3 << v3;
+    const size_t v3len = s3.size();
+    CPTXQuorumRecord v3back;
+    s3 >> v3back;
+    BOOST_CHECK_EQUAL(v3back.reformed_height, 888);   // v3 carries the field
+    BOOST_CHECK_EQUAL(v3len, v2bytes.size() + sizeof(int32_t)); // exactly one field wider
+}
+
+// ★ DORMANCY + THE DEFERRED-BUG GUARD (the P5 structural idiom).
+// Negative limbs: across the production tree, ZERO call-shaped references to
+// MarkReformed / RestoreReformedOnUndo (dormant until W4-f), ZERO qualified
+// uses of PTXQuorumState::REFORMED outside the store TU (never reached by a
+// live path), and ZERO call-shaped references to MarkDisbanded — guarding the
+// deferred ODC-044 stamp bug (deliberately NOT fixed in W2.4; it is disband's,
+// owed with its producer) from silently gaining a caller.
+// Positive limbs (anti-vacuous): the definitions and the enum value exist.
+BOOST_AUTO_TEST_CASE(W4c_Dormancy_Structural)
+{
+    const std::string src = PTX_SRCDIR;
+    BOOST_REQUIRE_MESSAGE(!src.empty(),
+        "W4c: PTX_SRCDIR not injected — the structural check could not run");
+
+    // Positive limbs.
+    const std::string store_cpp = P5_slurp(src + "/src/ptx/ptx_quorum_store.cpp");
+    const std::string store_h   = P5_slurp(src + "/src/ptx/ptx_quorum_store.h");
+    BOOST_REQUIRE(!store_cpp.empty() && !store_h.empty());
+    BOOST_CHECK(P5_count(store_cpp, "CPTXQuorumStore::MarkReformed") == 1);
+    BOOST_CHECK(P5_count(store_cpp, "CPTXQuorumStore::RestoreReformedOnUndo") == 1);
+    BOOST_CHECK(P5_count(store_cpp, "CPTXQuorumStore::MarkDisbanded") == 1);
+    BOOST_CHECK(P5_count(store_h, "REFORMED = 4") == 1);
+
+    // Negative limbs: scan the first-party production dirs where a caller
+    // could live.  (Excludes tests; third-party subtrees have no PTX symbols.)
+    const std::vector<std::string> dirs = {
+        "/src/evo", "/src/rpc", "/src/consensus", "/src/primitives",
+        "/src/wallet", "/src/ptx"
+    };
+    std::string prod;
+    for (const std::string& d : dirs) {
+        const fs::path p = fs::path(src + d);
+        if (!fs::is_directory(p)) continue;
+        for (fs::recursive_directory_iterator it(p), end; it != end; ++it) {
+            if (!fs::is_regular_file(it->path())) continue;
+            const std::string sp = it->path().string();
+            if (sp.find("/ptx/test/") != std::string::npos) continue;
+            const std::string ext = it->path().extension().string();
+            if (ext != ".cpp" && ext != ".h") continue;
+            prod += P5_slurp(sp);
+        }
+    }
+    // Also the top-level production TUs a producer would plausibly touch.
+    for (const char* f : {"/src/validation.cpp", "/src/init.cpp"})
+        prod += P5_slurp(src + f);
+    BOOST_REQUIRE(!prod.empty());
+
+    for (const std::string& fn :
+         {"MarkReformed", "RestoreReformedOnUndo", "MarkDisbanded"}) {
+        BOOST_CHECK_MESSAGE(P5_count(prod, "->" + fn + "(") == 0 &&
+                            P5_count(prod, "." + fn + "(") == 0,
+                            "production call-shaped reference to " << fn);
+    }
+    // REFORMED unreached: qualified uses only inside the store TU itself.
+    const size_t total   = P5_count(prod, "PTXQuorumState::REFORMED");
+    const size_t in_store = P5_count(store_cpp, "PTXQuorumState::REFORMED") +
+                            P5_count(store_h, "PTXQuorumState::REFORMED");
+    BOOST_CHECK_MESSAGE(total == in_store,
+        "PTXQuorumState::REFORMED referenced outside the store TU: " <<
+        total << " vs " << in_store);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
