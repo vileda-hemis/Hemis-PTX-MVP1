@@ -2307,6 +2307,14 @@ semantics), ODC-025 (cadence N, open).
 
 ---
 
+**[TIER-4 LOOSE-END BATCH, 2026-07-27 — recorded during W4-e, not acted on.]**
+
+**1. Stale  binary in the host tree (build hygiene).** An untracked July-3  (293MB) in the working tree masked a W4-e compile error: the canonical container build copies the tree, make failed, and the STALE copied binary ran — reporting "no test cases matching filter" instead of the compile error. Build scripts now  it from the container copy pre-build; the host-tree cruft itself is untracked and owed a cleanup (and the canonical invocation a permanent  guard). Tier-4.
+
+**2. ★ THE DISABLED PTX TEST SUITES — an OWED INVESTIGATION, not a resolved item.** Every filtered run lists eight PTX suites : ptx_coalesce / ptx_coalesce_gen / ptx_node_id / ptx_opt_in / ptx_payout / ptx_payout_gen / ptx_explorer_rpc / ptx_wallet / **ptx_pose_rpc** (+ ptx_lottery_state, ptx_sess under some filters — the mechanism disables them outside their own runs). These are OTHER PTX subsystems, untouched by W2.4 — but "disabled" is where correctness rots silently. **Owed: establish per-suite WHY** — infra-not-present-in-this-test-env (benign) vs disabled-because-failing (a hidden gap). ★ **ptx_pose_rpc specifically flagged:** PoSe surfaced repeatedly in W2.4's design (RecordWithhold/Abstain/InvalidCommit have zero production callers; the flat-file determinism caveat) — a disabled pose test suite could be masking KNOWN pose breakage, and pose is load-bearing for the deferred disband design (KDD-074 §4). Investigate before any package that consumes PoSe; do not let the disband package inherit an untested substrate. Tier-4 (escalates to its own ODC if the investigation finds disabled-because-failing).
+
+---
+
 ## Appendix: Register cross-reference
 
 *Program status / roadmap (to first testnet), including live fleet-state snapshots and pre-testnet blockers, lives in the tracked `doc/ptx/PTX_ROADMAP.md`. This register tracks decisions; the roadmap tracks status.*
