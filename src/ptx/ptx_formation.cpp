@@ -100,7 +100,9 @@ bool PTX_Formation_SelectAtAnchor(const CBlockIndex* pindexAnchor,
 PTXRotationDecision PTX_Formation_RotationDueAt(
         const CBlockIndex* pindexAnchor,
         CPTXQuorumStore& store,
-        const Consensus::PTXFormationParams& params)
+        const Consensus::PTXFormationParams& params,
+        const std::function<bool(const CBlockIndex*, CBlock&)>& read_block,
+        const std::function<bool(const CPTXQuorumRecord&, const CBlockIndex*)>& impossible_at)
 {
     // KDD-072 P-b6b — THE TRIGGER POLICY: age test + lowest-hash tie-break.
     //
@@ -132,6 +134,19 @@ PTXRotationDecision PTX_Formation_RotationDueAt(
     for (const CPTXQuorumRecord& rec : active) {
         if (pindexAnchor->nHeight - rec.formation_height < params.nFormationInterval)
             continue;                                     // not yet due
+        // W2.4 W4-e — THE KDD-075 YIELD: terminal-eligibility yields rotation
+        // AT CEREMONY-START.  ★ Keyed on ELIGIBILITY, never "fired": an
+        // eligible quorum the rate limiter defers this window STILL yields —
+        // it stays ACTIVE-queued for its turn.  Keying on "fired" would let
+        // the deferred quorum fall through to rotating, mint a successor with
+        // a fresh (reset) idleness view, and reopen Hazard A through the
+        // limiter.  A rotation-impossible quorum yielding here also stops it
+        // winning the tie-break with a ceremony that cannot start (the
+        // ODC-045 starvation fix — the yield's double duty, KDD-076).
+        // With the params gate at its 0 defaults this is never true.
+        if (PTX_Formation_TerminalEligible(rec, pindexAnchor, params,
+                                           read_block, impossible_at))
+            continue;                                     // yields to reform
         if (lowest == nullptr || rec.quorum_hash < *lowest)
             lowest = &rec.quorum_hash;                    // tie-break: lowest hash wins
     }
@@ -430,8 +445,24 @@ void StartFormationAtAnchor(const CBlockIndex* pindexNew,
         // KDD-072 P-b6a — THE ROTATION BRANCH. The decision is P-b6b's policy;
         // the stub returns due=false today, so the else-arm below is the only
         // reachable path and the fresh behaviour is byte-identical to pre-P-b6a.
+        // W2.4 W4-e — the production eligibility sources: blocks from disk
+        // (the authenticated attributions W4-b verified at connect), and the
+        // resolver composed with the boundary-time DGM lists.  Fail-safe
+        // NOT-impossible when the formation anchor is unknown.
+        const auto readBlockFromDisk = [](const CBlockIndex* p, CBlock& out) {
+            return ReadBlockFromDisk(out, p);
+        };
+        const auto impossibleAt = [](const CPTXQuorumRecord& r, const CBlockIndex* pb) {
+            const CBlockIndex* pForm = LookupBlockIndex(r.quorum_hash);
+            if (pForm == nullptr) return false;   // fail-safe: not impossible
+            const CDeterministicGMList listRot  = deterministicGMManager->GetListForBlock(pb);
+            const CDeterministicGMList listForm = deterministicGMManager->GetListForBlock(pForm);
+            std::string why;
+            return PTX_Formation_RotationImpossible(r, listRot, listForm, why);
+        };
         const PTXRotationDecision decision =
-                PTX_Formation_RotationDueAt(pindexAnchor, *ptxQuorumStore, params);
+                PTX_Formation_RotationDueAt(pindexAnchor, *ptxQuorumStore, params,
+                                            readBlockFromDisk, impossibleAt);
         if (decision.due) {
             // ROTATION: members come from the predecessor record through the
             // SHARED resolver (P-b3a) — the identical resolution V12 and the
@@ -703,5 +734,57 @@ bool PTX_Formation_ForcedReformGraceElapsed(
             return false;  // rotation was possible here: grace restarts
         }
     }
+    return true;
+}
+
+bool PTX_Formation_TerminalEligible(
+        const CPTXQuorumRecord& rec,
+        const CBlockIndex* pindexAnchor,
+        const Consensus::PTXFormationParams& params,
+        const std::function<bool(const CBlockIndex*, CBlock&)>& read_block,
+        const std::function<bool(const CPTXQuorumRecord&, const CBlockIndex*)>& impossible_at)
+{
+    // KDD-074 idle arm — gated by nRetireWindow (0 = disabled).
+    if (params.nRetireWindow > 0 &&
+        PTX_Formation_QuorumIdleAt(rec.quorum_hash, pindexAnchor,
+                                   params.nRetireWindow, read_block)) {
+        return true;
+    }
+    // KDD-076 forced-reform arm — gated by nReformGrace (0 = disabled; the
+    // grace function itself fail-safes on m <= 0).  Due-AND-impossible at
+    // each of the last nReformGrace boundaries, rec-bound.
+    if (params.nReformGrace > 0 &&
+        PTX_Formation_ForcedReformGraceElapsed(
+                rec, pindexAnchor, params.nFormationInterval, params.nReformGrace,
+                [&](const CBlockIndex* pb) { return impossible_at(rec, pb); })) {
+        return true;
+    }
+    return false;
+}
+
+bool PTX_Formation_SelectReformCandidate(
+        const std::vector<std::pair<uint256, int>>& candidates,
+        int tip_height,
+        int rate_window,
+        int last_reform_height,
+        uint256& selected_out)
+{
+    // Gate posture: a disabled limiter selects NOTHING (the transition stays
+    // dormant even with eligibility enabled).
+    if (rate_window <= 0 || candidates.empty()) return false;
+    // One per window: a reform inside the window rate-limits everyone out.
+    if (last_reform_height >= 0 && tip_height - last_reform_height < rate_window) {
+        return false;
+    }
+    // Least-recently-active first (smallest last_activity_height), ties to
+    // the lowest hash — deterministic on every node (the P-b6b shape).
+    const std::pair<uint256, int>* best = nullptr;
+    for (const auto& c : candidates) {
+        if (best == nullptr || c.second < best->second ||
+            (c.second == best->second && c.first < best->first)) {
+            best = &c;
+        }
+    }
+    selected_out = best->first;
     return true;
 }

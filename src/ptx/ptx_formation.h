@@ -132,10 +132,54 @@ struct PTXRotationDecision {
 // All are cheap linear walks over a map holding a handful of entries.
 void PTX_Formation_RunTipSweeps(int tip_height);
 
+// W2.4 W4-e (KDD-075): RotationDueAt now carries THE YIELD — a quorum that is
+// terminal-eligible (idle, or rotation-impossible past grace) yields its
+// rotation AT CEREMONY-START and is skipped by the due-selection.  ★ KEYED ON
+// ELIGIBILITY, never on "the transition fired": a rate-deferred eligible
+// quorum still yields (stays ACTIVE-queued for its limiter turn) — keying on
+// "fired" would let it fall through to rotating, mint a successor with reset
+// idleness, and reopen Hazard A through the limiter (KDD-075's load-bearing
+// clause).  The two injectables (NO defaults — every caller states its
+// sources, the P-b2 posture) feed the W4-d predicates; with the params gate
+// at its 0 defaults nothing is ever eligible and behaviour is byte-identical
+// to P-b6b.  impossible_at is rec-aware (production composes the resolver
+// with GetListForBlock at the boundary; tests inject).
 PTXRotationDecision PTX_Formation_RotationDueAt(
         const CBlockIndex* pindexAnchor,
         CPTXQuorumStore& store,
-        const Consensus::PTXFormationParams& params);
+        const Consensus::PTXFormationParams& params,
+        const std::function<bool(const CBlockIndex*, CBlock&)>& read_block,
+        const std::function<bool(const CPTXQuorumRecord&, const CBlockIndex*)>& impossible_at);
+
+// W2.4 W4-e — THE ELIGIBILITY COMPOSITION (KDD-075/076): terminal-eligible =
+//   (nRetireWindow > 0  AND  idle over that window)            [KDD-074]
+//   OR (nReformGrace > 0 AND due-and-impossible for that many
+//       consecutive boundaries)                                 [KDD-076]
+// One set, two routes in; W4-e's yield reads it, W4-f's producer drains it
+// through the limiter.  Pure composition of the W4-d predicates — no state.
+bool PTX_Formation_TerminalEligible(
+        const CPTXQuorumRecord& rec,
+        const CBlockIndex* pindexAnchor,
+        const Consensus::PTXFormationParams& params,
+        const std::function<bool(const CBlockIndex*, CBlock&)>& read_block,
+        const std::function<bool(const CPTXQuorumRecord&, const CBlockIndex*)>& impossible_at);
+
+// W2.4 W4-e — THE RATE LIMITER (KDD-074): among the terminal-eligible set, at
+// most ONE transition per rate_window blocks, LEAST-RECENTLY-ACTIVE first
+// (smallest last_activity_height; ties broken lowest-hash — the P-b6b
+// tie-break shape, deterministic on every node).  candidates carry
+// (quorum_hash, last_activity_height) — the caller (W4-f) derives activity
+// from the same authenticated attributions the idle scan reads.
+// last_reform_height = the most recent reformed_height across all records
+// (-1 if none); a reform within the window rate-limits everyone out.
+// rate_window <= 0 selects NOTHING (the gate posture).  PURE — W4-f wires
+// the real derivation; the selection itself is this one function.
+bool PTX_Formation_SelectReformCandidate(
+        const std::vector<std::pair<uint256, int>>& candidates,
+        int tip_height,
+        int rate_window,
+        int last_reform_height,
+        uint256& selected_out);
 
 // ---------------------------------------------------------------------------
 // W2.4 W4-d — THE THREE TERMINAL-ELIGIBILITY PREDICATES (KDD-074/075/076).

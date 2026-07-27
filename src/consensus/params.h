@@ -186,6 +186,28 @@ struct PTXFormationParams {
     // it must exceed the ceremony floor M (~47 blocks) so a new boundary
     // cannot fire before the prior ceremony completes.
     int nFormationInterval;
+
+    // ------------------------------------------------------------------
+    // W2.4 W4-e (KDD-074/075/076) — THE TERMINAL-ELIGIBILITY GATE.
+    // ★ ALL THREE DEFAULT 0 == DISABLED on every network (the P-b3b flip
+    // posture): with the gate off, nothing is ever terminal-eligible, the
+    // KDD-075 yield never fires, the limiter never selects — the whole W2.4
+    // lifecycle is dormant-by-parameter.  DEPLOY SAFETY: the bf fleet is
+    // ALL-IDLE (rolls are manual), so a live idle-yield with a default-on
+    // gate would suppress EVERY rotation fleet-wide and break the proven
+    // rotation arc.  W4-f's drill enables these explicitly; no chainparams
+    // sets them at HEAD.
+    // ------------------------------------------------------------------
+    // KDD-074 idle window: a quorum with no attributed roll in the last
+    // nRetireWindow blocks is idle-eligible.  0 = idle arm DISABLED.
+    int nRetireWindow{0};
+    // KDD-076 grace: forced reform only after due-AND-rotation-impossible at
+    // this many consecutive boundaries.  0 = forced-reform arm DISABLED.
+    int nReformGrace{0};
+    // KDD-074 rate limiter: at most one reform transition per this many
+    // blocks (least-recently-active first).  0 = limiter selects NOTHING
+    // (the transition stays dormant even if eligibility is enabled).
+    int nReformRateWindow{0};
 };
 
 /**

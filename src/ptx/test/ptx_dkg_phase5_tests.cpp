@@ -2651,13 +2651,19 @@ BOOST_AUTO_TEST_CASE(Pb5_V12d_RejectsSecondSuccessor)
 // RED (inversion A): make the stub return due=true -> this row fails, and the
 // whole rotation path becomes live — which is exactly what P-b6b will do
 // deliberately, with a policy, not a constant.
+// W2.4 W4-e: RotationDueAt takes the two eligibility sources.  The Pb6b rows
+// run with the params gate at its 0 defaults (no chainparams enables it), so
+// inert stubs preserve the pre-W4-e behaviour byte-identically.
+static bool W4eStubReader(const CBlockIndex*, CBlock& out) { out = CBlock(); return true; }
+static bool W4eStubImpossible(const CPTXQuorumRecord&, const CBlockIndex*) { return false; }
+
 BOOST_AUTO_TEST_CASE(Pb6a_RotationDue_StubbedDisabled)
 {
     BOOST_REQUIRE(evoDb);
     CPTXQuorumStore store(*evoDb);
     const Consensus::PTXFormationParams& params = Params().GetConsensus().ptxFormation;
     // Every input shape the production call site can present — all disabled.
-    const PTXRotationDecision d = PTX_Formation_RotationDueAt(nullptr, store, params);
+    const PTXRotationDecision d = PTX_Formation_RotationDueAt(nullptr, store, params, W4eStubReader, W4eStubImpossible);
     BOOST_CHECK(!d.due);
     BOOST_CHECK(d.predecessor_quorum_hash.IsNull());
 }
@@ -2800,10 +2806,10 @@ BOOST_AUTO_TEST_CASE(Pb6b_Trigger_AgeTestBoundary)
     Pb6bSeedActive(qh, /*formation*/ 1000, /*mined*/ 1005);
 
     CBlockIndex early = Pb6bAnchor(1000 + N - 1);           // one short
-    BOOST_CHECK(!PTX_Formation_RotationDueAt(&early, store, params).due);
+    BOOST_CHECK(!PTX_Formation_RotationDueAt(&early, store, params, W4eStubReader, W4eStubImpossible).due);
 
     CBlockIndex due = Pb6bAnchor(1000 + N);                  // exactly N
-    const PTXRotationDecision d = PTX_Formation_RotationDueAt(&due, store, params);
+    const PTXRotationDecision d = PTX_Formation_RotationDueAt(&due, store, params, W4eStubReader, W4eStubImpossible);
     BOOST_CHECK(d.due);
     BOOST_CHECK(d.predecessor_quorum_hash == qh);
 }
@@ -2828,7 +2834,7 @@ BOOST_AUTO_TEST_CASE(Pb6b_Trigger_TieBreakLowestHashOnly)
     Pb6bSeedActive(hi, 2000, 2006);                          // both same age
 
     CBlockIndex anchor = Pb6bAnchor(2000 + N);               // both due
-    const PTXRotationDecision d = PTX_Formation_RotationDueAt(&anchor, store, params);
+    const PTXRotationDecision d = PTX_Formation_RotationDueAt(&anchor, store, params, W4eStubReader, W4eStubImpossible);
     BOOST_REQUIRE(d.due);
     BOOST_CHECK(d.predecessor_quorum_hash == lo);            // lowest starts
     BOOST_CHECK(!(d.predecessor_quorum_hash == hi));         // the other waits
@@ -3484,6 +3490,161 @@ BOOST_AUTO_TEST_CASE(W4d_Dormancy_Structural)
     for (const std::string& fn : fns)   // negative limb: zero refs elsewhere
         BOOST_CHECK_MESSAGE(P5_count(prod, fn) == 0,
                             "production reference to " << fn << " before W4-e");
+}
+
+// ===========================================================================
+// W2.4 W4-e — the KDD-075 yield + the KDD-074 rate limiter, PARAM-GATED OFF.
+// The two ★ load-bearing pins: keying-on-ELIGIBILITY (Hazard A stays closed
+// through the limiter) and the gate's 0 defaults (deploy safety on the
+// all-idle bf fleet).
+// ===========================================================================
+
+// ★ THE GATE PIN: every knob defaults 0 == DISABLED, and NO chainparams
+// enables any of them — with the gate off, an idle-in-fact due quorum is NOT
+// eligible and RotationDueAt behaves byte-identically to P-b6b (still due).
+// RED: flipping any in-struct default to non-zero fails this test — the
+// deploy-safety pin (bf is all-idle; a default-on gate suppresses every
+// rotation fleet-wide).
+BOOST_AUTO_TEST_CASE(W4e_GateDefaultOff_Dormancy)
+{
+    const Consensus::PTXFormationParams& params = Params().GetConsensus().ptxFormation;
+    BOOST_CHECK_EQUAL(params.nRetireWindow, 0);
+    BOOST_CHECK_EQUAL(params.nReformGrace, 0);
+    BOOST_CHECK_EQUAL(params.nReformRateWindow, 0);
+
+    BOOST_REQUIRE(evoDb);
+    PTX_BLS_WipeShares(evoDb.get());
+    CPTXQuorumStore store(*evoDb);
+    const int N = params.nFormationInterval;
+
+    const uint256 qh = QHk(0xF1);
+    Pb6bSeedActive(qh, /*formation*/ 1000, /*mined*/ 1005);
+    std::vector<CBlockIndex> chain = W4dChain(1000 + N);
+    const CBlockIndex* due = &chain[1000 + N];
+
+    // Idle by every measure (empty blocks), impossible by every measure —
+    // and STILL not eligible, because the gate is off.
+    auto emptyReader = [](const CBlockIndex*, CBlock& out) { out = CBlock(); return true; };
+    auto alwaysImpossible = [](const CPTXQuorumRecord&, const CBlockIndex*) { return true; };
+    CPTXQuorumRecord rec;
+    BOOST_REQUIRE(store.GetQuorumRecord(qh, rec));
+    BOOST_CHECK(!PTX_Formation_TerminalEligible(rec, due, params, emptyReader, alwaysImpossible));
+
+    // And the due-decision is byte-identical to pre-W4-e: the quorum rotates.
+    const PTXRotationDecision d =
+        PTX_Formation_RotationDueAt(due, store, params, emptyReader, alwaysImpossible);
+    BOOST_CHECK(d.due);
+    BOOST_CHECK(d.predecessor_quorum_hash == qh);
+}
+
+// ★ THE KEYING PIN (KDD-075): with the gate ON, ALL eligible quorums yield —
+// including the one the rate limiter would defer this window.  RED
+// (key-on-fired inversion): only the limiter-selected quorum yields, the
+// deferred one falls through to rotating — minting a successor with a reset
+// idleness view and REOPENING HAZARD A through the limiter.  This test must
+// fail under that inversion.
+BOOST_AUTO_TEST_CASE(W4e_YieldKeyedOnEligibility)
+{
+    Consensus::PTXFormationParams params = Params().GetConsensus().ptxFormation;
+    params.nRetireWindow = 50;          // idle arm ON
+    params.nReformRateWindow = 100;     // limiter would pick at most ONE
+
+    BOOST_REQUIRE(evoDb);
+    PTX_BLS_WipeShares(evoDb.get());
+    CPTXQuorumStore store(*evoDb);
+    const int N = params.nFormationInterval;
+
+    // TWO due quorums, both idle (no attributed rolls anywhere).
+    const uint256 qhA = QHk(0x0A), qhB = QHk(0x0B);
+    Pb6bSeedActive(qhA, 1000, 1005);
+    Pb6bSeedActive(qhB, 1000, 1006);
+    std::vector<CBlockIndex> chain = W4dChain(1000 + N);
+    const CBlockIndex* due = &chain[1000 + N];
+    auto emptyReader = [](const CBlockIndex*, CBlock& out) { out = CBlock(); return true; };
+    auto neverImpossible = [](const CPTXQuorumRecord&, const CBlockIndex*) { return false; };
+
+    // BOTH yield: no rotation is due at this anchor, even though the limiter
+    // could only ever transition one of them this window.  The deferred one
+    // stays ACTIVE-queued — it must NOT fall through to rotating.
+    const PTXRotationDecision d =
+        PTX_Formation_RotationDueAt(due, store, params, emptyReader, neverImpossible);
+    BOOST_CHECK_MESSAGE(!d.due,
+        "an eligible-but-rate-deferred quorum fell through to rotating - Hazard A reopened");
+}
+
+// The composition: idle OR (impossible AND grace), each arm under its own
+// knob.  RED: composition inversions flip the per-arm rows.
+BOOST_AUTO_TEST_CASE(W4e_YieldComposition)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_BLS_WipeShares(evoDb.get());
+    CPTXQuorumStore store(*evoDb);
+    Consensus::PTXFormationParams params = Params().GetConsensus().ptxFormation;
+    const int N = params.nFormationInterval;
+
+    const uint256 qh = QHk(0xF2);
+    Pb6bSeedActive(qh, 1000, 1005);
+    std::vector<CBlockIndex> chain = W4dChain(1000 + N);
+    const CBlockIndex* due = &chain[1000 + N];
+    CPTXQuorumRecord rec;
+    BOOST_REQUIRE(store.GetQuorumRecord(qh, rec));
+
+    auto emptyReader = [](const CBlockIndex*, CBlock& out) { out = CBlock(); return true; };
+    auto neverImpossible = [](const CPTXQuorumRecord&, const CBlockIndex*) { return false; };
+    auto alwaysImpossible = [](const CPTXQuorumRecord&, const CBlockIndex*) { return true; };
+
+    // Idle arm alone (window ON, grace OFF): idle -> eligible.
+    params.nRetireWindow = 50; params.nReformGrace = 0;
+    BOOST_CHECK(PTX_Formation_TerminalEligible(rec, due, params, emptyReader, neverImpossible));
+
+    // Busy (an attributed roll at the anchor): NOT eligible via the idle arm.
+    std::map<int, CBlock> blocks = {{1000 + N, W4dRollBlock(qh)}};
+    auto busyReader = [&blocks](const CBlockIndex* p, CBlock& out) {
+        auto it = blocks.find(p->nHeight);
+        out = (it != blocks.end()) ? it->second : CBlock();
+        return true;
+    };
+    BOOST_CHECK(!PTX_Formation_TerminalEligible(rec, due, params, busyReader, neverImpossible));
+
+    // Forced arm alone (window OFF, grace ON): impossible-and-due -> eligible
+    // even while BUSY (a dead-but-demanded quorum reforms on the impossible
+    // route, not the idle route).
+    params.nRetireWindow = 0; params.nReformGrace = 1;
+    BOOST_CHECK(PTX_Formation_TerminalEligible(rec, due, params, busyReader, alwaysImpossible));
+
+    // Neither arm fires: possible and busy -> not eligible.
+    BOOST_CHECK(!PTX_Formation_TerminalEligible(rec, due, params, busyReader, neverImpossible));
+}
+
+// The limiter: one per window, least-recently-active first, lowest-hash ties,
+// disabled selects nothing.  RED: most-recent selection / dropped rate check.
+BOOST_AUTO_TEST_CASE(W4e_LimiterSelectsOneLRA)
+{
+    const uint256 hiHash = QHk(0xEE), loHash = QHk(0x11);
+    uint256 sel;
+
+    // LRA wins: B (last active 50) over A (last active 100).
+    std::vector<std::pair<uint256, int>> cands = {{hiHash, 100}, {loHash, 50}};
+    BOOST_REQUIRE(PTX_Formation_SelectReformCandidate(cands, 1000, 200, -1, sel));
+    BOOST_CHECK(sel == loHash);
+    // ...independent of ordering.
+    std::vector<std::pair<uint256, int>> rev = {{loHash, 50}, {hiHash, 100}};
+    BOOST_REQUIRE(PTX_Formation_SelectReformCandidate(rev, 1000, 200, -1, sel));
+    BOOST_CHECK(sel == loHash);
+
+    // Tie on activity: lowest hash wins (the P-b6b shape).
+    std::vector<std::pair<uint256, int>> tie = {{hiHash, 70}, {loHash, 70}};
+    BOOST_REQUIRE(PTX_Formation_SelectReformCandidate(tie, 1000, 200, -1, sel));
+    BOOST_CHECK(sel == loHash);
+
+    // ONE per window: a reform inside the window rate-limits everyone out...
+    BOOST_CHECK(!PTX_Formation_SelectReformCandidate(cands, 1000, 200, 900, sel));
+    // ...and exactly at the window edge it re-allows.
+    BOOST_CHECK(PTX_Formation_SelectReformCandidate(cands, 1000, 200, 800, sel));
+
+    // Gate posture: disabled limiter or no candidates selects nothing.
+    BOOST_CHECK(!PTX_Formation_SelectReformCandidate(cands, 1000, 0, -1, sel));
+    BOOST_CHECK(!PTX_Formation_SelectReformCandidate({}, 1000, 200, -1, sel));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
