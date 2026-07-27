@@ -11,7 +11,9 @@
 #include "ptx/ptx_accum_script.h"
 #include "rpc/protocol.h"
 #include "script/script.h"
+#include "streams.h"
 #include "sync.h"
+#include "version.h"
 
 #include <boost/test/unit_test.hpp>
 
@@ -112,6 +114,44 @@ BOOST_AUTO_TEST_CASE(PTXSESSValidOutput_IgnoresNonAccumExtraOutputs)
            << OP_EQUALVERIFY << OP_CHECKSIG;
     mtx.vout.push_back(CTxOut(50 * COIN, change));
     BOOST_CHECK_EQUAL(RunCheck(mtx), "");
+}
+
+// ---------------------------------------------------------------------------
+// W2.4 W4-a — quorum_hash attribution field (KDD-074/076).
+
+// The attribution survives the PRODUCTION serialization path (SetTxPayload ->
+// GetTxPayload), not just the in-memory struct.
+BOOST_AUTO_TEST_CASE(W4a_AttributionRoundTrip)
+{
+    CMutableTransaction mtx = MakePTXSESSBase();
+    CProbabilisticTxPayload payload;
+    BOOST_REQUIRE(GetTxPayload(CTransaction(mtx), payload));
+    payload.quorum_hash = uint256S("ac5c28ed9d744ff80dfcf582b69c12b85fc4ce345d84243c6293f7c78d3c54b1");
+    SetTxPayload(mtx, payload);
+
+    CProbabilisticTxPayload out;
+    BOOST_REQUIRE(GetTxPayload(CTransaction(mtx), out));
+    BOOST_CHECK(out.quorum_hash ==
+                uint256S("ac5c28ed9d744ff80dfcf582b69c12b85fc4ce345d84243c6293f7c78d3c54b1"));
+    BOOST_CHECK(!out.quorum_hash.IsNull());
+}
+
+// The serialization boundary: a legacy-layout stream (everything up to
+// quorum_sig, no quorum_hash) must FAIL to deserialize — never be silently
+// read with garbage attribution. Wire-gate context: the banked bf chain holds
+// zero type-6 txs, so no real payload has the legacy layout.
+BOOST_AUTO_TEST_CASE(W4a_LegacyStreamBoundary)
+{
+    CProbabilisticTxPayload payload;
+    payload.quorum_hash = uint256S("ac5c28ed9d744ff80dfcf582b69c12b85fc4ce345d84243c6293f7c78d3c54b1");
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << payload;
+
+    // The legacy layout is exactly the new one minus the trailing 32 bytes.
+    CDataStream legacy(std::vector<char>(ss.begin(), ss.end() - 32),
+                       SER_NETWORK, PROTOCOL_VERSION);
+    CProbabilisticTxPayload out;
+    BOOST_CHECK_THROW(legacy >> out, std::ios_base::failure);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

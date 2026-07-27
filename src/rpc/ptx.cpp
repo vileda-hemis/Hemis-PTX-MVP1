@@ -383,6 +383,7 @@ UniValue ptx_roll(const JSONRPCRequest& request)
     payload.results          = results;
     payload.quorum_members   = member_ids;
     payload.quorum_sig       = threshold_sig_bytes;
+    payload.quorum_hash      = dkg_ctx.quorum_hash;
     // quorum_sig_hash = SHA256(threshold_sig); non-null satisfies existing validation.
     {
         CSHA256 qh;

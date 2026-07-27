@@ -529,6 +529,11 @@ struct CProbabilisticTxPayload {
     std::vector<std::string> quorum_members;
     // BLS threshold signature (96 bytes, Phase 2); quorum_sig_hash = SHA256(quorum_sig).
     std::vector<uint8_t> quorum_sig;
+    // W2.4 (KDD-074/076): the signing quorum's record hash — the attribution
+    // that makes "this quorum produced output at height h" chain-computable.
+    // NOT a trustworthy trigger input until the consensus quorum_sig verify
+    // lands (W4-b): until then any staker can stamp an arbitrary quorum_hash.
+    uint256 quorum_hash;
 
     SERIALIZE_METHODS(CProbabilisticTxPayload, obj)
     {
@@ -538,7 +543,7 @@ struct CProbabilisticTxPayload {
                   obj.exclude_integers, obj.exclude_txids,
                   obj.round_seed, obj.beacon, obj.results,
                   obj.quorum_sig_hash, obj.quorum_members,
-                  obj.quorum_sig);
+                  obj.quorum_sig, obj.quorum_hash);
     }
 };
 
