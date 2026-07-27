@@ -2297,6 +2297,14 @@ semantics), ODC-025 (cadence N, open).
 
 **ODC:** ODC-046
 
+> **[CAUSE ESTABLISHED, 2026-07-27 — appended after git-blame/log investigation.]** ★ **Verdict: NEVER-HAD-IT (in this repository, definitively).** `git blame` attributes every line of the GetAncestor walk to **`1f34501` ("first step", 2023-07-20, TheExiledMonk) — the wholesale 2,814-file tree import that created this repository.** chain.cpp has exactly three commits here (`1f34501` import → checkpoint hash → hemis rename); **no commit ever touched the walk, so no removal — casualty or reasoned — ever happened in this repo.** The guard was absent in the imported ancestor.
+>
+> **The lineage evidence:** the fork's walk is the shape of **upstream Bitcoin's ORIGINAL 2014 skiplist implementation** — no `pskip` guard in the skip branch, the "Only follow pskip if pprev->pskip isn't better" comment verbatim — **plus** the later `assert(pindexWalk->pprev)` in the else branch. So the PIVX-lineage ancestor partially tracked upstream hardening (picked up the pprev assert) but **stopped before upstream added the `pskip != nullptr &&` guard to the skip branch.** Whether the intermediate lineage (PIVX/predecessors) dropped it or never merged it is not answerable from this repo's history — but the discriminator that matters is **excluded: there is no reasoned-removal commit and no invariant argument anywhere in this history.** Nothing was decided; the code simply predates the fix.
+>
+> **The invariant, checked (item 4):** the skip branch's CONDITION is pure height arithmetic (`GetSkipHeight` reads no pointers), so it can select the skip branch while `pskip` is null — the guard is what makes null-pskip degrade to the pprev walk instead of faulting. The implicit "skiplist always built" invariant **holds in production today**: `BuildSkip` has exactly two production call sites (`validation.cpp:2509` AddToBlockIndex — every new block; `:3627` the load-time loop — every loaded index) and every production `CBlockIndex` passes through one of them. Hand-built indexes exist **only in tests** (the Pb6b anchor idiom, the W4-d chains). **ODC-046's scope therefore stands as written — latent in production, real for hand-built indexes — no widening needed;** but the invariant is IMPLICIT (nothing enforces that a future construction path calls BuildSkip), which is exactly why the owed one-token guard is hardening worth doing rather than paranoia.
+>
+> **Consequence for the owed fix:** "restore the guard" is the complete remedy — there is no reasoned removal being papered over and no weakened-invariant exposure beyond GetAncestor itself. The fix remains its own small commit with its own RED (a skiplist-less index driven through the skip branch), per the entry above.
+
 ---
 
 ## Appendix: Register cross-reference
