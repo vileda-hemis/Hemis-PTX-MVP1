@@ -9,6 +9,8 @@
 #include "chainparams.h"
 #include "consensus/params.h"
 #include "logging.h"
+#include "primitives/block.h"        // W2.4 W4-d: CBlock walk (idle derive-at-eval)
+#include "primitives/transaction.h"  // W2.4 W4-d: CProbabilisticTxPayload + GetTxPayload
 #include "net.h" // g_connman (KDD-065 member-connection hooks)
 #include "evo/evodb.h"                // KDD-072 P-b6b: evoDb for the tip sweeps
 #include "ptx/ptx_bls.h"                // KDD-072 P-b6b: ExpirePending / DiscardSuperseded
@@ -608,4 +610,98 @@ void PTX_Formation_NotifyUpdatedBlockTip(const CBlockIndex* pindexNew,
     }
 
     StartFormationAtAnchor(pindexNew, params, /*fBoundary=*/true);
+}
+
+// ---------------------------------------------------------------------------
+// W2.4 W4-d — the three terminal-eligibility predicates (KDD-074/075/076).
+// Pure and stateless; see the header for the full contracts.  DORMANT: no
+// production caller until W4-e composes them into the RotationDueAt yield.
+// ---------------------------------------------------------------------------
+
+bool PTX_Formation_BlockHasAttributedRoll(const CBlock& block,
+                                          const uint256& quorum_hash)
+{
+    for (const auto& tx : block.vtx) {
+        if (!tx->IsProbabilisticTx()) continue;
+        CProbabilisticTxPayload payload;
+        if (!GetTxPayload(*tx, payload)) continue;
+        // The attribution compared here is AUTHENTICATED: W4-b rejects any
+        // roll whose quorum_sig does not verify against the named record's
+        // group_pk, so a connected block cannot carry a forged quorum_hash.
+        if (payload.quorum_hash == quorum_hash) return true;
+    }
+    return false;
+}
+
+bool PTX_Formation_QuorumIdleAt(
+        const uint256& quorum_hash,
+        const CBlockIndex* pindexTip,
+        int n_retire,
+        const std::function<bool(const CBlockIndex*, CBlock&)>& read_block)
+{
+    // FAIL-SAFE: degenerate inputs answer NOT idle — never retire on missing
+    // data (the same posture as the as-of predicate's unknown-state arm).
+    if (pindexTip == nullptr || n_retire <= 0 || !read_block) return false;
+
+    // The window (tip - n_retire, tip]: exactly n_retire blocks, walked
+    // tip-first; truncated at genesis on a young chain.
+    const CBlockIndex* p = pindexTip;
+    for (int i = 0; i < n_retire && p != nullptr; ++i, p = p->pprev) {
+        CBlock block;
+        if (!read_block(p, block)) return false;  // unreadable: NOT idle
+        if (PTX_Formation_BlockHasAttributedRoll(block, quorum_hash)) {
+            return false;                          // attributed output in window
+        }
+    }
+    return true;
+}
+
+bool PTX_Formation_RotationImpossible(
+        const CPTXQuorumRecord& predecessor,
+        const CDeterministicGMList& listAtRotationAnchor,
+        const CDeterministicGMList& listAtFormationAnchor,
+        std::string& why_out)
+{
+    // The P-b3a resolver IS the predicate (one implementation, KDD-073):
+    // impossible == the same-set resolve refuses.  Never reimplemented — the
+    // eligibility and V12's validity can therefore never disagree.
+    std::vector<CDeterministicGMCPtr> unused;
+    return !PTX_DKG_ResolveRotationQuorum(predecessor, listAtRotationAnchor,
+                                          listAtFormationAnchor, unused, why_out);
+}
+
+bool PTX_Formation_ForcedReformGraceElapsed(
+        const CPTXQuorumRecord& rec,
+        const CBlockIndex* pindexAnchor,
+        int formation_interval,
+        int grace_m,
+        const std::function<bool(const CBlockIndex*)>& impossible_at)
+{
+    // FAIL-SAFE false: a grace that cannot be evaluated has not elapsed.
+    if (pindexAnchor == nullptr || formation_interval <= 0 || grace_m <= 0 ||
+        !impossible_at) {
+        return false;
+    }
+    // Due-AND-impossible at each of the last grace_m boundaries, newest
+    // first.  Any boundary that was NOT due (quorum too young there) or NOT
+    // impossible (the pathological ProUpReg self-heal) breaks the run — the
+    // stateless re-derivation IS the grace reset.
+    for (int i = 0; i < grace_m; ++i) {
+        const int bh = pindexAnchor->nHeight - i * formation_interval;
+        if (bh < 0) return false;
+        // Plain pprev walk, NOT GetAncestor: this tree's GetAncestor follows
+        // pskip unguarded (chain.cpp — upstream guards it, this fork doesn't),
+        // so it faults on any index without a built skiplist.  The walk is
+        // bounded by grace_m * interval and assumption-free.
+        const CBlockIndex* pb = pindexAnchor;
+        while (pb != nullptr && pb->nHeight > bh) pb = pb->pprev;
+        if (pb == nullptr || pb->nHeight != bh) return false;
+        if (pb->nHeight - rec.formation_height < formation_interval) {
+            return false;  // not yet due at this boundary
+        }
+        if (!impossible_at(pb)) {
+            return false;  // rotation was possible here: grace restarts
+        }
+    }
+    return true;
 }

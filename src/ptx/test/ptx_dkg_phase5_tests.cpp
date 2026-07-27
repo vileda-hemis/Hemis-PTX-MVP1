@@ -28,6 +28,7 @@
 #include "evo/specialtx_validation.h"
 #include "ptx/ptx_accum_script.h"  // W2.4 W4-b: accum output for the roll-tx shape
 #include "consensus/validation.h"
+#include "primitives/block.h"       // W2.4 W4-d: CBlock for the idle-scan fakes
 #include "primitives/transaction.h"
 
 #include "bls/bls_wrapper.h"
@@ -40,6 +41,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <cstring>
+#include <set>
 #include <fstream>                  // KDD-070 P5: read source files for the structural check
 #include <map>
 #include <sstream>
@@ -3287,6 +3289,201 @@ BOOST_AUTO_TEST_CASE(W4c_Dormancy_Structural)
     BOOST_CHECK_MESSAGE(total == in_store,
         "PTXQuorumState::REFORMED referenced outside the store TU: " <<
         total << " vs " << in_store);
+}
+
+// ===========================================================================
+// W2.4 W4-d — the three terminal-eligibility predicates (KDD-074/075/076).
+// Pure, stateless, DORMANT (W4-e composes them).  Each RED-proven by
+// inversion: idle window boundary + attribution-soundness; resolver-reject
+// classification; grace-M boundary + heal-reset.
+// ===========================================================================
+
+// A pprev-linked fake chain 0..top (GetAncestor degenerates to a pprev walk
+// with pskip null — the Pb6b anchor idiom, extended to a chain).
+static std::vector<CBlockIndex> W4dChain(int top)
+{
+    std::vector<CBlockIndex> chain(top + 1);
+    for (int h = 0; h <= top; ++h) {
+        chain[h].nHeight = h;
+        chain[h].pprev   = (h > 0) ? &chain[h - 1] : nullptr;
+    }
+    return chain;
+}
+
+// A block carrying one roll attributed to qh (sig content irrelevant here —
+// the scan reads attributions the W4-b verify already authenticated at
+// connect; it does not re-verify).
+static CBlock W4dRollBlock(const uint256& qh)
+{
+    CBlock b;
+    b.vtx.push_back(MakeTransactionRef(
+        W4bMakeRollTx(qh, QHk(0x77), std::vector<uint8_t>(96, 0x01))));
+    return b;
+}
+
+// Idle derive-at-eval: the window is (tip - n, tip] EXACTLY, the match is
+// attribution-scoped, and missing data answers NOT idle.
+// RED: window off-by-one flips the at-boundary case; an any-roll (rather than
+// attributed-roll) match flips the other-quorum case.
+BOOST_AUTO_TEST_CASE(W4d_IdleWindow)
+{
+    const uint256 qh = QHk(0xE1), other = QHk(0xE2);
+    std::vector<CBlockIndex> chain = W4dChain(200);
+    const CBlockIndex* tip = &chain[200];
+    const int N = 50;   // window (150, 200]
+
+    std::map<int, CBlock> blocks;   // heights carrying an attributed roll
+    auto reader = [&blocks](const CBlockIndex* p, CBlock& out) {
+        auto it = blocks.find(p->nHeight);
+        out = (it != blocks.end()) ? it->second : CBlock();
+        return true;
+    };
+
+    // (a) no rolls anywhere: idle.
+    BOOST_CHECK(PTX_Formation_QuorumIdleAt(qh, tip, N, reader));
+
+    // (b) roll at EXACTLY tip-N (150): OUTSIDE the window — still idle.
+    blocks = {{150, W4dRollBlock(qh)}};
+    BOOST_CHECK(PTX_Formation_QuorumIdleAt(qh, tip, N, reader));
+
+    // (c) roll at tip-N+1 (151): first block INSIDE — not idle.
+    blocks = {{151, W4dRollBlock(qh)}};
+    BOOST_CHECK(!PTX_Formation_QuorumIdleAt(qh, tip, N, reader));
+
+    // (d) roll at the tip itself: not idle.
+    blocks = {{200, W4dRollBlock(qh)}};
+    BOOST_CHECK(!PTX_Formation_QuorumIdleAt(qh, tip, N, reader));
+
+    // (e) ATTRIBUTION-SCOPED: another quorum's roll inside the window does
+    // NOT count as X's activity.
+    blocks = {{180, W4dRollBlock(other)}};
+    BOOST_CHECK(PTX_Formation_QuorumIdleAt(qh, tip, N, reader));
+
+    // (f) FAIL-SAFE: an unreadable block answers NOT idle.
+    blocks.clear();
+    auto badReader = [](const CBlockIndex* p, CBlock& out) {
+        return p->nHeight != 170;   // 170 unreadable
+    };
+    BOOST_CHECK(!PTX_Formation_QuorumIdleAt(qh, tip, N, badReader));
+
+    // (g) degenerate params: never idle.
+    BOOST_CHECK(!PTX_Formation_QuorumIdleAt(qh, nullptr, N, reader));
+    BOOST_CHECK(!PTX_Formation_QuorumIdleAt(qh, tip, 0, reader));
+}
+
+// Rotation-impossible = the P-b3a resolver refuses (one implementation, never
+// reimplemented).  RED: inverting the wrapper flips both classifications.
+BOOST_AUTO_TEST_CASE(W4d_RotationImpossible)
+{
+    Pb3aWorld w = Pb3aMakeWorld();
+    std::string why;
+
+    // All members present: possible.
+    BOOST_CHECK(!PTX_Formation_RotationImpossible(w.rec, w.list, w.list, why));
+
+    // A member absent from the rotation-anchor list: impossible, with the
+    // resolver's own reason (the Pb3a missing-member idiom).
+    CDeterministicGMList listMissing;
+    for (const auto& d : w.dgms) {
+        if (d->proTxHash == w.rec.members[0].proTxHash) continue;
+        listMissing.AddGM(d);
+    }
+    BOOST_CHECK(PTX_Formation_RotationImpossible(w.rec, listMissing, w.list, why));
+    BOOST_CHECK(why.find("unresolvable") != std::string::npos);
+}
+
+// Grace-M: due-AND-impossible at each of the last M boundaries; a healed or
+// not-yet-due boundary breaks the run (the stateless grace reset).
+// RED: M off-by-one passes at M-1; heal-reset removal passes the healed case.
+BOOST_AUTO_TEST_CASE(W4d_GraceElapsed)
+{
+    const int INTERVAL = 80;
+    std::vector<CBlockIndex> chain = W4dChain(400);
+    const CBlockIndex* anchor = &chain[400];   // boundaries at 400, 320 for M=2
+
+    CPTXQuorumRecord rec;
+    rec.formation_height = 80;                 // due at both boundaries
+
+    std::set<int> impossibleAt;
+    auto impossible = [&impossibleAt](const CBlockIndex* pb) {
+        return impossibleAt.count(pb->nHeight) > 0;
+    };
+
+    // (a) impossible at both of the last two boundaries: grace elapsed.
+    impossibleAt = {400, 320};
+    BOOST_CHECK(PTX_Formation_ForcedReformGraceElapsed(rec, anchor, INTERVAL, 2, impossible));
+
+    // (b) HEALED at the older boundary (possible at 320): grace NOT elapsed —
+    // the pathological ProUpReg self-heal resets the run by construction.
+    impossibleAt = {400};
+    BOOST_CHECK(!PTX_Formation_ForcedReformGraceElapsed(rec, anchor, INTERVAL, 2, impossible));
+
+    // (c) M=1: the current boundary alone decides.
+    BOOST_CHECK(PTX_Formation_ForcedReformGraceElapsed(rec, anchor, INTERVAL, 1, impossible));
+
+    // (d) YOUNG quorum: not yet due at the older boundary (formed 300;
+    // 320-300 < 80) — grace cannot elapse even though both marked impossible.
+    impossibleAt = {400, 320};
+    CPTXQuorumRecord young;
+    young.formation_height = 300;
+    BOOST_CHECK(!PTX_Formation_ForcedReformGraceElapsed(young, anchor, INTERVAL, 2, impossible));
+
+    // (e) degenerate: M=0 / null anchor / boundary below genesis.
+    BOOST_CHECK(!PTX_Formation_ForcedReformGraceElapsed(rec, anchor, INTERVAL, 0, impossible));
+    BOOST_CHECK(!PTX_Formation_ForcedReformGraceElapsed(rec, nullptr, INTERVAL, 2, impossible));
+    impossibleAt = {40};
+    CPTXQuorumRecord early;
+    early.formation_height = 0;
+    BOOST_CHECK(!PTX_Formation_ForcedReformGraceElapsed(early, &chain[40], INTERVAL, 2, impossible));
+}
+
+// Dormancy (the P5 idiom): the three predicates + the block helper have ZERO
+// production references outside their defining TU — W4-e is their first
+// caller.  Positive limbs anti-vacuous.
+BOOST_AUTO_TEST_CASE(W4d_Dormancy_Structural)
+{
+    const std::string src = PTX_SRCDIR;
+    BOOST_REQUIRE_MESSAGE(!src.empty(),
+        "W4d: PTX_SRCDIR not injected — the structural check could not run");
+
+    const std::string form_cpp = P5_slurp(src + "/src/ptx/ptx_formation.cpp");
+    const std::string form_h   = P5_slurp(src + "/src/ptx/ptx_formation.h");
+    BOOST_REQUIRE(!form_cpp.empty() && !form_h.empty());
+
+    const std::vector<std::string> fns = {
+        "PTX_Formation_BlockHasAttributedRoll",
+        "PTX_Formation_QuorumIdleAt",
+        "PTX_Formation_RotationImpossible",
+        "PTX_Formation_ForcedReformGraceElapsed",
+    };
+    for (const std::string& fn : fns)   // positive limb: defined in the TU
+        BOOST_CHECK_MESSAGE(P5_count(form_cpp, "bool " + fn + "(") == 1, fn);
+
+    const std::vector<std::string> dirs = {
+        "/src/evo", "/src/rpc", "/src/consensus", "/src/primitives",
+        "/src/wallet", "/src/ptx"
+    };
+    std::string prod;
+    for (const std::string& d : dirs) {
+        const fs::path p = fs::path(src + d);
+        if (!fs::is_directory(p)) continue;
+        for (fs::recursive_directory_iterator it(p), end; it != end; ++it) {
+            if (!fs::is_regular_file(it->path())) continue;
+            const std::string sp = it->path().string();
+            if (sp.find("/ptx/test/") != std::string::npos) continue;
+            if (sp.find("ptx_formation.") != std::string::npos) continue; // the defining TU
+            const std::string ext = it->path().extension().string();
+            if (ext != ".cpp" && ext != ".h") continue;
+            prod += P5_slurp(sp);
+        }
+    }
+    for (const char* f : {"/src/validation.cpp", "/src/init.cpp"})
+        prod += P5_slurp(src + f);
+    BOOST_REQUIRE(!prod.empty());
+
+    for (const std::string& fn : fns)   // negative limb: zero refs elsewhere
+        BOOST_CHECK_MESSAGE(P5_count(prod, fn) == 0,
+                            "production reference to " << fn << " before W4-e");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

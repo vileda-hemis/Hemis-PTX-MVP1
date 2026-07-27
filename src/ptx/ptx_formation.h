@@ -26,6 +26,7 @@
 #include "ptx/ptx_dkg.h"
 #include "ptx/ptx_quorum_store.h"
 
+#include <functional>
 #include <vector>
 
 class CBlockIndex;
@@ -135,6 +136,61 @@ PTXRotationDecision PTX_Formation_RotationDueAt(
         const CBlockIndex* pindexAnchor,
         CPTXQuorumStore& store,
         const Consensus::PTXFormationParams& params);
+
+// ---------------------------------------------------------------------------
+// W2.4 W4-d — THE THREE TERMINAL-ELIGIBILITY PREDICATES (KDD-074/075/076).
+// Pure, stateless, DORMANT: nothing calls them until W4-e composes them into
+// the RotationDueAt yield (idle -> reform; impossible AND grace -> forced
+// reform) and W4-f drains the eligible set through the rate limiter.
+// ---------------------------------------------------------------------------
+
+// Does this block carry a roll (type-6) ATTRIBUTED to quorum_hash?  The
+// attribution read here is TRUSTWORTHY only because W4-b consensus-verifies
+// quorum_sig against the named record's group_pk — a forged quorum_hash never
+// connects, so the idle signal below reads authenticated attributions only.
+bool PTX_Formation_BlockHasAttributedRoll(const CBlock& block,
+                                          const uint256& quorum_hash);
+
+// KDD-074 idle-eligibility, DERIVE-AT-EVAL (never a stored counter — the
+// stored form has an unclosable disconnect-undo hole; deriving leaves ZERO
+// undo surface).  True iff NO attributed roll for quorum_hash exists in the
+// window (tip_height - n_retire, tip_height] — the last n_retire blocks,
+// truncated at genesis on a young chain.  n_retire is a PARAMETER (W4-e owns
+// the gate; default-disabled there, not here).  read_block has NO default —
+// every caller states its source (the P-b2 no-default posture); production
+// passes a ReadBlockFromDisk wrapper, tests inject.  FAIL-SAFE: unreadable
+// block or degenerate params answer NOT idle (never retire on missing data).
+bool PTX_Formation_QuorumIdleAt(
+        const uint256& quorum_hash,
+        const CBlockIndex* pindexTip,
+        int n_retire,
+        const std::function<bool(const CBlockIndex*, CBlock&)>& read_block);
+
+// KDD-076 rotation-impossible: the P-b3a resolver REUSED as a predicate (one
+// implementation — reject-not-exclude decides both rotation validity and this
+// eligibility, so they can never disagree).  Stateless: re-evaluated fresh
+// each boundary, which is what dissolves terminal-vs-transient (a ProUpReg
+// self-heal simply makes this return false again).
+bool PTX_Formation_RotationImpossible(
+        const CPTXQuorumRecord& predecessor,
+        const CDeterministicGMList& listAtRotationAnchor,
+        const CDeterministicGMList& listAtFormationAnchor,
+        std::string& why_out);
+
+// KDD-076 grace-M: forced reform only after the quorum was DUE-AND-IMPOSSIBLE
+// at each of the last grace_m boundaries (anchor, anchor-interval, ...).
+// STATELESS — re-derived from chain history each call, so a boundary where
+// rotation was possible (the pathological self-heal) breaks the run and the
+// grace restarts by construction; no stored grace counter exists.
+// impossible_at evaluates predicate #2 at a historical boundary (production
+// composes it with GetListForBlock; tests inject).  FAIL-SAFE false on
+// degenerate params / missing ancestors.
+bool PTX_Formation_ForcedReformGraceElapsed(
+        const CPTXQuorumRecord& rec,
+        const CBlockIndex* pindexAnchor,
+        int formation_interval,
+        int grace_m,
+        const std::function<bool(const CBlockIndex*)>& impossible_at);
 
 // ---------------------------------------------------------------------------
 // W2.2 SG-1b-i — the pure schedule core (boundary + anchor). PURITY IS
