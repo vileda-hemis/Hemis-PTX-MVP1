@@ -23,6 +23,7 @@
 #include "ptx/ptx_dkg_commitments.h"
 #include "ptx/ptx_formation.h"
 #include "ptx/ptx_lottery_state.h"
+#include "ptx/ptx_bls.h"            // W2.4 W4-b: PTX_BLS_Verify in consensus
 #include "ptx/ptx_quorum_store.h"
 #include "ptx/ptx_winner_selection.h"
 #include "spork.h"
@@ -965,6 +966,31 @@ bool CheckSpecialTx(const CTransaction& tx, const CBlockIndex* pindexPrev, const
                 }
                 if (accumCount != 1)
                     return state.Invalid(false, REJECT_INVALID, "ptx-bad-accum-output");
+            }
+            // W2.4 W4-b (KDD-076 prerequisite) — consensus verification of the
+            // threshold signature, keyed by the W4-a attribution field.  Closes
+            // the unverified-quorum_sig gap: before this, consensus checked only
+            // quorum_sig_hash non-null, so any staker could fabricate sig bytes
+            // and stamp an arbitrary quorum_hash (the spoofable-trigger hole).
+            // Contextual-only: the store is chain state, so the structural path
+            // (CheckSpecialTxNoContext, pindexPrev == nullptr) stays
+            // structural-only — the same posture as CheckPTXDKGTx's V-sequence.
+            if (pindexPrev != nullptr) {
+                CPTXQuorumRecord qrec;
+                if (ptxQuorumStore == nullptr ||
+                    !ptxQuorumStore->GetQuorumRecord(payload.quorum_hash, qrec)) {
+                    // Also covers a null quorum_hash: no record has a null key.
+                    return state.Invalid(false, REJECT_INVALID, "ptx-unknown-quorum");
+                }
+                // A malformed sig (wrong length) is a bad sig, not a distinct
+                // class.  The message is the payload's round_seed — byte-for-byte
+                // the message the coordinator's own verify used (rpc/ptx.cpp).
+                if (payload.quorum_sig.size() != (size_t)PTX_SIG_BYTES ||
+                    qrec.group_pk_bytes.size() != 48 ||
+                    !PTX_BLS_Verify(qrec.group_pk_bytes.data(), payload.round_seed,
+                                    payload.quorum_sig.data())) {
+                    return state.Invalid(false, REJECT_INVALID, "ptx-bad-quorum-sig");
+                }
             }
             return true;
         }

@@ -26,6 +26,7 @@
 #include "chainparams.h"          // KDD-072 P-b6a: ptxFormation params for the due-rule stub
 #include "evo/evodb.h"              // KDD-070 P2: the in-memory evoDb from BasicTestingSetup
 #include "evo/specialtx_validation.h"
+#include "ptx/ptx_accum_script.h"  // W2.4 W4-b: accum output for the roll-tx shape
 #include "consensus/validation.h"
 #include "primitives/transaction.h"
 
@@ -2937,6 +2938,168 @@ BOOST_AUTO_TEST_CASE(Pb6b_Sweep_FiresOnPlainTipAdvance)
     CPTXQuorumStore store(*evoDb);
     BOOST_CHECK_EQUAL(store.RetireSupersededResidues(tip), 1u);
     BOOST_CHECK_EQUAL(PTX_BLS_HeldQuorumHashes().count(qh), 0u);
+}
+
+// ===========================================================================
+// W2.4 W4-b — consensus verification of the roll threshold signature
+// (CheckSpecialTx, PTX case, contextual block).  RED discipline: the two
+// reject tests FAIL at pre-W4-b HEAD (the forgery passes — the demonstrated
+// unverified-quorum_sig hole); the verify block turns them GREEN.
+// ===========================================================================
+
+// Swap the global store for one bound to the fixture's in-memory evoDb for
+// the duration of a test (CheckSpecialTx reads the global).
+struct W4bStoreGuard {
+    std::unique_ptr<CPTXQuorumStore> saved;
+    W4bStoreGuard()
+    {
+        saved = std::move(ptxQuorumStore);
+        ptxQuorumStore = std::make_unique<CPTXQuorumStore>(*evoDb);
+    }
+    ~W4bStoreGuard() { ptxQuorumStore = std::move(saved); }
+};
+
+// One real DKG walk -> ACTIVE record seeded under qh + a VALID combined
+// threshold signature over msg (the exact signing path the coordinator uses).
+static void W4bMakeQuorumAndSig(const uint256& qh, const uint256& msg,
+                                std::vector<uint8_t>& sig_out)
+{
+    std::map<uint256, CBLSSecretKey> key_map;
+    std::vector<PTXDKGSession> sessions;
+    AdvanceToFinalize(key_map, sessions);
+
+    uint8_t group_pk_bytes[48];
+    blst_p1_affine_compress(group_pk_bytes, &sessions[0].group_pk);
+
+    const int t = 6;
+    std::vector<int> indices;
+    std::vector<std::vector<uint8_t>> partial_sigs;
+    for (int i = 0; i < t; i++) {
+        indices.push_back(sessions[i].members[sessions[i].my_idx].share_index);
+        uint8_t sk_bytes[32];
+        blst_bendian_from_scalar(sk_bytes, &sessions[i].sk_share_i);
+        uint8_t sig_buf[PTX_SIG_BYTES];
+        BOOST_REQUIRE(PTX_BLS_PartialSign(sk_bytes, msg, sig_buf));
+        partial_sigs.push_back(std::vector<uint8_t>(sig_buf, sig_buf + PTX_SIG_BYTES));
+    }
+    uint8_t combined[PTX_SIG_BYTES];
+    BOOST_REQUIRE(PTX_BLS_Recover(indices, partial_sigs, combined));
+    BOOST_REQUIRE(PTX_BLS_Verify(group_pk_bytes, msg, combined));
+    sig_out.assign(combined, combined + PTX_SIG_BYTES);
+
+    CPTXQuorumRecord r;
+    r.quorum_hash      = qh;
+    r.formation_height = 1;
+    r.group_pk_bytes.assign(group_pk_bytes, group_pk_bytes + 48);
+    r.formed_size      = 11;
+    r.completed_size   = 11;
+    r.state            = static_cast<uint8_t>(PTXQuorumState::ACTIVE);
+    r.mined_height     = 1;
+    evoDb->Write(std::make_pair(PTX_QuorumRecordDBPrefix(), qh), r);
+}
+
+// A structurally-valid roll tx carrying (round_seed=msg, quorum_sig=sig,
+// quorum_hash=qh) — the sess-tests base shape (non-coinbase vin, one accum
+// output at the service fee).
+static CMutableTransaction W4bMakeRollTx(const uint256& qh, const uint256& msg,
+                                         const std::vector<uint8_t>& sig)
+{
+    CMutableTransaction mtx;
+    mtx.nVersion = CTransaction::TxVersion::SAPLING;
+    mtx.nType    = CTransaction::TxType::PTX;
+    mtx.vin.push_back(CTxIn(COutPoint(QHk(0xAA), 0)));
+    mtx.vout.push_back(CTxOut(Params().PTXServiceFee(), GetLotteryAccumScript()));
+
+    CProbabilisticTxPayload payload;
+    payload.nSeedHeight     = 1;
+    payload.count           = 1;
+    payload.low             = 1;
+    payload.high            = 100;
+    payload.results         = {50};
+    payload.round_seed      = msg;
+    payload.quorum_sig      = sig;
+    payload.quorum_hash     = qh;
+    payload.quorum_sig_hash = QHk(0xBB);   // non-null satisfies the structural check
+    SetTxPayload(mtx, payload);
+    return mtx;
+}
+
+static std::string W4bRunContextual(const CMutableTransaction& mtx)
+{
+    static CBlockIndex dummyPrev;   // PTX case never dereferences pindexPrev
+    LOCK(cs_main);
+    CValidationState state;
+    if (CheckSpecialTx(CTransaction(mtx), &dummyPrev, nullptr, state))
+        return "";
+    return state.GetRejectReason();
+}
+
+// (control) A genuine roll — real quorum, real threshold sig — passes the
+// contextual check.  Holds at RED and GREEN.
+BOOST_AUTO_TEST_CASE(W4b_ValidRollPasses)
+{
+    W4bStoreGuard g;
+    const uint256 qh = QHk(0xC1), msg = QHk(0x77);
+    std::vector<uint8_t> sig;
+    W4bMakeQuorumAndSig(qh, msg, sig);
+    BOOST_CHECK_EQUAL(W4bRunContextual(W4bMakeRollTx(qh, msg, sig)), "");
+}
+
+// (RED discriminator) A FORGED sig — correct-looking bytes, correct
+// quorum_hash, wrong signature — must be REJECTED.  At pre-W4-b HEAD this
+// passes validation: the demonstrated spoofable-trigger hole.
+BOOST_AUTO_TEST_CASE(W4b_ForgedSigRejected)
+{
+    W4bStoreGuard g;
+    const uint256 qh = QHk(0xC2), msg = QHk(0x77);
+    std::vector<uint8_t> sig;
+    W4bMakeQuorumAndSig(qh, msg, sig);
+    sig[40] ^= 0x01;   // one bit: valid-looking, cryptographically wrong
+    BOOST_CHECK_EQUAL(W4bRunContextual(W4bMakeRollTx(qh, msg, sig)),
+                      "ptx-bad-quorum-sig");
+}
+
+// (RED discriminator) A quorum_hash naming NO quorum — the second forgery
+// vector — must be REJECTED.  Also covers the null-hash case by construction.
+BOOST_AUTO_TEST_CASE(W4b_UnknownQuorumRejected)
+{
+    W4bStoreGuard g;
+    const uint256 qh = QHk(0xC3), msg = QHk(0x77);
+    std::vector<uint8_t> sig;
+    W4bMakeQuorumAndSig(qh, msg, sig);
+    BOOST_CHECK_EQUAL(W4bRunContextual(W4bMakeRollTx(QHk(0xDD), msg, sig)),
+                      "ptx-unknown-quorum");
+    CMutableTransaction nullAttr = W4bMakeRollTx(uint256(), msg, sig);
+    BOOST_CHECK_EQUAL(W4bRunContextual(nullAttr), "ptx-unknown-quorum");
+}
+
+// A valid roll from a since-SUPERSEDED quorum still verifies: quorum_hash
+// names an IMMUTABLE record (rotation mints a new record under a new hash),
+// so the pk lookup is height-free — and an in-flight roll mined just after
+// its signer rotated must not be rejected (the mempool-latency race).
+BOOST_AUTO_TEST_CASE(W4b_SupersededQuorumStillVerifies)
+{
+    W4bStoreGuard g;
+    const uint256 qh = QHk(0xC4), msg = QHk(0x77);
+    std::vector<uint8_t> sig;
+    W4bMakeQuorumAndSig(qh, msg, sig);
+    BOOST_REQUIRE(ptxQuorumStore->MarkSuperseded(qh, 500));
+    BOOST_CHECK_EQUAL(W4bRunContextual(W4bMakeRollTx(qh, msg, sig)), "");
+}
+
+// The siting: the structural path (CheckSpecialTxNoContext) stays
+// structural-only — the forged tx is caught contextually, not here.
+BOOST_AUTO_TEST_CASE(W4b_NoContextStructuralOnly)
+{
+    W4bStoreGuard g;
+    const uint256 qh = QHk(0xC5), msg = QHk(0x77);
+    std::vector<uint8_t> sig;
+    W4bMakeQuorumAndSig(qh, msg, sig);
+    sig[40] ^= 0x01;
+    const CMutableTransaction forged = W4bMakeRollTx(qh, msg, sig);
+    LOCK(cs_main);
+    CValidationState state;
+    BOOST_CHECK(CheckSpecialTxNoContext(CTransaction(forged), state));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
