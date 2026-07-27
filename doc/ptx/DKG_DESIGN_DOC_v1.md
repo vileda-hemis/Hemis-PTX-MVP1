@@ -2285,6 +2285,20 @@ semantics), ODC-025 (cadence N, open).
 
 ---
 
+**ODC-046 (2026-07-27). Inherited hazard: `CBlockIndex::GetAncestor` follows `pskip` UNGUARDED — faults on any index without a built skiplist. Found by segfault during W4-d; worked around, NOT fixed.**
+
+**Substance.** This fork's `CBlockIndex::GetAncestor` (chain.cpp) takes the skip-branch as `pindexWalk = pindexWalk->pskip;` with **no null check** — upstream Bitcoin guards the same branch with `pskip != nullptr &&`. Any `CBlockIndex` whose skiplist was never built (`BuildSkip` not run — hand-built indexes, test fixtures, any future code constructing indexes outside the block-tree loader) **dereferences null and crashes** (observed: memory access violation at 0x8, the pskip member offset). On the live chain every index gets `BuildSkip` at load, so production paths do not currently fault — the hazard is latent, not active.
+
+**How found:** W4-d's grace-M predicate first used `GetAncestor` for boundary lookups; its unit tests drive pprev-linked fake indexes (the established Pb6b fixture idiom) → hard segfault, run aborted at 197/371. **The workaround is landed** (0380747): the predicate walks `pprev` directly, bounded by grace_m x interval, assumption-free — and the in-source comment marks the hazard at the call site it avoided.
+
+**What is owed:** the one-token upstream guard (`pskip != nullptr &&`) in chain.cpp. NOT applied in W4-d — it is inherited consensus-adjacent code outside a PTX package's blast radius, and it deserves its own tiny commit with a RED (a skiplist-less index walked through the skip branch) rather than riding along. Until then: **any future PTX code calling GetAncestor on a hand-built index hits the same fault** — prefer bounded pprev walks (the W4-d posture) or ensure BuildSkip ran.
+
+**Cross-ref:** W2.4 W4-d (0380747 — the workaround + in-source hazard note), KDD-072 P-b6b (the fake-index test idiom that exposes the fault), upstream bitcoin chain.cpp (the guarded original).
+
+**ODC:** ODC-046
+
+---
+
 ## Appendix: Register cross-reference
 
 *Program status / roadmap (to first testnet), including live fleet-state snapshots and pre-testnet blockers, lives in the tracked `doc/ptx/PTX_ROADMAP.md`. This register tracks decisions; the roadmap tracks status.*
