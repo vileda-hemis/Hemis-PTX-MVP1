@@ -2315,6 +2315,10 @@ semantics), ODC-025 (cadence N, open).
 
 ---
 
+**[W2.4 CLOCK-SEMANTICS NOTE, 2026-07-27 — the fourth correction, recorded with the lineage clock.]** The W2.4 build required **four successive clock-semantics corrections**, each caught by walking the temporal timeline rather than by the (green) unit suite: **(1) derive-don't-store** (the stored idle counter's disconnect-undo hole), **(2) durable-index-not-cache** (the read-through recordCache is empty post-restart — a reindex-determinism hazard), **(3) the age anchor** (the chain-anchored window misread youth as idleness — young-quorum churn), and **(4) the lineage clock** (the age anchor's per-RECORD clock reopened KDD-075's Hazard A: rotation resets `mined_height`, so eligibility never ripens before the next rotation preempts it, and the two sizing rules — young-quorum exclusion vs the Order-B `N_retire > interval + ceremony-span` note — contradict for every parameter). ★ KDD-075's Hazard-A analysis blessed per-record clocks with *"the successor becomes eligible on its own clock"* — **false whenever `N_retire > ~2×interval`**; the lineage clock corrects it: silence is measured on the SEAT (`idle_since_height`, record v4, inherited by COPY across rotation — the predecessor's field untouched, undo-clean by construction; fresh formations start their own clock — the young-quorum grace intact). RED-proven: reverting to the per-record clock reproduces the starvation loop as three failing assertions (the finding turned into a permanent guard). Clock semantics in a rotating-lineage system are subtle: each mechanism was individually correct and unit-green; every failure lived in the INTERACTION of two correct clocks, visible only in the fleet's future. Recorded so the next lifecycle builder walks timelines first.
+
+---
+
 ## Appendix: Register cross-reference
 
 *Program status / roadmap (to first testnet), including live fleet-state snapshots and pre-testnet blockers, lives in the tracked `doc/ptx/PTX_ROADMAP.md`. This register tracks decisions; the roadmap tracks status.*
