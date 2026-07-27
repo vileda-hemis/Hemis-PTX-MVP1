@@ -144,9 +144,17 @@ PTXRotationDecision PTX_Formation_RotationDueAt(
         // winning the tie-break with a ceremony that cannot start (the
         // ODC-045 starvation fix — the yield's double duty, KDD-076).
         // With the params gate at its 0 defaults this is never true.
+        std::string why;
         if (PTX_Formation_TerminalEligible(rec, pindexAnchor, params,
-                                           read_block, impossible_at))
+                                           read_block, impossible_at, &why)) {
+            // Diagnostic only (not consensus): the DIRECT observable for the
+            // KDD-075 yield — without it the yield is a silent continue and a
+            // drill can only observe it by proxy.
+            LogPrintf("PTX formation: quorum %s TERMINAL-ELIGIBLE (%s) at height %d - "
+                      "rotation YIELDED (KDD-075)\n",
+                      rec.quorum_hash.ToString(), why, pindexAnchor->nHeight);
             continue;                                     // yields to reform
+        }
         if (lowest == nullptr || rec.quorum_hash < *lowest)
             lowest = &rec.quorum_hash;                    // tie-break: lowest hash wins
     }
@@ -742,12 +750,24 @@ bool PTX_Formation_TerminalEligible(
         const CBlockIndex* pindexAnchor,
         const Consensus::PTXFormationParams& params,
         const std::function<bool(const CBlockIndex*, CBlock&)>& read_block,
-        const std::function<bool(const CPTXQuorumRecord&, const CBlockIndex*)>& impossible_at)
+        const std::function<bool(const CPTXQuorumRecord&, const CBlockIndex*)>& impossible_at,
+        std::string* why_out)
 {
     // KDD-074 idle arm — gated by nRetireWindow (0 = disabled).
+    // ★ THE AGE ANCHOR (W4-f amendment, pre-drill finding): "N blocks of
+    // silence" semantically requires N blocks of the QUORUM'S opportunity to
+    // be silent — the scan below is chain-anchored, so without this clause a
+    // young quorum on a quiet chain is instantly idle-eligible (youth misread
+    // as idleness) and the reformed successor churns: reformed away at its
+    // first boundary before it could be anything.  The forced arm already
+    // excludes young quorums (grace-M's per-boundary due-ness); this brings
+    // idle into line.  ONE implementation — the yield and the producer both
+    // inherit it here.
     if (params.nRetireWindow > 0 &&
+        rec.mined_height + params.nRetireWindow <= pindexAnchor->nHeight &&
         PTX_Formation_QuorumIdleAt(rec.quorum_hash, pindexAnchor,
                                    params.nRetireWindow, read_block)) {
+        if (why_out != nullptr) *why_out = "idle";
         return true;
     }
     // KDD-076 forced-reform arm — gated by nReformGrace (0 = disabled; the
@@ -757,6 +777,7 @@ bool PTX_Formation_TerminalEligible(
         PTX_Formation_ForcedReformGraceElapsed(
                 rec, pindexAnchor, params.nFormationInterval, params.nReformGrace,
                 [&](const CBlockIndex* pb) { return impossible_at(rec, pb); })) {
+        if (why_out != nullptr) *why_out = "forced-reform";
         return true;
     }
     return false;

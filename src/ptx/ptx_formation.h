@@ -157,12 +157,21 @@ PTXRotationDecision PTX_Formation_RotationDueAt(
 //       consecutive boundaries)                                 [KDD-076]
 // One set, two routes in; W4-e's yield reads it, W4-f's producer drains it
 // through the limiter.  Pure composition of the W4-d predicates — no state.
+// why_out is a DIAGNOSTIC SINK (set to idle/forced-reform on true) - the
+// nullptr default is deliberate and does not breach the no-default-sources
+// posture: P-b2's rule binds INPUTS a caller must consciously state; this is
+// an optional output for the yield's log line.
+// ★ W4-f amendment - THE AGE ANCHOR: the idle arm additionally requires
+// mined_height + nRetireWindow <= anchor height (the quorum lived through the
+// whole silent window).  Without it a young quorum on a quiet chain is
+// instantly idle-eligible and the reformed successor churns.
 bool PTX_Formation_TerminalEligible(
         const CPTXQuorumRecord& rec,
         const CBlockIndex* pindexAnchor,
         const Consensus::PTXFormationParams& params,
         const std::function<bool(const CBlockIndex*, CBlock&)>& read_block,
-        const std::function<bool(const CPTXQuorumRecord&, const CBlockIndex*)>& impossible_at);
+        const std::function<bool(const CPTXQuorumRecord&, const CBlockIndex*)>& impossible_at,
+        std::string* why_out = nullptr);
 
 // W2.4 W4-e — THE RATE LIMITER (KDD-074): among the terminal-eligible set, at
 // most ONE transition per rate_window blocks, LEAST-RECENTLY-ACTIVE first

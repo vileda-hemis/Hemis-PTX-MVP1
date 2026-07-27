@@ -3792,4 +3792,52 @@ BOOST_AUTO_TEST_CASE(W4f_UnstubAndWiring_Structural)
     BOOST_CHECK(P5_count(st, "RestoreReformedAtHeight(pindex->nHeight);") == 1);
 }
 
+// ★ W4-f AMENDMENT — THE AGE ANCHOR (the pre-drill finding): "N blocks of
+// silence" requires N blocks of the QUORUM'S opportunity to be silent.  A
+// quorum idle-IN-FACT but YOUNGER than the window is NOT eligible — youth is
+// not idleness.  Without the anchor, a young quorum on a quiet chain reforms
+// at its first boundary and the reformed successor churns forever.
+// RED: drop the age clause -> both young rows flip eligible/reformed.
+BOOST_AUTO_TEST_CASE(W4fA_AgeAnchor)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_BLS_WipeShares(evoDb.get());
+    CPTXQuorumStore store(*evoDb);
+    const Consensus::PTXFormationParams params = W4fParams();  // window 50
+
+    std::vector<CBlockIndex> chain = W4dChain(160);
+    auto emptyReader = [](const CBlockIndex*, CBlock& out) { out = CBlock(); return true; };
+    auto neverImpossible = [](const CPTXQuorumRecord&, const CBlockIndex*) { return false; };
+
+    // PREDICATE level: idle-in-fact but young (mined 130; 130+50 > 160).
+    const uint256 qhYoung = QHk(0xD7);
+    Pb6bSeedActive(qhYoung, /*formation*/ 125, /*mined*/ 130);
+    CPTXQuorumRecord young;
+    BOOST_REQUIRE(store.GetQuorumRecord(qhYoung, young));
+    BOOST_CHECK(!PTX_Formation_TerminalEligible(young, &chain[160], params,
+                                                emptyReader, neverImpossible));
+
+    // The EXACT boundary: mined + window == anchor -> the quorum has lived
+    // the whole window -> eligible (110 + 50 == 160).
+    const uint256 qhEdge = QHk(0xD8);
+    Pb6bSeedActive(qhEdge, 105, /*mined*/ 110);
+    CPTXQuorumRecord edge;
+    BOOST_REQUIRE(store.GetQuorumRecord(qhEdge, edge));
+    BOOST_CHECK(PTX_Formation_TerminalEligible(edge, &chain[160], params,
+                                               emptyReader, neverImpossible));
+
+    // PRODUCER level (the churn-loop guard where it matters): with ONLY the
+    // young quorum active, the producer reforms NOTHING at the boundary.
+    // (Seed a fresh store world: reuse qhYoung alone by marking edge reformed
+    // out of the way is intrusive - instead assert the producer selects the
+    // EDGE quorum, never the young one.)
+    BOOST_CHECK_EQUAL(store.MaybeReformAtBoundary(&chain[160], params,
+                                                  emptyReader, neverImpossible), 1u);
+    CPTXQuorumRecord y2, e2;
+    BOOST_REQUIRE(store.GetQuorumRecord(qhYoung, y2));
+    BOOST_REQUIRE(store.GetQuorumRecord(qhEdge, e2));
+    BOOST_CHECK_EQUAL((int)y2.state, (int)PTXQuorumState::ACTIVE);    // young: untouched
+    BOOST_CHECK_EQUAL((int)e2.state, (int)PTXQuorumState::REFORMED);  // edge: reformed
+}
+
 BOOST_AUTO_TEST_SUITE_END()
