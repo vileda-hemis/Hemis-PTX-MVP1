@@ -3164,7 +3164,8 @@ BOOST_AUTO_TEST_CASE(W4c_MarkReformedStampsFromBirth)
     BOOST_REQUIRE(store.GetQuorumRecord(qh, rec));
     BOOST_CHECK_EQUAL((int)rec.state, (int)PTXQuorumState::REFORMED);
     BOOST_CHECK_EQUAL(rec.reformed_height, 100);      // THE STAMP
-    BOOST_CHECK_EQUAL((int)rec.nVersion, 3);          // v2 record upgraded on rewrite
+    const int curv2 = CPTXQuorumRecord::CURRENT_VERSION; // local copy (the P-b1 ODR lesson)
+    BOOST_CHECK_EQUAL((int)rec.nVersion, curv2);      // upgraded to CURRENT on rewrite (was literal 3)
     BOOST_CHECK(PTX_QuorumRecordActiveAt(rec, 50));   // as-of: active BEFORE reform
     BOOST_CHECK(!PTX_QuorumRecordActiveAt(rec, 100)); // not AT it
 
@@ -3838,6 +3839,154 @@ BOOST_AUTO_TEST_CASE(W4fA_AgeAnchor)
     BOOST_REQUIRE(store.GetQuorumRecord(qhEdge, e2));
     BOOST_CHECK_EQUAL((int)y2.state, (int)PTXQuorumState::ACTIVE);    // young: untouched
     BOOST_CHECK_EQUAL((int)e2.state, (int)PTXQuorumState::REFORMED);  // edge: reformed
+}
+
+// ===========================================================================
+// W2.4 LINEAGE CLOCK - idle_since_height (v4), inherited across rotation.
+// The fix for age-anchor-reopens-Hazard-A: silence is measured on the SEAT
+// (lineage), not the key-generation (record).
+// ===========================================================================
+
+// Seed an ACTIVE record with an explicit lineage clock.
+static uint256 W4LSeed(uint8_t fill, int mined, int idle_since)
+{
+    CPTXQuorumRecord r;
+    r.quorum_hash       = QHk(fill);
+    r.state             = static_cast<uint8_t>(PTXQuorumState::ACTIVE);
+    r.mined_height      = mined;
+    r.idle_since_height = idle_since;
+    evoDb->Write(std::make_pair(PTX_QuorumRecordDBPrefix(), r.quorum_hash), r);
+    evoDb->Write(std::make_pair(std::string("pq_h"),
+                 htobe32(std::numeric_limits<uint32_t>::max() - mined)), r.quorum_hash);
+    return r.quorum_hash;
+}
+
+// ★ THE INHERITED-CLOCK ROW (load-bearing): a rotation successor of an IDLE
+// LINEAGE - young record (own mined 130), OLD inherited clock (idle_since 10)
+// - IS eligible at its first boundary: the lineage's silence already exceeds
+// the window.  RED (the anchor reverted to mined_height = the don't-inherit
+// world): the successor reads as too young -> NOT eligible -> it would rotate
+// instead of reforming -> HAZARD A REPRODUCED as this row's failure.
+// Fresh-grace + sentinel rows hold under that inversion (idle_since==mined
+// and the -1 fallback both degrade to mined) - single-row attribution.
+BOOST_AUTO_TEST_CASE(W4L_InheritedClockEligible)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_BLS_WipeShares(evoDb.get());
+    CPTXQuorumStore store(*evoDb);
+    const Consensus::PTXFormationParams params = W4fParams();   // window 50
+    std::vector<CBlockIndex> chain = W4dChain(160);
+    auto emptyReader = [](const CBlockIndex*, CBlock& out) { out = CBlock(); return true; };
+    auto neverImpossible = [](const CPTXQuorumRecord&, const CBlockIndex*) { return false; };
+
+    // Successor-shaped: mined 130 (young record), inherited clock 10 (old seat).
+    const uint256 qh = W4LSeed(0xE7, /*mined*/ 130, /*idle_since*/ 10);
+    CPTXQuorumRecord rec;
+    BOOST_REQUIRE(store.GetQuorumRecord(qh, rec));
+    BOOST_CHECK_MESSAGE(
+        PTX_Formation_TerminalEligible(rec, &chain[160], params, emptyReader, neverImpossible),
+        "successor of an idle lineage NOT eligible at its first boundary - "
+        "the clock reset on rotation: Hazard A (the starvation loop) is back");
+
+    // PRODUCER level: the same successor reforms at the boundary.
+    BOOST_CHECK_EQUAL(store.MaybeReformAtBoundary(&chain[160], params,
+                                                  emptyReader, neverImpossible), 1u);
+    BOOST_REQUIRE(store.GetQuorumRecord(qh, rec));
+    BOOST_CHECK_EQUAL((int)rec.state, (int)PTXQuorumState::REFORMED);
+}
+
+// Fresh-formation grace INTACT: a fresh record (idle_since == own mined) is
+// NOT eligible before it lived the window - the W4-f amendment's churn fix
+// survives the lineage clock unchanged.
+BOOST_AUTO_TEST_CASE(W4L_FreshGraceIntact)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_BLS_WipeShares(evoDb.get());
+    CPTXQuorumStore store(*evoDb);
+    const Consensus::PTXFormationParams params = W4fParams();
+    std::vector<CBlockIndex> chain = W4dChain(160);
+    auto emptyReader = [](const CBlockIndex*, CBlock& out) { out = CBlock(); return true; };
+    auto neverImpossible = [](const CPTXQuorumRecord&, const CBlockIndex*) { return false; };
+
+    const uint256 qh = W4LSeed(0xE8, /*mined*/ 130, /*idle_since*/ 130);  // fresh-shaped
+    CPTXQuorumRecord rec;
+    BOOST_REQUIRE(store.GetQuorumRecord(qh, rec));
+    BOOST_CHECK(!PTX_Formation_TerminalEligible(rec, &chain[160], params,
+                                                emptyReader, neverImpossible));
+}
+
+// Sentinel fallback: a pre-v4 record (idle_since -1) behaves exactly as
+// before the lineage clock - the anchor reads mined_height.  (The W4fA
+// boundary rows re-proven through the fallback path.)
+BOOST_AUTO_TEST_CASE(W4L_SentinelFallback)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_BLS_WipeShares(evoDb.get());
+    CPTXQuorumStore store(*evoDb);
+    const Consensus::PTXFormationParams params = W4fParams();
+    std::vector<CBlockIndex> chain = W4dChain(160);
+    auto emptyReader = [](const CBlockIndex*, CBlock& out) { out = CBlock(); return true; };
+    auto neverImpossible = [](const CPTXQuorumRecord&, const CBlockIndex*) { return false; };
+
+    const uint256 old_enough = W4LSeed(0xE9, /*mined*/ 110, /*idle_since*/ -1);  // 110+50==160
+    const uint256 too_young  = W4LSeed(0xEA, /*mined*/ 130, /*idle_since*/ -1);
+    CPTXQuorumRecord a, b;
+    BOOST_REQUIRE(store.GetQuorumRecord(old_enough, a));
+    BOOST_REQUIRE(store.GetQuorumRecord(too_young, b));
+    BOOST_CHECK(PTX_Formation_TerminalEligible(a, &chain[160], params, emptyReader, neverImpossible));
+    BOOST_CHECK(!PTX_Formation_TerminalEligible(b, &chain[160], params, emptyReader, neverImpossible));
+}
+
+// Additive v4: a v3 stream is byte-identical (field never written), loads
+// with the sentinel; v4 carries the field and is exactly one int32 wider.
+BOOST_AUTO_TEST_CASE(W4L_AdditiveV4)
+{
+    CPTXQuorumRecord v3;
+    v3.nVersion          = 3;
+    v3.quorum_hash       = QHk(0xEB);
+    v3.idle_since_height = 777;          // must NOT reach the wire at v3
+    CDataStream s3(SER_DISK, PROTOCOL_VERSION);
+    s3 << v3;
+    const std::vector<char> v3bytes(s3.begin(), s3.end());
+    CPTXQuorumRecord v3back;
+    CDataStream s3r(v3bytes, SER_DISK, PROTOCOL_VERSION);
+    s3r >> v3back;
+    BOOST_CHECK_EQUAL(v3back.idle_since_height, -1);       // sentinel, not 777
+    CDataStream s3again(SER_DISK, PROTOCOL_VERSION);
+    s3again << v3back;
+    BOOST_CHECK(std::vector<char>(s3again.begin(), s3again.end()) == v3bytes);
+
+    CPTXQuorumRecord v4;
+    v4.nVersion          = 4;
+    v4.quorum_hash       = QHk(0xEC);
+    v4.idle_since_height = 888;
+    CDataStream s4(SER_DISK, PROTOCOL_VERSION);
+    s4 << v4;
+    const size_t v4len = s4.size();
+    CPTXQuorumRecord v4back;
+    s4 >> v4back;
+    BOOST_CHECK_EQUAL(v4back.idle_since_height, 888);
+    BOOST_CHECK_EQUAL(v4len, v3bytes.size() + sizeof(int32_t));
+}
+
+// ★ The stamp sites + COPY-not-mutate, pinned structurally (the connect
+// materialization is not unit-drivable; the drill verifies it live).
+// Positive limbs: the fresh stamp and the inheritance (with the pre-v4
+// predecessor fallback) exist in ProcessBlock.  Negative limb: NOTHING
+// assigns to the predecessor's idle_since_height (copy, never mutate - the
+// undo-clean pin).  RED: altering the fresh stamp or adding a predecessor
+// mutation flips the counts.
+BOOST_AUTO_TEST_CASE(W4L_StampSites_Structural)
+{
+    const std::string src = PTX_SRCDIR;
+    BOOST_REQUIRE_MESSAGE(!src.empty(), "W4L: PTX_SRCDIR not injected");
+    const std::string st = P5_slurp(src + "/src/ptx/ptx_quorum_store.cpp");
+    BOOST_REQUIRE(!st.empty());
+    BOOST_CHECK(P5_count(st, "rec.idle_since_height = pindex->nHeight;") == 1);   // fresh stamp
+    BOOST_CHECK(P5_count(st, "rec.idle_since_height = lineagePred.idle_since_height >= 0") == 1); // inherit
+    BOOST_CHECK(P5_count(st, ": lineagePred.mined_height;") == 1);                // pre-v4 fallback
+    BOOST_CHECK(P5_count(st, "lineagePred.idle_since_height =") == 0);            // COPY not mutate
+    BOOST_CHECK(P5_count(st, "predRec.idle_since_height =") == 0);                // (either spelling)
 }
 
 BOOST_AUTO_TEST_SUITE_END()

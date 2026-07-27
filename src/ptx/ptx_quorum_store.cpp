@@ -220,6 +220,10 @@ bool CPTXQuorumStore::ProcessBlock(const CBlock& block, const CBlockIndex* pinde
     rec.accepted_txid    = tx->GetHash();
     rec.mined_block_hash = pindex->GetBlockHash();
     rec.mined_height     = pindex->nHeight;
+    // W2.4 LINEAGE CLOCK - fresh formation: the seat's silence starts at its
+    // birth (own mined height; the young-quorum grace intact).  The rotation
+    // branch below OVERWRITES this with the predecessor's inherited clock.
+    rec.idle_since_height = pindex->nHeight;
     // KDD-072 P-b6b: stamp the SUCCESSOR's last_rotation_height — "this quorum
     // came into being by rotating its predecessor, at this height". A fresh
     // formation keeps the -1 sentinel. Pre-write field assignment: no second
@@ -228,6 +232,22 @@ bool CPTXQuorumStore::ProcessBlock(const CBlock& block, const CBlockIndex* pinde
     if (payload.nVersion >= PTXDKGPayload::ROTATION_VERSION &&
         !payload.predecessor_quorum_hash.IsNull()) {
         rec.last_rotation_height = pindex->nHeight;
+        // W2.4 LINEAGE CLOCK - rotation successor: INHERIT the predecessor's
+        // idle_since_height (COPY, never mutate - the predecessor keeps its
+        // own field, so undo needs nothing new: the successor's record is
+        // erased whole on disconnect).  The seat's clock survives rotation;
+        // without this the per-record clock resets every rotation and an
+        // idle lineage rotates forever instead of reforming (Hazard A via
+        // the age anchor - the pre-drill finding).  Pre-v4 predecessor
+        // (sentinel -1): fall back to its mined_height, the same fallback
+        // the anchor itself applies.  The predecessor record is guaranteed
+        // present (the rotation guard above validated it this same call).
+        CPTXQuorumRecord lineagePred;
+        if (GetQuorumRecord(payload.predecessor_quorum_hash, lineagePred)) {
+            rec.idle_since_height = lineagePred.idle_since_height >= 0
+                                        ? lineagePred.idle_since_height
+                                        : lineagePred.mined_height;
+        }
     }
 
     evoDb.Write(std::make_pair(DB_PTXDKG_QUORUM, rec.quorum_hash), rec);

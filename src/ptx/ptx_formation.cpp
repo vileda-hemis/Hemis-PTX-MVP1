@@ -763,8 +763,16 @@ bool PTX_Formation_TerminalEligible(
     // excludes young quorums (grace-M's per-boundary due-ness); this brings
     // idle into line.  ONE implementation — the yield and the producer both
     // inherit it here.
+    // W2.4 LINEAGE CLOCK — the age anchor reads the SEAT'S clock
+    // (idle_since_height, inherited across rotation), not the record's
+    // (mined_height, which rotation resets — the per-record clock made
+    // eligibility unreachable on a rotating fleet: Hazard A, the pre-drill
+    // finding).  Pre-v4 sentinel falls back to mined_height (the pre-lineage
+    // behaviour, so old records answer as before).
+    const int idle_since = rec.idle_since_height >= 0 ? rec.idle_since_height
+                                                      : rec.mined_height;
     if (params.nRetireWindow > 0 &&
-        rec.mined_height + params.nRetireWindow <= pindexAnchor->nHeight &&
+        idle_since + params.nRetireWindow <= pindexAnchor->nHeight &&
         PTX_Formation_QuorumIdleAt(rec.quorum_hash, pindexAnchor,
                                    params.nRetireWindow, read_block)) {
         if (why_out != nullptr) *why_out = "idle";

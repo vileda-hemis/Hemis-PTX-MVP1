@@ -121,7 +121,10 @@ public:
     // deserialize with the -1 sentinel and are never REFORMED (no producer
     // existed when they were written), so every arm answers them correctly.
     // No migration.
-    static const uint8_t CURRENT_VERSION = 3;
+    // v4 (W2.4 lineage clock): + idle_since_height, same contract — pre-v4
+    // records deserialize with the -1 sentinel and the age anchor falls back
+    // to mined_height (the pre-lineage behaviour).  No migration.
+    static const uint8_t CURRENT_VERSION = 4;
 
     uint8_t nVersion{CURRENT_VERSION};
     uint256 quorum_hash;             // formation anchor block hash — the identity
@@ -161,6 +164,17 @@ public:
     // the sentinel and answers inactive-at-every-height; this writer must
     // never reproduce that).
     int32_t reformed_height{-1};     // stamped by MarkReformed (DORMANT until W4-f)
+    // v4 (W2.4 LINEAGE CLOCK) — the height from which this SEAT'S silence is
+    // measured.  Stamped at connect: fresh formation = own mined_height (the
+    // seat's silence starts at birth — the young-quorum grace intact);
+    // rotation successor = COPY of the predecessor's idle_since_height (the
+    // seat's clock survives rotation — rotation must NOT reset it, or an idle
+    // lineage rotates forever and never reforms: Hazard A through the
+    // per-record clock, the pre-drill finding).  COPY not mutate: the
+    // predecessor's own field is untouched (undo-clean — the successor's
+    // record carries the copy and is erased whole on disconnect).  Sentinel
+    // -1 (pre-v4 record): the age anchor falls back to mined_height.
+    int32_t idle_since_height{-1};
 
     CPTXQuorumRecord() : group_pk_bytes(48, 0) {}
 
@@ -179,6 +193,9 @@ public:
         }
         if (obj.nVersion >= 3) {
             READWRITE(obj.reformed_height);
+        }
+        if (obj.nVersion >= 4) {
+            READWRITE(obj.idle_since_height);
         }
     }
 };
