@@ -538,4 +538,131 @@ BOOST_AUTO_TEST_CASE(CD_RWIDTH_UnderWidthDivergesToAbort)
     }
 }
 
+// ===========================================================================
+// SG-5 S2 — MATRIX COMPLETION.  Four rows, each asserting the CORRECT outcome
+// under KDD-077 §4 (safety absolutely preserved; liveness/fairness may
+// degrade).  All SINGLE-QUORUM: every row lives inside one 11-member
+// ceremony — none needs L>1 (multi-quorum interactions are W2.5's).
+// ===========================================================================
+
+// CD_R5 — PARTITION: the 11 split into two non-communicating groups.
+// ★ THE STRUCTURAL GUARANTEE: t=6 of 11 is a MAJORITY, so AT MOST ONE side of
+// any partition can ever reach threshold — §9.1's "bare majority" trade-off is
+// exactly what makes partition safe.  The minority side closes sub-threshold
+// and ABORTS; there is no split-brain of two different keys.
+// RED (inversion): drop ClosePhase0's t-gate -> the 5-side finalizes too ->
+// two different group_pks -> AssertOnePk fails.
+BOOST_AUTO_TEST_CASE(CD_R5_PartitionMinorityAborts)
+{
+    HarnessCfg cfg;
+    cfg.seed = 31;
+    cfg.drop = [](int from, int to, const std::string&) {
+        return (from < 6) != (to < 6);   // groups {0..5} (6) and {6..10} (5)
+    };
+    HarnessResult r = RunCeremony(cfg);
+
+    // The minority side (5 < t=6) can never reach threshold: all ABORTED.
+    for (int i = 6; i < 11; i++)
+        BOOST_CHECK(r.last[i] == PTXStepResult::ABORTED);
+    // ★ SAFETY: whoever finalized agrees on ONE key — never two.
+    AssertOnePk(r);
+    // And no finalization below threshold: either the majority side completed
+    // as a body, or nobody did.
+    BOOST_CHECK(r.done_count == 0 || r.done_count == 6);
+}
+
+// CD_R6 — LATE-JOIN: a member starts stepping after its commit window closed
+// (absent until h = F+8; HASH_COMMIT ends at F+6).  Deliveries to an absent
+// node are dropped, so it joins with nothing.
+// Assert: the late member excludes ITSELF (its own close is sub-threshold) and
+// does NOT corrupt the ceremony the others completed — no divergence from a
+// late arrival.
+// RED (inversion): drop ClosePhase0's t-gate -> the late node "completes" on
+// its empty view -> a second, different pk -> AssertOnePk fails.
+BOOST_AUTO_TEST_CASE(CD_R6_LateJoinSelfExcludes)
+{
+    HarnessCfg cfg;
+    cfg.seed = 37;
+    cfg.absent = {10};                       // starts absent...
+    cfg.on_height = [](int h, std::deque<HNode>& nodes) {
+        if (h == 1008) nodes[10].absent = false;   // ...joins after P0 closed
+    };
+    HarnessResult r = RunCeremony(cfg);
+
+    // The ten who were present complete together on one key.
+    BOOST_CHECK_EQUAL(r.done_count, 10);
+    AssertOnePk(r);
+    // The late arrival excluded itself rather than diverging.
+    BOOST_CHECK(r.last[10] == PTXStepResult::ABORTED);
+}
+
+// CD_R7 — MULTI-BAD-DEALER: TWO dealers corrupt an eval in the same ceremony.
+// Assert: the complaint/justify machinery sweeps BOTH to bad_members on ALL
+// nodes (it is not single-bad-dealer-shaped), effective-QUAL = 9 >= t, and the
+// ceremony completes on one key.
+// RED (inversion): stop the ClosePhase3 sweep after the first bad dealer ->
+// the second slips through -> the both-excluded assertions fail.
+BOOST_AUTO_TEST_CASE(CD_R7_MultiBadDealerBothExcluded)
+{
+    HarnessCfg cfg;
+    cfg.seed = 41;
+    cfg.on_height = [](int h, std::deque<HNode>& nodes) {
+        if (h != 1001) return;
+        nodes[2].session->local_contrib.evals[7] = nodes[2].session->local_contrib.evals[6];
+        nodes[3].session->local_contrib.evals[8] = nodes[3].session->local_contrib.evals[6];
+    };
+    HarnessResult r = RunCeremony(cfg);
+
+    for (int i = 0; i < 11; i++) {
+        if (r.last[i] != PTXStepResult::DONE) continue;
+        BOOST_CHECK(r.bad[i].count(MemberPtx(2)) == 1);
+        BOOST_CHECK(r.bad[i].count(MemberPtx(3)) == 1);
+    }
+    BOOST_CHECK_EQUAL(r.done_count, 11);   // effective 9 >= t = 6
+    AssertOnePk(r);
+}
+
+// ★ CD_R8 — JUSTIFY-SUPPRESSION: the R4red SIBLING, suppressing the DEFENCE
+// rather than the accusation.
+//
+// ★ THE ASYMMETRY, and the finding: R4red (suppress complaints) PROTECTS a bad
+// dealer; suppressing justifications CONVICTS without proof.  ClosePhase3 marks
+// a dealer bad when any complaint against it is "unresolved" — and a
+// justification that was DROPPED is indistinguishable from one that was never
+// sent or that FAILED.  So the exclusion here carries NO proof of guilt: the
+// outcome is byte-identical to CD_R4 (where the justify genuinely failed).
+// ★ That is KDD-077 §3's malice-vs-error limit reappearing in the transport
+// layer — the protocol cannot distinguish "guilty" from "unheard".
+//
+// ★ SAFETY VERDICT (the row's point): even so, NO WRONG OUTPUT.  A uniform
+// suppression excludes the dealer on ALL nodes, so they agree and finalize one
+// key — the cost is fairness/liveness (a member lost), never safety.  (The
+// non-uniform case diverges and is caught by the P4 premit gate — CD_R4red;
+// and enough exclusions drive effective < t, which ABORTS — ClosePhase3.)
+// RED (inversion): treat a missing justification as exoneration -> the dealer
+// is NOT excluded -> the exclusion assertions fail.
+BOOST_AUTO_TEST_CASE(CD_R8_JustifySuppressedConvictsWithoutProof)
+{
+    HarnessCfg cfg;
+    cfg.seed = 43;
+    cfg.on_height = [](int h, std::deque<HNode>& nodes) {
+        if (h != 1001) return;
+        nodes[2].session->local_contrib.evals[7] = nodes[2].session->local_contrib.evals[6];
+    };
+    cfg.drop = [](int, int, const std::string& cmd) {
+        return cmd == NetMsgType::PTXQJUSTIFICATION; // suppress the DEFENCE
+    };
+    HarnessResult r = RunCeremony(cfg);
+
+    // Convicted on every node that finalized — with no justification ever seen.
+    for (int i = 0; i < 11; i++) {
+        if (r.last[i] != PTXStepResult::DONE) continue;
+        BOOST_CHECK(r.bad[i].count(MemberPtx(2)) == 1);
+    }
+    // ★ SAFETY HOLDS: the survivors agree on ONE key. Liveness/fairness paid,
+    // safety intact — the KDD-077 §4 posture, in the false-positive direction.
+    AssertOnePk(r);
+    BOOST_CHECK(r.done_count >= 6);   // effective 10 >= t: the body completes
+}
+
 BOOST_AUTO_TEST_SUITE_END()
