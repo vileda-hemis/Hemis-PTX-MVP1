@@ -164,6 +164,17 @@ understood. It is not a launch requirement.
 
 **KDD:** KDD-040
 
+> **[W2.5 RELAXATION, 2026-07-28 — appended; KDD-040's original text byte-unchanged. Claims no number — a relaxation of this entry's scope, not a re-decision.]**
+> **★ THE MULTI-QUORUM NETWORK POSTURE IS SANCTIONED; SINGLE-MEMBERSHIP-PER-GM IS RETAINED.** KDD-079's premise — L ACTIVE quorums served by the decoupled cadence — is now built (§7.4 routing + P1/P2/P3, see KDD-079's BUILD LANDED amendment) and **fleet-proven at L=2** (the h960 disjoint formation: the second quorum's members drawn exactly from the first's complement, rebuilt identically after the h1010 supersede). This entry's **"single-quorum-per-GM" half is UNCHANGED and is what the multi-quorum posture rests on**; the **"multi-membership rejected" half is likewise undisturbed** (ODC-024 stays a deferred future extension — a GM is in at most ONE quorum at any L).
+>
+> **★ L_max = pool/11, EMERGENT — no cap was lifted because none existed.** The formation trigger fires whenever the KDD-040-excluded pool holds ≥ 11; successive boundaries form successive disjoint quorums until the pool runs dry. The deployment knob is **`nSupportedQuorums`** (the declared count Guard 1 checks — KDD-079 §3): raising L is a **config declaration bounded by the cadence invariant `R/B >= L`**, not a code change. W2.5b's L=6-8 therefore needs a **66-88-GM fleet** — node1 hosts it (KDD-079 §8: 78 containers / 31 GB of 94 GB measured).
+>
+> **★ THE FINDING — record it so no future reader wonders where the code went: the relaxation required NO production change.** The 2026-07-28 sweep (grep for count assumptions, `[0]`/`.front()` indexing into the ACTIVE set, "the active quorum" singular) found the codebase **already L-generic under kept one-per-GM**: every "at most one" is a **per-quorum, per-anchor, or per-block** invariant (V9 one-PTXDKG-per-anchor, V12d predecessor-uniqueness, per-quorum CURRENT/PENDING) — correct at any L; the two singular phrasings are **post-selection, quorum-scoped** (the selected quorum's members/threshold/group_pk); routing is `hash(tip) mod |ACTIVE|` (§7.4); the share store is unbounded by design (KDD-070 recorded the ≤2 figure as *today's fact, never encoded in the type* — that discipline is what made this a no-op). ★ **The L-genericity DEPENDS on one-per-GM**: one GM = one lineage, so per-GM and per-lineage invariants coincide (the global one-PENDING rule is per-lineage-equivalent at any L). Relaxing ODC-024 multi-membership would break that coincidence and re-open this sweep — recorded as the boundary condition.
+>
+> **★ The one unit gap is closed:** row (d) proved the pool exclusion for ONE ACTIVE record; the multi-quorum posture makes the **UNION over all records** the load-bearing shape. `kdd040_multi_record_union_excluded` (`cf162aa`) pins it — 33 GMs, two disjoint ACTIVE 11s, pool = the exact 11-complement, L=3 draw re-selects nobody; RED by union-truncation (18 failures, all in the new row; row (d) green — single-row attribution).
+>
+> **Cross-ref:** KDD-079 (+ its BUILD LANDED amendment — the cadence side of the same posture), KDD-079 §3/`nSupportedQuorums` (the declared knob), ODC-024 (multi-membership: still deferred, now also the recorded re-open condition for this sweep), KDD-070 (the never-encode-today's-bound discipline that paid off), the h960/h1010 fleet proof (ODC-042 verification arc), `cf162aa` (the union row), W2.5b (L=6-8 under genuine competition — where this posture is exercised at scale).
+
 ---
 
 ## §5 Decided: GM Economics
