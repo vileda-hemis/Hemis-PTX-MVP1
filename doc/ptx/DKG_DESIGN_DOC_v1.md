@@ -2274,6 +2274,8 @@ semantics), ODC-025 (cadence N, open).
 
 **KDD:** KDD-076
 
+> **[PREMISE CORRECTION — CORRELATED DEPARTURES, 2026-07-28 — appended; the entry above byte-unchanged.]** The *"Correlation: INHERITED-SOLVED"* clause reads *"At W2.5's relaxed bound, one GM's departure makes several quorums rotation-impossible at once"* — written when W2.5 was expected to relax one-per-GM. ★ **The landed relaxation KEPT one-per-GM** (KDD-040's W2.5 RELAXATION amendment, `3697d5d`), **so the membership amplifier is GONE**: one GM's departure makes exactly **ONE** quorum rotation-impossible (`RotationImpossible` is the same-set resolver — own-members only; **no cross-quorum path exists**, source-confirmed by the interaction-hardening recon). The correlated case that remains real is a **correlated EVENT** — a host failure or fleet redeploy departing many GMs across many quorums at once. ★ **The conclusion stands, STRONGER:** the eligible set is built per-record over all ACTIVE quorums and the KDD-074 limiter drains it one-per-window identically — now **producer-proven at three mixed-eligibility candidates** (`IH_CorrelatedDrain_OnePerWindowLRA`, `fd9a041`: one reform per window, LRA-first, adjacent boundaries rate-limited out, deterministic stateless re-derivation). Nothing new to build — as recorded, minus the amplifier that never materialized.
+
 ---
 
 **[W2.4 DECISION 3 — ITEMS 3+4 RESOLVED; DECISION 3 CLOSED; W2.4 DESIGN SETTLED. 2026-07-26.]**
@@ -2617,6 +2619,26 @@ SG-5 S1's stall-out takes its budget from `nFormationInterval`. If that becomes 
 > **Cross-ref:** `7a9ccdc`/`2b721e4`/`a374a25`/`2ddd2c5`/`d9c2afd` (the build), ODC-052 (structural half discharged; low-demand half + Moment-1 tax owed there), KDD-045 (the bound Guard 2 preserves — **scale-validation owed**), KDD-075 (§7(iii) amendment landed), ODC-050 (Guard 3 protects it), the §8 env-gated W2.5b set (staggering capacity at scale, Guard 2 under competition, correlated departures, ODC-052 under demand). Remaining W2.5a per §8: KDD-040 relaxation → interaction hardening.
 
 **Next-free: KDD-080 / ODC-054.**
+
+---
+
+**ODC-054 (2026-07-28). ★ THE GUARD-2 × GATE-OFF COUPLING — at L>1 with the KDD-076 gate off, a rotation-impossible quorum captures the fleet THROUGH the fairness floor. DEFECT-WITH-FIX (CheckParams hard-reject, `fd9a041`). The SIXTH compositional-seam finding of the arc.**
+
+**The defect.** The ODC-045 amendment's fleet-halt (a can-never-rotate quorum winning the tie-break every boundary) was dissolved by the KDD-076 yield — but the yield runs **only when `nReformGrace > 0`**, and every shipped config is 0. With the gate off, a rotation-impossible quorum's age **never resets** (it never rotates, nothing reforms it), so it inevitably crosses Guard 2's overdue floor (`nRotationInterval + 2·nBoundaryInterval`) — and the override then hands it **every boundary REGARDLESS of hash**: resolve fails, no ceremony starts, the boundary is consumed, and it is *still* most-overdue at the next one. Pre-Guard-2 only a **lowest-hashing** impossible quorum halted the fleet; post-Guard-2 **any** impossible quorum eventually does. L=1 is unaffected (a lone quorum owns every boundary either way) — the delta is exactly L>1 with the gate off, a configuration nothing rejected.
+
+**The fix, and ★ the tier rationale.** `PTX_Formation_CheckParams` **HARD-REJECTS `nSupportedQuorums > 1` with `nReformGrace == 0`** — a multi-quorum config must run the yield that keeps Guard 2 safe. ★ **The tier follows from which side of the harm the refusal sits on**: Guard 1's runtime tier **warns and never refuses** because refusing to rotate would *CAUSE* the starvation it warns about; this check **refuses** because refusing *PREVENTS* it (the config is broken before any chain exists — a startup reject costs a restart with one param set, a runtime capture costs the fleet's rotation schedule). The mirror symmetry is the design, not a coincidence. Deploy-safe: L=1 exempt, all five shipped networks validate unchanged (G1a's SelectParams sweep, green post-change).
+
+**★ The seam pattern — SIXTH in the arc** (ODC-042 as-of, ODC-045 can-never-rotate, the age anchor, the lineage clock, ODC-052 routing×reform, now **Guard 2 × gate posture**): two individually-correct mechanisms — Guard 2 (correct: fairness needs the override) and the gate-off default (correct pre-Guard-2: deploy-safety for an all-idle fleet) — composing into a starvation neither owns. **Found by source-reading (the interaction-hardening recon), not by testing**, like every one before it. The recon habit of asking "what does each new guard compose with?" is the only reason this was caught pre-W2.5b rather than as a wedged drill fleet.
+
+**What the recon confirmed already-composed (no build, recorded so the absence is legible):** per-quorum precedence (KDD-075's three-way) composes at L because the **yield removes terminal-eligibles from the due set BEFORE any cross-quorum selection** — the cross-quorum question never meets the per-quorum one. Cross-quorum selection is fully owned: due-vs-due by the tie-break + Guard 2 (one rotation per boundary); reform by the limiter's independent channel (a state flip — no ceremony, no PTXDKG, never contends for the anchor); rotation-vs-fresh by the trigger's if/else — **rotation wins the anchor, fresh formation waits a boundary**, and Guard 1's advisory margin (capacity ≥ 2L) is what keeps free boundaries in expectation for it. Disband precedence is vacuous until its producer lands (W2.4-owed). The limiter's LRA metric is coherent at L>1: the W4-f age anchor forces idle keys (`mined_height ≤ anchor − window`) below any in-window attribution, so long-idle quorums deterministically drain first.
+
+**Pins (`fd9a041`):** `G4a_MultiQuorumGateOffRejected` (the reject + the L=1 exemption), `IH_YieldBeatsOverride_GateCouplingMechanism` (both arms: the gate-off capture demonstrated, and yield-beats-override — previously true only by code order), `IH_CorrelatedDrain_OnePerWindowLRA` (the correlated-event drain). Three isolated RED inversions (check dropped / tracking hoisted above the yield / rate gate dropped), each failing exactly its own row. **Status: FIXED at `fd9a041`; behavioral exercise under genuine contention env-gated to W2.5b with the rest of the §8 set.**
+
+**Cross-ref:** KDD-079 §4 + its BUILD LANDED amendment (Guard 2, whose honest-scope this coupling annotates), KDD-075/076 (the yield this couples to; KDD-076 carries the correlated-departures premise correction, same date), ODC-045 amendment (the fleet-halt this reintroduced), Guard 1 / `nSupportedQuorums` (the check target and the tier mirror), ODC-042/045/052 + the age-anchor and lineage-clock findings (the seam lineage), `fd9a041` (fix + pins), `3697d5d` (the kept one-per-GM the composition analysis rests on).
+
+**ODC:** ODC-054
+
+**Next-free: KDD-080 / ODC-055.**
 
 ---
 
