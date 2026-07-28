@@ -763,6 +763,10 @@ static Consensus::PTXFormationParams G1(int B, int R, int L)
     Consensus::PTXFormationParams p{};
     p.name = "g1"; p.nBoundaryInterval = B; p.nRotationInterval = R;
     p.nCeremonyBudget = 80; p.nSupportedQuorums = L;
+    // ODC-054: a VALID multi-quorum shape carries the forced-reform gate
+    // (the Guard-2 coupling hard-rejects L > 1 with grace 0 — G4a constructs
+    // that broken shape explicitly).  Irrelevant at the L = 1 rows.
+    p.nReformGrace = 1;
     return p;
 }
 
@@ -816,6 +820,44 @@ BOOST_AUTO_TEST_CASE(G1c_OverCapacityDetectedNotRefused)
     // capacity 1 / margin 2 = 0, and 1 > 0 would warn — so this pins that the
     // shipped L=1 config stays QUIET at its own active count.
     BOOST_CHECK(!PTX_Formation_OverCapacity(G1(1440, 1440, 1), 0));
+}
+
+// ===========================================================================
+// W2.5a INTERACTION HARDENING — the GUARD-2 × GATE COUPLING (ODC-054).
+// ===========================================================================
+
+// G4a — a multi-quorum config MUST run the KDD-076 forced-reform gate.  With
+// nReformGrace == 0 the yield never removes a rotation-impossible quorum
+// from the due set; it ages past the Guard-2 floor and the override hands it
+// every boundary (fleet-wide rotation starvation — the mechanism row is
+// IH_YieldBeatsOverride_GateCouplingMechanism in the phase5 suite).  REFUSE
+// because refusing PREVENTS the harm — the mirror of Guard 1's runtime warn,
+// which never refuses because refusing would CAUSE it.
+// ★ Deploy-safety: L == 1 is exempt (a lone quorum owns every boundary with
+// or without Guard 2) — G1a's five-network SelectParams sweep runs against
+// this same CheckParams and stays green, so every shipped config validates
+// unchanged; the local L=1 row below pins the exemption directly.
+// RED (inversion: drop the coupling check): the broken config is ACCEPTED
+// and both assertions on it fail.
+BOOST_AUTO_TEST_CASE(G4a_MultiQuorumGateOffRejected)
+{
+    std::string err;
+
+    // The broken shape: L > 1, gate off -> REJECTED, naming the mechanism.
+    Consensus::PTXFormationParams broken = G1(30, 1440, 2);
+    broken.nReformGrace = 0;
+    BOOST_CHECK(!PTX_Formation_CheckParams(broken, err));
+    BOOST_CHECK_MESSAGE(err.find("nReformGrace") != std::string::npos,
+                        "the reject must name the missing gate: " << err);
+
+    // The same cadence with the gate on -> accepted (the G1 helper's shape).
+    BOOST_CHECK_MESSAGE(PTX_Formation_CheckParams(G1(30, 1440, 2), err), err);
+
+    // L == 1 gate-off — today's every-network shape — stays accepted: the
+    // coupling is L>1-scoped by design.
+    Consensus::PTXFormationParams lone = G1(1440, 1440, 1);
+    lone.nReformGrace = 0;
+    BOOST_CHECK_MESSAGE(PTX_Formation_CheckParams(lone, err), err);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

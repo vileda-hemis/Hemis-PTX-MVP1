@@ -126,6 +126,27 @@ bool PTX_Formation_CheckParams(const Consensus::PTXFormationParams& params,
             params.nSupportedQuorums);
         return false;
     }
+    // ★ GUARD-2 × GATE COUPLING (ODC-054): a multi-quorum config MUST run the
+    // KDD-076 forced-reform gate.  With nReformGrace == 0 the KDD-075 yield
+    // never removes a rotation-impossible quorum from the due set; its age
+    // never resets, it ages past the Guard-2 fairness floor, and the override
+    // then hands it EVERY boundary regardless of hash — resolve fails, no
+    // ceremony starts, the healthy quorums starve: the ODC-045-amendment
+    // fleet-halt, reintroduced through the guard built to prevent starvation.
+    // REFUSE because refusing PREVENTS the harm — the mirror of Guard 1's
+    // runtime tier, which never refuses because refusing would CAUSE it.
+    // L == 1 is exempt: a lone quorum owns every boundary with or without
+    // Guard 2, so every shipped config validates unchanged.
+    if (params.nSupportedQuorums > 1 && params.nReformGrace <= 0) {
+        err_out = strprintf(
+            "PTX multi-quorum config requires the forced-reform gate: "
+            "nSupportedQuorums = %d but nReformGrace = %d. With the gate off, "
+            "a rotation-impossible quorum ages past the Guard-2 fairness "
+            "floor and captures every boundary (fleet-wide rotation "
+            "starvation, ODC-054). Set nReformGrace > 0.",
+            params.nSupportedQuorums, params.nReformGrace);
+        return false;
+    }
     // ★ Advisory tier: margin absorbs CONTENTION, which needs L > 1.  Never
     // warned at L == 1 (no competition exists there).
     if (params.nSupportedQuorums > 1 &&

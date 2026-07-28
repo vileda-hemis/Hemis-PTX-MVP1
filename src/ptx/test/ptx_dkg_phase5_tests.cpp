@@ -4191,6 +4191,149 @@ BOOST_AUTO_TEST_CASE(W4L_StampSites_Structural)
 }
 
 // ===========================================================================
+// W2.5a INTERACTION HARDENING (ODC-054) — the multi-quorum compositions.
+// ===========================================================================
+
+// (IH) ★ THE GUARD-2 × GATE COUPLING, both arms.
+// Arm 1 (gate OFF — the defect the CheckParams coupling makes unreachable in
+// production): a rotation-impossible quorum's age never resets (the KDD-076
+// yield doesn't run), it ages past the fairness floor, and Guard 2 hands it
+// the boundary REGARDLESS of hash — the ODC-045-amendment fleet-halt
+// reintroduced through the guard built to prevent starvation.  Pinned as the
+// MECHANISM the G4a hard-reject exists for.
+// Arm 2 (gate ON — YIELD-BEATS-OVERRIDE): the SAME quorum is
+// due-and-impossible past grace -> terminal-eligible -> yields at the TOP of
+// the due-loop, BEFORE Guard 2's overdue tracking ever sees it -> the
+// healthy rival wins.  True by code order since P3; previously UNPINNED.
+// RED (inversion: move Guard-2's overdue tracking ABOVE the yield): arm 2
+// fails (the overdue-eligible quorum captures the slot); arm 1 and the G2
+// rows hold (no eligibility there) — single-row attribution.
+BOOST_AUTO_TEST_CASE(IH_YieldBeatsOverride_GateCouplingMechanism)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_BLS_WipeShares(evoDb.get());
+    CPTXQuorumStore store(*evoDb);
+    G2RetireAllActive(store);
+
+    std::vector<CBlockIndex> chain = W4dChain(200);
+    const Consensus::PTXFormationParams params = G2Params();   // gate OFF (grace 0)
+
+    // The impossible quorum: HIGHEST hash (would lose every tie-break),
+    // formed one boundary before its healthy rival.
+    const uint256 target = QHk(0xEE), rival = QHk(0x22);
+    Pb6bSeedActive(target, 100, 102);
+    Pb6bSeedActive(rival,  110, 112);
+    auto emptyReader = [](const CBlockIndex*, CBlock& out) { out = CBlock(); return true; };
+    auto impossibleTarget = [&](const CPTXQuorumRecord& r, const CBlockIndex*) {
+        return r.quorum_hash == target;
+    };
+
+    // At chain[160]: target age 60 (= R + 2B, overdue), rival age 50 (due).
+    // ARM 1 — gate off: no yield, the impossible quorum reaches Guard 2's
+    // overdue candidacy and CAPTURES the slot.  The mechanism, demonstrated.
+    {
+        const PTXRotationDecision d = PTX_Formation_RotationDueAt(
+                &chain[160], store, params, emptyReader, impossibleTarget);
+        BOOST_REQUIRE(d.due);
+        BOOST_CHECK_MESSAGE(d.predecessor_quorum_hash == target,
+            "gate-off mechanism changed: the impossible quorum no longer "
+            "captures via Guard 2 - re-examine the ODC-054 coupling rationale");
+    }
+
+    // ARM 2 — gate ON (grace 2): due-and-impossible at the last two
+    // boundaries -> terminal-eligible -> YIELDS before Guard 2 sees it ->
+    // the healthy rival wins the slot.
+    {
+        Consensus::PTXFormationParams gated = params;
+        gated.nReformGrace = 2;
+        const PTXRotationDecision d = PTX_Formation_RotationDueAt(
+                &chain[160], store, gated, emptyReader, impossibleTarget);
+        BOOST_REQUIRE(d.due);
+        BOOST_CHECK_MESSAGE(d.predecessor_quorum_hash == rival,
+            "the KDD-076 yield must remove the impossible quorum BEFORE "
+            "Guard-2's overdue tracking - an overdue-eligible quorum captured "
+            "the slot (yield-beats-override broken)");
+    }
+}
+
+// (IH) ★ CORRELATED DEPARTURES + LIMITER SCALING at the producer level.
+// Three simultaneously-eligible ACTIVE records with MIXED eligibility (two
+// idle, one busy-but-impossible): exactly ONE reform per rate window, LRA
+// first, deterministic drain across successive windows — the correlated-
+// EVENT case (many quorums eligible at once) contained one-per-window.
+// ★ The W4-f age-anchor key coherence, demonstrated live at the first
+// boundary: idle-eligibles key on mined_height, which the age anchor
+// (mined + window <= anchor) forces BELOW any in-window attribution — so
+// long-idle quorums deterministically rank before the busy-but-impossible
+// one.  rate_window (100) > boundary interval (80), so adjacent boundaries
+// rate-limit out — the containment the KDD-074 limiter exists for.
+// RED (inversion: drop the one-per-window gate in SelectReformCandidate):
+// the rate-limited boundaries reform anyway (0-expected rows fail).
+BOOST_AUTO_TEST_CASE(IH_CorrelatedDrain_OnePerWindowLRA)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_BLS_WipeShares(evoDb.get());
+    CPTXQuorumStore store(*evoDb);
+    G2RetireAllActive(store);
+
+    std::vector<CBlockIndex> chain = W4dChain(480);
+    Consensus::PTXFormationParams params = W4fParams();   // B=R=80, window 50
+    params.nReformGrace      = 2;
+    params.nReformRateWindow = 100;                       // > B: adjacent boundaries limited
+
+    // The correlated-eligible set: two long-idle, one busy-but-impossible.
+    const uint256 idleA = QHk(0x41), idleB = QHk(0x52), busyC = QHk(0x63);
+    Pb6bSeedActive(idleA, /*formation*/ 10, /*mined*/ 20);
+    Pb6bSeedActive(idleB, /*formation*/ 12, /*mined*/ 30);
+    Pb6bSeedActive(busyC, /*formation*/ 0,  /*mined*/ 5);
+
+    // busyC rolls at 140 (inside the (110,160] window: NOT idle) and is
+    // rotation-impossible — eligible via the FORCED arm only.
+    std::map<int, CBlock> blocks = {{140, W4dRollBlock(busyC)}};
+    auto reader = [&](const CBlockIndex* p, CBlock& out) {
+        auto it = blocks.find(p->nHeight);
+        out = (it != blocks.end()) ? it->second : CBlock();
+        return true;
+    };
+    auto impossibleC = [&](const CPTXQuorumRecord& r, const CBlockIndex*) {
+        return r.quorum_hash == busyC;
+    };
+
+    auto stateOf = [&](const uint256& qh) {
+        CPTXQuorumRecord r;
+        BOOST_REQUIRE(store.GetQuorumRecord(qh, r));
+        return (PTXQuorumState)r.state;
+    };
+
+    // Boundary 160: all three eligible; LRA keys A=20 (mined), B=30 (mined),
+    // C=140 (in-window attribution) — the age-anchor coherence: both idle
+    // keys sit below the busy key by construction.  A drains first.
+    BOOST_CHECK_EQUAL(store.MaybeReformAtBoundary(&chain[160], params, reader, impossibleC), 1u);
+    BOOST_CHECK(stateOf(idleA) == PTXQuorumState::REFORMED);
+    BOOST_CHECK(stateOf(idleB) == PTXQuorumState::ACTIVE);
+    BOOST_CHECK(stateOf(busyC) == PTXQuorumState::ACTIVE);
+
+    // Boundary 240: inside the rate window (240 - 160 = 80 < 100) — the
+    // remaining eligibles QUEUE.  The correlated cascade, contained.
+    BOOST_CHECK_EQUAL(store.MaybeReformAtBoundary(&chain[240], params, reader, impossibleC), 0u);
+
+    // Boundary 320: window open again.  C's attribution has aged out of the
+    // scan, so its key reverts to record antiquity (mined 5 < B's 30) — the
+    // LRA re-derivation is stateless and deterministic.  C drains.
+    BOOST_CHECK_EQUAL(store.MaybeReformAtBoundary(&chain[320], params, reader, impossibleC), 1u);
+    BOOST_CHECK(stateOf(busyC) == PTXQuorumState::REFORMED);
+    BOOST_CHECK(stateOf(idleB) == PTXQuorumState::ACTIVE);
+
+    // Boundary 400: limited again (400 - 320 = 80 < 100) -> queue holds.
+    BOOST_CHECK_EQUAL(store.MaybeReformAtBoundary(&chain[400], params, reader, impossibleC), 0u);
+
+    // Boundary 480: the last eligible drains.  Three correlated eligibles,
+    // three windows, deterministic order — nothing reformed en masse.
+    BOOST_CHECK_EQUAL(store.MaybeReformAtBoundary(&chain[480], params, reader, impossibleC), 1u);
+    BOOST_CHECK(stateOf(idleB) == PTXQuorumState::REFORMED);
+}
+
+// ===========================================================================
 // LINEAGE-SCOPED SCAN - the demanded-case half of seat-vs-record idleness.
 // A demanded lineage's pre-rotation rolls (attributed to the predecessor's
 // hash) must be SEEN by the successor's scan.  RED (hash-scoped inversion =

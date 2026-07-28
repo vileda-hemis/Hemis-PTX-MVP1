@@ -207,6 +207,12 @@ bool PTX_Formation_OverCapacity(const Consensus::PTXFormationParams& params,
 // L=2; the guard is LATENT at low L (capacity generous, nothing starves) and
 // load-bearing only as L approaches R/B.  Real validation is env-gated to
 // W2.5b at L=6-8 under genuine competition.
+// ★ GATE COUPLING (ODC-054): Guard 2 is SAFE only alongside the KDD-076
+// yield — with nReformGrace == 0 a rotation-impossible quorum ages to
+// most-overdue and the override hands it every boundary (fleet-wide rotation
+// starvation).  CheckParams therefore HARD-REJECTS nSupportedQuorums > 1
+// with nReformGrace == 0; the yield runs before the override by construction
+// (pinned by IH_YieldBeatsOverride_GateCouplingMechanism).
 // ---------------------------------------------------------------------------
 PTXRotationDecision PTX_Formation_RotationDueAt(
         const CBlockIndex* pindexAnchor,
