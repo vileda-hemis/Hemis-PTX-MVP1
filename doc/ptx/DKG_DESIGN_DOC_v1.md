@@ -2451,6 +2451,43 @@ Fail-safe is **not free**: it converts safety risk into **liveness risk**, and t
 
 ---
 
+**ODC-052 (2026-07-28). ★ THE L>1 REFORM-CHURN BOUND — winner-take-all routing makes every non-newest quorum idle BY CONSTRUCTION, so W2.4 reform drains the fleet continuously at L>1. A SCOPE BOUND on shipped code, not a defect. §7.4 routing distribution is the PREREQUISITE fix.**
+
+**The mechanism.** `PTX_SelectDKGSigningCtx` (KDD-066) selects the **single newest quorum** — highest `formation_height`, lowest-hash tie-break — so **all rolls go to one quorum**. At **L > 1 with demand**, the consequence is compositional:
+1. the newest quorum receives every roll; **the other L-1 receive nothing and are idle BY CONSTRUCTION** — not because demand is absent, but because routing never offers them any;
+2. under KDD-074 retire-on-absence they all become idle-eligible once past their windows;
+3. the KDD-074 limiter drains them **one per window**, each reform spawning a fresh formation;
+4. ★ the fresh formation has the **highest `formation_height`** -> it becomes "newest" -> **takes the routing** -> the previous holder now receives nothing and **starts its own idle clock**;
+5. **repeat, indefinitely.**
+
+★ **Steady state: the fleet turns over completely at the limiter rate, forever, regardless of quorum health.** At L=37 with a 40-block window that is a full-fleet turnover roughly every **1,480 blocks** — every quorum reformed on rotation, each costing a 60+-block reform cycle (§9.1), members dissolving and re-forming, keys churning, for no operational reason.
+
+**Severity and honest classification.** ★ **This is NOT a safety defect.** Consistent with KDD-077 §4, safety holds throughout — no wrong output, no split, every reform is a valid transition and every fresh formation a valid quorum. What degrades is **liveness and efficiency**.
+
+★★ **THE FIX vs THE BOUND — do not confuse the layers.** **§7.4 routing distribution is THE FIX**: a quorum that receives its share of rolls **is not idle, is not eligible, and is not reformed** — the churn never starts. **ODC-047's K>1 floor is DAMAGE-BOUNDING, not the fix**: it caps how far a drain can go if churn happens anyway, but it does **not stop the churn** and does not make L>1 safe on its own. ★ **A reader must not conclude "build the K>1 floor and L>1 is safe."** Routing *prevents*; the floor *contains*. Both are wanted; only routing closes this entry.
+
+★ **AND ODC-047's CHARACTER CHANGES.** ODC-047 described its drain as *possible under a sustained demand lull* — an adversarial or unusual condition. **At L>1 with winner-take-all routing the drain is CERTAIN UNDER NORMAL OPERATION**, because demand reaching one quorum is indistinguishable, to every other quorum, from no demand at all. **ODC-047's floor is therefore not edge-case insurance but normal-operation-necessary at scale** — which arguably raises its priority relative to how it was first recorded.
+
+★ **NOT A DEFECT IN WHAT WAS BUILT — a scope bound.** W2.4's reform is **correct and fleet-proven in the regime it was specified and proven for: L=1.** Two drill runs, identical fire heights, three paced reforms, stable liveness — all valid, all at L=1. **Reform's safety at L>1 depends on routing distribution that does not yet exist.** Recording this means **nobody mistakes L=1-proven for L-general-proven.**
+
+★ **Why no drill could have caught it.** bf's ceiling is **L_max = 2** (22 GMs / 11 seats under KDD-040) and it carries **zero rolls** (the W4-a wire gate proved it). The interaction requires **L > 1 AND demand simultaneously** — a combination bf **structurally cannot produce**. ★ **This is the FIFTH compositional-seam gap in this arc** (ODC-042 as-of, ODC-045 can-never-rotate, the age anchor, the lineage clock, and now ODC-052): each was two individually-correct, unit-green, fleet-proven mechanisms whose **composition at a seam** produced a behaviour neither owned, and **every one was found by source-reading, not by testing**. Here the seam is routing x reform.
+
+**THE PREREQUISITE FIX.** §7.4 already specifies the correct behaviour — *"the routing layer selects among available quorums… route over records with state == ACTIVE"*, caller-agnostic — but the built selection is winner-take-all. ★ **This makes §7.4 routing distribution a PREREQUISITE for reform at scale, not optional W2.5 polish** — W2.5 must land it *before* (or with) any L>1 deployment carrying demand, and should sequence it accordingly.
+
+**Bound, stated for operators and future readers:** *until §7.4 routing distribution lands, PTX reform is safe to run at L=1; at L>1 with demand it will churn the fleet continuously.* A deployment wanting L>1 before §7.4 can **disable the idle arm** (`nRetireWindow = 0`, the KDD-077 §5 gate) — reform then fires only on the forced-reform arm (KDD-076), which is demand-independent. ★ That workaround exists **only because the W4-e gate was built as three independent knobs** rather than one on/off switch.
+
+**Cross-ref:** KDD-066 (`PTX_SelectDKGSigningCtx` — the winner-take-all selection), §7.4 (the specified routing distribution; **THE FIX**), KDD-074 (retire-on-absence + limiter — the other half of the composition), **ODC-047** (whose drain this changes from *possible under a lull* to **certain under normal operation at L>1**, and whose K>1 floor is **damage-bounding, not the fix**), W2.4 arc entry (qualified by the L=1 amendment below), W2.5 (which builds §7.4), ODC-045 (the same compositional-seam pattern), KDD-077 §4 (why this is liveness, not safety) and §5 (the three-knob gate the workaround uses).
+
+**ODC:** ODC-052
+
+---
+
+> **[W2.4 ARC ENTRY — L=1 QUALIFICATION, 2026-07-28 — appended; the arc entry and its sustained-idle amendment byte-unchanged.]** ★ **Read every "FLEET-PROVEN" claim in the W2.4 arc entry as "FLEET-PROVEN AT L=1."** The two drill runs, the identical fire heights, the pool-unsaturation, the three paced reforms and the sustained-idle validation are all **valid and unqualified within the L=1 regime** — the regime W2.4 was specified and built for. **They do not extend to L>1.** ★ **ODC-052** records why: KDD-066's winner-take-all routing makes every non-newest quorum idle *by construction*, so at L>1 with demand W2.4's reform drains the fleet continuously until **§7.4 routing distribution** lands. That is a **scope bound, not a defect** — and bf **structurally could not have surfaced it** (L_max = 2, zero rolls; the interaction needs L>1 *and* demand together). **§7.4 routing distribution is a prerequisite for reform at L>1**, owed to W2.5. Until it lands, an L>1 deployment should run with the idle arm gated off (`nRetireWindow = 0`).
+
+**Next-free: KDD-078 / ODC-053.**
+
+---
+
 ## Appendix: Register cross-reference
 
 *Program status / roadmap (to first testnet), including live fleet-state snapshots and pre-testnet blockers, lives in the tracked `doc/ptx/PTX_ROADMAP.md`. This register tracks decisions; the roadmap tracks status.*
