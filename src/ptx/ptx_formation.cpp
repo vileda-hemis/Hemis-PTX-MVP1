@@ -193,11 +193,33 @@ PTXRotationDecision PTX_Formation_RotationDueAt(
     // Of the ACTIVE quorums, which are DUE at this anchor? Age is measured from
     // the quorum's own formation anchor, so a quorum is due once a full
     // interval has elapsed since it formed.
+    //
+    // ★ GUARD 2 (KDD-079 §4) — THE FAIRNESS FLOOR.  The lowest-hash tie-break
+    // below SPREADS contested rotations but is not FAIR: quorum_hash is fixed
+    // at formation, so a persistently high-hash quorum can lose every
+    // contested boundary and starve past nRotationInterval — ageing its key
+    // beyond the KDD-045 compromise bound the rotation interval exists to
+    // enforce.  The floor: a quorum whose age reaches
+    //     nRotationInterval + 2 * nBoundaryInterval
+    // is OVERDUE and wins its slot REGARDLESS of hash.  The slack scales with
+    // the cadence — "lost two contested boundaries, wins the third" — and
+    // reuses formation_height (no new record field).  Most-overdue-first
+    // among several overdue (lowest hash between equals); non-overdue fall
+    // through to the tie-break unchanged.
+    // ★ At the shipped L=1 defaults this is observationally a NO-OP: a lone
+    // quorum wins every tie-break, so even when the predicate holds (B == R
+    // puts the floor at 3R — reachable only through repeated ceremony
+    // failure) the selected winner is IDENTICAL with or without the override.
+    const int overdue_floor =
+            params.nRotationInterval + 2 * params.nBoundaryInterval;
     const uint256* lowest = nullptr;
+    const uint256* overdue = nullptr;
+    int overdue_age = 0;
     for (const CPTXQuorumRecord& rec : active) {
         // KDD-079: the ROTATION AGE test — nRotationInterval, NOT the boundary
         // cadence.  KDD-045's key-compromise window is bounded by this.
-        if (pindexAnchor->nHeight - rec.formation_height < params.nRotationInterval)
+        const int age = pindexAnchor->nHeight - rec.formation_height;
+        if (age < params.nRotationInterval)
             continue;                                     // not yet due
         // W2.4 W4-e — THE KDD-075 YIELD: terminal-eligibility yields rotation
         // AT CEREMONY-START.  ★ Keyed on ELIGIBILITY, never "fired": an
@@ -220,14 +242,33 @@ PTXRotationDecision PTX_Formation_RotationDueAt(
                       rec.quorum_hash.ToString(), why, pindexAnchor->nHeight);
             continue;                                     // yields to reform
         }
+        // Guard 2: track the most-overdue candidate (lowest hash between
+        // equal ages — deterministic on every node, the P-b6b shape).
+        if (age >= overdue_floor &&
+            (overdue == nullptr || age > overdue_age ||
+             (age == overdue_age && rec.quorum_hash < *overdue))) {
+            overdue = &rec.quorum_hash;
+            overdue_age = age;
+        }
         if (lowest == nullptr || rec.quorum_hash < *lowest)
             lowest = &rec.quorum_hash;                    // tie-break: lowest hash wins
     }
     if (lowest == nullptr) return PTXRotationDecision{};   // none due
 
+    // Diagnostic only when the floor CHANGES the outcome — the direct
+    // observable for the W2.5b contention drills (an overdue quorum is also
+    // the lowest-hash due quorum in the common case, and logging that would
+    // drown the signal).
+    if (overdue != nullptr && !(*overdue == *lowest)) {
+        LogPrintf("PTX formation: quorum %s OVERDUE (age %d >= %d = R + 2B) - "
+                  "fairness floor overrides the lowest-hash tie-break "
+                  "(KDD-079 Guard 2)\n",
+                  overdue->ToString(), overdue_age, overdue_floor);
+    }
+
     PTXRotationDecision d;
     d.due = true;
-    d.predecessor_quorum_hash = *lowest;
+    d.predecessor_quorum_hash = (overdue != nullptr) ? *overdue : *lowest;
     return d;
 }
 

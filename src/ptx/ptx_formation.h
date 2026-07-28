@@ -184,6 +184,30 @@ bool PTX_Formation_CheckParams(const Consensus::PTXFormationParams& params,
 bool PTX_Formation_OverCapacity(const Consensus::PTXFormationParams& params,
                                 size_t active_count);
 
+// ---------------------------------------------------------------------------
+// ★ W2.5a GUARD 2 (KDD-079 §4) — THE FAIRNESS FLOOR, inside RotationDueAt.
+//
+// P-b6b's lowest-hash tie-break SPREADS contested rotations but is not FAIR:
+// quorum_hash is fixed at formation, so a persistently high-hash quorum can
+// lose every contested boundary and starve past nRotationInterval — ageing
+// its key beyond KDD-045's compromise bound.  Guard 2 is the floor under the
+// tie-break: a quorum whose age (anchor - formation_height, the SAME quantity
+// the due test reads — no new record field) reaches
+//     nRotationInterval + 2 * nBoundaryInterval
+// is OVERDUE and wins its slot REGARDLESS of hash.  The slack scales with the
+// cadence ("lost two contested boundaries, wins the third").  Ordering:
+// most-overdue-first, lowest hash between equals, non-overdue fall through to
+// the tie-break unchanged.  This is what lets KDD-079's Option B preserve
+// KDD-045's rotation-windowing bound at scale.
+// ★ NODE-LOCAL POLICY like the tie-break it floors — V12 never checks timing,
+// so a policy-divergent node produces a valid-but-early rotation, not a split.
+// ★ Observationally a NO-OP at the shipped L=1 defaults: a lone quorum wins
+// every tie-break, so the winner is identical with or without the override.
+// ★ HONEST SCOPE: unit-proven by forcing the tie-break loss ARTIFICIALLY at
+// L=2; the guard is LATENT at low L (capacity generous, nothing starves) and
+// load-bearing only as L approaches R/B.  Real validation is env-gated to
+// W2.5b at L=6-8 under genuine competition.
+// ---------------------------------------------------------------------------
 PTXRotationDecision PTX_Formation_RotationDueAt(
         const CBlockIndex* pindexAnchor,
         CPTXQuorumStore& store,

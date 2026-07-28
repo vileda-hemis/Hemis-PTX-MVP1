@@ -2850,6 +2850,174 @@ BOOST_AUTO_TEST_CASE(Pb6b_Trigger_TieBreakLowestHashOnly)
     BOOST_CHECK(!(d.predecessor_quorum_hash == hi));         // the other waits
 }
 
+// ---------------------------------------------------------------------------
+// W2.5a P3 — GUARD 2 (KDD-079 §4): the fairness floor over the tie-break.
+// ---------------------------------------------------------------------------
+
+// Divergent-cadence params: Guard 2's home terrain is B < R (at the shipped
+// B == R defaults the floor sits at 3R and a lone quorum wins anyway).
+static Consensus::PTXFormationParams G2Params()
+{
+    Consensus::PTXFormationParams p{};
+    p.name = "g2";
+    p.nBoundaryInterval = 10;
+    p.nRotationInterval = 40;    // floor = 40 + 2*10 = 60
+    p.nCeremonyBudget   = 80;
+    p.nSupportedQuorums = 2;
+    return p;
+}
+
+// Quorum records leak across rows in the shared evoDb (each row seeds, none
+// erases).  The earlier rows tolerate that by hash choice; the G2 rows CANNOT
+// — the override favours the OLDEST formation, so any leaked old record would
+// hijack the selection.  Retire everything visible before seeding, THROUGH the
+// store's own producer: a direct evoDb write behind a warm store is invisible
+// (recordCache faults in on read and never invalidates — mid-test retires hit
+// exactly that), while MarkReformed writes record AND cache in one lock.
+// reformed_height 0 is never active at any probed height (strict predicate).
+static void G2RetireAllActive(CPTXQuorumStore& store)
+{
+    for (const CPTXQuorumRecord& rec : store.GetActiveQuorumsAtHeight(1 << 30)) {
+        BOOST_REQUIRE(store.MarkReformed(rec.quorum_hash, 0));
+    }
+}
+
+// (P3) ★ GUARD 2 — THE FAIRNESS FLOOR.  A quorum whose hash loses EVERY
+// contested tie-break (highest hash by construction) starves while merely
+// due; once its age reaches R + 2B it wins the slot REGARDLESS of hash.
+// Asserted as the INVARIANT (the overdue quorum wins), never as hash/height
+// literals — heights are computed from the params (the W4d/W4f
+// pin-the-property lesson, third application).
+// RED (inversion: drop the override -> winner is always the lowest hash): the
+// high-hash quorum loses at the floor too, and at every boundary after —
+// starving INDEFINITELY past nRotationInterval.  KDD-045's key-compromise
+// bound violated, surfacing as this row's failure.
+// ★ HONEST SCOPE (recorded here AND in the KDD-079 entry): this row forces
+// the tie-break loss ARTIFICIALLY at L=2 — the guard is LATENT at low L
+// (capacity generous, nothing starves) and load-bearing only as L approaches
+// R/B.  Real validation is env-gated to W2.5b at L=6-8 under genuine
+// competition.
+BOOST_AUTO_TEST_CASE(G2a_OverdueQuorumBeatsTieBreak)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_BLS_WipeShares(evoDb.get());
+    CPTXQuorumStore store(*evoDb);
+    const Consensus::PTXFormationParams params = G2Params();
+    G2RetireAllActive(store);
+
+    const int R = params.nRotationInterval;
+    const int floorAge = R + 2 * params.nBoundaryInterval;
+
+    // The target: HIGHEST hash (loses every tie-break), formed earliest.  The
+    // rival: lower hash, formed one boundary later — due-but-never-overdue at
+    // both probed anchors, so it wins exactly while the tie-break rules.
+    const uint256 target = QHk(0xEE), rival = QHk(0x22);
+    BOOST_REQUIRE(rival < target);                 // the construction's premise
+    const int tform = 5000;
+    Pb6bSeedActive(target, tform, tform + 2);
+    Pb6bSeedActive(rival,  tform + params.nBoundaryInterval,
+                           tform + params.nBoundaryInterval + 2);
+
+    // One block SHORT of the floor: both merely due -> the tie-break rules
+    // and the target keeps losing (the starvation this guard exists to stop).
+    CBlockIndex shortOf = Pb6bAnchor(tform + floorAge - 1);
+    {
+        const PTXRotationDecision d = PTX_Formation_RotationDueAt(
+                &shortOf, store, params, W4eStubReader, W4eStubImpossible);
+        BOOST_REQUIRE(d.due);
+        BOOST_CHECK(d.predecessor_quorum_hash == rival);
+    }
+    // AT the floor: the overdue target wins its slot regardless of hash.
+    CBlockIndex atFloor = Pb6bAnchor(tform + floorAge);
+    {
+        const PTXRotationDecision d = PTX_Formation_RotationDueAt(
+                &atFloor, store, params, W4eStubReader, W4eStubImpossible);
+        BOOST_REQUIRE(d.due);
+        BOOST_CHECK_MESSAGE(d.predecessor_quorum_hash == target,
+            "the overdue quorum did not win its slot - the fairness floor is "
+            "inert and a high-hash quorum starves past nRotationInterval "
+            "(KDD-045's key-compromise bound broken)");
+    }
+}
+
+// (P3) THE ORDERING among several overdue: MOST-overdue-first regardless of
+// hash; lowest hash only between EQUAL ages (deterministic on every node, the
+// P-b6b shape); non-overdue quorums fall through to the tie-break untouched.
+// RED (inversion: order the overdue set by hash): the less-starved low-hash
+// quorum jumps the queue and the most-aged key keeps ageing — the first probe
+// fails.
+BOOST_AUTO_TEST_CASE(G2b_MostOverdueFirstLowestHashAmongEquals)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_BLS_WipeShares(evoDb.get());
+    CPTXQuorumStore store(*evoDb);
+    const Consensus::PTXFormationParams params = G2Params();
+    G2RetireAllActive(store);
+
+    const int B = params.nBoundaryInterval;
+    const int floorAge = params.nRotationInterval + 2 * B;
+
+    // Both overdue, one boundary apart in age; the MORE overdue has the
+    // HIGHER hash — most-overdue-first must beat lowest-hash.
+    const uint256 aged = QHk(0xDD), less = QHk(0x11);
+    const int aform = 6000;
+    Pb6bSeedActive(aged, aform,     aform + 2);
+    Pb6bSeedActive(less, aform + B, aform + B + 2);
+    CBlockIndex anchor = Pb6bAnchor(aform + floorAge + B);   // ages: floor+B / floor
+    {
+        const PTXRotationDecision d = PTX_Formation_RotationDueAt(
+                &anchor, store, params, W4eStubReader, W4eStubImpossible);
+        BOOST_REQUIRE(d.due);
+        BOOST_CHECK(d.predecessor_quorum_hash == aged);      // most overdue first
+    }
+
+    // EQUAL overdue ages: lowest hash between them — the selection stays
+    // deterministic when the age ordering cannot discriminate.
+    G2RetireAllActive(store);
+    const uint256 eqLo = QHk(0x33), eqHi = QHk(0x77);
+    const int eform = 7000;
+    Pb6bSeedActive(eqLo, eform, eform + 2);
+    Pb6bSeedActive(eqHi, eform, eform + 3);
+    CBlockIndex equalAnchor = Pb6bAnchor(eform + floorAge);
+    {
+        const PTXRotationDecision d = PTX_Formation_RotationDueAt(
+                &equalAnchor, store, params, W4eStubReader, W4eStubImpossible);
+        BOOST_REQUIRE(d.due);
+        BOOST_CHECK(d.predecessor_quorum_hash == eqLo);
+    }
+}
+
+// (P3) ★ THE DEPLOY-SAFETY PIN, Guard-2 edition: at the shipped defaults
+// (B == R, L == 1) the floor sits at 3R, and a lone quorum wins every
+// tie-break anyway — the winner is IDENTICAL with or without the override,
+// both while merely due and even once its age passes the floor (reachable at
+// L=1 only through repeated ceremony failure).  Guard 2 is observationally a
+// NO-OP at the single-quorum defaults, like Guards 1 and 3.  Like G1a this
+// row asserts ACCEPTANCE and stays GREEN under the G2a/G2b inversions —
+// correctly: a dropped override cannot change a lone quorum's selection.
+BOOST_AUTO_TEST_CASE(G2c_LoneQuorumDefaultsUnchanged)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_BLS_WipeShares(evoDb.get());
+    CPTXQuorumStore store(*evoDb);
+    const Consensus::PTXFormationParams& params = Params().GetConsensus().ptxFormation;
+    BOOST_REQUIRE_EQUAL(params.nBoundaryInterval, params.nRotationInterval); // shipped shape
+    G2RetireAllActive(store);
+
+    const uint256 lone = QHk(0xC4);
+    const int lform = 8000;
+    Pb6bSeedActive(lone, lform, lform + 2);
+
+    CBlockIndex due = Pb6bAnchor(lform + params.nRotationInterval);   // merely due
+    CBlockIndex far = Pb6bAnchor(lform + 3 * params.nRotationInterval); // past the floor
+    for (CBlockIndex* a : {&due, &far}) {
+        const PTXRotationDecision d = PTX_Formation_RotationDueAt(
+                a, store, params, W4eStubReader, W4eStubImpossible);
+        BOOST_REQUIRE(d.due);
+        BOOST_CHECK(d.predecessor_quorum_hash == lone);
+    }
+}
+
 // (P-b6b) (a) ExpirePending: a PENDING past TTL is erased; within TTL survives.
 BOOST_AUTO_TEST_CASE(Pb6b_Sweep_ExpirePending)
 {
