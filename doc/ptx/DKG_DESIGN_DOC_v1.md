@@ -2360,6 +2360,14 @@ semantics), ODC-025 (cadence N, open).
 
 **Next-free: KDD-077 / ODC-050.**
 
+> **[SUSTAINED-IDLE AMENDMENT, 2026-07-28 — appended; the original entry above byte-unchanged.]** ★ **The sustained-idle validation is now THREE paced reforms, not one: h1120 / h1360 / h1600 — exact 240-block spacing.** The fleet was left running past the arc entry and the third reform fired as predicted.
+>
+> ★ **THE PACING IS COMPUTABLE, NOT MERELY OBSERVED.** The h1600 reform was **predicted ~30 minutes ahead from live state** — the lineage's fresh-formation origin `b30d6fb1` was mined h1387, so `idle_since(1387) + nRetireWindow(200) = 1587`, and the first formation boundary at or past that is **h1600** — and it fired **on that block** (`MarkReformed: quorum REFORMED at height 1600. quorum_hash=bd787bf4…`). That is the difference between *"the mechanism behaved well for six hours"* and *"we understand the rule it follows and can compute its next action in advance."*
+>
+> ★ **THE SEAT-VS-RECORD PROOF REPRODUCED INDEPENDENTLY, at a fresh lineage origin.** The clock that fired at h1600 was set at **h1387**; the records underneath it turned over **twice** in between — `b30d6fb1` -> `4db34b0b` (h1467) -> `bd787bf4` (h1547) — each successor **inheriting 1387** rather than resetting. `bd787bf4` reformed when it was **53 blocks old**; under a per-record clock it could not have been eligible until ~h1747. **The SEAT'S silence fired it, not the key-generation's** — the two-rotation demonstration first seen at h1360, now reproduced independently on a lineage that began after it.
+>
+> **Three full `rotate -> rotate -> reform -> fresh formation` cycles ran unbroken**, the pool unsaturating each time (a fresh ceremony started in the reform's own block on every occasion — h1600's successor ceremony `415170e7…` began at 08:49:01Z, same block). Zero churn, zero disband events, liveness stable throughout.
+
 ---
 
 ## Appendix: Register cross-reference
