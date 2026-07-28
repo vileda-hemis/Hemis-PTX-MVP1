@@ -21,6 +21,7 @@
 #include "util/system.h" // error()
 #include "validation.h"  // LookupBlockIndex
 
+#include <algorithm>
 #include <limits>
 #include <set>
 
@@ -781,7 +782,8 @@ bool CPTXQuorumStore::GetQuorumRecord(const uint256& quorum_hash, CPTXQuorumReco
 // See the header for the x-basis note and the PROVISIONAL selection rule.
 // ---------------------------------------------------------------------------
 
-PTXDKGSigningCtx PTX_SelectDKGSigningCtx(const std::vector<CPTXQuorumRecord>& active)
+PTXDKGSigningCtx PTX_SelectDKGSigningCtx(const std::vector<CPTXQuorumRecord>& active,
+                                         const uint256& tip_hash)
 {
     PTXDKGSigningCtx ctx;
     if (active.empty())
@@ -789,18 +791,52 @@ PTXDKGSigningCtx PTX_SelectDKGSigningCtx(const std::vector<CPTXQuorumRecord>& ac
 
     ctx.quorum_present = true;      // from here, a load failure is FAIL-CLOSED
 
-    // PROVISIONAL selection rule (KDD-066, owed to W2.1 — see header): highest
-    // formation_height; ties broken by LOWEST quorum_hash lexicographically so
-    // the choice is deterministic across nodes rather than iteration-ordered.
-    const CPTXQuorumRecord* best = nullptr;
-    for (const auto& rec : active) {
-        if (best == nullptr ||
-            rec.formation_height > best->formation_height ||
-            (rec.formation_height == best->formation_height &&
-             rec.quorum_hash < best->quorum_hash)) {
-            best = &rec;
-        }
-    }
+    // ------------------------------------------------------------------
+    // §7.4 ROUTING DISTRIBUTION (W2.5a, KDD-079 §7(ii); replaces the
+    // PROVISIONAL KDD-066 newest-wins rule).  §7.4 requires the router to
+    // "select among available quorums", caller-agnostic — newest-wins sent
+    // EVERY roll to one quorum, which is the structural half of ODC-052:
+    // at L>1 the other L-1 are idle BY CONSTRUCTION, so reform drains them
+    // and the fleet churns.  Distributing breaks that: a quorum receiving
+    // its share is not idle, not eligible, not reformed.
+    //
+    // ★ SELECTION INPUT = THE TIP BLOCK HASH (decision A'), never the
+    // caller's round_seed.  round_seed is built from caller_salt, which is
+    // FREE-FORM HEX: keying on it would let a caller grind salts locally,
+    // at ~zero cost, until the selector named a quorum of their choosing —
+    // a targeting oracle.  The tip hash is unforgeable by the caller.
+    //
+    // ★ A' IS A DISTRIBUTION FIX WITH A DOCUMENTED RESIDUAL, NOT A SECURITY
+    // FIX.  The caller can still TIMING-grind (wait ~L blocks for the tip to
+    // reshuffle onto a target).  That residual sits inside §9.1's accepted
+    // bound — targeting only helps a caller who has ALREADY compromised a
+    // quorum, which §9.1 accepts can bias its own outputs; targeting
+    // amplifies that, it grants no new capability (cannot make an honest
+    // quorum lie, cannot forge).  The sharper residual is LIFECYCLE
+    // manipulation (avoid a quorum -> force its reform; pin it -> prevent
+    // reform).  The structural fix is commit-reveal (selection resolved by
+    // the inclusion block, which does NOT exist at this point in the flow —
+    // selection precedes the tx), recorded as the escape hatch.
+    //
+    // ★ SORTED BY quorum_hash before indexing: GetActiveQuorumsAtHeight's
+    // iteration order is a storage detail and MUST NOT leak into the
+    // selection, or two nodes could route the same roll differently.
+    // ------------------------------------------------------------------
+    std::vector<const CPTXQuorumRecord*> ordered;
+    ordered.reserve(active.size());
+    for (const auto& rec : active) ordered.push_back(&rec);
+    std::sort(ordered.begin(), ordered.end(),
+              [](const CPTXQuorumRecord* a, const CPTXQuorumRecord* b) {
+                  return a->quorum_hash < b->quorum_hash;
+              });
+
+    // Index from the tip hash's low 8 bytes (uint256 is little-endian
+    // internally; any fixed slice is fine — it must only be deterministic).
+    uint64_t sel = 0;
+    for (int i = 0; i < 8; i++)
+        sel = (sel << 8) | (uint64_t)(*(tip_hash.begin() + i));
+    const CPTXQuorumRecord* best = ordered[sel % ordered.size()];
+
     if (best == nullptr)
         return ctx;
 

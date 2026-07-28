@@ -495,6 +495,16 @@ struct PTXDKGSigningCtx {
 // (ODC-036: deriving it from registry size mis-signs when registered-nodes !=
 // quorum-size).  No threshold parameter: it is derived here and returned in
 // ctx.threshold, the single source the roll path reads.
-PTXDKGSigningCtx PTX_SelectDKGSigningCtx(const std::vector<CPTXQuorumRecord>& active);
+// §7.4 ROUTING (W2.5a, KDD-079 §7(ii)) — distribution across the ACTIVE set,
+// NOT newest-wins.  tip_hash is the SELECTION INPUT (decision A'): unforgeable
+// by the caller, unlike round_seed whose caller_salt is free-form hex and would
+// make selection a grindable targeting oracle.  PURE (the input is passed in),
+// so it stays unit-testable.  Selection is over the ACTIVE vector SORTED by
+// quorum_hash — storage iteration order must never leak into routing.
+// ★ Residual (documented, not fixed here): a caller can TIMING-grind by waiting
+// for the tip to reshuffle; the structural fix is commit-reveal, which needs a
+// flow change (selection precedes the tx, so no inclusion hash exists here).
+PTXDKGSigningCtx PTX_SelectDKGSigningCtx(const std::vector<CPTXQuorumRecord>& active,
+                                         const uint256& tip_hash);
 
 #endif // PTX_QUORUM_STORE_H

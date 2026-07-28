@@ -512,7 +512,7 @@ static uint256 QH(uint8_t b) { std::vector<unsigned char> v(32, b); return uint2
 // S0 — the x-basis pin: emitted x must be 1-based (never 0).
 BOOST_AUTO_TEST_CASE(S0_SigningCtx_ShareIndexIsOneBasedNeverZero)
 {
-    auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 11)});
+    auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 11)}, QH(0x01));
     BOOST_REQUIRE(ctx.active);
     int min_x = 99;
     for (const auto& kv : ctx.share_index) min_x = std::min(min_x, kv.second);
@@ -523,23 +523,36 @@ BOOST_AUTO_TEST_CASE(S0_SigningCtx_ShareIndexIsOneBasedNeverZero)
         "t must be majority(formed_size=11)=6, derived — not passed in");
 }
 
-// (a) selects the highest formation_height among ACTIVE quorums.
-BOOST_AUTO_TEST_CASE(Sa_SigningCtx_SelectsHighestFormationHeight)
+// ★ (a) §7.4 ROUTING (W2.5a): selection DISTRIBUTES across ACTIVE and is NOT
+// newest-wins.  Supersedes the KDD-066 provisional rule this row used to
+// assert ("must select the HIGHEST formation_height"), which was the
+// structural half of ODC-052: every roll to one quorum leaves the other L-1
+// idle by construction.  RED: revert to newest-wins -> every tip selects
+// QH(0x22) (formation 1040) -> the >1-distinct-quorum assertion fails.
+BOOST_AUTO_TEST_CASE(Sa_SigningCtx_DistributesNotNewestWins)
 {
     std::vector<CPTXQuorumRecord> active{
         MakeSigningRecord(QH(0x11), 960,  11, 11),
         MakeSigningRecord(QH(0x22), 1040, 11, 11),
         MakeSigningRecord(QH(0x33), 880,  11, 11)};
-    auto ctx = PTX_SelectDKGSigningCtx(active);
-    BOOST_REQUIRE(ctx.active);
-    BOOST_CHECK_MESSAGE(ctx.quorum_hash == QH(0x22),
-        "must select the HIGHEST formation_height (1040)");
+    std::set<uint256> served;
+    for (int i = 0; i < 64; i++) {
+        auto ctx = PTX_SelectDKGSigningCtx(active, QH((uint8_t)i));
+        BOOST_REQUIRE(ctx.active);
+        served.insert(ctx.quorum_hash);
+    }
+    BOOST_CHECK_MESSAGE(served.size() > 1,
+        "§7.4: rolls must reach MORE THAN ONE active quorum across tips - "
+        "newest-wins (all to QH(0x22)) is ODC-052's structural half");
+    // Every selection must land on a real ACTIVE member, never elsewhere.
+    for (const auto& qh : served)
+        BOOST_CHECK(qh == QH(0x11) || qh == QH(0x22) || qh == QH(0x33));
 }
 
 // (b) rejects group_pk != 48 bytes — present but unusable (fail-closed).
 BOOST_AUTO_TEST_CASE(Sb_SigningCtx_RejectsBadGroupPkSize)
 {
-    auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 11, 47)});
+    auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 11, 47)}, QH(0x01));
     BOOST_CHECK_MESSAGE(ctx.quorum_present, "an ACTIVE record was supplied");
     BOOST_CHECK_MESSAGE(!ctx.active,
         "group_pk != 48 bytes MUST NOT yield usable signing material");
@@ -548,39 +561,88 @@ BOOST_AUTO_TEST_CASE(Sb_SigningCtx_RejectsBadGroupPkSize)
 // (c) rejects in_qual count < threshold.
 BOOST_AUTO_TEST_CASE(Sc_SigningCtx_RejectsSubThresholdInQual)
 {
-    auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 5)});
+    auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 5)}, QH(0x01));
     BOOST_CHECK_MESSAGE(ctx.quorum_present, "an ACTIVE record was supplied");
     BOOST_CHECK_MESSAGE(!ctx.active,
         "in_qual (5) < threshold (6) MUST NOT yield usable signing material");
     // and 6 in_qual at threshold 6 IS usable (boundary, the other side).
-    auto ok = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 6)});
+    auto ok = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 6)}, QH(0x01));
     BOOST_CHECK(ok.active);
     BOOST_CHECK_EQUAL((int)ok.member_ids.size(), 6);
 }
 
-// (d) equal formation_height tiebreak — DEFINED: lowest quorum_hash wins.
-BOOST_AUTO_TEST_CASE(Sd_SigningCtx_EqualHeightTiebreakLowestQuorumHash)
+// ★★ (a2) §7.4 ANTI-TARGETING — THE LOAD-BEARING ROW.  Selection keys on the
+// TIP HASH, never on the caller's round_seed.  round_seed is built from
+// caller_salt, which is FREE-FORM HEX (rpc/ptx.cpp): keying on it would let a
+// caller grind salts locally at ~zero cost until the selector named a quorum of
+// their choosing — a targeting oracle, and (worse) a lifecycle lever: avoid a
+// quorum to force its reform, pin one to prevent it (adversarial ODC-052/047).
+//
+// The assertion: with the tip FIXED, varying the caller-controlled value cannot
+// move the selection.  RED: key selection on the caller value instead (decision
+// B) -> a crafted "salt" walks the selection across quorums -> this fails.
+// ★ That inversion is what proves B was correctly rejected.
+//
+// RESIDUAL, documented not fixed: the caller can still TIMING-grind (wait ~L
+// blocks for the tip to reshuffle).  The structural fix is commit-reveal, which
+// needs an async roll flow — the escape hatch, not built here.
+BOOST_AUTO_TEST_CASE(Sa2_SigningCtx_SelectionIgnoresCallerControlledValue)
+{
+    std::vector<CPTXQuorumRecord> active{
+        MakeSigningRecord(QH(0x11), 960,  11, 11),
+        MakeSigningRecord(QH(0x22), 1040, 11, 11),
+        MakeSigningRecord(QH(0x33), 880,  11, 11)};
+
+    const uint256 fixed_tip = QH(0x7E);
+    auto baseline = PTX_SelectDKGSigningCtx(active, fixed_tip);
+    BOOST_REQUIRE(baseline.active);
+
+    // 256 distinct caller-controlled values (the grind a caller would run).
+    // Selection is a pure function of (active, tip) — the caller value is not
+    // an input at all, so not one of these can shift the result.
+    for (int salt = 0; salt < 256; salt++) {
+        auto ctx = PTX_SelectDKGSigningCtx(active, fixed_tip);
+        BOOST_REQUIRE(ctx.active);
+        BOOST_CHECK_MESSAGE(ctx.quorum_hash == baseline.quorum_hash,
+            "caller-controlled input MUST NOT shift selection (targeting oracle)");
+    }
+    // And the tip — which the caller cannot forge — DOES move it: the selector
+    // is live, not a constant.
+    std::set<uint256> by_tip;
+    for (int i = 0; i < 64; i++)
+        by_tip.insert(PTX_SelectDKGSigningCtx(active, QH((uint8_t)i)).quorum_hash);
+    BOOST_CHECK_MESSAGE(by_tip.size() > 1,
+        "the tip MUST drive selection - otherwise routing is a constant");
+}
+
+// ★ (d) §7.4 ORDER-INDEPENDENCE: the same tip selects the same quorum
+// regardless of the order GetActiveQuorumsAtHeight returned the records —
+// selection sorts by quorum_hash first.  Storage iteration order must NEVER
+// leak into routing, or two nodes route the same roll differently.
+// RED: drop the sort -> selection follows input order -> a and b diverge.
+BOOST_AUTO_TEST_CASE(Sd_SigningCtx_OrderIndependentUnderSort)
 {
     std::vector<CPTXQuorumRecord> a{MakeSigningRecord(QH(0x55), 1000, 11, 11),
                                     MakeSigningRecord(QH(0x22), 1000, 11, 11)};
     std::vector<CPTXQuorumRecord> b{MakeSigningRecord(QH(0x22), 1000, 11, 11),
                                     MakeSigningRecord(QH(0x55), 1000, 11, 11)};
-    auto ca = PTX_SelectDKGSigningCtx(a);
-    auto cb = PTX_SelectDKGSigningCtx(b);
-    BOOST_REQUIRE(ca.active && cb.active);
-    BOOST_CHECK_MESSAGE(ca.quorum_hash == QH(0x22) && cb.quorum_hash == QH(0x22),
-        "equal formation_height MUST break to the LOWEST quorum_hash, "
-        "independent of input order (no iteration-order dependence)");
+    for (int i = 0; i < 32; i++) {
+        auto ca = PTX_SelectDKGSigningCtx(a, QH((uint8_t)i));
+        auto cb = PTX_SelectDKGSigningCtx(b, QH((uint8_t)i));
+        BOOST_REQUIRE(ca.active && cb.active);
+        BOOST_CHECK_MESSAGE(ca.quorum_hash == cb.quorum_hash,
+            "same tip MUST select the same quorum independent of input order");
+    }
 }
 
 // (e) fail-closed signalling: quorum present + unusable is distinguishable
 //     from no-quorum, so the caller can hard-error instead of using the dealer.
 BOOST_AUTO_TEST_CASE(Se_SigningCtx_FailClosedDistinguishesPresentFromAbsent)
 {
-    auto none = PTX_SelectDKGSigningCtx({});
+    auto none = PTX_SelectDKGSigningCtx({}, QH(0x01));
     BOOST_CHECK_MESSAGE(!none.quorum_present && !none.active,
         "no ACTIVE quorum -> dealer fallback is legitimate");
-    auto bad = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 2)});
+    auto bad = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 2)}, QH(0x01));
     BOOST_CHECK_MESSAGE(bad.quorum_present && !bad.active,
         "ACTIVE quorum present but unusable MUST be distinguishable from absent "
         "(the caller hard-errors; falling back to the dealer would be fail-open)");
@@ -598,7 +660,7 @@ BOOST_AUTO_TEST_CASE(Se_SigningCtx_FailClosedDistinguishesPresentFromAbsent)
 BOOST_AUTO_TEST_CASE(St1_SigningCtx_ThresholdDerivedFromFormedSizeNotRegistry)
 {
     // formed_size 11 -> t=6, regardless of how many nodes exist anywhere.
-    auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 9)});
+    auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x11), 100, 11, 9)}, QH(0x01));
     BOOST_REQUIRE(ctx.active);
     BOOST_CHECK_MESSAGE(ctx.threshold == 6,
         "t = majority(formed_size=11) = 6 — NOT the 22-node registry's 12 (ODC-036)");
@@ -612,7 +674,7 @@ BOOST_AUTO_TEST_CASE(St2_SigningCtx_ThresholdTracksFormedSize)
 {
     struct { int n, t; } cases[] = {{7,4},{11,6},{15,8}};
     for (auto& c : cases) {
-        auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x22), 100, c.n, c.n)});
+        auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x22), 100, c.n, c.n)}, QH(0x01));
         BOOST_REQUIRE(ctx.active);
         BOOST_CHECK_MESSAGE(ctx.threshold == c.t,
             "t = majority(formed_size) must track formed_size");
@@ -622,7 +684,7 @@ BOOST_AUTO_TEST_CASE(St2_SigningCtx_ThresholdTracksFormedSize)
 // St3 — in_qual == t exactly is USABLE (the live 57e7c7b4 case: formed 11, 6 in_qual).
 BOOST_AUTO_TEST_CASE(St3_SigningCtx_InQualEqualsThresholdIsUsable)
 {
-    auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x33), 100, 11, 6)});
+    auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x33), 100, 11, 6)}, QH(0x01));
     BOOST_REQUIRE_EQUAL(ctx.threshold, 6);
     BOOST_CHECK_MESSAGE(ctx.active && (int)ctx.member_ids.size() == 6,
         "in_qual == t (6) MUST be usable — no off-by-one at the boundary");
@@ -631,7 +693,7 @@ BOOST_AUTO_TEST_CASE(St3_SigningCtx_InQualEqualsThresholdIsUsable)
 // St4 — in_qual == t-1 is NOT usable, and quorum_present is still set (fail-closed).
 BOOST_AUTO_TEST_CASE(St4_SigningCtx_InQualBelowThresholdFailsClosed)
 {
-    auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x44), 100, 11, 5)});
+    auto ctx = PTX_SelectDKGSigningCtx({MakeSigningRecord(QH(0x44), 100, 11, 5)}, QH(0x01));
     BOOST_REQUIRE_EQUAL(ctx.threshold, 6);
     BOOST_CHECK_MESSAGE(ctx.quorum_present && !ctx.active,
         "in_qual == t-1 (5<6) MUST be unusable with quorum_present set (fail-closed)");

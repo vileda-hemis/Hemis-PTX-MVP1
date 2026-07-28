@@ -114,7 +114,13 @@ static std::set<int64_t> PTX_ResolveExclude(const UniValue& arr)
 static PTXDKGSigningCtx PTX_LoadDKGSigningCtx(int nHeight)
 {
     if (!ptxQuorumStore) return PTXDKGSigningCtx();
-    return PTX_SelectDKGSigningCtx(ptxQuorumStore->GetActiveQuorumsAtHeight(nHeight));
+    // §7.4 (W2.5a): the SELECTION INPUT is the block hash at nHeight — the tip
+    // this roll is anchored to.  Chain-derived and unforgeable by the caller;
+    // deliberately NOT round_seed (caller_salt is free-form => grindable).
+    const CBlockIndex* pindexSel = WITH_LOCK(cs_main, return chainActive[nHeight]);
+    if (pindexSel == nullptr) return PTXDKGSigningCtx();
+    return PTX_SelectDKGSigningCtx(ptxQuorumStore->GetActiveQuorumsAtHeight(nHeight),
+                                   pindexSel->GetBlockHash());
 }
 
 // ---------------------------------------------------------------------------
