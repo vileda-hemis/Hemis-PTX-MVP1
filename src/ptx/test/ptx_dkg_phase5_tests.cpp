@@ -3989,4 +3989,78 @@ BOOST_AUTO_TEST_CASE(W4L_StampSites_Structural)
     BOOST_CHECK(P5_count(st, "predRec.idle_since_height =") == 0);                // (either spelling)
 }
 
+// ===========================================================================
+// LINEAGE-SCOPED SCAN - the demanded-case half of seat-vs-record idleness.
+// A demanded lineage's pre-rotation rolls (attributed to the predecessor's
+// hash) must be SEEN by the successor's scan.  RED (hash-scoped inversion =
+// pre-fix HEAD): the successor reads FALSE-IDLE - the gap reproduced.
+// ===========================================================================
+
+// A block carrying the rotation PTXDKG successor <- predecessor (the
+// in-window lineage link the scan reads).
+static CBlock W4SRotationBlock(const uint256& succ, const uint256& pred)
+{
+    CMutableTransaction mtx;
+    mtx.nVersion = CTransaction::TxVersion::SAPLING;
+    mtx.nType    = CTransaction::TxType::PTXDKG;
+    mtx.vin.push_back(CTxIn(COutPoint(QHk(0xAB), 0)));
+    PTXDKGPayload pl;
+    pl.nVersion = PTXDKGPayload::ROTATION_VERSION;
+    pl.quorum_hash = succ;
+    pl.predecessor_quorum_hash = pred;
+    SetTxPayload(mtx, pl);
+    CBlock b;
+    b.vtx.push_back(MakeTransactionRef(mtx));
+    return b;
+}
+
+BOOST_AUTO_TEST_CASE(W4S_LineageScopedScan)
+{
+    const uint256 S = QHk(0x51), P = QHk(0x52), Q = QHk(0x53), other = QHk(0x54);
+    std::vector<CBlockIndex> chain = W4dChain(200);
+    const CBlockIndex* tip = &chain[200];
+    const int N = 80;   // window (120, 200]
+
+    std::map<int, CBlock> blocks;
+    auto reader = [&blocks](const CBlockIndex* p2, CBlock& out) {
+        auto it = blocks.find(p2->nHeight);
+        out = (it != blocks.end()) ? it->second : CBlock();
+        return true;
+    };
+
+    // ★ THE DEMANDED-LINEAGE ROW: P rolled at 130, P rotated into S at 150.
+    // S's scan must SEE the seat's demand across the rotation -> NOT idle.
+    // RED (hash-scoped): S sees nothing under its own hash -> FALSE-IDLE.
+    blocks = {{130, W4dRollBlock(P)}, {150, W4SRotationBlock(S, P)}};
+    BOOST_CHECK_MESSAGE(!PTX_Formation_QuorumIdleAt(S, tip, N, reader),
+        "demanded lineage read FALSE-IDLE - the successor's scan cannot see "
+        "the predecessor's in-window rolls (the hash-scoped gap)");
+
+    // ORDER-FREE (the post-pass resolution pin): an in-flight roll attributed
+    // to P but mined AFTER S's connect is still seen.
+    blocks = {{150, W4SRotationBlock(S, P)}, {160, W4dRollBlock(P)}};
+    BOOST_CHECK(!PTX_Formation_QuorumIdleAt(S, tip, N, reader));
+
+    // MULTI-HOP: Q rolled at 125; Q->P at 135; P->S at 150.  Transitive.
+    blocks = {{125, W4dRollBlock(Q)}, {135, W4SRotationBlock(P, Q)},
+              {150, W4SRotationBlock(S, P)}};
+    BOOST_CHECK(!PTX_Formation_QuorumIdleAt(S, tip, N, reader));
+
+    // ATTRIBUTION STILL SCOPED: an UNRELATED quorum's roll does not count.
+    blocks = {{130, W4dRollBlock(other)}, {150, W4SRotationBlock(S, P)}};
+    BOOST_CHECK(PTX_Formation_QuorumIdleAt(S, tip, N, reader));
+
+    // PRE-WINDOW rolls are irrelevant (the link is in-window, the roll not).
+    blocks = {{119, W4dRollBlock(P)}, {150, W4SRotationBlock(S, P)}};
+    BOOST_CHECK(PTX_Formation_QuorumIdleAt(S, tip, N, reader));
+
+    // ★ THE BF-SAFE PIN: zero rolls anywhere -> lineage-scoped and
+    // hash-scoped are IDENTICAL (both see nothing) -> idle.  The drill's
+    // behaviour is untouched by this fix.
+    blocks = {{150, W4SRotationBlock(S, P)}};
+    BOOST_CHECK(PTX_Formation_QuorumIdleAt(S, tip, N, reader));
+    blocks.clear();
+    BOOST_CHECK(PTX_Formation_QuorumIdleAt(S, tip, N, reader));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

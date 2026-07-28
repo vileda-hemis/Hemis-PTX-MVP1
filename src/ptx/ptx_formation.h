@@ -204,6 +204,11 @@ bool PTX_Formation_SelectReformCandidate(
 bool PTX_Formation_BlockHasAttributedRoll(const CBlock& block,
                                           const uint256& quorum_hash);
 
+// LINEAGE-SCOPED (the demanded-case half of seat-vs-record): idle means no
+// roll attributed to ANY hash in the quorum's LINEAGE within the window -
+// in-window rotation links (the PTXDKGs the walk already reads) resolve the
+// lineage post-pass, so a demanded lineage that rotated is NOT false-idle.
+// On a zero-roll chain (bf) this is byte-identical to hash-scoped.
 // KDD-074 idle-eligibility, DERIVE-AT-EVAL (never a stored counter — the
 // stored form has an unclosable disconnect-undo hole; deriving leaves ZERO
 // undo surface).  True iff NO attributed roll for quorum_hash exists in the

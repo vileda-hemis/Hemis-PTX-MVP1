@@ -682,15 +682,48 @@ bool PTX_Formation_QuorumIdleAt(
     // data (the same posture as the as-of predicate's unknown-state arm).
     if (pindexTip == nullptr || n_retire <= 0 || !read_block) return false;
 
-    // The window (tip - n_retire, tip]: exactly n_retire blocks, walked
-    // tip-first; truncated at genesis on a young chain.
+    // THE LINEAGE-SCOPED SCAN (the demanded-case half of the seat-vs-record
+    // fix; the lineage clock is the clock half).  A predecessor's rolls only
+    // matter if they are IN the window - and for that, the rotation joining
+    // predecessor to successor must itself be in-window, which means its
+    // PTXDKG (quorum_hash = successor, predecessor_quorum_hash = link) sits
+    // in a block this walk ALREADY reads.  So one bounded pass collects BOTH
+    // roll attributions and rotation links; the lineage set is resolved
+    // POST-PASS (order-free: an in-flight roll attributed to the predecessor
+    // but mined after the successor's connect is still seen - a
+    // resolve-during-walk would miss it).  Pure block data: deterministic on
+    // every node, no store reads, no new record field, no unbounded walk.
+    std::map<uint256, uint256> pred_of;   // successor -> predecessor (in-window links)
+    std::set<uint256> rolled;             // hashes with an attributed roll in-window
     const CBlockIndex* p = pindexTip;
     for (int i = 0; i < n_retire && p != nullptr; ++i, p = p->pprev) {
         CBlock block;
         if (!read_block(p, block)) return false;  // unreadable: NOT idle
-        if (PTX_Formation_BlockHasAttributedRoll(block, quorum_hash)) {
-            return false;                          // attributed output in window
+        for (const auto& tx : block.vtx) {
+            if (tx->IsProbabilisticTx()) {
+                CProbabilisticTxPayload payload;
+                if (GetTxPayload(*tx, payload)) rolled.insert(payload.quorum_hash);
+            } else if (tx->IsPTXDKGTx()) {
+                PTXDKGPayload payload;
+                if (GetTxPayload(*tx, payload) &&
+                    payload.nVersion >= PTXDKGPayload::ROTATION_VERSION &&
+                    !payload.predecessor_quorum_hash.IsNull()) {
+                    pred_of[payload.quorum_hash] = payload.predecessor_quorum_hash;
+                }
+            }
         }
+    }
+    // Resolve the lineage from the target back through the in-window links
+    // (bounded by links found; the insert-guard breaks any pathological cycle).
+    std::set<uint256> lineage{quorum_hash};
+    uint256 cur = quorum_hash;
+    auto it = pred_of.find(cur);
+    while (it != pred_of.end() && lineage.insert(it->second).second) {
+        cur = it->second;
+        it = pred_of.find(cur);
+    }
+    for (const uint256& qh : lineage) {
+        if (rolled.count(qh)) return false;        // the SEAT was demanded in-window
     }
     return true;
 }
