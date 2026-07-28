@@ -297,6 +297,11 @@ private:
 
         PTXCeremonyDriverState  dstate;
         PTXCeremonyDeadlines    deadlines;   // production defaults (tip-height widths)
+        // SG-5 S1 (ODC-050): the absolute stall-out bound, set from the
+        // FORMATION INTERVAL — enforcing the invariant §9.1 already asserts
+        // (N exceeds the ceremony floor so a new boundary cannot fire before
+        // the prior ceremony completes).  Width-independent by construction.
+        deadlines.max_span = Params().GetConsensus().ptxFormation.nFormationInterval;
         std::vector<PTXCeremonyOutbound> outbounds;
         CMutableTransaction     dkgtx;
 

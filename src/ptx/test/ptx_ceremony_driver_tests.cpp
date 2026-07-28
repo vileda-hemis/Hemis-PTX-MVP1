@@ -21,11 +21,16 @@
 //   CD_R1b_PermanentEdgeDropFailSafe     Green  one P1 edge dropped: victim ABORTS at the P4
 //                                               premit gate (fail-safe), 10 DONE one pk
 //   CD_R2_ThresholdCarry                 Green  1 absent: 10 DONE one pk, absent not in qual
-//   CD_R2red_NoDeadlineStalls            RED    absent + no reachable window end: ceremony
-//                                               waits forever (all stuck in HASH_COMMIT)
+//   CD_R2_UnreachableDeadlineAborts      Green  absent + no reachable window end: the
+//                                               ODC-050 stall-out ABORTS all 10 (was RED:
+//                                               "waits forever").  ★ Also the WIDTH-INFLATION
+//                                               pin: w_hashcommit=100000 makes any width-
+//                                               derived budget unreachable; the interval-
+//                                               keyed bound still fires.
 //   CD_R3_EmptyComplaintAdvances         Green  honest run: zero complaints, COMPLAINT/JUSTIFY
 //                                               advance on the window boundary alone
-//   CD_R3red_NoDeadlineComplaintHangs    RED    no reachable P2 window end: all hang in COMPLAINT
+//   CD_R3_UnreachableComplaintDeadline   Green  no reachable P2 window end: the ODC-050
+//     Aborts                                     stall-out ABORTS all 11 (was RED: "hang")
 //   CD_R4_BadShareExcluded               Green  corrupted eval → complaint → justify FAILS →
 //                                               dealer in bad_members on ALL 11, 11 DONE one pk
 //   CD_R4red_ComplaintSuppressed         RED    complaints dropped: dealer NOT excluded on
@@ -360,16 +365,24 @@ BOOST_AUTO_TEST_CASE(CD_R2_ThresholdCarry)
 // shape so the row proves the harness CAN show a stall.
 // ---------------------------------------------------------------------------
 
-BOOST_AUTO_TEST_CASE(CD_R2red_NoDeadlineStalls)
+BOOST_AUTO_TEST_CASE(CD_R2_UnreachableDeadlineAborts)
 {
     HarnessCfg cfg;
     cfg.seed = 5;
     cfg.absent = {10};
     cfg.widths.w_hashcommit = 100000; // deadline unreachable in the bounded run
+    cfg.widths.max_span     = 30;     // stall-out inside the 34-height run
     HarnessResult r = RunCeremony(cfg);
     BOOST_CHECK_EQUAL(r.done_count, 0);
-    for (int i = 0; i < 10; i++)
-        BOOST_CHECK(r.phase[i] == PTXDKGPhase::HASH_COMMIT); // stuck — waits forever
+    // ★ SG-5 S1 (ODC-050): the stall-out fires — ABORTED, not stuck forever.
+    // ★ AND this row is the WIDTH-INFLATION PIN: w_hashcommit = 100000 makes
+    // OffsetEnd(PREMIT) = 100020, so any width-DERIVED budget would itself be
+    // unreachable and never fire.  The bound holds because it is keyed on the
+    // formation interval, not on the widths — the planning finding, pinned.
+    for (int i = 0; i < 10; i++) {
+        BOOST_CHECK(r.phase[i] == PTXDKGPhase::ABORTED);
+        BOOST_CHECK(r.last[i] == PTXStepResult::ABORTED);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -394,15 +407,20 @@ BOOST_AUTO_TEST_CASE(CD_R3_EmptyComplaintAdvances)
 // round; only the deadline advances it.
 // ---------------------------------------------------------------------------
 
-BOOST_AUTO_TEST_CASE(CD_R3red_NoDeadlineComplaintHangs)
+BOOST_AUTO_TEST_CASE(CD_R3_UnreachableComplaintDeadlineAborts)
 {
     HarnessCfg cfg;
     cfg.seed = 11;
     cfg.widths.w_complaint = 100000;
+    cfg.widths.max_span    = 30;      // stall-out inside the 34-height run
     HarnessResult r = RunCeremony(cfg);
     BOOST_CHECK_EQUAL(r.done_count, 0);
-    for (int i = 0; i < 11; i++)
-        BOOST_CHECK(r.phase[i] == PTXDKGPhase::COMPLAINT); // hung — deadline is the only exit
+    // ★ SG-5 S1 (ODC-050): the stall-out fires mid-COMPLAINT — the deadline is
+    // no longer the ONLY exit; abort is.  Same width-independence as CD_R2.
+    for (int i = 0; i < 11; i++) {
+        BOOST_CHECK(r.phase[i] == PTXDKGPhase::ABORTED);
+        BOOST_CHECK(r.last[i] == PTXStepResult::ABORTED);
+    }
 }
 
 // ---------------------------------------------------------------------------

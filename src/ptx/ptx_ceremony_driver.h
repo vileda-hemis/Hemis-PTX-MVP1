@@ -83,6 +83,25 @@ struct PTXCeremonyDeadlines {
     int w_complaint  = 4;
     int w_justify    = 4;
     int w_premit     = 6;
+    // ★ SG-5 S1 — THE ABSOLUTE STALL-OUT BOUND (ODC-050).  A ceremony that
+    // reaches formation_height + max_span while still in a WINDOWED phase
+    // ABORTS: its next window end is unreachable, and a hang is not a state
+    // (KDD-077 §4 — abort is the safe terminal state).
+    //
+    // ★ WIDTH-INDEPENDENT BY CONSTRUCTION, and that is the whole point: a
+    // budget derived from the widths (sum-of-widths + slack) is unreachable
+    // EXACTLY WHEN A WIDTH IS THE BUG — with w_hashcommit = 100000,
+    // OffsetEnd(PREMIT) becomes 100020 and such a bound never fires.  This
+    // bound is set from the FORMATION INTERVAL instead, which enforces an
+    // invariant the design already asserts but never checked: N must exceed
+    // the ceremony floor "so a new boundary cannot fire before the prior
+    // ceremony completes" (§9.1).  A ceremony still running at the next
+    // boundary is definitionally stale.
+    //
+    // Default 80 = the dev-chain interval; production overwrites it from
+    // params.nFormationInterval at the call site.  Non-positive disables
+    // (harness rows that want the pre-S1 hang behaviour say so explicitly).
+    int max_span     = 80;
     // Formation-relative height offset at which phase p's window ENDS (the
     // k -> k+1 advance boundary).  Accumulates the widths in phase order.
     int OffsetEnd(PTXDKGPhase p) const;

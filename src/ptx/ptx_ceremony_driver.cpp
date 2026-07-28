@@ -281,6 +281,30 @@ PTXStepResult PTX_Ceremony_Step(PTXDKGSession& session,
         }
     }
 
+    // ★ SG-5 S1 — THE ABSOLUTE STALL-OUT (ODC-050).  Reached ONLY by a step
+    // that could not advance: the windowed-advance block above runs first, so
+    // any step able to close its phase already did, and no slack constant is
+    // needed.  FINALIZE/DONE/ABORTED returned early at the top of this
+    // function, so a session whose tx is built and merely waiting to be mined
+    // is structurally excluded — correct, its work is done.
+    //
+    // Width-INDEPENDENT (see the header): keyed on the formation interval, not
+    // on OffsetEnd, so it still fires when an inflated width is itself the bug.
+    // NODE-LOCAL orchestration, never consensus (the only production caller is
+    // the formation thread; no validator reaches here), yet DETERMINISTIC: a
+    // shared formation_height and a shared span mean every node aborts at the
+    // same height.  Fail-safe per KDD-077 §4 — a hang is not a state.
+    if (!boundary && deadlines.max_span > 0 &&
+        current_height >= formation_height + deadlines.max_span) {
+        LogPrintf("PTX ceremony: STALL-OUT at height %d (formation %d + max_span %d) "
+                  "in phase %s — window end unreachable, ABORTING (ODC-050)\n",
+                  current_height, formation_height, deadlines.max_span, PhaseName(ph));
+        // *session.cs is ALREADY held from the top of this function (the
+        // single lock scope that ends at the return below) — no re-acquire.
+        session.phase = PTXDKGPhase::ABORTED;
+        result = PTXStepResult::ABORTED;
+    }
+
     return result;
     // *session.cs released here; the caller now transmits outbounds_out.
 }
