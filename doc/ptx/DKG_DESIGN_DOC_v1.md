@@ -2370,6 +2370,87 @@ semantics), ODC-025 (cadence N, open).
 
 ---
 
+**KDD-077 (2026-07-28). ★ THE PTX THREAT MODEL — PTX's FIRST written adversary model. Fail-safe RATIFIED (Option C: fail-safe posture + liveness floor as reliability), decided against fail-operational (Option B).**
+
+**Why this exists.** A recon for SG-5 found that three deferred items — SG-5's complaint suppression, ODC-047's liveness gap, and the disband fork-B accusation problem — **all converge on one unanswered question: what adversary does PTX defend against?** The recon then found the answer had never been written: **"threat model" appears zero times across every PTX document**, and the adversary exists only as ~17 fragments local to individual decisions. Each of the three items was re-litigating the same question from scratch. This entry writes the model down once so they scope deterministically. ★ **Throughout, this entry RATIFIES what the code already does — it does not invent new posture.** Every section below names the existing behaviour or decision it is making explicit.
+
+### §1 — The adversary model (ratifies §9.1)
+**Honest-majority-per-quorum.** An adversary controlling **t=6 of 11 GMs in one quorum can bias that quorum's output** — **accepted**, as §9.1 already recorded. Three defences bound it: **quorum randomness** (the first defence — compromising a *randomly selected* 11 is far harder than compromising 6/11 network-wide), **per-quorum bounded impact** (KDD-040 single-quorum-per-GM: one compromise cannot span quorums), and **rotation-windowing** (KDD-045: the adversary must corrupt >= t of the *same* 11 **within one rotation interval**; shares stolen before a rotation are shares of a dead key). PTX does **not** claim security against a >t-of-11 in-quorum coalition, and does not need to: the beacon's failure under that condition is bias, not forgery, and the three defences price it.
+
+### §2 — ★ The network model (RATIFIES an assumption the code already encodes)
+**PTX assumes NO synchrony guarantee and NO reliable message delivery.** ★ This was **decided implicitly when the ceremony driver was built** and has been load-bearing ever since: **phase advance is driven by CHAIN HEIGHT windows, not by message receipt** (`current_height >= formation_height + deadlines.OffsetEnd(ph)`, ptx_ceremony_driver.cpp:238; widths 6/6/4/4/6). **A height-driven advance IS the no-reliable-delivery assumption** — a node that hears nothing advances on the chain and closes sub-threshold rather than waiting on a message that may never arrive. The recon found this was never *written down*; this section states it, it does not newly decide it. Concretely: **any ceremony message may be dropped, delayed, or reordered arbitrarily**, and the protocol must remain *safe* under that — it is **not** required to remain *live*. **Substrate note:** ceremony traffic is a **direct-connected member clique** (`relayHook` pushes inv only to GMAUTH-verified peers in the resolved member set; KDD-065 `setQuorumNodes` establishes the connections) — **not** fleet-wide gossip. That makes targeted suppression *hard* (it requires network-path control between specific member pairs, not a protocol-level action) and simultaneously means **the mesh carries no delivery redundancy** — see ODC-051.
+
+### §3 — ★ THE EPISTEMIC LIMIT (promoted from a buried line to a load-bearing statement)
+**The protocol cannot distinguish malice from error.** Stated at §Phase-3 (register :1224) about unfounded complaints — *"C is marked bad regardless of whether C was malicious or merely wrong… the protocol does not distinguish malice from error because it cannot"* — and **promoted here because it is arguably PTX's most load-bearing security statement**, and because the same wall was hit independently, years later, by the W2.4 disband design (a failure report is an **accusation that cannot be cryptographically proven**; there is no proof of a non-signature). **Consequence, general:** wherever PTX must act on "someone misbehaved", it either (a) acts on a **chain-evident observation** (deterministic, no accuser — the KDD-074 retire-on-absence pattern), or (b) applies a **symmetric penalty that does not require adjudicating intent** (the false-accuser rule: an unfounded complaint marks the *complainer* bad, malice or error alike), or (c) **does not act**. It never adjudicates intent. Any future mechanism that would require distinguishing malice from error is, by this model, **out of scope until the limit itself is addressed** — which is why disband fork-B is deferred against a *principle*, not a schedule.
+
+### §4 — ★ THE POSTURE: FAIL-SAFE. Safety absolutely preserved; liveness sacrificed. (ratifies built behaviour)
+**The beacon STALLS rather than produces-wrong.** For a randomness beacon this is the correct trade: a stalled beacon is an outage; a lying beacon is a compromise of everything downstream that trusted it. **Stopping >> lying.** This ratifies what PTX **already does universally** — the posture was built consistently before it was ever decided. Enumerated:
+- **Coordinator** (COORDINATOR_ROLE_SPEC :83): *"A malicious coordinating caller can at most fail its own roll. It cannot produce a wrong [beacon]."*
+- **The P4 premit gate**: a node whose view diverged (dropped edge, under-width, unresolved complaint) **ABORTS** rather than finalize — *"no divergent finalization"* (CD_R1b, CD_RWIDTH, CD_R4red).
+- **Sub-threshold close**: `|QUAL| < t` -> `ABORTED`, no keypair, no output (ClosePhase0's t-gate).
+- **Consensus validation**: reject-not-exclude on rotation resolution (P-b3a); a rotation that cannot be reconstructed identically does not start.
+- **W2.4 lifecycle**: unreadable block or degenerate params answer **NOT idle** — never retire on missing data.
+
+### §5 — ★ WHAT OPTION C ADDS: the liveness floor is RELIABILITY, not adversary defence
+Fail-safe is **not free**: it converts safety risk into **liveness risk**, and the bill compounds. SG-5's abort paths and ODC-047's drain interact — reforms retire quorums while degraded conditions make fresh formations abort, so ceremony-level *"fail-safe"* can become system-level ***"beacon dark."*** Option C answers that with **two guards explicitly framed as reliability engineering, NOT as defences against an attacker**:
+- **ODC-047's K>1 floor** — a **liveness guard** against benign demand-lull-plus-abort compounding. It does not defend against an adversary and does not claim to.
+- **ODC-050's deadline stall-out** — a bound so a **misconfigured or stalled chain** cannot hang a ceremony forever. It does not defend against a malicious staller.
+
+★ **Framing matters for sizing, and this is Option B's central error:** treating reliability gaps as Byzantine problems balloons them. Both guards are cheap **because** they are scoped as reliability; as adversary defences they would each be an arc.
+
+★★ **THE OPERATIONAL COST THIS DECISION OWNS — operator-indistinguishability.** With the zero-redundancy mesh (§2, ODC-051), **a stall is indistinguishable AT THE OPERATOR LEVEL between attack and network degradation** — the logs show an abort or a hang either way, and nothing separates "someone is suppressing our complaints" from "a link is flaky." ★ **This parallels §3 one layer up: the protocol cannot distinguish malice from error; the OPERATOR cannot distinguish attack from degradation.** This is a **real downside of Option C**, owned here rather than discovered later: fail-safe means the system stops safely, but it does not tell you *why*, and a stalled beacon with an ambiguous cause is an operationally expensive condition. **It is also a re-open condition for Option B** — an operator or deployment that genuinely NEEDS to tell attack from degradation is an argument for redundancy (ODC-051) or for B outright, because redundancy is what would make a *persisting* failure diagnostic rather than ambiguous.
+
+### §6 — ★ WHY C OVER B (the alternative, argued — this was a choice, not a default)
+**Option B (fail-operational: the ceremony completes despite a delivery-controlling adversary) is a real alternative with a real argument.** A beacon feeding **value-bearing applications** can be argued to need adversary-robust exclusion: under fail-safe, an adversary who can suppress delivery can **deny the beacon indefinitely at low cost**, and "the beacon is down" may be an acceptable *safety* outcome while being an unacceptable *product* outcome. That argument is not dismissed. **C is chosen over B on three grounds:**
+1. **Fail-safe is correct for randomness specifically.** A beacon that stalls is recoverable; a beacon that emits a biased or forged value corrupts every consumer irreversibly, and consumers cannot detect it after the fact. The asymmetry is not close.
+2. **★ The suppression case is reliability, not attack.** The mesh is a zero-redundancy direct clique, so the R4red outcome (silent non-exclusion) is **reachable by ordinary link failure**. Building Byzantine machinery to defend against what is mostly *network trouble* is the wrong instrument — ODC-051 addresses it as redundancy, which is both cheaper and covers the larger (benign) share of the cases.
+3. **The epistemic limit (§3) is already accepted elsewhere.** Fail-operational exclusion would require adjudicating intent under adversarial conditions — the exact thing §3 states PTX cannot do. B is not merely expensive; it is in tension with a limit PTX already lives by.
+
+**What would reopen B:** a demonstrated *low-cost, protocol-level* suppression path (§2's analysis says an attacker needs network-path control, not a protocol action); a downstream consumer whose safety requires beacon *liveness* rather than beacon *correctness*; or ★ an operational requirement to **distinguish attack from degradation** (§5's owned cost).
+
+### §7 — Consequences (the three items, scoped deterministically)
+- **SG-5 ~0.6-0.8**: the complaint-suppression question is **ANSWERED** (accepted bound per §4; reliability half -> ODC-051). SG-5 registers its standing-RED gaps, closes the deadline-stall as a **liveness bound** (ODC-050), and extends the matrix. **It does NOT become the 1.6-2.3-unit Byzantine arc.**
+- **ODC-047**: the K>1 floor, reframed as a **liveness guard** (see its amendment below). Scoped and cheap.
+- **Disband fork-B**: **stays deferred, now against a principled limit** (§3) rather than a scheduling one. The deferral has a reason that will not expire with time.
+
+**Cross-ref:** §9.1 (collusion bound ratified), §Phase-3 :1224 (the malice-vs-error limit promoted), COORDINATOR_ROLE_SPEC :83 (fail-safe precedent), KDD-045 (rotation-windowing), KDD-040 (per-quorum bounding), KDD-074 (chain-evident-observation pattern — §3(a)), ODC-047 / ODC-050 / ODC-051, SG-5's CD_R* matrix (`ptx_ceremony_driver_tests.cpp`).
+
+**KDD:** KDD-077
+
+---
+
+**ODC-050 (2026-07-28). The ceremony has no ABSOLUTE stall-out — an unreachable phase-window end hangs it forever. A LIVENESS bound (KDD-077 §5), not an adversary defence. SG-5 owns it.**
+
+**Substance.** Phase advance keys on `current_height >= formation_height + deadlines.OffsetEnd(ph)` (ptx_ceremony_driver.cpp:238) with production widths 6/6/4/4/6. If a window end is **unreachable** — misconfigured width, or a chain that stops advancing — **every node sits in-phase indefinitely**. Documented since the driver was built, as **two standing-RED tests that pass by asserting the broken shape**: `CD_R2red_NoDeadlineStalls` (w_hashcommit = 100000 -> `done_count == 0`, all 10 stuck in HASH_COMMIT) and `CD_R3red_NoDeadlineComplaintHangs` (all hang in COMPLAINT). ★ **These gaps existed ONLY as source comments and test rows — invisible to any register reader.** Registering them is itself part of the fix.
+
+**Disposition:** SG-5 adds an absolute stall-out (a ceremony that cannot reach its next window end **aborts** rather than hangs) — consistent with §4's fail-safe posture: aborting is the safe terminal state, hanging is not a state at all. Cheap because it is scoped as reliability, per KDD-077 §5.
+
+**Cross-ref:** KDD-077 §5, SG-5, `CD_R2red` / `CD_R3red`.
+
+**ODC:** ODC-050
+
+---
+
+**ODC-051 (2026-07-28). ★ The ceremony mesh carries NO delivery redundancy — a single failed direct link produces silent non-exclusion. A RELIABILITY question, deliberately scoped SEPARATELY from SG-5's adversarial framing.**
+
+**Substance.** Ceremony traffic is a **direct-connected member clique**, not gossip (`relayHook` -> members only; KDD-065 `setQuorumNodes`). **No path routes around a broken link.** Consequence, captured by the standing-RED `CD_R4red_ComplaintSuppressed`: when `PTXQCOMPLAINT` fails to arrive, **the bad dealer is NOT excluded on non-victims**; the victim alone sweeps it bad, diverges, and fails safe at the P4 premit gate (10 DONE, one pk — safety held).
+
+★ **THE REFRAME, and why this is not SG-5's:** the test models this as *adversarial suppression*, but on a zero-redundancy clique **the same outcome is produced by ordinary link failure**. It is therefore **mostly a reliability defect and only incidentally an attack** — and KDD-077 §6.2 chose redundancy over Byzantine machinery precisely because redundancy also covers the larger benign share. **Do NOT fold this into SG-5 as Byzantine work** (that is the 1.6-2.3-unit path KDD-077 declined).
+
+**Open (undecided):** whether to add redundancy (relay complaints via non-member GMAUTH peers, complaint acks with retry, or an on-chain complaint surface — PTX *has* one it deliberately does not use for complaints), or to accept silent non-exclusion as an operational bound given safety always holds. ★ **Note the residual either way:** with no redundancy, a *degraded network* and *an attacker* are indistinguishable — the operator-indistinguishability cost KDD-077 §5 owns, and the clearest practical argument for building redundancy.
+
+**Cross-ref:** KDD-077 §2 / §5 / §6.2, `CD_R4red`, SG-5 (scoped apart), KDD-065 (the member-connection topology).
+
+**ODC:** ODC-051
+
+---
+
+> **[ODC-047 REFRAME, 2026-07-28 — appended with KDD-077; ODC-047's original text byte-unchanged.]** KDD-077 §5 settles what this gap **is**: the K>1 floor is a **LIVENESS GUARD against benign compounding**, **not a defence against an adversary**. The compounding it guards is now named: **reform retires quorums while degraded or unsettled conditions make fresh formations abort** (the SG-5 interaction), so ceremony-level fail-safe becomes system-level beacon-dark. ★ **The reframe is what keeps it cheap** — as a chain-derived guard clause (*refuse to reform if the active count would drop below K > 1*) it is small; as an adversary-aware defence it would be an arc. **Severity unchanged**; the bf non-manifestation caveat in the original entry still stands (bf structurally cannot test it).
+
+**Next-free: KDD-078 / ODC-052.**
+
+---
+
 ## Appendix: Register cross-reference
 
 *Program status / roadmap (to first testnet), including live fleet-state snapshots and pre-testnet blockers, lives in the tracked `doc/ptx/PTX_ROADMAP.md`. This register tracks decisions; the roadmap tracks status.*
