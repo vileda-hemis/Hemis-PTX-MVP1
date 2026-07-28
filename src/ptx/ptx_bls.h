@@ -30,7 +30,9 @@ static const int PTX_SIG_BYTES = 96;
 // GM-side BLS key-share store (KDD-070 P1) — a keyed multi-share map replacing
 // the single global. Keyed by quorum_hash: a GM may hold shares for more than
 // one quorum, so the count is NOT bounded (the "one quorum per GM" limit is
-// KDD-040's, a fact about today that W2.5 multi-quorum may relax — it is not an
+// KDD-040's — and the W2.5 relaxation KEPT it (KDD-040's W2.5 amendment:
+// multi-quorum network, one-quorum-per-GM retained; only ODC-024
+// multi-membership, still deferred, would change it) — it is not an
 // invariant of this type). Written ONLY through PTX_BLS_SetSkShare (the §C1
 // guarded setter) from its single write site, PTX_DKG_StoreSkShare, on ceremony
 // completion. Read for signing ONLY through PTX_BLS_GetCurrentShare. Under

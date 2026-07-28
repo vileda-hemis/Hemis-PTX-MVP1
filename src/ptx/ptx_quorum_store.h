@@ -68,8 +68,9 @@ enum class PTXQuorumState : uint8_t {
     // rotation-impossible while due — KDD-076) and its members dissolved to
     // the pool with no §8 consequence.  DISTINCT from DISBANDED (failed) by
     // design: the two carry different member consequences and different
-    // futures.  Producer: MarkReformed — DORMANT until W4-f wires the
-    // block-driven transition.
+    // futures — though per KDD-080 the DISBANDED producer will never
+    // exist (retirement subsumes it).  Producer: MarkReformed — LIVE since
+    // W4-f (MaybeReformAtBoundary, block-driven, drill-proven).
     REFORMED = 4,
 };
 
@@ -152,10 +153,11 @@ public:
     // DERIVED only (never wall-clock, never receive-order — the reindex-
     // determinism guarantee). Sentinel -1 = transition never happened.
     int32_t superseded_height{-1};   // stamped by MarkSuperseded (successor connect)
-    int32_t disbanded_height{-1};    // DORMANT: no producer until W2.4 wires
-                                     // MarkDisbanded's stamp — present now so
-                                     // W2.4 adds a producer, not a schema
-                                     // change under a live format (the P-b2
+    int32_t disbanded_height{-1};    // ★ RESERVED-PERMANENTLY (KDD-080): no
+                                     // producer will EVER stamp this —
+                                     // disband was decided OUT (retirement
+                                     // subsumes it).  Kept for persisted-
+                                     // bytes stability, never renumber (the P-b2
                                      // present-but-unfed posture)
     // v3 (W2.4 W4-c, KDD-074/075/076) — same contract as the v2 stamps:
     // pindex-derived only, sentinel -1 = never reformed.  Stamped by
@@ -163,7 +165,7 @@ public:
     // lesson: MarkDisbanded sets state but never stamps — its as-of arm reads
     // the sentinel and answers inactive-at-every-height; this writer must
     // never reproduce that).
-    int32_t reformed_height{-1};     // stamped by MarkReformed (DORMANT until W4-f)
+    int32_t reformed_height{-1};     // stamped by MarkReformed (LIVE since W4-f)
     // v4 (W2.4 LINEAGE CLOCK) — the height from which this SEAT'S silence is
     // measured.  Stamped at connect: fresh formation = own mined_height (the
     // seat's silence starts at birth — the young-quorum grace intact);
@@ -218,8 +220,8 @@ public:
 // (the driver at anchor h already saw the flip; >= would keep it active for
 // the validator only → pool divergence → chain split).  A stamped-state record
 // carrying the -1 sentinel (corrupt) answers inactive at every h — fail-safe.
-// The DISBANDED arm is VACUOUS at HEAD (no producer until W2.4) — written now
-// so W2.4 adds a producer, not a predicate change.
+// The DISBANDED arm is PERMANENTLY VACUOUS (KDD-080: disband decided out —
+// no producer will ever exist); the arm stays for persisted-bytes stability.
 // ---------------------------------------------------------------------------
 bool PTX_QuorumRecordActiveAt(const CPTXQuorumRecord& rec, int nHeight);
 

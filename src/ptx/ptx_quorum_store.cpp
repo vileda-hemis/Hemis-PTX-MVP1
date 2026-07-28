@@ -57,7 +57,7 @@ bool PTX_QuorumRecordActiveAt(const CPTXQuorumRecord& rec, int nHeight)
         case PTXQuorumState::SUPERSEDED:
             return rec.superseded_height > nHeight;  // STRICT: superseded AT h is NOT active at h
         case PTXQuorumState::DISBANDED:
-            return rec.disbanded_height > nHeight;   // vacuous at HEAD (no producer until W2.4)
+            return rec.disbanded_height > nHeight;   // permanently vacuous (KDD-080: no producer ever)
         case PTXQuorumState::REFORMED:
             return rec.reformed_height > nHeight;    // W4-c: same STRICT contract; vacuous until W4-f
         default:

@@ -66,7 +66,10 @@ bool PTX_BLS_SetSkShare(const uint256& quorum_hash, int formation_height,
         // is in one lineage, so at most one rotation-successor may be pending at
         // a time. A second store-pending is refused (the driver must not start a
         // second rotation before the first resolves; a stuck PENDING is cleaned
-        // by TTL). W2.5 multi-quorum relaxes this to ONE-PER-LINEAGE; do NOT
+        // by TTL). ★ The W2.5 relaxation KEPT one-per-GM (KDD-040's W2.5
+        // amendment), so global-one-PENDING == one-per-lineage at ANY L (one
+        // GM = one lineage) and this rule needs no change; only ODC-024
+        // multi-membership (still deferred) would split the two — do NOT
         // encode a global cap in the type.
         for (const auto& kv : g_ptx_my_shares) {
             if (kv.second.role == PTXShareRole::PENDING) {
