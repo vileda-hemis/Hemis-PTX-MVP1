@@ -4333,6 +4333,29 @@ BOOST_AUTO_TEST_CASE(IH_CorrelatedDrain_OnePerWindowLRA)
     BOOST_CHECK(stateOf(idleB) == PTXQuorumState::REFORMED);
 }
 
+// (ODC-055) ★ STRUCTURAL PIN — the catch-up relay's HOOK SITE.  The behavioral
+// row (v_catchup_relays_stored_to_late_verified_member, validate_relay suite)
+// proves the transport core; this pin proves the core is WIRED at the GMAUTH
+// verify point — without the call the fix is dead code and the N98 qual=0
+// race returns silently.  Call-shaped match (the W4d bare-name lesson).
+// RED: remove the gmauth.cpp call -> this row fails while the behavioral row
+// stays green — the exact split that makes an unwired fix visible.
+BOOST_AUTO_TEST_CASE(ODC055_CatchupRelay_WiredAtVerify)
+{
+    const std::string src = PTX_SRCDIR;
+    BOOST_REQUIRE_MESSAGE(!src.empty(), "PTX_SRCDIR not injected - pin cannot run");
+    const std::string gmauth = P5_slurp(src + "/src/evo/gmauth.cpp");
+    BOOST_REQUIRE(!gmauth.empty());
+    // Line-anchored (newline + exact indentation + call): a COMMENTED-OUT
+    // call must NOT satisfy this pin — a comment is not a caller (the W4d
+    // lesson; the bare-substring form of this very pin passed its own
+    // inversion and was strengthened to this).
+    BOOST_CHECK_MESSAGE(
+        P5_count(gmauth, "\n        PTX_Ceremony_CatchupRelayOnVerify(pnode);") == 1,
+        "the catch-up relay is not called from the GMAUTH verify point - "
+        "the ODC-055 fix is unwired and the announce race is back");
+}
+
 // ===========================================================================
 // LINEAGE-SCOPED SCAN - the demanded-case half of seat-vs-record idleness.
 // A demanded lineage's pre-rotation rolls (attributed to the predecessor's

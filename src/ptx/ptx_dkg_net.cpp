@@ -31,15 +31,26 @@ void InitPTXCeremonyTransport()
     // the operator keys are wired (W2.2 boundary, register-marked).
     g_ptx_ceremony_transport.relayHook = [](const CInv& inv, const PTXDKGSession& session) {
         if (!g_connman) return;
+        int pushed = 0;
         g_connman->ForEachNode([&](CNode* pnode) {
             if (pnode->verifiedProRegTxHash.IsNull()) return;
             for (const auto& m : session.members) {
                 if (m.proTxHash == pnode->verifiedProRegTxHash) {
                     pnode->PushInventory(inv);
+                    pushed++;
                     return;
                 }
             }
         });
+        // ★ ODC-055 observability: UNCONDITIONAL (never NET-gated) — a
+        // zero-peer relay is the announce leg silently dying, the exact
+        // condition that cost the N98 diagnosis hours.  The catch-up relay
+        // (PTX_Ceremony_CatchupRelayOnVerify) is what recovers from it.
+        if (pushed == 0) {
+            LogPrintf("PTX: ceremony relay reached 0 verified member peers "
+                      "(inv %s) - awaiting catch-up on GMAUTH verify\n",
+                      inv.hash.ToString());
+        }
     };
     g_ptx_ceremony_transport.StartDrain();
     LogPrintf("PTX: ceremony transport initialized (W2.0b: dispatch + validate-before-relay live; sessions produced at W2.2)\n");
@@ -305,6 +316,46 @@ void CPTXCeremonyTransport::ProcessBatch(int phase, size_t maxCount)
         case 4: ProcessBatchT(4, MSG_PTX_QUORUM_PREMATURE_COMMITMENT, storeP4, maxCount); break;
         default: assert(false);
     }
+}
+
+bool CPTXCeremonyTransport::CatchupInvsForMember(const uint256& proTxHash,
+                                                 std::vector<CInv>& invs_out)
+{
+    // ODC-055: the catch-up half — see the header contract.  Session check
+    // first (cheap), then one pass over all five stores under cs_store.
+    if (proTxHash.IsNull()) return false;
+    std::shared_ptr<PTXDKGSession> session;
+    {
+        LOCK(cs_session);
+        session = activeSession;
+    }
+    if (!session) return false;
+    bool member = false;
+    for (const auto& m : session->members) {
+        if (m.proTxHash == proTxHash) { member = true; break; }
+    }
+    if (!member) return false;
+    LOCK(cs_store);
+    for (const auto& kv : storeP0) invs_out.emplace_back(MSG_PTX_QUORUM_HASH_COMMIT, kv.first);
+    for (const auto& kv : storeP1) invs_out.emplace_back(MSG_PTX_QUORUM_CONTRIB, kv.first);
+    for (const auto& kv : storeP2) invs_out.emplace_back(MSG_PTX_QUORUM_COMPLAINT, kv.first);
+    for (const auto& kv : storeP3) invs_out.emplace_back(MSG_PTX_QUORUM_JUSTIFICATION, kv.first);
+    for (const auto& kv : storeP4) invs_out.emplace_back(MSG_PTX_QUORUM_PREMATURE_COMMITMENT, kv.first);
+    return !invs_out.empty();
+}
+
+void PTX_Ceremony_CatchupRelayOnVerify(CNode* pnode)
+{
+    if (pnode == nullptr) return;
+    const uint256 proTx = WITH_LOCK(pnode->cs_gmauth, return pnode->verifiedProRegTxHash);
+    std::vector<CInv> invs;
+    if (!g_ptx_ceremony_transport.CatchupInvsForMember(proTx, invs)) return;
+    for (const CInv& inv : invs) pnode->PushInventory(inv);
+    // Unconditional (the ODC-055 observability posture): this line firing is
+    // the race being RECOVERED — the direct observable for the fix.
+    LogPrintf("PTX: ceremony catch-up relay - %d stored inv(s) to now-verified "
+              "member %s peer=%d\n",
+              (int)invs.size(), proTx.ToString(), pnode->GetId());
 }
 
 bool CPTXCeremonyTransport::AlreadyHaveMsg(const CInv& inv)

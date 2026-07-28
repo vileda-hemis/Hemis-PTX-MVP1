@@ -286,4 +286,63 @@ BOOST_AUTO_TEST_CASE(v_accept_relays_and_stores)
     BOOST_CHECK(h.transport.AlreadyHaveMsg(CInv(MSG_PTX_QUORUM_HASH_COMMIT, hash)));
 }
 
+// ---------------------------------------------------------------------------
+// ★ W2.5b DELIVERY FIX (ODC-055) — the catch-up relay, THE REGRESSION PIN.
+//
+// The race this pins: the store-time relayHook is ONE-SHOT and fires before a
+// ceremony's member-connections GMAUTH-verify (they open AT ceremony start,
+// verify seconds later), so at realistic mesh density the announce reaches
+// ZERO verified peers and every ceremony aborts qual=0 — first caught live at
+// N98 (masked at N22 by the dense-mesh accident; retroactively explains the
+// sub-11 convergences).  This is the unit row that SHOULD have existed
+// pre-fleet: a member "verifies" AFTER the store moment, and the stored
+// message must still be reachable for it.
+// RED (inversion: neuter CatchupInvsForMember, or drop the gmauth.cpp call —
+// the structural pin in the phase5 suite guards the call site): the
+// late-verified member gets nothing — the N98 qual=0 signature, reproduced
+// as this row's failure.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(v_catchup_relays_stored_to_late_verified_member)
+{
+    Harness h;
+
+    // A valid P0 arrives and is stored + one-shot-relayed.  In the live race
+    // the relay reached zero verified peers — the recorder stands in for
+    // whatever the hook saw; the point is the STORE is now the only copy.
+    auto msg = h.ValidP0(0);
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << msg;
+    CHashWriter hw(SER_GETHASH, 0);
+    hw.write(ss.data(), ss.size());
+    const uint256 hash = hw.GetHash();
+    h.Enqueue(NetMsgType::PTXQHASHCOMMIT, msg);
+    h.transport.ProcessBatch(0);
+    BOOST_REQUIRE(h.transport.AlreadyHaveMsg(CInv(MSG_PTX_QUORUM_HASH_COMMIT, hash)));
+
+    // ★ THE LATE VERIFY: member[1] becomes a verified peer AFTER the store.
+    // The catch-up must hand it every stored session inv.
+    std::vector<CInv> invs;
+    BOOST_REQUIRE_MESSAGE(
+        h.transport.CatchupInvsForMember(h.session.members[1].proTxHash, invs),
+        "late-verified session member got NO catch-up - the one-shot relay "
+        "race is unrecovered (the N98 qual=0 signature)");
+    BOOST_REQUIRE_EQUAL(invs.size(), 1U);
+    BOOST_CHECK(invs[0].type == MSG_PTX_QUORUM_HASH_COMMIT);
+    BOOST_CHECK(invs[0].hash == hash);
+
+    // Restriction intact: a NON-member (born-restricted posture) gets nothing.
+    std::vector<CInv> none;
+    uint256 stranger;
+    std::vector<unsigned char> sb(32, 0x77);
+    stranger = uint256(sb);
+    BOOST_CHECK(!h.transport.CatchupInvsForMember(stranger, none));
+    BOOST_CHECK(none.empty());
+
+    // No live session (cleared slot) -> no catch-up: nothing leaks after
+    // ceremony teardown.
+    h.transport.SetActiveSession(nullptr);
+    std::vector<CInv> after;
+    BOOST_CHECK(!h.transport.CatchupInvsForMember(h.session.members[1].proTxHash, after));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

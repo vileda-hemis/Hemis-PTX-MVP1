@@ -11,6 +11,7 @@
 #include "net.h" // for CSerializedNetMsg
 #include "netmessagemaker.h"
 #include "llmq/quorums_connections.h"
+#include "ptx/ptx_dkg_net.h" // ODC-055: catch-up relay on verify
 #include "tiertwo/gamemaster_meta_manager.h"
 #include "tiertwo/net_gamemasters.h"
 #include "tiertwo/tiertwo_sync_state.h"
@@ -189,6 +190,14 @@ bool CGMAuth::ProcessMessage(CNode* pnode, const std::string& strCommand, CDataS
             connman.PushMessage(pnode, msgMaker.Make(NetMsgType::QSENDRECSIGS, true));
             pnode->m_gamemaster_iqr_connection = true;
         }
+
+        // ★ W2.5b DELIVERY FIX (ODC-055): a ceremony's member-connections
+        // verify AFTER the transport's one-shot store-time relay fired — push
+        // any stored session invs to the now-verified member (the catch-up
+        // half of the born-restricted relay; the same on-verify-push shape as
+        // QSENDRECSIGS above).  No-op unless this peer is a live-session
+        // member with messages already stored.
+        PTX_Ceremony_CatchupRelayOnVerify(pnode);
 
         LogPrint(BCLog::NET_GM, "CGMAuth::%s -- Valid GMAUTH for %s, peer=%d\n", __func__, gmauth.proRegTxHash.ToString(), pnode->GetId());
     }

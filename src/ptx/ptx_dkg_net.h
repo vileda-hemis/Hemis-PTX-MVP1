@@ -177,6 +177,23 @@ public:
     //   outcome — quorums_dkgsession.cpp:270-272) → PTX_DKG_Receive*.
     void ProcessBatch(int phase, size_t maxCount = PTX_DKG_TRANSPORT_BATCH);
 
+    // ★ W2.5b DELIVERY FIX (ODC-055) — THE CATCH-UP HALF of the born-restricted
+    // relay.  The store-time relayHook is ONE-SHOT and fires the instant a
+    // message is stored — but a ceremony's member-connections OPEN at ceremony
+    // start and GMAUTH-verify seconds LATER, so at realistic mesh density the
+    // one-shot relay finds zero verified member peers and every ceremony
+    // starves (qual=0 fleet abort, first caught live at N98; masked at N22 by
+    // the dense-mesh accident — members were already-verified peers).  This
+    // method is the pure core: if proTxHash is a member of the ACTIVE session,
+    // collect EVERY stored inv (all five phases — the stores are phase-split
+    // but the catch-up is family-wide by construction).  Returns false when
+    // no live session or not a member.  The CNode-facing wrapper
+    // (PTX_Ceremony_CatchupRelayOnVerify) is called from the GMAUTH verify
+    // point — the same on-verify-push shape as the QSENDRECSIGS precedent.
+    // ★ ADDITIVE: the store-time relay stays (correct when peers are already
+    // verified); this covers the not-yet-verified-at-store case.
+    bool CatchupInvsForMember(const uint256& proTxHash, std::vector<CInv>& invs_out);
+
     // Relay/getdata surface (net_processing AlreadyHave / ProcessGetData).
     bool AlreadyHaveMsg(const CInv& inv);
     bool GetStoredPhase0(const uint256& hash, PTXDKGPhase0Msg& ret);
@@ -212,5 +229,13 @@ extern CPTXCeremonyTransport g_ptx_ceremony_transport;
 // the LLMQ managers link.  C2 turns these into drain-thread start/stop.
 void InitPTXCeremonyTransport();
 void StopPTXCeremonyTransport();
+
+// ★ W2.5b DELIVERY FIX (ODC-055) — the GMAUTH-verify hook's entry: if the
+// now-verified peer is a member of the live ceremony session, push it every
+// stored session inv (CatchupInvsForMember + PushInventory).  Called from
+// CGMAuth::ProcessMessage immediately after verifiedProRegTxHash is set.
+// No-op for non-members, no live session, or a null verified hash.
+class CNode;
+void PTX_Ceremony_CatchupRelayOnVerify(CNode* pnode);
 
 #endif // PTX_DKG_NET_H
