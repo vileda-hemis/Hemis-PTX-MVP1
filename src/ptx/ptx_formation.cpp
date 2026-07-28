@@ -97,6 +97,56 @@ bool PTX_Formation_SelectAtAnchor(const CBlockIndex* pindexAnchor,
     return membersOut.size() == 11;
 }
 
+int PTX_Formation_RotationCapacity(const Consensus::PTXFormationParams& params)
+{
+    if (params.nBoundaryInterval <= 0 || params.nRotationInterval <= 0) return 0;
+    return params.nRotationInterval / params.nBoundaryInterval;
+}
+
+bool PTX_Formation_CheckParams(const Consensus::PTXFormationParams& params,
+                               std::string& err_out)
+{
+    if (params.nBoundaryInterval <= 0 || params.nRotationInterval <= 0 ||
+        params.nCeremonyBudget <= 0 || params.nSupportedQuorums <= 0) {
+        err_out = "PTX formation params must all be positive";
+        return false;
+    }
+    // ★ GUARD 1 hard tier: capacity must cover the declared quorum count.
+    // At the current defaults (B == R, L == 1) capacity == 1 >= 1 — PASSES
+    // with no special case, which is what keeps this deploy-safe.
+    const int capacity = PTX_Formation_RotationCapacity(params);
+    if (capacity < params.nSupportedQuorums) {
+        err_out = strprintf(
+            "PTX cadence cannot serve the declared quorum count: "
+            "nRotationInterval/nBoundaryInterval = %d/%d = %d rotation slots "
+            "per interval, but nSupportedQuorums = %d. Quorums would starve "
+            "past nRotationInterval and KDD-045's key-compromise bound would "
+            "break. Lower nBoundaryInterval or nSupportedQuorums.",
+            params.nRotationInterval, params.nBoundaryInterval, capacity,
+            params.nSupportedQuorums);
+        return false;
+    }
+    // ★ Advisory tier: margin absorbs CONTENTION, which needs L > 1.  Never
+    // warned at L == 1 (no competition exists there).
+    if (params.nSupportedQuorums > 1 &&
+        capacity < params.nSupportedQuorums * PTX_GUARD1_MARGIN) {
+        LogPrintf("PTX WARNING: thin rotation-cadence margin - %d slots per "
+                  "interval for %d declared quorums (recommended >= %dx). "
+                  "Contended boundaries may push quorums toward the KDD-079 "
+                  "Guard-2 fairness floor.\n",
+                  capacity, params.nSupportedQuorums, PTX_GUARD1_MARGIN);
+    }
+    return true;
+}
+
+bool PTX_Formation_OverCapacity(const Consensus::PTXFormationParams& params,
+                                size_t active_count)
+{
+    const int capacity = PTX_Formation_RotationCapacity(params);
+    if (capacity <= 0) return false;                 // degenerate: the static check owns it
+    return (int)active_count > capacity / PTX_GUARD1_MARGIN;
+}
+
 PTXRotationDecision PTX_Formation_RotationDueAt(
         const CBlockIndex* pindexAnchor,
         CPTXQuorumStore& store,
@@ -126,6 +176,19 @@ PTXRotationDecision PTX_Formation_RotationDueAt(
 
     const std::vector<CPTXQuorumRecord> active =
             store.GetActiveQuorumsAtHeight(pindexAnchor->nHeight);
+
+    // ★ GUARD 1, runtime tier (KDD-079 §3): the fleet has outgrown the cadence
+    // it was configured for.  WARN, NEVER REFUSE — declining to rotate here
+    // would CAUSE the starvation this is warning about.
+    if (PTX_Formation_OverCapacity(params, active.size())) {
+        LogPrintf("PTX WARNING: %d ACTIVE quorums exceed the comfortable "
+                  "rotation capacity (%d slots per interval at B=%d/R=%d, "
+                  "margin %dx) - quorums may starve past nRotationInterval "
+                  "(KDD-079 Guard 1). Lower nBoundaryInterval.\n",
+                  (int)active.size(), PTX_Formation_RotationCapacity(params),
+                  params.nBoundaryInterval, params.nRotationInterval,
+                  PTX_GUARD1_MARGIN);
+    }
 
     // Of the ACTIVE quorums, which are DUE at this anchor? Age is measured from
     // the quorum's own formation anchor, so a quorum is due once a full

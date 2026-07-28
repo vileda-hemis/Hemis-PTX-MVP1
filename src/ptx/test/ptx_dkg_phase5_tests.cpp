@@ -1512,6 +1512,16 @@ BOOST_AUTO_TEST_CASE(P4_SupersededNeverSignable_AcrossCycle)
 namespace {
 // slurp a whole file; empty string if it cannot be opened (the caller REQUIREs
 // non-empty so a bad path fails loud, never skips).
+// Return the first line of `hay` containing `needle` (empty if none).
+std::string P5_line_containing(const std::string& hay, const std::string& needle)
+{
+    size_t pos = hay.find(needle);
+    if (pos == std::string::npos) return std::string();
+    size_t b = hay.rfind('\n', pos); b = (b == std::string::npos) ? 0 : b + 1;
+    size_t e = hay.find('\n', pos);  if (e == std::string::npos) e = hay.size();
+    return hay.substr(b, e - b);
+}
+
 std::string P5_slurp(const std::string& path)
 {
     std::ifstream f(path, std::ios::binary);
@@ -3790,11 +3800,25 @@ BOOST_AUTO_TEST_CASE(W4f_UnstubAndWiring_Structural)
 
     const std::string cp = P5_slurp(src + "/src/chainparams.cpp");
     BOOST_REQUIRE(!cp.empty());
-    BOOST_CHECK(P5_count(cp, "ptxFormation = {\"main\", 1440, 1440, 1440};") == 1);      // mainnet DORMANT
-    BOOST_CHECK(P5_count(cp, "ptxFormation = {\"test\", 1440, 1440, 1440};") == 1);      // testnet DORMANT
-    BOOST_CHECK(P5_count(cp, "ptxFormation = {\"ptxtest\", 80, 80, 80};") == 1);     // ptxtest DORMANT
-    BOOST_CHECK(P5_count(cp, "ptxFormation = {\"regtest\", 80, 80, 80, 200, 1, 40}") == 1);  // drill LIVE
-    BOOST_CHECK(P5_count(cp, "ptxFormation = {\"ptxbea\", 80, 80, 80, 200, 1, 40}") == 1);   // drill LIVE
+    // ★ PIN THE PROPERTY, NOT THE LITERAL.  This row previously pinned each
+    // network's ENTIRE initializer, so it broke on every schema growth — it
+    // fired on W2.5a P1 (the three-way split) and again on P2 (adding
+    // nSupportedQuorums), both times for a change that did not touch what it
+    // guards.  What it actually guards is the REFORM GATE: live on the drill
+    // chains, dormant everywhere else.  Assert exactly that, and the row
+    // survives future params while still catching a real un-stub leak.
+    const std::string gate = "200, 1, 40";   // nRetireWindow, nReformGrace, nReformRateWindow
+    for (const char* net : {"main", "test", "ptxtest"}) {
+        const std::string line = P5_line_containing(cp, std::string("ptxFormation = {\"") + net + "\"");
+        BOOST_CHECK_MESSAGE(!line.empty(), std::string("no ptxFormation line for ") + net);
+        BOOST_CHECK_MESSAGE(line.find(gate) == std::string::npos,
+            std::string(net) + " must NOT carry the reform gate (mainnet/testnet stay DORMANT): " + line);
+    }
+    for (const char* net : {"regtest", "ptxbea"}) {
+        const std::string line = P5_line_containing(cp, std::string("ptxFormation = {\"") + net + "\"");
+        BOOST_CHECK_MESSAGE(line.find(gate) != std::string::npos,
+            std::string(net) + " must carry the reform gate (drill chains LIVE): " + line);
+    }
 
     const std::string st = P5_slurp(src + "/src/ptx/ptx_quorum_store.cpp");
     BOOST_REQUIRE(!st.empty());

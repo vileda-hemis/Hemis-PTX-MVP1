@@ -372,7 +372,7 @@ public:
 
         // PTX formation cadence (W2.2 SG-1b): N = 1440 = 24h at 60s spacing,
         // security-ceiling-only (KDD-063 handover-at-accept).
-        consensus.ptxFormation = {"main", 1440, 1440, 1440};   // KDD-079 decouple: B=R=budget (L=1-preserving)
+        consensus.ptxFormation = {"main", 1440, 1440, 1440, 1};   // KDD-079 decouple: B=R=budget (L=1-preserving)
 
         nLLMQConnectionRetryTimeout = 60;
 
@@ -541,7 +541,7 @@ public:
 
         // PTX formation cadence (W2.2 SG-1b): public testnet mirrors the
         // mainnet posture (SG-1b plan-gate decision 1).
-        consensus.ptxFormation = {"test", 1440, 1440, 1440};   // KDD-079 decouple: B=R=budget (L=1-preserving)
+        consensus.ptxFormation = {"test", 1440, 1440, 1440, 1};   // KDD-079 decouple: B=R=budget (L=1-preserving)
 
         nLLMQConnectionRetryTimeout = 60;
 
@@ -688,7 +688,7 @@ public:
 
         // PTX formation cadence (W2.2 SG-1b): dev test-N = 80, M-coupled
         // (~1.7x the ceremony floor M~47; SG-1b plan-gate decision 1).
-        consensus.ptxFormation = {"regtest", 80, 80, 80, 200, 1, 40}; // KDD-079 decouple (B=R=budget, L=1-preserving) + W4-f reform gate LIVE (drill chains only)
+        consensus.ptxFormation = {"regtest", 80, 80, 80, 1, 200, 1, 40}; // KDD-079 decouple (B=R=budget, L=1-preserving) + W4-f reform gate LIVE (drill chains only)
 
         // Tier two
         nFulfilledRequestExpireTime = 60 * 60; // fulfilled requests expire in 1 hour
@@ -838,7 +838,7 @@ public:
 
         // PTX formation cadence (W2.2 SG-1b): dev test-N = 80, M-coupled
         // (~1.7x the ceremony floor M~47; SG-1b plan-gate decision 1).
-        consensus.ptxFormation = {"ptxtest", 80, 80, 80};
+        consensus.ptxFormation = {"ptxtest", 80, 80, 80, 1};
 
         nFulfilledRequestExpireTime = 60 * 60;
 
@@ -974,7 +974,7 @@ public:
 
         // PTX formation cadence (W2.2 SG-1b): dev test-N = 80, M-coupled
         // (~1.7x the ceremony floor M~47; SG-1b plan-gate decision 1).
-        consensus.ptxFormation = {"ptxbea", 80, 80, 80, 200, 1, 40};  // KDD-079 decouple (B=R=budget, L=1-preserving) + W4-f reform gate LIVE (drill chains only)
+        consensus.ptxFormation = {"ptxbea", 80, 80, 80, 1, 200, 1, 40};  // KDD-079 decouple (B=R=budget, L=1-preserving) + W4-f reform gate LIVE (drill chains only)
 
         nFulfilledRequestExpireTime = 60 * 60;
 

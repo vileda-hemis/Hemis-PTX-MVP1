@@ -49,6 +49,7 @@
 #include "utilmoneystr.h"
 #include "util/threadnames.h"
 #include "validation.h"
+#include "ptx/ptx_formation.h"   // W2.5a Guard 1: PTX params sanity
 #include "validationinterface.h"
 #include "warnings.h"
 #include "ptx/ptx_accum_script.h"
@@ -724,6 +725,18 @@ bool InitSanityCheck(void)
 
     if (!glibc_sanity_test() || !glibcxx_sanity_test()) {
         return false;
+    }
+
+    // ★ W2.5a Guard 1 (KDD-079 §3): the PTX rotation cadence must be able to
+    // serve the quorum count this network declares.  There was no PTX
+    // params-validation hook before this — InitSanityCheck was ECC/RNG only.
+    // Params() is available here: SelectParams runs before AppInitSanityChecks.
+    {
+        std::string ptx_err;
+        if (!PTX_Formation_CheckParams(Params().GetConsensus().ptxFormation, ptx_err)) {
+            UIError(strprintf(_("PTX formation parameter sanity check failed: %s"), ptx_err));
+            return false;
+        }
     }
 
     if (!Random_SanityCheck()) {

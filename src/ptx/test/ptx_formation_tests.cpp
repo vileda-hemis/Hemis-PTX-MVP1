@@ -701,4 +701,68 @@ BOOST_AUTO_TEST_CASE(St4_SigningCtx_InQualBelowThresholdFailsClosed)
         "in_qual == t-1 (5<6) MUST be unusable with quorum_present set (fail-closed)");
 }
 
+// ===========================================================================
+// W2.5a P2 — GUARD 1 (KDD-079 §3): the R/B >= L invariant, ENFORCED.
+// ===========================================================================
+
+static Consensus::PTXFormationParams G1(int B, int R, int L)
+{
+    Consensus::PTXFormationParams p{};
+    p.name = "g1"; p.nBoundaryInterval = B; p.nRotationInterval = R;
+    p.nCeremonyBudget = 80; p.nSupportedQuorums = L;
+    return p;
+}
+
+// ★★ THE DEPLOY-SAFETY PIN.  Today every network runs B == R with L == 1.
+// Capacity = 1 and L = 1, so 1 >= 1 PASSES — no special case, no rejection.
+// If Guard 1 rejected this, EVERY node on the banked chain and the live fleet
+// would fail to start.  This row is the reason the margin is NOT in the hard
+// check (a margin demand would reject a correct single-quorum config).
+BOOST_AUTO_TEST_CASE(G1a_SingleQuorumDefaultsAccepted)
+{
+    std::string err;
+    BOOST_CHECK_MESSAGE(PTX_Formation_CheckParams(G1(1440, 1440, 1), err), err);
+    BOOST_CHECK_MESSAGE(PTX_Formation_CheckParams(G1(80, 80, 1), err), err);
+    // ...and the REAL shipped params of every network validate.
+    for (const auto& net : {CBaseChainParams::MAIN, CBaseChainParams::TESTNET,
+                            CBaseChainParams::REGTEST, CBaseChainParams::PTXBEATESTNET}) {
+        SelectParams(net);
+        BOOST_CHECK_MESSAGE(
+            PTX_Formation_CheckParams(Params().GetConsensus().ptxFormation, err),
+            "shipped params for " << net << " must validate: " << err);
+    }
+    SelectParams(CBaseChainParams::PTXBEATESTNET);   // restore the fixture's net
+}
+
+// A multi-quorum config whose cadence cannot cover its declared count is
+// REJECTED — the true starvation bound.  RED: drop the capacity check ->
+// a starving config is accepted.
+BOOST_AUTO_TEST_CASE(G1b_StarvingMultiQuorumConfigRejected)
+{
+    std::string err;
+    // B=1440,R=1440 -> 1 slot; declaring 8 quorums cannot work.
+    BOOST_CHECK(!PTX_Formation_CheckParams(G1(1440, 1440, 8), err));
+    BOOST_CHECK(err.find("starve") != std::string::npos);
+    // The KDD-079 worked example: B=30, R=1440 -> 48 slots.
+    BOOST_CHECK_EQUAL(PTX_Formation_RotationCapacity(G1(30, 1440, 40)), 48);
+    BOOST_CHECK(PTX_Formation_CheckParams(G1(30, 1440, 40), err));   // 48 >= 40: accepted
+    BOOST_CHECK(!PTX_Formation_CheckParams(G1(30, 1440, 60), err));  // 48 <  60: rejected
+    // Degenerate params are rejected too.
+    BOOST_CHECK(!PTX_Formation_CheckParams(G1(0, 1440, 1), err));
+}
+
+// The runtime tier: over-capacity is DETECTED (and warned, never refused).
+// RED: drop the predicate -> silent starvation.
+BOOST_AUTO_TEST_CASE(G1c_OverCapacityDetectedNotRefused)
+{
+    const auto p = G1(30, 1440, 40);                 // 48 slots, margin 2 -> comfort 24
+    BOOST_CHECK(!PTX_Formation_OverCapacity(p, 24));  // at comfort: quiet
+    BOOST_CHECK(PTX_Formation_OverCapacity(p, 25));   // beyond it: warn
+    BOOST_CHECK(PTX_Formation_OverCapacity(p, 40));
+    // ★ At the single-quorum defaults the runtime tier never fires either:
+    // capacity 1 / margin 2 = 0, and 1 > 0 would warn — so this pins that the
+    // shipped L=1 config stays QUIET at its own active count.
+    BOOST_CHECK(!PTX_Formation_OverCapacity(G1(1440, 1440, 1), 0));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

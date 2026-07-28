@@ -144,6 +144,46 @@ void PTX_Formation_RunTipSweeps(int tip_height);
 // at its 0 defaults nothing is ever eligible and behaviour is byte-identical
 // to P-b6b.  impossible_at is rec-aware (production composes the resolver
 // with GetListForBlock at the boundary; tests inject).
+// ---------------------------------------------------------------------------
+// ★ W2.5a GUARD 1 (KDD-079 §3) — the R/B >= L invariant, ENFORCED not assumed.
+//
+// Selection-staggering (P-b6b's tie-break at the boundary cadence) provides
+// R/B rotation slots per rotation interval.  If that capacity does not cover
+// the quorum count, quorums starve past nRotationInterval and KDD-045's
+// key-compromise bound breaks.  KDD-079 promotes this from a tuning
+// assumption to a checked bound — "an unchecked invariant is how the
+// conflation went unnoticed in the first place."
+//
+// ★ TWO TIERS, deliberately, and the margin is NOT in the hard check:
+//   REJECT  when capacity < L            — the true starvation bound.
+//   WARN    when capacity < L * MARGIN   — thin, but workable.
+// ★ Why the margin is advisory: it exists to absorb CONTENTION between
+// competing quorums, and contention requires L > 1.  At L = 1 there is no
+// competition — the lone quorum wins every tie-break — so a margin demand
+// there would reject or spam a perfectly correct single-quorum config.
+//
+// ★ DEPLOY-SAFETY, and this is the point: at today's defaults (B = R,
+// L = 1) capacity = 1 and L = 1, so 1 >= 1 PASSES with no special case, and
+// the warn tier is skipped for L = 1.  The current banked chain, the live
+// fleet and every drill config validate unchanged.
+// ---------------------------------------------------------------------------
+static const int PTX_GUARD1_MARGIN = 2;
+
+// Rotation slots available per rotation interval (integer, floor).
+int PTX_Formation_RotationCapacity(const Consensus::PTXFormationParams& params);
+
+// Startup validation.  Returns false + a reason on a config that cannot serve
+// its declared quorum count.  PURE (params in, verdict out) so it is
+// unit-testable; called from InitSanityCheck.
+bool PTX_Formation_CheckParams(const Consensus::PTXFormationParams& params,
+                               std::string& err_out);
+
+// Runtime tier: is the LIVE active count beyond what the configured cadence
+// comfortably serves?  ★ WARN ONLY — never refuse: refusing to rotate would
+// CAUSE the starvation this warns about.
+bool PTX_Formation_OverCapacity(const Consensus::PTXFormationParams& params,
+                                size_t active_count);
+
 PTXRotationDecision PTX_Formation_RotationDueAt(
         const CBlockIndex* pindexAnchor,
         CPTXQuorumStore& store,

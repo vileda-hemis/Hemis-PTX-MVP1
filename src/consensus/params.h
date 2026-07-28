@@ -213,6 +213,13 @@ struct PTXFormationParams {
     // connect 1147) under a 30-block boundary interval would be aborted
     // mid-flight by its own safety mechanism.
     int nCeremonyBudget;
+    // ★ W2.5a Guard 1 (KDD-079 §3) — the network's DECLARED quorum count.
+    // Guard 1 is unenforceable without a check target: the real L is chain
+    // state (GetActiveQuorumsAtHeight) and unknown at startup, so the config
+    // must declare what it is provisioned for.  Default 1 = single-quorum,
+    // which is what every network runs today and what makes the check a
+    // no-op on the current defaults.
+    int nSupportedQuorums;
 
     // ------------------------------------------------------------------
     // W2.4 W4-e (KDD-074/075/076) — THE TERMINAL-ELIGIBILITY GATE.
