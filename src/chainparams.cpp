@@ -974,7 +974,16 @@ public:
 
         // PTX formation cadence (W2.2 SG-1b): dev test-N = 80, M-coupled
         // (~1.7x the ceremony floor M~47; SG-1b plan-gate decision 1).
-        consensus.ptxFormation = {"ptxbea", 80, 80, 80, 1, 200, 1, 40};  // KDD-079 decouple (B=R=budget, L=1-preserving) + W4-f reform gate LIVE (drill chains only)
+        // ★ W2.5b FLEET SHAPE (2026-07-28): the multi-quorum drill config —
+        // B=30 boundaries / R=1440 rotation age / budget=80 (Guard 3: the
+        // stall-out must NOT track the cadence — a ~27-block ceremony under a
+        // 30-block boundary lives on this separation) / L=8 declared
+        // (Guard 1: capacity 1440/30 = 48 >= 8, margin 48 >= 16 — quiet) /
+        // reform gate LIVE 200,1,40 (ODC-054: L>1 HARD-REQUIRES grace>0 —
+        // CheckParams refuses the gate-off variant at startup).  ptxbea is
+        // the FLEET's chain (-ptxbea, GMAUTH subnet carve-out); main/test/
+        // ptxtest/regtest stay at their L=1 shapes untouched.
+        consensus.ptxFormation = {"ptxbea", 30, 1440, 80, 8, 200, 1, 40};  // W2.5b fleet shape (KDD-079 decoupled; guards validate at startup)
 
         nFulfilledRequestExpireTime = 60 * 60;
 

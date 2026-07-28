@@ -860,4 +860,41 @@ BOOST_AUTO_TEST_CASE(G4a_MultiQuorumGateOffRejected)
     BOOST_CHECK_MESSAGE(PTX_Formation_CheckParams(lone, err), err);
 }
 
+// G4b — ★ THE W2.5b FLEET SHAPE, validated by the guards built for it.  The
+// REAL shipped ptxbea params (the fleet's chain: B=30/R=1440/budget=80/L=8,
+// gate 200,1,40) must pass CheckParams — this IS the startup validation the
+// fleet's own daemons run (InitSanityCheck), pinned at the unit level.
+// Property assertions, not literals: capacity covers the declared count with
+// the advisory margin (no warn), and the SAME shape with the gate zeroed is
+// REFUSED — ODC-054's coupling proven on the real config, not a synthetic
+// one.  RED: rides G4a's inversion (coupling dropped -> the gate-off variant
+// is accepted here too).
+BOOST_AUTO_TEST_CASE(G4b_FleetShapeValidates)
+{
+    std::string err;
+    SelectParams(CBaseChainParams::PTXBEATESTNET);
+    const Consensus::PTXFormationParams fleet = Params().GetConsensus().ptxFormation;
+    SelectParams(CBaseChainParams::MAIN);            // restore the fixture net
+
+    // The shipped fleet shape is multi-quorum with the gate LIVE...
+    BOOST_REQUIRE_GT(fleet.nSupportedQuorums, 1);
+    BOOST_REQUIRE_GT(fleet.nReformGrace, 0);
+    // ...its cadence covers the declared count WITH the advisory margin
+    // (property: no Guard-1 warn on the fleet's own config)...
+    BOOST_CHECK_GE(PTX_Formation_RotationCapacity(fleet),
+                   fleet.nSupportedQuorums * PTX_GUARD1_MARGIN);
+    // ...Guard 3's separation holds (the budget does not track the cadence:
+    // a ~27-block ceremony under a 30-block boundary needs budget > B)...
+    BOOST_CHECK_GT(fleet.nCeremonyBudget, fleet.nBoundaryInterval);
+    // ...and it VALIDATES — the fleet daemon starts.
+    BOOST_CHECK_MESSAGE(PTX_Formation_CheckParams(fleet, err), err);
+
+    // The same shape with the gate off is REFUSED (ODC-054 on the real
+    // config): a mis-edit dropping the gate cannot reach the fleet.
+    Consensus::PTXFormationParams gateOff = fleet;
+    gateOff.nReformGrace = 0;
+    BOOST_CHECK(!PTX_Formation_CheckParams(gateOff, err));
+    BOOST_CHECK(err.find("nReformGrace") != std::string::npos);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
