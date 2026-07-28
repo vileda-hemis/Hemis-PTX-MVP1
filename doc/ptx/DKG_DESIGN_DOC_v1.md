@@ -2488,6 +2488,45 @@ Fail-safe is **not free**: it converts safety risk into **liveness risk**, and t
 
 ---
 
+**KDD-078 (2026-07-28). ★ THE CEREMONY'S LAYERED SAFETY PROPERTIES — three independent threshold gates, and the two-path exclusion split. Both PROPERTIES (load-bearing, good), both previously undocumented; both surfaced by a RED that failed to discriminate.**
+
+**Why this is a KDD and not a note:** these two structures are **what implements KDD-077 §4's fail-safe posture at the ceremony layer.** §4 claims *"every adversarial or failure path terminates safety-preserved"*; these are the mechanisms that make the claim true. A future change to either silently weakens §4, so they belong at the level of the claim they support.
+
+### §1 — THREE INDEPENDENT THRESHOLD GATES (defence in depth)
+A ceremony is checked against `t` at **three separate points**: `ClosePhase0` (`phase0_commits.size() < t`), `ClosePhase1` (`revealed < t`, ptx_dkg.cpp:723), and `ClosePhase4` (`consistent < t`, :1405). **Removing any one leaves the others aborting a sub-threshold ceremony.** ★ **Consequence:** `CD_R5`'s partition safety — only one side of a split can reach threshold — **holds even if a single gate regresses**; the property is not carried by any one check. ★ **Discovered empirically, and by a failure:** SG-5 S2's first inversion removed `ClosePhase0`'s gate alone and the partition and late-join rows **stayed green**, because the later gates caught the sub-threshold sides. **A test that fails to fail is normally a bad test; here it was the system reporting a property nobody had written down.**
+
+### §2 — THE EXCLUSION SPLIT (two paths to `bad_members`)
+A bad dealer is excluded by **either** of two distinct mechanisms: **(a) RECEIVE-TIME verdict** — `ReceivePhase3Msg` (:1090) inserts the dealer the moment a justification **fails** its Feldman check (and symmetrically inserts the *complainant* at :1087 when the justification **passes** — the false-accuser rule); **(b) the `ClosePhase3` SWEEP** (:1138) — the **fallback for complaints that were never answered at all**, marking any dealer with an unresolved complaint. ★ **Consequence:** a future change to exclusion **must know which path it touches** — breaking the receive-time verdict is not the same as breaking the sweep, and each governs a different adversarial case. S2 demonstrated the distinction: `CD_R7` (multi-bad-dealer, justifications *sent and failing*) exercises **(a)**; `CD_R8` (justifications *suppressed*) exercises **(b)**. An inversion aimed at (b) leaves (a)'s row untouched, and vice versa.
+
+### §3 — ★ KDD-077 §3's MALICE-VS-ERROR LIMIT, AT THE TRANSPORT LAYER (its third independent appearance)
+`CD_R8` shows the limit in a new place: **a dropped justification is indistinguishable from one never sent and from one that failed**, so `ClosePhase3` convicts identically in all three cases — the outcome is **byte-identical** to a genuinely-guilty dealer. **The exclusion therefore carries no proof of guilt whenever justifications can be lost.** ★ This is the **third independent appearance** of KDD-077 §3: (1) the complaint round's false-accuser rule (*"C is marked bad regardless of whether C was malicious or merely wrong"*), (2) the W2.4 disband fork-B accusation problem, (3) here, in the transport. **A limit that reappears in three unrelated contexts is structural, not incidental** — further evidence for §3's promotion.
+
+**Safety verdict (unchanged, and reasoned):** liveness/fairness cost only. Uniform suppression -> all nodes agree on the exclusion -> one key; non-uniform -> divergence caught by the **P4 premit gate**; enough exclusions -> `effective < t` -> **abort**. **No path yields a wrong beacon.**
+
+★ **SCOPE HONESTY — do not overclaim `CD_R8`:** the row demonstrates conviction-without-proof using a **genuinely bad** dealer. The pure false-positive — an **honest** dealer wrongly convicted — requires **victim-side share corruption**, which the harness cannot currently express cleanly. **That safety verdict rests on the reasoning above (`ClosePhase3` + the premit gate), not on the row.** An honest-dealer row is owed to any future harness extension that can corrupt a received share.
+
+**Cross-ref:** KDD-077 §4 (the posture these two properties implement) and §3 (the limit §3 above extends), ODC-050 (the stall-out — SG-5's other safety piece, the one gate that did *not* exist), ODC-051 (the delivery-redundancy question these make concrete), ODC-053 (what the harness canNOT exercise), `CD_R5`/`CD_R7`/`CD_R8`/`CD_R4red` (the rows that exercise them), SG-5 S2 (`98296e6` — the non-discriminating RED that surfaced both).
+
+**KDD:** KDD-078
+
+---
+
+**ODC-053 (2026-07-28). Ceremony COVERAGE BOUNDS that live only in source — three items, registered here to end their invisibility. NOT defects: these are things the in-process harness cannot exercise.**
+
+Found by SG-5 S3's sweep of the ceremony driver and its harness for gaps recorded only in comments. ★ Framing: KDD-078 records what the harness **does** exercise and proves; this records what it **cannot** — the two together bound what a green driver suite actually means.
+
+1. **`IsComplete` early-exit fast path — DEFERRED.** `ptx_ceremony_driver.h:24` records that a node advancing early on `IsPhaseNComplete` would emit phase-k+1 messages that nodes still in k discard (skew -> loss -> divergent qual), so the windowed advance is used instead and the fast path is **owed until the transport can BUFFER future-phase messages rather than dropping them**. Real, reasoned, and previously **source-only**.
+2. **getdata-recovery / retransmit — NOT MODELLED.** The harness drops permanently (Option B, no retransmit in-suite); real recovery via getdata is **owed to SG-2b**. Consequence for reading results: every harness DROP is a *permanent* loss, which is strictly harsher than production — a row that survives a drop here survives it in production, but a row that fails may recover in production. Previously **source-only**.
+3. ★ **Session-mutex locking NOT exercised — and the comment claimed a registration that never existed.** The harness is single-threaded **by design** (determinism), so the locking the session mutex exists to protect is never contended; the `AssertLockNotHeld` guards are the only in-between tripwire. The source comment said *"registered owed to SG-2d"* — ★ **SG-2d appears NOWHERE in this register**; the registration never happened. **Corrected here: it is registered as this item**, and the source comment now points at ODC-053. A real coverage bound (concurrency correctness is unproven by this suite), and a reminder that a comment asserting "registered" is not evidence of registration.
+
+**Cross-ref:** KDD-078 (what the harness *does* prove), SG-5 (the arc that swept these up), `ptx_ceremony_driver_tests.cpp` (the harness whose bounds these are), ODC-051 (delivery redundancy — item 2's production-side sibling).
+
+**ODC:** ODC-053
+
+**Next-free: KDD-079 / ODC-054.**
+
+---
+
 ## Appendix: Register cross-reference
 
 *Program status / roadmap (to first testnet), including live fleet-state snapshots and pre-testnet blockers, lives in the tracked `doc/ptx/PTX_ROADMAP.md`. This register tracks decisions; the roadmap tracks status.*

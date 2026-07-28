@@ -12,7 +12,9 @@
 // heights), and per-tick shuffled delivery/step ORDER (reorder).  Height is
 // the harness-fake shared clock (the injectable seam).  Single-threaded BY
 // DESIGN for determinism — the locking the session mutex fixes is therefore
-// NOT exercised here (registered owed to SG-2d; the AssertLockNotHeld guards
+// NOT exercised here (a coverage bound, registered as ODC-053 item 3 — an
+// earlier comment claimed "SG-2d", which was never in the register; the
+// AssertLockNotHeld guards
 // are the in-between tripwire).
 //
 // Test inventory (RED forms are STANDING rows asserting the failure shape —
@@ -33,8 +35,20 @@
 //     Aborts                                     stall-out ABORTS all 11 (was RED: "hang")
 //   CD_R4_BadShareExcluded               Green  corrupted eval → complaint → justify FAILS →
 //                                               dealer in bad_members on ALL 11, 11 DONE one pk
-//   CD_R4red_ComplaintSuppressed         RED    complaints dropped: dealer NOT excluded on
-//                                               non-victims; victim aborts (SG-5 matrix preview)
+//   CD_R4red_ComplaintSuppressed         Bound  complaints dropped: dealer NOT excluded on
+//                                               non-victims; victim aborts fail-safe.  The
+//                                               ACCEPTED BOUND per KDD-077 §4; reliability
+//                                               half = ODC-051.  (Was marked RED.)
+//   CD_R5_PartitionMinorityAborts        Green  11 split 6/5: t=6 is a MAJORITY so only one
+//                                               side can reach threshold — minority ABORTS,
+//                                               done_count 0 or 6, never two keys
+//   CD_R6_LateJoinSelfExcludes           Green  member joins after its commit window closed:
+//                                               self-excludes sub-threshold, the other 10
+//                                               complete on one pk
+//   CD_R7_MultiBadDealerBothExcluded     Green  TWO corrupt dealers: BOTH swept to bad on all
+//                                               nodes (receive-time verdict), 11 DONE one pk
+//   CD_R8_JustifySuppressed...           Green  justifications dropped: dealer convicted with
+//     ConvictsWithoutProof                      NO proof of guilt (KDD-078 §3) — safety holds
 //   CD_RWIDTH_UnderWidthDivergesToAbort  Floor  w_contrib=1 + delay-2 edges: victim closes P1 on
 //                                               a divergent set → ABORTS at the P4 premit gate
 //                                               (no divergent finalization); SAME schedule at
@@ -359,10 +373,13 @@ BOOST_AUTO_TEST_CASE(CD_R2_ThresholdCarry)
 }
 
 // ---------------------------------------------------------------------------
-// CD_R2red — the deadline is the rescuer (STANDING RED): with no reachable
-// window end, an absent member stalls the ceremony forever.  This is the
-// failure mode the windowed deadline exists to prevent — asserted in its RED
-// shape so the row proves the harness CAN show a stall.
+// CD_R2 — UNREACHABLE DEADLINE -> ABORT (SG-5 S1, ODC-050).  With no
+// reachable window end an absent member USED to stall the ceremony forever;
+// the absolute stall-out now ABORTS it (a hang is not a state — KDD-077 §4).
+// ★ This row doubles as the WIDTH-INFLATION PIN: w_hashcommit = 100000 makes
+// OffsetEnd(PREMIT) = 100020, so any WIDTH-DERIVED budget would itself be
+// unreachable and never fire; the bound holds because it is keyed on the
+// FORMATION INTERVAL instead.
 // ---------------------------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(CD_R2_UnreachableDeadlineAborts)
@@ -402,9 +419,10 @@ BOOST_AUTO_TEST_CASE(CD_R3_EmptyComplaintAdvances)
 }
 
 // ---------------------------------------------------------------------------
-// CD_R3red — (STANDING RED) with no reachable P2 window end the ceremony
-// hangs in COMPLAINT forever: nothing count-completes an empty complaint
-// round; only the deadline advances it.
+// CD_R3 — UNREACHABLE COMPLAINT DEADLINE -> ABORT (SG-5 S1, ODC-050).
+// Nothing count-completes an empty complaint round, so with no reachable P2
+// window end the ceremony USED to hang in COMPLAINT forever.  The deadline is
+// no longer the only exit: the absolute stall-out aborts it.
 // ---------------------------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(CD_R3_UnreachableComplaintDeadlineAborts)
@@ -455,12 +473,18 @@ BOOST_AUTO_TEST_CASE(CD_R4_BadShareExcluded)
 }
 
 // ---------------------------------------------------------------------------
-// CD_R4red — (STANDING RED / SG-5 preview) complaint SUPPRESSION: with all
+// ★ CD_R4red — THE ACCEPTED BOUND (KDD-077 §4), not a gap.  Complaint
+// SUPPRESSION: with all
 // PTXQCOMPLAINT messages dropped, the bad dealer is NOT excluded on any
 // non-victim node — the exclusion assertion fails in exactly the shape a
 // broken complaint round would produce.  The victim (whose local complaint
 // stands unresolved) sweeps the dealer bad at ClosePhase3, diverges, and
-// fails safe at the P4 premit gate.  Full adversarial matrix: SG-5.
+// fails safe at the P4 premit gate — SAFETY HOLDS, which is why KDD-077 §4
+// ACCEPTS this bound rather than building Byzantine machinery against it
+// (KDD-077 §6).  ★ The RELIABILITY half is ODC-051: on the zero-redundancy
+// member clique the same outcome arises from ORDINARY LINK FAILURE, so
+// redundancy — not Byzantine agreement — is the open question.  SG-5 touches
+// this row as DOCUMENTATION ONLY.  Name kept: cited by ODC-051 and KDD-078.
 // ---------------------------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(CD_R4red_ComplaintSuppressed)
