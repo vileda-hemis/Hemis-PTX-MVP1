@@ -2527,6 +2527,66 @@ Found by SG-5 S3's sweep of the ceremony driver and its harness for gaps recorde
 
 ---
 
+**KDD-079 (2026-07-28). ★ W2.5a ROTATION STAGGERING — DECOUPLE THE CONFLATED PARAMETER, STAGGER BY SELECTION (Option B, hardened with three guards). Decided against generalising V11 (Option A), which is retained as a documented fallback with an explicit re-open condition.**
+
+### §1 — ★ THE FINDING THAT DECIDED IT: a parameter-conflation artifact, not a consensus constraint
+
+The W2.5 recon concluded that §7.2's per-quorum drift is **inexpressible** under the consensus rules — quorum identity *is* a block hash (V1 resolves `quorum_hash` to a real block; V9 permits one PTXDKG per anchor) and **V11** forces that block onto `height % nFormationInterval == 0`, so a drifted rotation anchor is rejected. It then computed the consequence at scale: with all L quorums due at one boundary and one rotation per boundary, **the last waits ~37 x 1440 ~= 53,000 blocks**, breaking **KDD-045's rotation-windowing** (the key-compromise window bounded by N).
+
+★ **That arithmetic assumed `boundary_cadence == rotation_interval`. Source shows why: they are the SAME PARAMETER.** `nFormationInterval` is doing **at least three semantically distinct jobs** — `ptx_formation.cpp:564` `IsBoundary` (**the boundary cadence**, V11's rule); `ptx_formation.cpp:135` `RotationDueAt` (**the rotation age threshold**); `ptx_formation.cpp:304` (**the ceremony stall-out budget**, ODC-050); plus grace-M spacing (:824), GetAnchor staging (:576) and the reform producer's boundary check (`ptx_quorum_store.cpp:586`). **They are numerically identical only because there is one knob.** ★ **The catastrophe is an artifact of the conflation, not a property of the consensus rules — and decoupling dissolves it.**
+
+### §2 — THE DECISION: three parameters, staggering by selection
+
+Split `nFormationInterval` into: **`nBoundaryInterval` (~30)** — V11's `height % N == 0` and the fresh-formation cadence; **`nRotationInterval` (~1440)** — the rotation age test only; **`nCeremonyBudget`** (ceremony span + mining tail + margin) — the ODC-050 stall-out bound only.
+
+Staggering then **emerges from machinery already shipped and fleet-proven**: P-b6b's lowest-hash tie-break selects **one due quorum per boundary**, and capacity is `R / B` rotations per rotation-interval. At **L=40, R=1440, B=30 -> 48 slots for 40 quorums.** ★ **No V11 change, no identity change, no `drift_offset` producer, no consensus-rule change of any kind.** `drift_offset` remains a sentinel-only field (its producer is not owed under this decision).
+
+### §3 — ★ GUARD 1: the `R/B >= L` invariant, ENFORCED not assumed
+
+Selection-staggering works **only while capacity exceeds demand for slots**. `nRotationInterval / nBoundaryInterval` must exceed the active quorum count **with margin (1.5-2x)**, or quorums starve. ★ Following the **ODC-047-floor pattern**, this is promoted from a tuning assumption to a **checked bound**: validated at **startup config-validation** (params self-consistent for the network's supported L), and **runtime-aware** if L grows past what the configured ratio supports — a condition an operator must see rather than discover as silent key-staleness. **An unchecked invariant is how the conflation went unnoticed in the first place.**
+
+### §4 — ★★ GUARD 2: THE ANTI-STARVATION FAIRNESS FLOOR — what makes B preserve KDD-045
+
+The lowest-hash tie-break spreads rotations but is **not fair**: a persistently high-hash quorum can lose every contested boundary and **starve past `nRotationInterval`**, ageing its key beyond the bound — **reintroducing exactly the KDD-045 violation B was chosen to avoid**. So: **a quorum that is OVERDUE — waited beyond `nRotationInterval + slack` — WINS its slot regardless of hash.** A tie-break override; grace-M's sibling in shape. **Multi-overdue resolution: most-overdue-first** (largest `anchor - formation_height`), lowest-hash only as the final tie-break, so the ordering stays deterministic and chain-derived.
+
+★ **This guard is the load-bearing half of the decision.** Without it, B is only *statistically* safe; with it, **the KDD-045 bound is `nRotationInterval + slack` for every quorum, not merely for lucky ones.**
+
+★ **HONEST ABOUT ITS TESTABILITY:** Guard 2 is **latent at low L** — when `R/B` is generous nothing ever starves, so the override never fires — and becomes load-bearing only as **L approaches `R/B`**. It is **unit-testable NOW** (force a high-hash quorum to lose repeatedly; assert the overdue override fires and it wins), but **real validation is env-gated to W2.5b at L=6-8 under competition**. Recorded as: **guard built and unit-proven at W2.5a; scale-validation owed to W2.5b.** The same honesty ODC-047 carries — a guard proven in the small, whose real exercise needs an environment that does not yet exist.
+
+### §5 — GUARD 3: ceremony-budget separation (must land in the SAME change)
+
+SG-5 S1's stall-out takes its budget from `nFormationInterval`. If that becomes **B ~= 30** while a ceremony needs **~27 blocks plus a mining tail** (drill: formation 1120 -> connect 1147), **the stall-out would begin aborting healthy ceremonies.** `nCeremonyBudget` is mechanical once the split exists — but it is **not optional and not deferrable**: it must land **atomically with the decouple**, or the decoupling breaks a shipped safety mechanism the moment it lands.
+
+### §6 — ★ WHY B OVER A, AND A AS DOCUMENTED FALLBACK
+
+**Option A (generalise V11 for per-quorum drifted anchors)** is real and buildable — more so than the recon first implied, since a rotation names its predecessor and V12 already loads that record at validation, so a validator **can** derive the drifted boundary; fresh formations would keep the global boundary. ~**1.0-1.5**, and it is what §7.2 literally specifies.
+
+**B is chosen because the problem it solves turned out not to exist**: the pile-up was conflation, and the staggering machinery is already built, shipped and fleet-proven. **~0.3-0.5 versus 1.0-1.5**, with **no consensus-rule change** — and consensus changes carry the activation-gate and forward-bind costs V11 already owes (the pre-mainnet height-gate).
+
+★ **The honest trade:** **B buys KDD-045's bound with ENFORCED OBLIGATIONS (Guards 1 and 2); A buys it STRUCTURALLY** (each quorum owns its slot; no contention, no starvation possible). A is **retained as the documented fallback.**
+
+**★ RE-OPEN TO A IF:** W2.5b's L=6-8 validation shows unfairness or starvation that **Guard 2's fairness floor cannot bound**; or the `R/B >= L` invariant proves impractical to maintain at a target L; or a deployment needs the structural guarantee rather than an enforced one.
+
+### §7 — Companion decisions
+
+**(ii) §7.4 distribution rule: `hash(round_seed) mod |ACTIVE|`** — **stateless** (round-robin needs stored state), **chain-derived and deterministic**, and **anti-targeting** by §7.4's requirement (LRU is grindable by an observing caller). ★ **Caveat designed in, not discovered later:** the **reform window must EXCEED the expected distribution period**, or **low-demand sparsity** (`rolls_per_window < L`, so some quorums legitimately see no roll) reads as idleness and trips reform eligibility. **Sparsity is not idleness**, and the parameter relationship must say so.
+
+**(iii) KDD-075 amendment (short, not a re-decision):** its yield keys on "due", which assumed a single interval. Under the decoupled params **"due" means rotation-interval-due** (`anchor - formation_height >= nRotationInterval`), evaluated at boundaries spaced by `nBoundaryInterval`. An update so the yield keys correctly — the precedence *decision* is unchanged.
+
+### §8 — Build order and sizing
+
+**§7.4 routing FIRST** (separable — a pure function over the ACTIVE set with one caller; discharges **ODC-052**, the bound on *shipped* reform; buildable and validatable at L=2 now) -> **the params decouple + three guards + the KDD-075 amendment** -> **KDD-040 relaxation** (raises `L_max = pool/11`; gates **W2.5b's** L=6-8, not W2.5a) -> **interaction hardening**.
+
+**Sizing:** B-hardened ~**0.3-0.5** against A's 1.0-1.5. ★ **W2.5a revises to ~1.6-2.7** (was 3.1-5.0). **Buildable now at L<=2:** §7.4 routing, the decouple, all three guards (unit), KDD-040 relaxation. **Env-gated to W2.5b (L=6-8):** staggering capacity at scale, **Guard 2's real validation under competition**, correlated departures, and **ODC-052's fix under demand**. Hardware is **not** the constraint (node1 measured at 78 containers / 31 GB of 94 GB; a 60-90-GM fleet fits) — W2.5b is demand-generation and orchestration work.
+
+**Cross-ref:** §7.2 (the drift specification this declines to implement, and why), V11/V9/V1-V3 (`specialtx_validation.cpp:686-737` — the identity chain that made drift inexpressible), KDD-045 (the rotation-windowing bound Guards 1-2 preserve), KDD-072 P-b6b (the lowest-hash tie-break this promotes to the staggering mechanism), KDD-075 (amended per §7(iii)), ODC-050 (the stall-out Guard 3 protects), ODC-052 (discharged by the §7.4 routing piece), ODC-047 (the enforced-invariant pattern Guard 1 follows), KDD-077 §6 (the decided-with-a-documented-fallback pattern this entry reuses).
+
+**KDD:** KDD-079
+
+**Next-free: KDD-080 / ODC-054.**
+
+---
+
 ## Appendix: Register cross-reference
 
 *Program status / roadmap (to first testnet), including live fleet-state snapshots and pre-testnet blockers, lives in the tracked `doc/ptx/PTX_ROADMAP.md`. This register tracks decisions; the roadmap tracks status.*
