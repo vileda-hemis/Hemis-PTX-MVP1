@@ -310,7 +310,9 @@ static Consensus::PTXFormationParams ScheduleParams(int n)
 {
     Consensus::PTXFormationParams p;
     p.name = "unit";
-    p.nFormationInterval = n;
+    p.nBoundaryInterval = n;
+    p.nRotationInterval = n;   // KDD-079: fixtures keep B==R (the L=1-preserving default)
+    p.nCeremonyBudget   = n;
     return p;
 }
 

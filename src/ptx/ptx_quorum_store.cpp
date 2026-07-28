@@ -582,9 +582,11 @@ size_t CPTXQuorumStore::MaybeReformAtBoundary(
     if (pindex == nullptr) return 0;
     if (params.nRetireWindow <= 0 && params.nReformGrace <= 0) return 0;
     if (params.nReformRateWindow <= 0) return 0;   // limiter selects nothing
-    if (params.nFormationInterval <= 0 ||
+    // KDD-079: the reform producer fires at BOUNDARIES (cadence), not at the
+    // rotation interval.
+    if (params.nBoundaryInterval <= 0 ||
         pindex->nHeight <= 0 ||
-        pindex->nHeight % params.nFormationInterval != 0) {
+        pindex->nHeight % params.nBoundaryInterval != 0) {
         return 0;                                   // boundaries only
     }
 

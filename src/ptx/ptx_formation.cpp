@@ -132,7 +132,9 @@ PTXRotationDecision PTX_Formation_RotationDueAt(
     // interval has elapsed since it formed.
     const uint256* lowest = nullptr;
     for (const CPTXQuorumRecord& rec : active) {
-        if (pindexAnchor->nHeight - rec.formation_height < params.nFormationInterval)
+        // KDD-079: the ROTATION AGE test — nRotationInterval, NOT the boundary
+        // cadence.  KDD-045's key-compromise window is bounded by this.
+        if (pindexAnchor->nHeight - rec.formation_height < params.nRotationInterval)
             continue;                                     // not yet due
         // W2.4 W4-e — THE KDD-075 YIELD: terminal-eligibility yields rotation
         // AT CEREMONY-START.  ★ Keyed on ELIGIBILITY, never "fired": an
@@ -301,7 +303,10 @@ private:
         // FORMATION INTERVAL — enforcing the invariant §9.1 already asserts
         // (N exceeds the ceremony floor so a new boundary cannot fire before
         // the prior ceremony completes).  Width-independent by construction.
-        deadlines.max_span = Params().GetConsensus().ptxFormation.nFormationInterval;
+        // ★ KDD-079 GUARD 3: the ODC-050 stall-out takes nCeremonyBudget, NEVER
+        // the boundary cadence — at B=30 a healthy ~27-block ceremony would be
+        // aborted mid-flight by its own safety mechanism.
+        deadlines.max_span = Params().GetConsensus().ptxFormation.nCeremonyBudget;
         std::vector<PTXCeremonyOutbound> outbounds;
         CMutableTransaction     dkgtx;
 
@@ -425,7 +430,7 @@ void StartFormationAtAnchor(const CBlockIndex* pindexNew,
             // does.  The re-arm path logs its own RE-ARM line instead.
             LogPrintf("PTX formation boundary: height=%d anchor=%s anchor_height=%d N=%d\n",
                       pindexNew->nHeight, pindexAnchor->GetBlockHash().ToString(),
-                      pindexAnchor->nHeight, params.nFormationInterval);
+                      pindexAnchor->nHeight, params.nBoundaryInterval);
         }
 
         // (a) AT-START ANCHOR RE-VERIFY (decision 3a — the h400 stake-race
@@ -561,7 +566,9 @@ bool PTX_Formation_IsBoundary(int nHeight,
                               const Consensus::PTXFormationParams& params)
 {
     // nHeight > 0 is load-bearing: 0 % N == 0 would make genesis a boundary.
-    return nHeight > 0 && (nHeight % params.nFormationInterval) == 0;
+    // KDD-079: the BOUNDARY CADENCE.  V11 inherits this through this one
+    // function — the single consensus-side dependency on the cadence.
+    return nHeight > 0 && (nHeight % params.nBoundaryInterval) == 0;
 }
 
 const CBlockIndex* PTX_Formation_GetAnchor(
@@ -573,7 +580,7 @@ const CBlockIndex* PTX_Formation_GetAnchor(
     // Walk pindexNew's OWN branch (V3's reorg-robust idiom) — never
     // chainActive[] (equivalent only while the tip is on the active chain;
     // divergent, self-poisoning, on a fork), never cached across tips.
-    const int stage = pindexNew->nHeight % params.nFormationInterval;
+    const int stage = pindexNew->nHeight % params.nBoundaryInterval;
     return pindexNew->GetAncestor(pindexNew->nHeight - stage);
 }
 
@@ -750,13 +757,22 @@ bool PTX_Formation_RotationImpossible(
 bool PTX_Formation_ForcedReformGraceElapsed(
         const CPTXQuorumRecord& rec,
         const CBlockIndex* pindexAnchor,
-        int formation_interval,
+        int boundary_interval,
+        int rotation_interval,
         int grace_m,
         const std::function<bool(const CBlockIndex*)>& impossible_at)
 {
+    // ★★ KDD-079 — THE FOURTH CONFLATION, FIXED.  This function used ONE
+    // interval for TWO jobs: stepping back over BOUNDARIES, and testing
+    // ROTATION due-ness at each.  At divergent values that is a DEFECT, not a
+    // cosmetic issue: with B=30 / R=1440 the due-test would fire on a
+    // 30-block-old quorum and the forced-reform arm would trip wildly early.
+    // ★ It propagated INTO this function (written at W2.4 W4-d, after the
+    // conflation existed) precisely because there was only one param to pass
+    // — KDD-079's thesis demonstrated a second time, in newer code.
     // FAIL-SAFE false: a grace that cannot be evaluated has not elapsed.
-    if (pindexAnchor == nullptr || formation_interval <= 0 || grace_m <= 0 ||
-        !impossible_at) {
+    if (pindexAnchor == nullptr || boundary_interval <= 0 ||
+        rotation_interval <= 0 || grace_m <= 0 || !impossible_at) {
         return false;
     }
     // Due-AND-impossible at each of the last grace_m boundaries, newest
@@ -764,7 +780,7 @@ bool PTX_Formation_ForcedReformGraceElapsed(
     // impossible (the pathological ProUpReg self-heal) breaks the run — the
     // stateless re-derivation IS the grace reset.
     for (int i = 0; i < grace_m; ++i) {
-        const int bh = pindexAnchor->nHeight - i * formation_interval;
+        const int bh = pindexAnchor->nHeight - i * boundary_interval;  // BOUNDARY step
         if (bh < 0) return false;
         // Plain pprev walk, NOT GetAncestor: this tree's GetAncestor follows
         // pskip unguarded (chain.cpp — upstream guards it, this fork doesn't),
@@ -773,7 +789,7 @@ bool PTX_Formation_ForcedReformGraceElapsed(
         const CBlockIndex* pb = pindexAnchor;
         while (pb != nullptr && pb->nHeight > bh) pb = pb->pprev;
         if (pb == nullptr || pb->nHeight != bh) return false;
-        if (pb->nHeight - rec.formation_height < formation_interval) {
+        if (pb->nHeight - rec.formation_height < rotation_interval) {  // ROTATION due-test
             return false;  // not yet due at this boundary
         }
         if (!impossible_at(pb)) {
@@ -821,7 +837,8 @@ bool PTX_Formation_TerminalEligible(
     // each of the last nReformGrace boundaries, rec-bound.
     if (params.nReformGrace > 0 &&
         PTX_Formation_ForcedReformGraceElapsed(
-                rec, pindexAnchor, params.nFormationInterval, params.nReformGrace,
+                rec, pindexAnchor, params.nBoundaryInterval, params.nRotationInterval,
+                params.nReformGrace,
                 [&](const CBlockIndex* pb) { return impossible_at(rec, pb); })) {
         if (why_out != nullptr) *why_out = "forced-reform";
         return true;

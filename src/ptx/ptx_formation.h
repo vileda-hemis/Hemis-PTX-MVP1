@@ -243,10 +243,15 @@ bool PTX_Formation_RotationImpossible(
 // impossible_at evaluates predicate #2 at a historical boundary (production
 // composes it with GetListForBlock; tests inject).  FAIL-SAFE false on
 // degenerate params / missing ancestors.
+// ★ KDD-079: TWO intervals, deliberately.  boundary_interval steps back over
+// boundaries; rotation_interval tests due-ness at each.  A single param for
+// both is a DEFECT at divergent values (it fired forced-reform on a
+// 30-block-old quorum at B=30/R=1440) — the fourth conflation, fixed.
 bool PTX_Formation_ForcedReformGraceElapsed(
         const CPTXQuorumRecord& rec,
         const CBlockIndex* pindexAnchor,
-        int formation_interval,
+        int boundary_interval,
+        int rotation_interval,
         int grace_m,
         const std::function<bool(const CBlockIndex*)>& impossible_at);
 

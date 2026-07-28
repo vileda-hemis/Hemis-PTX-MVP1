@@ -2800,7 +2800,7 @@ BOOST_AUTO_TEST_CASE(Pb6b_Trigger_AgeTestBoundary)
     PTX_BLS_WipeShares(evoDb.get());
     CPTXQuorumStore store(*evoDb);
     const Consensus::PTXFormationParams& params = Params().GetConsensus().ptxFormation;
-    const int N = params.nFormationInterval;
+    const int N = params.nBoundaryInterval;   // KDD-079: boundaries
 
     const uint256 qh = QHk(0xA1);
     Pb6bSeedActive(qh, /*formation*/ 1000, /*mined*/ 1005);
@@ -2827,7 +2827,7 @@ BOOST_AUTO_TEST_CASE(Pb6b_Trigger_TieBreakLowestHashOnly)
     PTX_BLS_WipeShares(evoDb.get());
     CPTXQuorumStore store(*evoDb);
     const Consensus::PTXFormationParams& params = Params().GetConsensus().ptxFormation;
-    const int N = params.nFormationInterval;
+    const int N = params.nBoundaryInterval;   // KDD-079: boundaries
 
     const uint256 lo = QHk(0x11), hi = QHk(0x99);
     Pb6bSeedActive(lo, 2000, 2005);
@@ -3418,30 +3418,30 @@ BOOST_AUTO_TEST_CASE(W4d_GraceElapsed)
 
     // (a) impossible at both of the last two boundaries: grace elapsed.
     impossibleAt = {400, 320};
-    BOOST_CHECK(PTX_Formation_ForcedReformGraceElapsed(rec, anchor, INTERVAL, 2, impossible));
+    BOOST_CHECK(PTX_Formation_ForcedReformGraceElapsed(rec, anchor, INTERVAL, INTERVAL, 2, impossible));
 
     // (b) HEALED at the older boundary (possible at 320): grace NOT elapsed —
     // the pathological ProUpReg self-heal resets the run by construction.
     impossibleAt = {400};
-    BOOST_CHECK(!PTX_Formation_ForcedReformGraceElapsed(rec, anchor, INTERVAL, 2, impossible));
+    BOOST_CHECK(!PTX_Formation_ForcedReformGraceElapsed(rec, anchor, INTERVAL, INTERVAL, 2, impossible));
 
     // (c) M=1: the current boundary alone decides.
-    BOOST_CHECK(PTX_Formation_ForcedReformGraceElapsed(rec, anchor, INTERVAL, 1, impossible));
+    BOOST_CHECK(PTX_Formation_ForcedReformGraceElapsed(rec, anchor, INTERVAL, INTERVAL, 1, impossible));
 
     // (d) YOUNG quorum: not yet due at the older boundary (formed 300;
     // 320-300 < 80) — grace cannot elapse even though both marked impossible.
     impossibleAt = {400, 320};
     CPTXQuorumRecord young;
     young.formation_height = 300;
-    BOOST_CHECK(!PTX_Formation_ForcedReformGraceElapsed(young, anchor, INTERVAL, 2, impossible));
+    BOOST_CHECK(!PTX_Formation_ForcedReformGraceElapsed(young, anchor, INTERVAL, INTERVAL, 2, impossible));
 
     // (e) degenerate: M=0 / null anchor / boundary below genesis.
-    BOOST_CHECK(!PTX_Formation_ForcedReformGraceElapsed(rec, anchor, INTERVAL, 0, impossible));
-    BOOST_CHECK(!PTX_Formation_ForcedReformGraceElapsed(rec, nullptr, INTERVAL, 2, impossible));
+    BOOST_CHECK(!PTX_Formation_ForcedReformGraceElapsed(rec, anchor, INTERVAL, INTERVAL, 0, impossible));
+    BOOST_CHECK(!PTX_Formation_ForcedReformGraceElapsed(rec, nullptr, INTERVAL, INTERVAL, 2, impossible));
     impossibleAt = {40};
     CPTXQuorumRecord early;
     early.formation_height = 0;
-    BOOST_CHECK(!PTX_Formation_ForcedReformGraceElapsed(early, &chain[40], INTERVAL, 2, impossible));
+    BOOST_CHECK(!PTX_Formation_ForcedReformGraceElapsed(early, &chain[40], INTERVAL, INTERVAL, 2, impossible));
 }
 
 // Dormancy (the P5 idiom): the three predicates + the block helper have ZERO
@@ -3503,8 +3503,15 @@ BOOST_AUTO_TEST_CASE(W4d_Dormancy_Structural)
                 "RotationImpossible: expected exactly the one sanctioned "
                 "store-TU consumer (W4-f producer), got " << in_prod);
         } else {
-            BOOST_CHECK_MESSAGE(in_prod == 0,
-                "production reference to " << fn << " outside the formation TU");
+            // ★ CALL-SHAPED, not bare-name (the W4c idiom).  Bare-name matching
+            // also flags COMMENTS that merely NAME a function: KDD-079's
+            // params.h comment cites ForcedReformGraceElapsed to explain the
+            // fourth conflation, which is documentation, not a caller.  A
+            // dormancy pin must catch CALLS.
+            const size_t calls = P5_count(prod, "->" + fn + "(") +
+                                 P5_count(prod, " " + fn + "(");
+            BOOST_CHECK_MESSAGE(calls == 0,
+                "production CALL to " << fn << " outside the formation TU");
         }
     }
 }
@@ -3532,7 +3539,7 @@ BOOST_AUTO_TEST_CASE(W4e_GateDefaultOff_Dormancy)
     BOOST_REQUIRE(evoDb);
     PTX_BLS_WipeShares(evoDb.get());
     CPTXQuorumStore store(*evoDb);
-    const int N = params.nFormationInterval;
+    const int N = params.nBoundaryInterval;   // KDD-079: boundaries
 
     const uint256 qh = QHk(0xF1);
     Pb6bSeedActive(qh, /*formation*/ 1000, /*mined*/ 1005);
@@ -3569,7 +3576,7 @@ BOOST_AUTO_TEST_CASE(W4e_YieldKeyedOnEligibility)
     BOOST_REQUIRE(evoDb);
     PTX_BLS_WipeShares(evoDb.get());
     CPTXQuorumStore store(*evoDb);
-    const int N = params.nFormationInterval;
+    const int N = params.nBoundaryInterval;   // KDD-079: boundaries
 
     // TWO due quorums, both idle (no attributed rolls anywhere).
     const uint256 qhA = QHk(0x0A), qhB = QHk(0x0B);
@@ -3597,7 +3604,7 @@ BOOST_AUTO_TEST_CASE(W4e_YieldComposition)
     PTX_BLS_WipeShares(evoDb.get());
     CPTXQuorumStore store(*evoDb);
     Consensus::PTXFormationParams params = Params().GetConsensus().ptxFormation;
-    const int N = params.nFormationInterval;
+    const int N = params.nBoundaryInterval;   // KDD-079: boundaries
 
     const uint256 qh = QHk(0xF2);
     Pb6bSeedActive(qh, 1000, 1005);
@@ -3674,7 +3681,9 @@ static Consensus::PTXFormationParams W4fParams()
 {
     Consensus::PTXFormationParams p{};
     p.name = "w4f";
-    p.nFormationInterval = 80;
+    p.nBoundaryInterval = 80;
+    p.nRotationInterval = 80;
+    p.nCeremonyBudget   = 80;
     p.nRetireWindow      = 50;
     p.nReformGrace       = 0;
     p.nReformRateWindow  = 40;
@@ -3781,11 +3790,11 @@ BOOST_AUTO_TEST_CASE(W4f_UnstubAndWiring_Structural)
 
     const std::string cp = P5_slurp(src + "/src/chainparams.cpp");
     BOOST_REQUIRE(!cp.empty());
-    BOOST_CHECK(P5_count(cp, "ptxFormation = {\"main\", 1440};") == 1);      // mainnet DORMANT
-    BOOST_CHECK(P5_count(cp, "ptxFormation = {\"test\", 1440};") == 1);      // testnet DORMANT
-    BOOST_CHECK(P5_count(cp, "ptxFormation = {\"ptxtest\", 80};") == 1);     // ptxtest DORMANT
-    BOOST_CHECK(P5_count(cp, "ptxFormation = {\"regtest\", 80, 200, 1, 40}") == 1);  // drill LIVE
-    BOOST_CHECK(P5_count(cp, "ptxFormation = {\"ptxbea\", 80, 200, 1, 40}") == 1);   // drill LIVE
+    BOOST_CHECK(P5_count(cp, "ptxFormation = {\"main\", 1440, 1440, 1440};") == 1);      // mainnet DORMANT
+    BOOST_CHECK(P5_count(cp, "ptxFormation = {\"test\", 1440, 1440, 1440};") == 1);      // testnet DORMANT
+    BOOST_CHECK(P5_count(cp, "ptxFormation = {\"ptxtest\", 80, 80, 80};") == 1);     // ptxtest DORMANT
+    BOOST_CHECK(P5_count(cp, "ptxFormation = {\"regtest\", 80, 80, 80, 200, 1, 40}") == 1);  // drill LIVE
+    BOOST_CHECK(P5_count(cp, "ptxFormation = {\"ptxbea\", 80, 80, 80, 200, 1, 40}") == 1);   // drill LIVE
 
     const std::string st = P5_slurp(src + "/src/ptx/ptx_quorum_store.cpp");
     BOOST_REQUIRE(!st.empty());
@@ -4061,6 +4070,73 @@ BOOST_AUTO_TEST_CASE(W4S_LineageScopedScan)
     BOOST_CHECK(PTX_Formation_QuorumIdleAt(S, tip, N, reader));
     blocks.clear();
     BOOST_CHECK(PTX_Formation_QuorumIdleAt(S, tip, N, reader));
+}
+
+// ===========================================================================
+// W2.5a P1 — THE PARAMS DECOUPLE (KDD-079).  Two rows, both proving the
+// SPLIT's load-bearing halves at DIVERGENT values (B != R), which is the only
+// regime where the conflation is observable.
+// ===========================================================================
+
+// ★★ P1a — THE FOURTH-CONFLATION FIX.  ForcedReformGraceElapsed takes TWO
+// intervals: boundary_interval steps back over boundaries, rotation_interval
+// tests due-ness.  With ONE param serving both (the pre-fix form) the due-test
+// runs against the BOUNDARY cadence, so at B=30/R=1440 a quorum only 30 blocks
+// old reads as "due" and forced-reform trips wildly early.
+// ★ A DEFECT FIX, not a rename — and the conflation had propagated INTO this
+// function (written at W2.4 W4-d) because there was only one param to pass.
+// RED: pass boundary_interval for BOTH (the pre-fix single-param form) -> the
+// young quorum reads due -> grace elapses -> this row fails.
+BOOST_AUTO_TEST_CASE(P1a_GraceUsesRotationIntervalForDueness)
+{
+    const int B = 30, R = 1440;
+    std::vector<CBlockIndex> chain = W4dChain(3000);
+    const CBlockIndex* anchor = &chain[3000];
+    auto alwaysImpossible = [](const CBlockIndex*) { return true; };
+
+    // A YOUNG quorum: formed 60 blocks ago — older than TWO boundaries (B=30)
+    // but far younger than the rotation interval (R=1440).  It is NOT due.
+    CPTXQuorumRecord young;
+    young.formation_height = 2940;
+
+    BOOST_CHECK_MESSAGE(
+        !PTX_Formation_ForcedReformGraceElapsed(young, anchor, B, R, 2, alwaysImpossible),
+        "a 60-block-old quorum is NOT rotation-due at R=1440 - grace must test "
+        "due-ness against nRotationInterval, never the boundary cadence");
+
+    // An OLD quorum (formed 2000 blocks ago) IS due at both of the last two
+    // boundaries -> grace elapses.  Proves the row is not vacuously false.
+    CPTXQuorumRecord old_q;
+    old_q.formation_height = 1000;
+    BOOST_CHECK(PTX_Formation_ForcedReformGraceElapsed(old_q, anchor, B, R, 2, alwaysImpossible));
+}
+
+// ★ P1b — GUARD 3, THE SEAM GUARD.  The ODC-050 stall-out budget must track
+// nCeremonyBudget, NEVER the boundary cadence: a healthy ceremony spans ~27
+// blocks (drill: formation 1120 -> connect 1147), so a 30-block boundary
+// interval used as the budget would abort it mid-flight — the split breaking a
+// shipped safety mechanism the moment it lands.
+// RED: set max_span from the BOUNDARY interval (30) instead of the budget (80)
+// -> the healthy ceremony aborts -> this row fails.
+BOOST_AUTO_TEST_CASE(P1b_StallOutUsesCeremonyBudgetNotBoundary)
+{
+    const int B = 30, BUDGET = 80;
+    // A ceremony still in a windowed phase 40 blocks in: past the BOUNDARY
+    // interval, well inside the BUDGET.  It must NOT be stalled out.
+    BOOST_CHECK_MESSAGE(40 < BUDGET,
+        "a 40-block-old ceremony is inside the budget - must not stall out");
+    // And the boundary interval, if wrongly used, WOULD have stalled it: the
+    // arithmetic that makes Guard 3 load-bearing.
+    BOOST_CHECK_MESSAGE(40 >= B,
+        "the same ceremony IS past the boundary interval - which is exactly why "
+        "the stall-out must not read the boundary cadence (KDD-079 Guard 3)");
+    // The production wiring reads the budget, not the cadence.
+    const std::string src = PTX_SRCDIR;
+    BOOST_REQUIRE(!src.empty());
+    const std::string form = P5_slurp(src + "/src/ptx/ptx_formation.cpp");
+    BOOST_REQUIRE(!form.empty());
+    BOOST_CHECK(P5_count(form, "max_span = Params().GetConsensus().ptxFormation.nCeremonyBudget") == 1);
+    BOOST_CHECK(P5_count(form, "max_span = Params().GetConsensus().ptxFormation.nBoundaryInterval") == 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

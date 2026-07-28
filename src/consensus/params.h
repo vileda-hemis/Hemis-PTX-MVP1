@@ -185,7 +185,34 @@ struct PTXFormationParams {
     // (handover-at-accept keeps rotation available across boundaries, KDD-063);
     // it must exceed the ceremony floor M (~47 blocks) so a new boundary
     // cannot fire before the prior ceremony completes.
-    int nFormationInterval;
+    // ★ W2.5a (KDD-079) — THE DECOUPLE.  This was ONE field doing THREE
+    // semantically distinct jobs; they were numerically identical only
+    // because there was one knob, and that conflation is what produced the
+    // "53,000-block pile-up" the W2.5 recon computed (boundary cadence and
+    // rotation interval are NOT the same quantity).  It also propagated INTO
+    // new code: PTX_Formation_ForcedReformGraceElapsed used the single param
+    // for both its boundary-step and its due-test, which is a defect at
+    // divergent values (see its two-parameter signature).
+    //
+    // ★ DEFAULTS PRESERVE L=1 BEHAVIOUR: all three default to the old
+    // nFormationInterval value, so behaviour is byte-identical until a
+    // multi-quorum config sets them apart (the P-b3b param-gate idiom — the
+    // split needs no gate of its own).
+    //
+    // The boundary cadence: V11's `height % N == 0` (inherited through
+    // PTX_Formation_IsBoundary — the single consensus dependency) and the
+    // fresh-formation schedule.  Staggering emerges from P-b6b's lowest-hash
+    // tie-break at this cadence, which is why no drift producer is needed.
+    int nBoundaryInterval;
+    // The rotation AGE test only: a quorum is due once this many blocks have
+    // elapsed since its own formation anchor.  KDD-045's key-compromise
+    // window is bounded by THIS, not by the boundary cadence.
+    int nRotationInterval;
+    // The ODC-050 ceremony stall-out budget only.  ★ MUST NOT track the
+    // boundary cadence: a ~27-block ceremony (drill: formation 1120 ->
+    // connect 1147) under a 30-block boundary interval would be aborted
+    // mid-flight by its own safety mechanism.
+    int nCeremonyBudget;
 
     // ------------------------------------------------------------------
     // W2.4 W4-e (KDD-074/075/076) — THE TERMINAL-ELIGIBILITY GATE.

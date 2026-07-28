@@ -99,7 +99,7 @@ struct PTXCeremonyDeadlines {
     // boundary is definitionally stale.
     //
     // Default 80 = the dev-chain interval; production overwrites it from
-    // params.nFormationInterval at the call site.  Non-positive disables
+    // params.nCeremonyBudget at the call site (KDD-079 Guard 3).  Non-positive disables
     // (harness rows that want the pre-S1 hang behaviour say so explicitly).
     int max_span     = 80;
     // Formation-relative height offset at which phase p's window ENDS (the
