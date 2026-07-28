@@ -199,6 +199,59 @@ BOOST_AUTO_TEST_CASE(kdd040_active_members_excluded)
 }
 
 // ---------------------------------------------------------------------------
+// Row (d') unit: KDD-040 UNION-exclusion at L>1 (the W2.5 relaxation row).
+// Row (d) proved the exclusion for ONE ACTIVE record; BuildPool loops ALL
+// records, and the multi-quorum posture (KDD-079, L_max = pool/11) makes
+// that union the load-bearing shape.  33 GMs, two disjoint ACTIVE 11s ->
+// the pool is EXACTLY the remaining 11 and a third draw re-selects nobody.
+// RED (inversion: truncate the union to the first record — a break after
+// BuildPool's first record iteration): the second record's members leak
+// into the pool (22, not 11) and the third draw re-selects active members
+// -> this row fails on both counts while row (d) stays green (one record —
+// single-row attribution).
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(kdd040_multi_record_union_excluded)
+{
+    CDeterministicGMList list = BuildList(33);
+
+    // Two disjoint ACTIVE quorums, built the way successive boundaries build
+    // them under the exclusion: the second is drawn from the first's
+    // complement.
+    auto firstQuorum = PTX_DKG_SelectQuorumFromList(list, AnchorHash());
+    BOOST_REQUIRE_EQUAL(firstQuorum.size(), 11u);
+    CPTXQuorumRecord activeA = MakeActiveRecord(firstQuorum);
+
+    CDeterministicGMList poolAfterA = PTX_Formation_BuildPool(list, {activeA});
+    BOOST_REQUIRE_EQUAL(poolAfterA.GetValidGMsCount(), 22u);
+    auto secondQuorum = PTX_DKG_SelectQuorumFromList(poolAfterA, Bytes32(0xB0, 0x02));
+    BOOST_REQUIRE_EQUAL(secondQuorum.size(), 11u);
+    CPTXQuorumRecord activeB = MakeActiveRecord(secondQuorum);
+
+    std::set<uint256> unionSet;
+    for (const auto& d : firstQuorum)  unionSet.insert(d->proTxHash);
+    for (const auto& d : secondQuorum) unionSet.insert(d->proTxHash);
+    BOOST_REQUIRE_EQUAL(unionSet.size(), 22u);   // genuinely disjoint records
+
+    // THE ROW: pool = eligible minus the UNION of both records' members —
+    // exactly the other 11 (33 - 22), none of them active anywhere.
+    CDeterministicGMList pool = PTX_Formation_BuildPool(list, {activeA, activeB});
+    BOOST_CHECK_EQUAL(pool.GetValidGMsCount(), 11u);
+    pool.ForEachGM(true, [&](const CDeterministicGMCPtr& dgm) {
+        BOOST_CHECK_MESSAGE(unionSet.count(dgm->proTxHash) == 0,
+                            "a member of an ACTIVE record leaked into the pool at L=2");
+    });
+
+    // The L=3 draw: selects the exact complement as a set (33 = 3 x 11),
+    // re-selecting no member of either ACTIVE record.
+    auto third = PTX_DKG_SelectQuorumFromList(pool, Bytes32(0xB0, 0x03));
+    BOOST_REQUIRE_EQUAL(third.size(), 11u);
+    for (const auto& d : third)
+        BOOST_CHECK_MESSAGE(unionSet.count(d->proTxHash) == 0,
+            "the L=3 draw re-selected a member of an ACTIVE quorum - the "
+            "union-exclusion is not covering every record");
+}
+
+// ---------------------------------------------------------------------------
 // Row (a) unit-constructed: anchor-list vs tip-list differ by one
 // post-anchor GM. Selection from the two lists DIFFERS — the divergence a
 // live-tip read would cause across nodes. (The source-stub RED cycle at the
