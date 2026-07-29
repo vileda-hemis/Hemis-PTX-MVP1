@@ -167,9 +167,27 @@ void BitcoinMiner(CWallet* pwallet, bool fProofOfStake)
         //
         unsigned int nTransactionsUpdatedLast = mempool.GetTransactionsUpdated();
 
-        std::unique_ptr<CBlockTemplate> pblocktemplate((fProofOfStake ?
-                                                        BlockAssembler(Params(), DEFAULT_PRINTPRIORITY).CreateNewBlock(CScript(), pwallet, true, &availableCoins) :
-                                                        CreateNewBlockWithKey(pReservekey, pwallet)));
+        // ★ BUG-022 (2026-07-29, found live on the N98 fleet): CreateNewBlock
+        // THROWS on TestBlockValidity failure (blockassembler.cpp), and the
+        // only catch is OUTSIDE this loop in ThreadStakeMinter — so ONE
+        // unbuildable candidate terminated the staker PERMANENTLY and, with a
+        // single producer, froze the whole chain (h719, a PTXPAYOUT whose
+        // input disagreed with the accumulator: every retry rebuilt the same
+        // candidate and re-killed the thread).  ★ A bad candidate must SKIP,
+        // never kill the producer — the fail-safe-becoming-fail-DEAD shape
+        // ODC-050 warned about, one layer up.  Catch here, log, and continue:
+        // the next iteration rebuilds from a fresh mempool/tip view.
+        std::unique_ptr<CBlockTemplate> pblocktemplate;
+        try {
+            pblocktemplate = (fProofOfStake ?
+                              BlockAssembler(Params(), DEFAULT_PRINTPRIORITY).CreateNewBlock(CScript(), pwallet, true, &availableCoins) :
+                              CreateNewBlockWithKey(pReservekey, pwallet));
+        } catch (const std::exception& e) {
+            LogPrintf("%s: block-template construction FAILED (%s) - skipping this "
+                      "candidate, producer stays alive (BUG-022)\n", __func__, e.what());
+            MilliSleep(1000); // do not hot-spin on a deterministically bad candidate
+            continue;
+        }
         if (!pblocktemplate) continue;
         std::shared_ptr<CBlock> pblock = std::make_shared<CBlock>(pblocktemplate->block);
 
