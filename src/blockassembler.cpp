@@ -253,8 +253,33 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
             currentAccumValue    = coalesceTx->vout[0].nValue;
         }
 
+        // ★ BUG-022 (correctness half, found live at N98 h719/h720): the
+        // accumulator outpoint carried by LotteryState can be STALE — already
+        // spent in the UTXO set — under sustained roll demand.  Building a
+        // PTXPAYOUT that spends it yields a candidate that fails its own
+        // TestBlockValidity ("bad-txns-inputs-missingorspent"), and at a
+        // SETTLEMENT BOUNDARY that repeats every attempt: the chain cannot
+        // advance past that height at all (the fleet wedged for hours).
+        // ★ A PRODUCER MUST NEVER BUILD A TX IT CAN KNOW IS INVALID.  Verify
+        // the accumulator is a live UTXO first; if it is not, LOG LOUDLY and
+        // skip the payout for this block — the chain keeps moving and the
+        // desync is visible instead of fatal.  This does NOT explain or repair
+        // the desync (that root cause is separately owed) — it removes its
+        // ability to halt block production.
+        bool accumSpendable = !currentAccumOutpoint.IsNull();
+        if (accumSpendable) {
+            CCoinsViewCache viewAccum(pcoinsTip.get());
+            if (!viewAccum.HaveCoin(currentAccumOutpoint)) {
+                accumSpendable = false;
+                LogPrintf("PTX WARNING: accumulator outpoint %s:%d is NOT a live UTXO at h=%d "
+                          "- SKIPPING PTXPAYOUT this block (LotteryState/UTXO desync, BUG-022). "
+                          "Block production continues; the desync is owed a root-cause fix.\n",
+                          currentAccumOutpoint.hash.ToString(), (int)currentAccumOutpoint.n, nHeight);
+            }
+        }
+
         // PTXPAYOUT: generated at settlement boundaries when eligible winner exists.
-        if (nHeight % Params().PTXSettlementWindow() == 0 &&
+        if (nHeight % Params().PTXSettlementWindow() == 0 && accumSpendable &&
             !currentAccumOutpoint.IsNull()) {
             LotteryState tempLs = GetLotteryState();
             tempLs.accumulator_outpoint = currentAccumOutpoint;
