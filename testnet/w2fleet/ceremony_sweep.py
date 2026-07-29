@@ -173,7 +173,7 @@ def main():
         h = heights.get(i)
         if s["done"]:
             state = "DONE gpk=%s.." % s["done"][:16]
-            done[i] = s["done"]
+            done[i] = (s["q"], s["done"])   # (quorum, key): convergence is per-quorum (L>1)
         elif s["aborted"]:
             state = "ABORTED"
             aborted[i] = True
@@ -200,19 +200,30 @@ def main():
         print("        pairs: STARTED=%d EXITED=%d mconnSET=%d mconnREMOVED=%d"
               % (v.n_started, v.n_exited, v.n_set, v.n_removed))
 
-    keys = defaultdict(list)
-    for i, k in done.items():
-        keys[k].append(i)
-    print("--- CONVERGENCE:")
+    # ★ L>1 (W2.5b): convergence is judged PER QUORUM — different quorums
+    # MUST carry different group_pks (a shared key across quorums would be the
+    # actual catastrophe).  The old fleet-pooled check flagged PARTIAL-
+    # DIVERGENCE the moment a SECOND quorum completed (first tripped at L=2,
+    # quorums 086f360c/1eaed663 — both internally 11/11-identical).
+    # Divergence is only real WITHIN one quorum.
+    perq = defaultdict(lambda: defaultdict(list))   # quorum -> gpk -> [nodes]
+    for i, (q, k) in done.items():
+        perq[q][k].append(i)
+    diverged = False
+    print("--- CONVERGENCE (per quorum):")
     if not done:
         print("  NO node reached DONE.")
-    elif len(keys) == 1:
-        k = next(iter(keys))
-        print("  CONVERGED: %d/%d DONE on ONE group_pk=%s" % (len(done), len(members), k[:24] + ".."))
-    else:
-        print("  ★ PARTIAL-DIVERGENCE DETECTED — %d distinct group_pk among DONE nodes:" % len(keys))
-        for k, ns in keys.items():
-            print("      %s.. : gm%s" % (k[:24], ",".join("%02d" % i for i in ns)))
+    for q, keys in sorted(perq.items()):
+        if len(keys) == 1:
+            k, ns = next(iter(keys.items()))
+            print("  q=%s.. CONVERGED: %d DONE on ONE group_pk=%s.."
+                  % (q[:12], len(ns), k[:24]))
+        else:
+            diverged = True
+            print("  ★ q=%s.. PARTIAL-DIVERGENCE — %d distinct group_pk WITHIN one quorum:"
+                  % (q[:12], len(keys)))
+            for k, ns in keys.items():
+                print("      %s.. : gm%s" % (k[:24], ",".join("%02d" % i for i in ns)))
     if aborted:
         print("  ABORTED: gm%s (fail-safe; >=6 CONVERGED still valid)"
               % ",".join("%02d" % i for i in sorted(aborted)))
@@ -232,7 +243,7 @@ def main():
               % ",".join("%02d" % i for i in sorted(leaks)))
 
     # exit code: 0 converged-clean; 1 no-done; 2 divergence/stall/dark/leak
-    if done and len(keys) == 1 and not stuck and not dark and not leaks:
+    if done and not diverged and not stuck and not dark and not leaks:
         sys.exit(0)
     sys.exit(1 if not done else 2)
 
