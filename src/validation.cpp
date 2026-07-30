@@ -50,6 +50,7 @@
 #include "warnings.h"
 #include "zpiv/zpivmodule.h"
 #include "ptx/ptx_accum_script.h"
+#include "ptx/ptx_lottery_state.h"
 
 #include <future>
 
@@ -3736,6 +3737,23 @@ bool CVerifyDB::VerifyDB(CCoinsView* coinsview, int nCheckLevel, int nCheckDepth
 
     // begin tx and let it rollback
     auto dbTx = evoDb->BeginTransaction();
+
+    // BUG-023: the level-3 walk below runs the REAL DisconnectBlock, whose
+    // UndoSpecialTxsInBlock assigns the in-memory LotteryState global — state
+    // outside BOTH sandboxes protecting this dry run (the throwaway coins
+    // cache and the evoDb transaction above, which rolls back on scope exit).
+    // Level 3 never reconnects and nothing reloads afterwards, so without a
+    // restore every startup with a PTXCOALESCE inside the -checkblocks window
+    // left the live state regressed to the pre-window snapshot (the h720
+    // fleet wedge).  Save/restore so verification leaves in-memory state
+    // exactly as found — init and the verifychain RPC both reach this.
+    // Destroyed before the LOCK above releases, so the cs_main requirement
+    // on GetLotteryState() holds in the destructor.
+    struct LotteryStateSentry {
+        LotteryState saved;
+        LotteryStateSentry() EXCLUSIVE_LOCKS_REQUIRED(cs_main) { saved = GetLotteryState(); }
+        ~LotteryStateSentry() { GetLotteryState() = saved; }
+    } lotteryStateSentry;
 
     // Verify blocks in the best chain
     if (nCheckDepth <= 0)
