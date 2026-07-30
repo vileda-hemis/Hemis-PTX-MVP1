@@ -1198,6 +1198,8 @@ bool CheckAndApplyPTXPayout(const CBlock& block,
                              const CBlockIndex* pindex,
                              const CDeterministicGMList& gmList,
                              const PTXPoSeTracker& poseTracker,
+                             const COutPoint& effAccumOutpoint,
+                             CAmount effAccumValue,
                              CValidationState& state,
                              bool fJustCheck)
 {
@@ -1216,9 +1218,10 @@ bool CheckAndApplyPTXPayout(const CBlock& block,
         // §5.4 rollover (no eligible GMs) is the only legitimate reason to omit PTXPAYOUT.
         if (pindex != nullptr && pindex->pprev != nullptr &&
             pindex->nHeight % Params().PTXSettlementWindow() == 0) {
-            const LotteryState& ls = GetLotteryState();
-            if (!ls.accumulator_outpoint.IsNull() &&
-                ls.accumulator_value >= Params().PTXPayoutMinerFee()) {
+            // BUG-024: P11 judges the EFFECTIVE accumulator, not the raw global —
+            // a boundary block that coalesces first still owes a payout.
+            if (!effAccumOutpoint.IsNull() &&
+                effAccumValue >= Params().PTXPayoutMinerFee()) {
                 const uint256 entropy = PTX_ComputeSelectionEntropy(
                     pindex->nHeight, pindex->pprev->GetBlockHash());
                 if (PTX_SelectWinner(gmList, poseTracker, entropy)) {
@@ -1236,28 +1239,29 @@ bool CheckAndApplyPTXPayout(const CBlock& block,
         return true;
     }
 
-    const LotteryState& ls = GetLotteryState();
-
-    // P2: input must spend the current accumulator UTXO.
-    if (payoutTx->vin[0].prevout != ls.accumulator_outpoint) {
+    // P2: input must spend the EFFECTIVE accumulator UTXO (BUG-024: the
+    // post-coalesce one when this block carries a coalesce — under fJustCheck
+    // the global has not been advanced, and reading it here made every
+    // coalesce+payout block unbuildable by its own producer).
+    if (payoutTx->vin[0].prevout != effAccumOutpoint) {
         return state.DoS(100, error("%s: PTXPAYOUT input %s:%u != accumulator %s:%u",
                                     __func__,
                                     payoutTx->vin[0].prevout.hash.GetHex(),
                                     payoutTx->vin[0].prevout.n,
-                                    ls.accumulator_outpoint.hash.GetHex(),
-                                    ls.accumulator_outpoint.n),
+                                    effAccumOutpoint.hash.GetHex(),
+                                    effAccumOutpoint.n),
                          REJECT_INVALID, "ptxpayout-wrong-input");
     }
 
-    // P5: output value must equal accumulator_value - nPTXPayoutMinerFee.
+    // P5: output value must equal the effective accumulator value - nPTXPayoutMinerFee.
     const CAmount minerFee    = Params().PTXPayoutMinerFee();
-    const CAmount expectedOut = ls.accumulator_value - minerFee;
+    const CAmount expectedOut = effAccumValue - minerFee;
     if (payoutTx->vout[0].nValue != expectedOut) {
         return state.DoS(100, error("%s: PTXPAYOUT output value %lld != expected %lld (accum=%lld fee=%lld)",
                                     __func__,
                                     (long long)payoutTx->vout[0].nValue,
                                     (long long)expectedOut,
-                                    (long long)ls.accumulator_value,
+                                    (long long)effAccumValue,
                                     (long long)minerFee),
                          REJECT_INVALID, "ptxpayout-wrong-output-value");
     }
@@ -1323,9 +1327,13 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
         return false;
     }
 
-    // PTXCOALESCE must be applied first so that LotteryState.accumulator_outpoint reflects
-    // the post-coalesce value when PTXPAYOUT P2 runs (§3.5 validation ordering).
-    if (!CheckAndApplyPTXCoalesce(block, pindex, state, fJustCheck)) {
+    // PTXCOALESCE must be checked first so the payout checks see the post-coalesce
+    // accumulator (§3.5 validation ordering).  BUG-024: the ordering alone only
+    // worked under !fJustCheck (apply mutates the global); the effective-accumulator
+    // pass-through below is what makes TestBlockValidity agree with connect.
+    COutPoint effAccumOutpoint;
+    CAmount effAccumValue{0};
+    if (!CheckAndApplyPTXCoalesce(block, pindex, state, fJustCheck, &effAccumOutpoint, &effAccumValue)) {
         return false;
     }
 
@@ -1370,7 +1378,8 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
     if (pindex->pprev != nullptr) {
         gmList = deterministicGMManager->GetListForBlock(pindex->pprev);
     }
-    if (!CheckAndApplyPTXPayout(block, pindex, gmList, g_ptx_pose_tracker, state, fJustCheck)) {
+    if (!CheckAndApplyPTXPayout(block, pindex, gmList, g_ptx_pose_tracker,
+                                effAccumOutpoint, effAccumValue, state, fJustCheck)) {
         return false;
     }
 
@@ -1403,7 +1412,9 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
 bool CheckAndApplyPTXCoalesce(const CBlock& block,
                               const CBlockIndex* pindex,
                               CValidationState& state,
-                              bool fJustCheck)
+                              bool fJustCheck,
+                              COutPoint* pEffAccumOutpoint,
+                              CAmount* pEffAccumValue)
 {
     AssertLockHeld(cs_main);
 
@@ -1456,6 +1467,13 @@ bool CheckAndApplyPTXCoalesce(const CBlock& block,
                              REJECT_INVALID, "ptxcoalesce-wrong-output-value");
         }
 
+        // BUG-024: export the effective post-coalesce accumulator under BOTH
+        // fJustCheck values — the payout checks that follow must see it even
+        // when the apply below is skipped, or a coalesce+payout block fails
+        // its own TestBlockValidity while connecting fine.
+        if (pEffAccumOutpoint) *pEffAccumOutpoint = COutPoint(coalesceTx->GetHash(), 0);
+        if (pEffAccumValue)    *pEffAccumValue    = expectedValue;
+
         if (!fJustCheck) {
             LotteryState& mls = GetLotteryState();
             mls.accumulator_outpoint = COutPoint(coalesceTx->GetHash(), 0);
@@ -1466,7 +1484,10 @@ bool CheckAndApplyPTXCoalesce(const CBlock& block,
             WriteLotteryStateSnapshotForBlock(pindex->GetBlockHash(), mls);
         }
     } else {
-        // No PTXCOALESCE: LotteryState unchanged.  Still write the post-block snapshot
+        // No PTXCOALESCE: the effective accumulator is the current one.
+        if (pEffAccumOutpoint) *pEffAccumOutpoint = GetLotteryState().accumulator_outpoint;
+        if (pEffAccumValue)    *pEffAccumValue    = GetLotteryState().accumulator_value;
+        // LotteryState unchanged.  Still write the post-block snapshot
         // so DisconnectBlock can always find a valid pprev snapshot.
         if (!fJustCheck) {
             WriteLotteryStateSnapshotForBlock(pindex->GetBlockHash(), GetLotteryState());

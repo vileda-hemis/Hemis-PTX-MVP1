@@ -175,7 +175,7 @@ BOOST_AUTO_TEST_CASE(Coalesce_LotteryStateUpdatedCorrectly)
         LOCK(cs_main);
         CValidationState state;
         BOOST_REQUIRE_MESSAGE(
-            CheckAndApplyPTXCoalesce(block, &idx, state, /*fJustCheck=*/false),
+            CheckAndApplyPTXCoalesce(block, &idx, state, /*fJustCheck=*/false, nullptr, nullptr),
             "CheckAndApplyPTXCoalesce failed: " + state.GetRejectReason());
     }
 
@@ -251,7 +251,7 @@ BOOST_AUTO_TEST_CASE(Coalesce_ReorgReversedCorrectly)
         LOCK(cs_main);
         CValidationState state;
         BOOST_REQUIRE_MESSAGE(
-            CheckAndApplyPTXCoalesce(block, &currIdx, state, /*fJustCheck=*/false),
+            CheckAndApplyPTXCoalesce(block, &currIdx, state, /*fJustCheck=*/false, nullptr, nullptr),
             "connect failed: " + state.GetRejectReason());
     }
 
@@ -343,7 +343,7 @@ BOOST_AUTO_TEST_CASE(Coalesce_GeneratedTxPassesStep6Rules)
 
         CValidationState stateStep7;
         BOOST_CHECK_MESSAGE(
-            CheckAndApplyPTXCoalesce(block, &idx, stateStep7, /*fJustCheck=*/true),
+            CheckAndApplyPTXCoalesce(block, &idx, stateStep7, /*fJustCheck=*/true, nullptr, nullptr),
             "CheckAndApplyPTXCoalesce rejected: " + stateStep7.GetRejectReason());
     }
 }

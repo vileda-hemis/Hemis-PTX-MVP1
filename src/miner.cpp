@@ -167,7 +167,10 @@ void BitcoinMiner(CWallet* pwallet, bool fProofOfStake)
         //
         unsigned int nTransactionsUpdatedLast = mempool.GetTransactionsUpdated();
 
-        // ★ BUG-022 (2026-07-29, found live on the N98 fleet): CreateNewBlock
+        // ★ BUG-024 (2026-07-29, found live on the N98 fleet; this comment and
+        // the commits 812c606/225d127/3b5d27b originally said "BUG-022", which
+        // the register had already assigned to the rpcevo lock-order inversion
+        // — relabelled here, see the BUG-023/024/025 register entry): CreateNewBlock
         // THROWS on TestBlockValidity failure (blockassembler.cpp), and the
         // only catch is OUTSIDE this loop in ThreadStakeMinter — so ONE
         // unbuildable candidate terminated the staker PERMANENTLY and, with a
@@ -184,7 +187,7 @@ void BitcoinMiner(CWallet* pwallet, bool fProofOfStake)
                               CreateNewBlockWithKey(pReservekey, pwallet));
         } catch (const std::exception& e) {
             LogPrintf("%s: block-template construction FAILED (%s) - skipping this "
-                      "candidate, producer stays alive (BUG-022)\n", __func__, e.what());
+                      "candidate, producer stays alive (BUG-024)\n", __func__, e.what());
             MilliSleep(1000); // do not hot-spin on a deterministically bad candidate
             continue;
         }

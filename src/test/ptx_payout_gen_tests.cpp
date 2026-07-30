@@ -13,6 +13,7 @@
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "ptx/ptx_accum_script.h"
+#include "ptx/ptx_coalesce.h"
 #include "ptx/ptx_lottery_state.h"
 #include "ptx/ptx_payout.h"
 #include "ptx/ptx_pose.h"
@@ -104,7 +105,12 @@ static std::string RunApplyPayout(const std::vector<CTransactionRef>& txs,
     dummyIndex.phashBlock = &blockHash;
     dummyIndex.pprev      = &dummyPrev;
 
-    if (CheckAndApplyPTXPayout(block, &dummyIndex, gmList, g_ptx_pose_tracker, state, fJustCheck)) return "";
+    // BUG-024: no coalesce in these harness blocks, so the effective accumulator
+    // is the current LotteryState (mirrors ProcessSpecialTxsInBlock's no-coalesce fill).
+    if (CheckAndApplyPTXPayout(block, &dummyIndex, gmList, g_ptx_pose_tracker,
+                               GetLotteryState().accumulator_outpoint,
+                               GetLotteryState().accumulator_value,
+                               state, fJustCheck)) return "";
     return state.GetRejectReason();
 }
 
@@ -358,6 +364,281 @@ BOOST_AUTO_TEST_CASE(Payout_LegitimateRolloverAccepted)
 
     // Block at settlement boundary, no PTXPAYOUT, no eligible winners → must accept.
     BOOST_CHECK_EQUAL(RunApplyPayout({}, emptyList, 0), "");
+}
+
+// ---------------------------------------------------------------------------
+// BUG-024: the fJustCheck coalesce→payout ordering asymmetry.
+//
+// A block carrying BOTH a PTXCOALESCE and a PTXPAYOUT spending the coalesce's
+// output (the assembler's product at any settlement boundary with pending
+// PTXSESS rolls) must validate IDENTICALLY under fJustCheck=true (TestBlockValidity)
+// and fJustCheck=false (connect).  Pre-fix, the coalesce check honoured
+// fJustCheck (no apply) while P2 read the raw global — so the producer's own
+// TestBlockValidity rejected every such block with ptxpayout-wrong-input while
+// connect would have accepted it: valid-on-connect, unbuildable-by-producer,
+// a structural liveness wedge at the first boundary × demand coincidence
+// (the h720 fleet wedge, 2026-07-29).
+// ---------------------------------------------------------------------------
+
+// Mirrors ProcessSpecialTxsInBlock's coalesce→payout EFFECTIVE-ACCUMULATOR
+// wiring — the coalesce check fills it, the payout check reads it — which is
+// the surface under test.  Like RunApplyPayout above, this harness does not
+// call the block-level rule helpers (P8/P9, CheckPTXCoalesceBlockRules); those
+// are covered by their own cases and are orthogonal to the fJustCheck
+// asymmetry being pinned here.
+static std::string RunCoalescePlusPayout(const std::vector<CTransactionRef>& txs,
+                                          const CDeterministicGMList&          gmList,
+                                          int                                  height,
+                                          bool                                 fJustCheck)
+{
+    LOCK(cs_main);
+    CBlock block;
+    block.vtx = txs;
+    CValidationState state;
+
+    uint256 prevBlockHash = uint256S("2222222222222222222222222222222222222222222222222222222222222222");
+    CBlockIndex dummyPrev;
+    dummyPrev.phashBlock = &prevBlockHash;
+
+    uint256 blockHash = uint256S("3333333333333333333333333333333333333333333333333333333333333333");
+    CBlockIndex dummyIndex;
+    dummyIndex.nHeight    = height;
+    dummyIndex.phashBlock = &blockHash;
+    dummyIndex.pprev      = &dummyPrev;
+
+    COutPoint effAccumOutpoint;
+    CAmount   effAccumValue{0};
+    if (!CheckAndApplyPTXCoalesce(block, &dummyIndex, state, fJustCheck,
+                                  &effAccumOutpoint, &effAccumValue))
+        return state.GetRejectReason();
+    if (!CheckAndApplyPTXPayout(block, &dummyIndex, gmList, g_ptx_pose_tracker,
+                                effAccumOutpoint, effAccumValue, state, fJustCheck))
+        return state.GetRejectReason();
+    return "";
+}
+
+// Build the boundary-with-demand block: coalesce rolling accumulator A forward,
+// payout spending the coalesce's own output.  Exactly what CreateNewBlock emits.
+static void SetupBug024State(const COutPoint& accumOp, CAmount accumValue,
+                              const std::string& suf,
+                              CDeterministicGMList& gmListOut,
+                              CTransactionRef& coalesceOut,
+                              CTransactionRef& payoutOut,
+                              int height)
+{
+    {
+        LOCK(cs_main);
+        GetLotteryState().Reset();
+        GetLotteryState().accumulator_outpoint = accumOp;
+        GetLotteryState().accumulator_value    = accumValue;
+    }
+    CScript script01 = MakeWinnerScript(0x24);
+    auto gm01 = MakeDGM("gm01:" + suf, script01,
+                         uint256S("2424242424242424242424242424242424242424242424242424242424242424"), 1);
+    gmListOut = MakeGMList({gm01});
+    PopulateTracker({{"gm01:" + suf, 5, true}});
+
+    coalesceOut = PTX_BuildCoalesceTx(accumOp, accumValue, {});
+
+    LotteryState tempLs;
+    {
+        LOCK(cs_main);
+        tempLs = GetLotteryState();
+    }
+    tempLs.accumulator_outpoint = COutPoint(coalesceOut->GetHash(), 0);
+    tempLs.accumulator_value    = coalesceOut->vout[0].nValue;
+
+    uint256 prevHash = uint256S("2222222222222222222222222222222222222222222222222222222222222222");
+    const Optional<CTransactionRef> payout = PTX_BuildPayoutTx(
+        tempLs, gmListOut, g_ptx_pose_tracker, height, prevHash);
+    BOOST_REQUIRE_MESSAGE(payout, "PTX_BuildPayoutTx returned nullopt in BUG-024 setup");
+    payoutOut = *payout;
+}
+
+// The fix: coalesce+payout validates under fJustCheck=true (TestBlockValidity path).
+BOOST_AUTO_TEST_CASE(Bug024_CoalescePlusPayout_AcceptsUnderJustCheck)
+{
+    const CAmount accumValue = 500000;
+    COutPoint accumOp(uint256S("a024a024a024a024a024a024a024a024a024a024a024a024a024a024a024a024"), 0);
+    CDeterministicGMList gmList;
+    CTransactionRef coalesceTx, payoutTx;
+    const int height = Params().PTXSettlementWindow();
+    SetupBug024State(accumOp, accumValue, "b0240001", gmList, coalesceTx, payoutTx, height);
+
+    BOOST_CHECK_EQUAL(RunCoalescePlusPayout({coalesceTx, payoutTx}, gmList, height,
+                                            /*fJustCheck=*/true), "");
+}
+
+// Connect parity control: the same block under fJustCheck=false also accepts,
+// and the apply advances the global to the coalesce's output.
+BOOST_AUTO_TEST_CASE(Bug024_CoalescePlusPayout_ConnectParity)
+{
+    const CAmount accumValue = 500000;
+    COutPoint accumOp(uint256S("a024a024a024a024a024a024a024a024a024a024a024a024a024a024a024a024"), 0);
+    CDeterministicGMList gmList;
+    CTransactionRef coalesceTx, payoutTx;
+    const int height = Params().PTXSettlementWindow();
+    SetupBug024State(accumOp, accumValue, "b0240002", gmList, coalesceTx, payoutTx, height);
+
+    BOOST_CHECK_EQUAL(RunCoalescePlusPayout({coalesceTx, payoutTx}, gmList, height,
+                                            /*fJustCheck=*/false), "");
+    LOCK(cs_main);
+    // Payout apply resets the accumulator (winner took it) — connect semantics.
+    BOOST_CHECK(GetLotteryState().accumulator_outpoint.IsNull());
+}
+
+// The hole, reproduced: feed the payout check the RAW GLOBAL (the pre-fix read)
+// instead of the effective accumulator → ptxpayout-wrong-input under fJustCheck.
+// If this limb ever stops failing-the-old-way, the scenario no longer
+// discriminates and the two limbs above prove nothing — keep all three.
+BOOST_AUTO_TEST_CASE(Bug024_RawGlobalRead_IsTheBug)
+{
+    const CAmount accumValue = 500000;
+    COutPoint accumOp(uint256S("a024a024a024a024a024a024a024a024a024a024a024a024a024a024a024a024"), 0);
+    CDeterministicGMList gmList;
+    CTransactionRef coalesceTx, payoutTx;
+    const int height = Params().PTXSettlementWindow();
+    SetupBug024State(accumOp, accumValue, "b0240003", gmList, coalesceTx, payoutTx, height);
+
+    LOCK(cs_main);
+    CBlock block;
+    block.vtx = {coalesceTx, payoutTx};
+    CValidationState state;
+    uint256 prevBlockHash = uint256S("2222222222222222222222222222222222222222222222222222222222222222");
+    CBlockIndex dummyPrev;  dummyPrev.phashBlock = &prevBlockHash;
+    uint256 blockHash = uint256S("3333333333333333333333333333333333333333333333333333333333333333");
+    CBlockIndex dummyIndex; dummyIndex.nHeight = height;
+    dummyIndex.phashBlock = &blockHash;  dummyIndex.pprev = &dummyPrev;
+
+    COutPoint effOp; CAmount effVal{0};
+    BOOST_REQUIRE(CheckAndApplyPTXCoalesce(block, &dummyIndex, state, /*fJustCheck=*/true,
+                                           &effOp, &effVal));
+    // Pre-fix behaviour: P2 against the un-advanced global.
+    BOOST_CHECK(!CheckAndApplyPTXPayout(block, &dummyIndex, gmList, g_ptx_pose_tracker,
+                                        GetLotteryState().accumulator_outpoint,
+                                        GetLotteryState().accumulator_value,
+                                        state, /*fJustCheck=*/true));
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "ptxpayout-wrong-input");
+}
+
+// Discrimination pin: the fix must NOT weaken P2 — a payout spending the STALE
+// pre-coalesce accumulator in a coalesce-carrying block still rejects, under
+// both fJustCheck values.
+BOOST_AUTO_TEST_CASE(Bug024_StalePayoutStillRejects)
+{
+    const CAmount accumValue = 500000;
+    COutPoint accumOp(uint256S("a024a024a024a024a024a024a024a024a024a024a024a024a024a024a024a024"), 0);
+    CDeterministicGMList gmList;
+    CTransactionRef coalesceTx, payoutTx;
+    const int height = Params().PTXSettlementWindow();
+    SetupBug024State(accumOp, accumValue, "b0240004", gmList, coalesceTx, payoutTx, height);
+
+    // Stale payout: built against the PRE-coalesce accumulator.
+    LotteryState staleLs;
+    {
+        LOCK(cs_main);
+        staleLs = GetLotteryState();
+    }
+    uint256 prevHash = uint256S("2222222222222222222222222222222222222222222222222222222222222222");
+    const Optional<CTransactionRef> stale = PTX_BuildPayoutTx(
+        staleLs, gmList, g_ptx_pose_tracker, height, prevHash);
+    BOOST_REQUIRE(stale);
+
+    BOOST_CHECK_EQUAL(RunCoalescePlusPayout({coalesceTx, *stale}, gmList, height,
+                                            /*fJustCheck=*/true), "ptxpayout-wrong-input");
+    BOOST_CHECK_EQUAL(RunCoalescePlusPayout({coalesceTx, *stale}, gmList, height,
+                                            /*fJustCheck=*/false), "ptxpayout-wrong-input");
+}
+
+// P11 reads the effective accumulator too: a boundary block that coalesces but
+// omits the owed payout rejects with missing-at-boundary under fJustCheck.
+BOOST_AUTO_TEST_CASE(Bug024_CoalesceWithoutPayout_StillOwesPayout)
+{
+    const CAmount accumValue = 500000;
+    COutPoint accumOp(uint256S("a024a024a024a024a024a024a024a024a024a024a024a024a024a024a024a024"), 0);
+    CDeterministicGMList gmList;
+    CTransactionRef coalesceTx, payoutTx;
+    const int height = Params().PTXSettlementWindow();
+    SetupBug024State(accumOp, accumValue, "b0240005", gmList, coalesceTx, payoutTx, height);
+
+    BOOST_CHECK_EQUAL(RunCoalescePlusPayout({coalesceTx}, gmList, height,
+                                            /*fJustCheck=*/true), "ptxpayout-missing-at-boundary");
+}
+
+// No-coalesce path: the effective accumulator degenerates to the current global
+// (the fill every payout-only block rides).
+BOOST_AUTO_TEST_CASE(Bug024_NoCoalesce_EffectiveIsGlobal)
+{
+    COutPoint accumOp(uint256S("a024a024a024a024a024a024a024a024a024a024a024a024a024a024a024a029"), 0);
+    {
+        LOCK(cs_main);
+        GetLotteryState().Reset();
+        GetLotteryState().accumulator_outpoint = accumOp;
+        GetLotteryState().accumulator_value    = 123456;
+    }
+    LOCK(cs_main);
+    CBlock block;  // empty — no coalesce
+    CValidationState state;
+    uint256 blockHash = uint256S("3333333333333333333333333333333333333333333333333333333333333333");
+    CBlockIndex idx; idx.nHeight = 5; idx.phashBlock = &blockHash; idx.pprev = nullptr;
+
+    COutPoint effOp; CAmount effVal{0};
+    BOOST_REQUIRE(CheckAndApplyPTXCoalesce(block, &idx, state, /*fJustCheck=*/true,
+                                           &effOp, &effVal));
+    BOOST_CHECK(effOp == accumOp);
+    BOOST_CHECK_EQUAL(effVal, 123456);
+}
+
+// ---------------------------------------------------------------------------
+// BUG-023 × BUG-024 COMPOSITION: the two defects sit at DIFFERENT layers, so
+// BUG-024's fix alone cannot rescue a node whose lottery state was clobbered.
+//
+// Sequence on the wedged fleet: h717 carried a PTXCOALESCE spending accumulator
+// A and producing B.  A restart then ran CVerifyDB's level-3 walk over the last
+// 6 blocks (717 ∈ window) and regressed the live global from B back to A —
+// BUG-023.  Every node then held A while the chain held B.
+//
+// This case pins what that regressed node does with a block a HEALTHY producer
+// builds (coalesce spending B, payout spending the coalesce's output): it is
+// rejected at the COALESCE check — before the payout checks BUG-024 repairs are
+// ever reached.  So the effective-accumulator fix is necessary but not
+// sufficient; the two fixes compose rather than overlap, and a fleet carrying
+// only BUG-024 would still have been wedged.  ★ This is also the reason the
+// 3b5d27b revert alone did not unwedge the fleet.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(Bug023x024_ClobberedGlobalRejectsAtCoalesceNotPayout)
+{
+    // B — the accumulator the healthy chain actually holds after h717.
+    const CAmount valueB = 500000;
+    COutPoint opB(uint256S("b023b023b023b023b023b023b023b023b023b023b023b023b023b023b023b023"), 0);
+    // A — the pre-coalesce accumulator a clobbered node regresses to.
+    COutPoint opA(uint256S("a023a023a023a023a023a023a023a023a023a023a023a023a023a023a023a023"), 0);
+
+    CDeterministicGMList gmList;
+    CTransactionRef coalesceTx, payoutTx;
+    const int height = Params().PTXSettlementWindow();
+
+    // Build the healthy producer's block against B.
+    SetupBug024State(opB, valueB, "b0230001", gmList, coalesceTx, payoutTx, height);
+
+    // Sanity: on a HEALTHY node (global == B) the block validates under
+    // fJustCheck — i.e. the only thing wrong below is the clobber.
+    BOOST_REQUIRE_EQUAL(RunCoalescePlusPayout({coalesceTx, payoutTx}, gmList, height,
+                                              /*fJustCheck=*/true), "");
+
+    // Now clobber: regress the live global to A, exactly as the VerifyDB walk did.
+    {
+        LOCK(cs_main);
+        GetLotteryState().accumulator_outpoint = opA;
+        GetLotteryState().accumulator_value    = valueB;
+    }
+
+    // The same, valid, block now fails — and it fails at the COALESCE input
+    // check, NOT at a payout check.  BUG-024's effective-accumulator threading
+    // is downstream of this and cannot help.
+    BOOST_CHECK_EQUAL(RunCoalescePlusPayout({coalesceTx, payoutTx}, gmList, height,
+                                            /*fJustCheck=*/true),
+                      "ptxcoalesce-wrong-input");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

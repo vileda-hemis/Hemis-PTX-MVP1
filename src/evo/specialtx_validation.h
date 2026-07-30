@@ -62,12 +62,20 @@ bool CheckPTXCoalesceBlockRules(const CBlock& block,
 // carries the correct accumulated value.  When !fJustCheck, updates the in-memory
 // LotteryState singleton and writes the post-block snapshot to evodb.
 //
+// BUG-024: pEffAccumOutpoint/pEffAccumValue (may be nullptr) receive the EFFECTIVE
+// post-block accumulator — the coalesce's output if the block carries one, the
+// current LotteryState otherwise — filled under BOTH fJustCheck values.  The payout
+// checks downstream must read this, not the raw global: under fJustCheck the apply
+// is skipped, and a coalesce+payout block must validate identically to connect.
+//
 // Called by ProcessSpecialTxsInBlock; exposed separately so unit tests can exercise
 // the Step 7 logic without invoking deterministicGMManager or llmq::quorumBlockProcessor.
 bool CheckAndApplyPTXCoalesce(const CBlock& block,
                               const CBlockIndex* pindex,
                               CValidationState& state,
-                              bool fJustCheck) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+                              bool fJustCheck,
+                              COutPoint* pEffAccumOutpoint,
+                              CAmount* pEffAccumValue) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
 // ODC-022 Step 8: block-level PTXPAYOUT count rule P8 (≤1 per block) and
 // settlement-boundary rule P9 (height % nPTXSettlementWindow == 0).
@@ -82,11 +90,20 @@ bool CheckPTXPayoutBlockRules(const CBlock& block,
 // hand-built fixtures without needing a live deterministicGMManager or chain.
 // When !fJustCheck, updates LotteryState and writes the post-block snapshot to evodb.
 //
+// BUG-024: effAccumOutpoint/effAccumValue are the EFFECTIVE accumulator from
+// CheckAndApplyPTXCoalesce — P2/P5/P11 evaluate against these, never the raw
+// global, so a block whose payout spends its own coalesce's output passes
+// TestBlockValidity exactly as it would connect (§3.5 ordering, both fJustCheck
+// values).  Callers without a coalesce in the block pass the current
+// LotteryState fields.
+//
 // Called by ProcessSpecialTxsInBlock; exposed separately for unit tests.
 bool CheckAndApplyPTXPayout(const CBlock& block,
                              const CBlockIndex* pindex,
                              const CDeterministicGMList& gmList,
                              const PTXPoSeTracker& poseTracker,
+                             const COutPoint& effAccumOutpoint,
+                             CAmount effAccumValue,
                              CValidationState& state,
                              bool fJustCheck) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 

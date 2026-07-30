@@ -124,7 +124,12 @@ static std::string RunApplyPayout(const std::vector<CTransactionRef>& txs,
     dummyIndex.phashBlock = &blockHash;
     dummyIndex.pprev      = &dummyPrev;
 
-    if (CheckAndApplyPTXPayout(block, &dummyIndex, gmList, g_ptx_pose_tracker, state, fJustCheck)) return "";
+    // BUG-024: no coalesce in these harness blocks, so the effective accumulator
+    // is the current LotteryState (mirrors ProcessSpecialTxsInBlock's no-coalesce fill).
+    if (CheckAndApplyPTXPayout(block, &dummyIndex, gmList, g_ptx_pose_tracker,
+                               GetLotteryState().accumulator_outpoint,
+                               GetLotteryState().accumulator_value,
+                               state, fJustCheck)) return "";
     return state.GetRejectReason();
 }
 
