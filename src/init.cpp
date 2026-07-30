@@ -1521,6 +1521,21 @@ bool AppInitMain()
                     break;
                 }
 
+                // BUG-025: PoSe state is consensus-affecting DERIVED state — it
+                // feeds PTXPAYOUT winner selection (P10/P11) — but it persists in
+                // a node-local file that a reindex never wiped (only evoDb is,
+                // via InitTierTwoPreChainLoad above).  A replay that inherits
+                // records accumulated at heights it has not reached yet judges
+                // committed blocks against the future: this forked a node at h480
+                // with ptxpayout-wrong-recipient against 88 stale records.
+                // Placed HERE deliberately — LoadBlockIndex has just settled
+                // fReindex from the on-disk flag as well as the command line, so
+                // an interrupted-and-resumed reindex is covered too, and it is
+                // still before ThreadImport replays any block.
+                if (fReindex || fReindexChainState) {
+                    g_ptx_pose_tracker.ResetForReindex();
+                }
+
                 // If the loaded chain has a wrong genesis, bail out immediately
                 // (we're likely using a testnet datadir, or the other way around).
                 if (!mapBlockIndex.empty() && !LookupBlockIndex(consensus.hashGenesisBlock)) {

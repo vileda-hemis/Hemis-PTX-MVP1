@@ -159,6 +159,31 @@ void PTXPoSeTracker::Save() const
     RenameOver(tmp_path, dat_path);
 }
 
+void PTXPoSeTracker::ResetForReindex()
+{
+    LOCK(cs_pose);
+
+    const size_t discarded = records_.size();
+    records_.clear();
+
+    fs::path dat_path = GetDataDir() / "ptx_pose.dat";
+    fs::path tmp_path = GetDataDir() / "ptx_pose.dat.tmp";
+    // Mirrors Load()'s contract: warn, never throw — a failure to remove must
+    // not abort init.  Note the in-memory clear above already guarantees the
+    // replay starts fresh even if the unlink fails.
+    try {
+        if (fs::exists(dat_path)) fs::remove(dat_path);
+        if (fs::exists(tmp_path)) fs::remove(tmp_path);
+    } catch (const std::exception& e) {
+        LogPrintf("PTX PoSe: WARNING: could not remove %s: %s\n", dat_path.string(), e.what());
+    }
+
+    LogPrintf("PTX PoSe: reindex in progress — discarded %u in-memory record(s) and removed %s "
+              "(BUG-025: PoSe is derived state; a replay must not inherit records from heights "
+              "it has not yet reached)\n",
+              (unsigned)discarded, dat_path.string());
+}
+
 void PTXPoSeTracker::Load()
 {
     LOCK(cs_pose);

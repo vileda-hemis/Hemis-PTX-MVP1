@@ -180,4 +180,82 @@ BOOST_AUTO_TEST_CASE(GmPose_PoseFieldsFromTracker)
     g_ptx_pose_tracker.AdvanceLotteryWindow();  // clean up
 }
 
+// ---------------------------------------------------------------------------
+// BUG-025: ptx_pose.dat is consensus-affecting DERIVED state that survived
+// -reindex.  PoSe feeds PTXPAYOUT winner selection (P10/P11), the file is
+// node-local and wall-clock-accumulated, it loads unconditionally at startup,
+// and -reindex wiped only evoDb.  A replay therefore inherited records from
+// heights it had not reached yet and judged committed blocks against the
+// future — gm01's reindex rejected committed h480 (ptxpayout-wrong-recipient)
+// against 88 stale records and forked at 479.
+//
+// Two cases: the inheritance MECHANISM (why the fix is needed) and the fix.
+// ---------------------------------------------------------------------------
+
+// Plant a ptx_pose.dat by hand, exactly as a pre-reindex run would have left it.
+static void PlantPoseFile(const std::string& nodeId, int poseScore, bool eligible)
+{
+    UniValue rec(UniValue::VOBJ);
+    rec.pushKV("node_id",         nodeId);
+    rec.pushKV("pose_score",      poseScore);
+    rec.pushKV("quorum_eligible", eligible);
+    rec.pushKV("lottery_tickets", 7);
+    rec.pushKV("window_zeroed",   false);
+    UniValue arr(UniValue::VARR);
+    arr.push_back(rec);
+    UniValue root(UniValue::VOBJ);
+    root.pushKV("records", arr);
+    const std::string json = root.write(2);
+
+    fs::path dat = GetDataDir() / "ptx_pose.dat";
+    FILE* f = fopen(dat.string().c_str(), "w");
+    BOOST_REQUIRE_MESSAGE(f != nullptr, "could not plant " + dat.string());
+    BOOST_REQUIRE_EQUAL(fwrite(json.data(), 1, json.size(), f), json.size());
+    fclose(f);
+}
+
+// The MECHANISM pin: a planted file really is inherited by Load(), and it
+// really does change an eligibility verdict that P10/P11 consult.  If this
+// ever stops holding, the fix below is guarding nothing and the pair is
+// vacuous — keep both.
+BOOST_AUTO_TEST_CASE(Bug025_StalePoseFileIsInherited)
+{
+    const std::string nid = "gm025:deadbeef";
+    PlantPoseFile(nid, /*poseScore=*/100, /*eligible=*/false);
+
+    g_ptx_pose_tracker.Load();
+
+    // The replay now believes this node is banned — on evidence it has not
+    // replayed yet.  This is the contamination, reproduced.
+    BOOST_CHECK(!g_ptx_pose_tracker.IsEligible(nid));
+    BOOST_CHECK_EQUAL(g_ptx_pose_tracker.GetRecord(nid).pose_score, 100);
+}
+
+// The FIX: ResetForReindex clears memory AND removes the file, so a replay
+// starts from the chain alone.
+BOOST_AUTO_TEST_CASE(Bug025_ResetForReindexClearsMemoryAndFile)
+{
+    const std::string nid = "gm025:feedface";
+    PlantPoseFile(nid, /*poseScore=*/100, /*eligible=*/false);
+    g_ptx_pose_tracker.Load();
+
+    // Preconditions: the contamination is present in BOTH places.
+    const fs::path dat = GetDataDir() / "ptx_pose.dat";
+    BOOST_REQUIRE(fs::exists(dat));
+    BOOST_REQUIRE(!g_ptx_pose_tracker.IsEligible(nid));
+
+    g_ptx_pose_tracker.ResetForReindex();
+
+    // In-memory cleared — the clear is what actually protects the replay,
+    // because the startup Load() runs before the reindex flags are known.
+    BOOST_CHECK(g_ptx_pose_tracker.GetAllRecords().empty());
+    BOOST_CHECK(g_ptx_pose_tracker.IsEligible(nid));   // unknown ⇒ eligible
+    // File removed — so a LATER restart cannot re-inherit it either.
+    BOOST_CHECK(!fs::exists(dat));
+
+    // And a fresh Load() over the removed file stays clean.
+    g_ptx_pose_tracker.Load();
+    BOOST_CHECK(g_ptx_pose_tracker.GetAllRecords().empty());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

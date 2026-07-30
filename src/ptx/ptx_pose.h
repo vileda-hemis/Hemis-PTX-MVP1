@@ -45,6 +45,16 @@ public:
     // Missing or corrupt file: log WARNING, start fresh (never crashes).
     void Load();
 
+    // BUG-025: discard all in-memory records AND remove the on-disk file.
+    // Called at startup when a reindex is under way.  PoSe feeds PTXPAYOUT
+    // winner selection (P10/P11), so it is consensus-affecting DERIVED state:
+    // a replay that inherits records accumulated at heights it has not reached
+    // yet judges committed blocks against the future and forks.  -reindex wipes
+    // evoDb but never touched this file, which is what forked a node at h480.
+    // Clears memory too — the load at startup happens before the reindex flags
+    // are known, so the file alone is not enough.  Never throws.
+    void ResetForReindex();
+
 private:
     mutable RecursiveMutex cs_pose;
     std::map<std::string, PTXNodeRecord> records_;
