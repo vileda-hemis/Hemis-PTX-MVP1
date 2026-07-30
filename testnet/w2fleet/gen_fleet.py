@@ -143,6 +143,7 @@ def caller_name(k, callers):
 
 
 def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser,
+                 caller_staking=0,
                  wire_operators=False, project=DEF_PROJECT, callers=1):
     lines = [HEADER.format(n=n, image=image, rpcuser=rpcuser, project=project)]
 
@@ -181,7 +182,7 @@ def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser,
       PTX_NODE_ID: ${{{cnid}:-{cname}}}
     command:
       - -externalip={cip}
-      - -staking=0
+      - -staking={caller_staking}
 """)
         for p in caller_peers:
             lines.append(f"      - -addnode={gm_ip(subnet_base, p)}\n")
@@ -255,6 +256,11 @@ def main():
     ap.add_argument("--project", default=DEF_PROJECT,
                     help="compose project + container/network prefix; use a distinct value "
                          "(e.g. bf) for a SECOND, isolated instance")
+    ap.add_argument("--caller-staking", type=int, default=0, choices=[0, 1],
+                    help="1 = callers STAKE (block-production de-concentration: "
+                         "N producers, so one staker dying DEGRADES rather than "
+                         "HALTS the chain - BUG-024 topology hardening). "
+                         "Default 0 preserves the drill-spare posture.")
     ap.add_argument("--callers", type=int, default=1,
                     help="caller count (1 = primary only; 2+ adds funded staking-off "
                          "spares for drill redundancy — a wedged primary restores, not re-bootstraps)")
@@ -293,7 +299,8 @@ def main():
         f.write(emit_compose(args.n, args.image, args.subnet_base,
                              args.port_base, args.data_root, args.rpcuser,
                              wire_operators=reg is not None, project=args.project,
-                             callers=args.callers))
+                             callers=args.callers,
+                             caller_staking=args.caller_staking))
 
     env_path = os.path.join(args.out, ".env")
     if os.path.exists(env_path):
