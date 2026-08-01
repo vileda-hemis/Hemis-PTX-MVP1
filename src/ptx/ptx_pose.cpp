@@ -3,9 +3,12 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <ptx/ptx_pose.h>
+#include <evo/evodb.h>
 #include <logging.h>
+#include <sync.h>
 #include <util/system.h>
 #include <univalue.h>
+#include <validation.h>
 
 #include <cstdio>
 #include <string>
@@ -254,4 +257,49 @@ void PTXPoSeTracker::Load()
         records_[r.node_id] = r;
     }
     LogPrintf("PTX PoSe: loaded %d records from %s\n", (int)records_.size(), dat_path.string());
+}
+
+// ── BUG-027 / ODC-056(c): per-block pose snapshots in evoDb ────────────────
+// Deliberate mirror of ptx_lottery_state.cpp. Key names follow the same
+// convention ("ls_S"/"ls_H" -> "ps_S"/"ps_H") so the two are recognisably one
+// pattern rather than two inventions.
+static const std::string DB_POSE_STATE_SNAP  = "ps_S";
+static const std::string DB_POSE_SNAP_HASHES = "ps_H";
+
+void WritePoseSnapshotForBlock(const uint256& blockHash,
+                               const std::map<std::string, PTXNodeRecord>& records)
+{
+    AssertLockHeld(cs_main);
+    evoDb->Write(std::make_pair(DB_POSE_STATE_SNAP, blockHash), records);
+
+    // Hash list drives PurgeStalePoseSnapshots — same bookkeeping LotteryState
+    // uses; without it the snapshots accumulate unbounded.
+    std::vector<uint256> hashes;
+    evoDb->Read(DB_POSE_SNAP_HASHES, hashes);
+    hashes.push_back(blockHash);
+    evoDb->Write(DB_POSE_SNAP_HASHES, hashes);
+}
+
+bool ReadPoseSnapshotForBlock(const uint256& blockHash,
+                              std::map<std::string, PTXNodeRecord>& recordsOut)
+{
+    return evoDb->Read(std::make_pair(DB_POSE_STATE_SNAP, blockHash), recordsOut);
+}
+
+void PurgeStalePoseSnapshots(int keepCount)
+{
+    std::vector<uint256> hashes;
+    if (!evoDb->Read(DB_POSE_SNAP_HASHES, hashes)) return;
+
+    int total = static_cast<int>(hashes.size());
+    if (total <= keepCount) return;
+
+    int eraseCount = total - keepCount;
+    for (int i = 0; i < eraseCount; i++) {
+        evoDb->Erase(std::make_pair(DB_POSE_STATE_SNAP, hashes[i]));
+    }
+    hashes.erase(hashes.begin(), hashes.begin() + eraseCount);
+    evoDb->Write(DB_POSE_SNAP_HASHES, hashes);
+
+    LogPrintf("PTX PoSe: purged %d stale snapshots, %d retained\n", eraseCount, keepCount);
 }

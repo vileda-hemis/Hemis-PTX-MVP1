@@ -220,11 +220,37 @@ BOOST_AUTO_TEST_CASE(Coalesce_ReorgReversedCorrectly)
         LOCK(cs_main);
         GetLotteryState().Reset();
         WriteLotteryStateSnapshotForBlock(prevHash, GetLotteryState());
+        // BUG-027 / ODC-056(c): UndoSpecialTxsInBlock now restores POSE from the
+        // pprev snapshot as well, and REFUSES the disconnect when that snapshot
+        // is absent (restoring a default map would silently zero every node's
+        // pose).  This fixture predates the pose arm, so it must supply the
+        // snapshot the production connect path now always writes.
+        WritePoseSnapshotForBlock(prevHash, g_ptx_pose_tracker.GetAllRecords());
     }
     const std::vector<uint8_t> preBlockBytes = [&]() {
         LOCK(cs_main);
         return SerializeState(GetLotteryState());
     }();
+
+    // ★ BUG-027 / ODC-056(c): assert POSE is reversed by the same disconnect,
+    // through the REAL UndoSpecialTxsInBlock path (the mechanism-level test
+    // lives in ptx_payout_gen_tests; this one proves the WIRING).  Credit pose
+    // after the pprev snapshot so the credits belong to the block being
+    // disconnected — pre-fix they survive the undo and pose grows every reorg.
+    auto poseTickets = []() {
+        int64_t t = 0;
+        for (const auto& kv : g_ptx_pose_tracker.GetAllRecords())
+            t += kv.second.lottery_tickets;
+        return t;
+    };
+    const int64_t prePoseTickets = poseTickets();
+    {
+        LOCK(cs_main);
+        g_ptx_pose_tracker.RecordHonestParticipation("bug027-reorg-a");
+        g_ptx_pose_tracker.RecordHonestParticipation("bug027-reorg-b");
+    }
+    BOOST_REQUIRE_MESSAGE(poseTickets() > prePoseTickets,
+                          "pose credit inert — the reorg assertion would pass vacuously");
 
     CMutableTransaction ptxsess = MakePTXSESS();
     const CTransaction  ptxsessTx(ptxsess);
@@ -275,6 +301,18 @@ BOOST_AUTO_TEST_CASE(Coalesce_ReorgReversedCorrectly)
         BOOST_CHECK(!GetLotteryState().HasAccumulator());
         BOOST_CHECK_EQUAL(GetLotteryState().accumulator_value, 0);
     }
+
+    // ★ BUG-027: pose must be back to its pre-block value too. Pre-fix this is
+    // the ONLY failing assertion in the test — LotteryState was already
+    // transactional and pose was not, which is precisely the asymmetry that let
+    // pose diverge across reorgs while the accumulator stayed correct on every
+    // node of the measured fleet.
+    BOOST_CHECK_MESSAGE(poseTickets() == prePoseTickets,
+                        "pose NOT reversed by disconnect: tickets " +
+                        std::to_string(poseTickets()) + " != pre-block " +
+                        std::to_string(prePoseTickets) +
+                        " — UndoSpecialTxsInBlock left the block's credits behind "
+                        "(ODC-056 leg 2, the monotonic-across-reorgs defect)");
 }
 
 // ---------------------------------------------------------------------------

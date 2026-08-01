@@ -654,6 +654,89 @@ BOOST_AUTO_TEST_CASE(Bug026_RestoreRecords_RoundTrips)
                         "carries the rejected block's credits (h480 partition shape)");
 }
 
+// ---------------------------------------------------------------------------
+// BUG-027 / ODC-056(c) — pose must be REVERSED on disconnect, not just on a
+// failed connect.
+//
+// BUG-026 [B] covered the block that FAILS to connect.  This covers the block
+// that connects SUCCESSFULLY and is later DISCONNECTED by a reorg — a path
+// [B]'s sentry never sees, because the sentry committed.  Before the fix,
+// UndoSpecialTxsInBlock restored LotteryState and touched pose nowhere, so
+// credits accumulated once per connect and were never removed: pose became
+// MONOTONIC across reorgs while the accumulator stayed transactional.
+//
+// MEASURED on the Phase-2 fleet (this is a regression test for an observed
+// failure, not a hypothetical): at total_rolls=2, expected tickets 11*2 = 22,
+// nodes read 22 / 33 / 44 / 88 strictly in proportion to their chain-switch
+// count — gm01 had 48 tip-height regressions and 88 tickets; gm03 had 14 and
+// 22.  Divergent pose picked a different settlement winner, rejecting the h300
+// boundary; and because wallet-less GMs cannot stake, the stranded nodes WERE
+// the producer set, fragmenting stake until the majority chain held 0.4% of
+// weight and the chain HALTED.
+//
+// THE ASSERTION IS THE INVARIANT, NOT THE SYMPTOM: after connect-then-
+// disconnect, pose must equal its pre-block value — NOT a value scaled by how
+// many times the block was connected.  The loop below connects and disconnects
+// the same credits repeatedly; a monotonic tracker grows every iteration.
+BOOST_AUTO_TEST_CASE(Bug027_PoseReversedOnDisconnect_NotMonotonicAcrossReorgs)
+{
+    CDeterministicGMList gmList;
+    std::vector<std::string> members;
+    SetupBug026Pose("b0270001", gmList, members);
+
+    auto ticketSum = [](const std::map<std::string, PTXNodeRecord>& m) {
+        int64_t t = 0;
+        for (const auto& kv : m) t += kv.second.lottery_tickets;
+        return t;
+    };
+
+    uint256 prevHash = uint256S("2727272727272727272727272727272727272727"
+                                "272727272727272727272727");
+    LOCK(cs_main);
+
+    // Pre-block state + the pprev snapshot the undo path reads.
+    const auto preRecords = g_ptx_pose_tracker.GetAllRecords();
+    const int64_t preTickets = ticketSum(preRecords);
+    WritePoseSnapshotForBlock(prevHash, preRecords);
+
+    // Round-trip the same block's credits several times. Each iteration is one
+    // connect + one disconnect — exactly what a chain switch does.
+    for (int round = 0; round < 4; ++round) {
+        for (const std::string& nid : members)
+            g_ptx_pose_tracker.RecordHonestParticipation(nid);
+
+        BOOST_REQUIRE_MESSAGE(
+            ticketSum(g_ptx_pose_tracker.GetAllRecords()) > preTickets,
+            "credit did not mutate pose — fixture is inert, the test would pass "
+            "vacuously");
+
+        // The undo arm under test: restore from the pprev snapshot.
+        std::map<std::string, PTXNodeRecord> restored;
+        BOOST_REQUIRE_MESSAGE(ReadPoseSnapshotForBlock(prevHash, restored),
+                              "pose snapshot missing for pprev — the connect path "
+                              "must write one for EVERY block or disconnect cannot "
+                              "restore");
+        g_ptx_pose_tracker.RestoreRecords(std::move(restored));
+
+        // ★ THE BUG-027 ASSERTION. Pre-fix this grows by |members| per round
+        // (22 -> 33 -> 44 -> ... the measured 88); post-fix it is invariant.
+        BOOST_CHECK_MESSAGE(
+            ticketSum(g_ptx_pose_tracker.GetAllRecords()) == preTickets,
+            "pose is MONOTONIC across reorg round " + std::to_string(round) +
+            ": tickets " +
+            std::to_string(ticketSum(g_ptx_pose_tracker.GetAllRecords())) +
+            " != pre-block " + std::to_string(preTickets) +
+            " — disconnect did not reverse the credits (ODC-056 leg 2)");
+    }
+
+    // Durability: the reversal must reach ptx_pose.dat, or it returns at restart
+    // — the same half BUG-026 [B] had to learn.
+    PTXPoSeTracker reloaded;
+    reloaded.Load();
+    BOOST_CHECK_MESSAGE(ticketSum(reloaded.GetAllRecords()) == preTickets,
+                        "reorg reversal did not reach ptx_pose.dat");
+}
+
 // The fix: coalesce+payout validates under fJustCheck=true (TestBlockValidity path).
 BOOST_AUTO_TEST_CASE(Bug024_CoalescePlusPayout_AcceptsUnderJustCheck)
 {

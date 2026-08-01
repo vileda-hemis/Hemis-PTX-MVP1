@@ -1459,6 +1459,21 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
         return false;
     }
 
+    // BUG-027 / ODC-056(c): snapshot the POST-BLOCK pose so DisconnectBlock can
+    // restore it, exactly as CheckAndApplyPTXCoalesce already does for
+    // LotteryState.  Written UNCONDITIONALLY on the accept path — even when this
+    // block credited no pose at all — because the undo reads the PPREV snapshot
+    // and a gap makes the predecessor unrestorable (the same reason the
+    // LotteryState "no PTXCOALESCE" arm still writes one).
+    // Placement is load-bearing: after the RecordHonestParticipation loop, so it
+    // captures the block's own credits, and before commit(), so a later failure
+    // still unwinds through the sentry rather than leaving a snapshot for a block
+    // that never connected.
+    if (!fJustCheck) {
+        WritePoseSnapshotForBlock(pindex->GetBlockHash(),
+                                  g_ptx_pose_tracker.GetAllRecords());
+    }
+
     // BUG-026 (B): the block is accepted — keep every mutation made above.
     // Reaching here is the ONLY path that disarms the rollback sentry.
     ptxStateSentry.commit();
@@ -1570,6 +1585,38 @@ bool UndoSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex)
             return false;
         }
         GetLotteryState() = prevState;
+    }
+
+    // ★ BUG-027 / ODC-056(c): restore POSE to the pre-block state too.
+    //
+    // THE DEFECT THIS CLOSES.  Until now this function restored LotteryState and
+    // said nothing about pose, so a disconnected block's
+    // RecordHonestParticipation credits were never removed — pose was MONOTONIC
+    // across reorgs while the accumulator was transactional.  Measured on the
+    // Phase-2 fleet at total_rolls=2 (expected 11*2 = 22 tickets): nodes read
+    // 22 / 33 / 44 / 88 strictly in proportion to their chain-switch count
+    // (gm01 48 tip regressions -> 88; gm03 14 -> 22).  Divergent pose selects a
+    // different settlement winner, so the h300 boundary was rejected fleet-wide
+    // by the contaminated nodes; and because wallet-less GMs cannot stake, the
+    // stranded nodes WERE the producer set, fragmenting stake until the majority
+    // chain held 0.4% of weight and stopped advancing.  A consensus defect became
+    // a chain HALT.
+    //
+    // Mirrors the LotteryState arm above in every respect, deliberately —
+    // including refusing the disconnect on a missing snapshot.  Restoring a
+    // default-constructed map instead would ZERO every node's pose and silently
+    // corrupt winner selection for the rest of the chain, which is strictly worse
+    // than declining to disconnect.
+    {
+        AssertLockHeld(cs_main);
+        assert(pindex->pprev != nullptr);
+        std::map<std::string, PTXNodeRecord> prevPose;
+        if (!ReadPoseSnapshotForBlock(pindex->pprev->GetBlockHash(), prevPose)) {
+            LogPrintf("%s: missing pose snapshot for %s — evodb integrity failure\n",
+                      __func__, pindex->pprev->GetBlockHash().ToString());
+            return false;
+        }
+        g_ptx_pose_tracker.RestoreRecords(std::move(prevPose));
     }
 
     // W2.1 C1: reverse of connect order — the PTXDKG quorum record is written

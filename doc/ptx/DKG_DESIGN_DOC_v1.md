@@ -2775,7 +2775,37 @@ W2.6's front question was never "how to build disband" but **"what is disband al
 
 > **ODC-057 (opened 2026-08-01) — should un-mined DKG commitments be PERSISTED?** The KDD-058-A store is **replication-only by deliberate design**, Dash-faithful: *"minableCommitments is memory+replication in the lineage; only MINED commitments hit disk."* Consequence: a **whole-network simultaneous restart loses un-mined entries** (single-node restarts re-learn from peers via inv; a fresh boundary re-forms). This is a **documented accepted trade, not a defect** — registered here so it is decided on its own merits rather than folded into the Phase-2 rebuild, where it would be a second moving variable against the like-for-like economics baseline. **Options:** (a) leave as-is, matching the lineage; (b) persist un-mined commitments with startup reconciliation; (c) shorten exposure by reducing FINALIZE→mined latency instead. ★ **Distinct from — and must not be conflated with —** the uncovered `PTX_DKG_Commitments_EraseMined` failed-connect leak noted in BUG-026 AMENDMENT (i): that is an in-memory rollback gap on the failure path (sentry extension, ~15 lines + a `GetAll` accessor); this is a durability question about the un-mined set across a total restart. Both touch the same store; neither closes the other. **Owed before mainnet; no decision taken here.**
 
-**Next-free: KDD-081 / ODC-058 / BUG-027.**
+**★ BUG-027 — POSE DIVERGENCE ACROSS REORGS HALTS A WALLET-LESS FLEET (opened 2026-08-01, measured on the Phase-2 rebuild).** Root cause is **ODC-056 leg (2)**, already registered and still open: `UndoSpecialTxsInBlock` (`specialtx_validation.cpp:1556`) restores `LotteryState` from its pprev evoDb snapshot, then undoes the quorum store, the DGM manager and LLMQ — and **touches pose nowhere** (verified: zero pose references in the whole function). `RecordHonestParticipation` credits at connect are therefore **never removed on disconnect**, so pose is monotonic across reorgs while the accumulator is not.
+
+**MEASURED EVIDENCE** (artifact: `w2-fleet/bug027-capture/bug027-evidence.json` + `growth.jsonl`; fleet held HALTED as a preserved exhibit). The invariant `pose_ticket_sum == 11 × total_rolls` holds on a clean node. On the rebuilt N98/8-caller fleet at `total_rolls = 2` (expected 22):
+
+| tickets | nodes | reading |
+|---|---|---|
+| 22 | 95 | clean — no chain switches |
+| 33 | caller4, caller6 | credited 1.5× |
+| 44 | caller5, caller7 | credited 2× |
+| 88 | gm01, gm02, gm24, gm49, gm50, gm73, gm98 | credited **4×** |
+
+Ticket count scales with chain-switch count, confirmed directly: **gm01 = 48 tip-height regressions / 88 tickets; gm03 = 14 regressions / 22 tickets.** ★ **The accumulator was CORRECT on all 106 nodes** (`rolls=2`, `pool=1.0`) — because `LotteryState` rides evoDb snapshot+undo and pose rides a flat file with neither. That asymmetry is the diagnosis, and it is why this is **NOT a BUG-026 regression**: BUG-026 [A] fixed within-node `fJustCheck` read-ordering and [B] fixed within-node failed-connect rollback; both demonstrably hold here. This is the **third axis** the BUG-026 commit explicitly carved out as not closed.
+
+**★ THE ESCALATION — a consensus defect becomes a LIVENESS failure.** Divergent pose selects a different settlement winner, so the h300 boundary block was rejected (`ptxpayout-wrong-recipient`, 11 nodes), stranding callers on **7 separate tips**. Under the wallet-less topology **the callers ARE the entire producer set** — the 98 GMs run `-disablewallet=1` and have no staker thread — so stranding the producers **fragmented the stake**:
+
+```
+MAJORITY tip (99 nodes, h319) — last block 20:57, static 48 min on a 60s chain
+TOTAL stakeable 122,357 HMS | ON THE MAJORITY TIP 505 HMS = 0.4%
+caller1 (treasury, 104,837 = 86% of stake) stranded off-tip at h313
+only caller3 (0.4%) producing on the chain 99 nodes agree on
+```
+
+The 99 nodes holding the majority chain **cannot extend it**, because 98 of them are structurally unable to stake. **CHAIN HALT.** This was impossible on the pre-Phase-2 topology, where gm01 held the stake *and* mined and so could never be stranded away from its own chain. Making GMs wallet-less is correct and stays — but it **couples the divergence-prone population to the producing population**, and that coupling converts a consensus-hygiene defect into a halt.
+
+**FIX = ODC-056 option (c)**, no longer "owed before mainnet" but **BLOCKING for any multi-producer (i.e. shipping) topology**: pose into evoDb with per-block snapshot + undo, mirroring `LotteryState`'s proven template (`ps_S`/`ps_H` keys; write at the same `!fJustCheck` points that already write the LotteryState snapshot; restore from the pprev snapshot as the FIRST act of `UndoSpecialTxsInBlock`; refuse-the-disconnect on a missing snapshot rather than restoring a default; `PurgeStaleSnapshots` analog). The flat file degrades to a cache, which also closes **ODC-056 leg (1)**. RED is measured, not reconstructed: the halted fleet itself is the failing case.
+
+> **★ ODC-058 (opened 2026-08-01) — LIVENESS COUPLING IS A PROPERTY OF THE WALLET-LESS TOPOLOGY, not of BUG-027.** Registered separately because it outlives its first instance. When GMs cannot stake, the producer set and the divergence-prone set are **the same population**, so *any* mechanism that strands producers on different chains — pose today; network partitions, latency asymmetry or ban-driven isolation in Phase 4 — fragments stake and can halt the chain, even when every individual node is behaving correctly. The old single-producer topology was immune by accident, not by design: one node held both the stake and the mining role. ★ **Consequence for Phase 4 (partition testing): a partition on this topology is not "diverge now, reconcile later" — it is a candidate HALT**, and the recovery question ("which chain accumulates enough stake to win?") has no good answer when stake is concentrated in a stranded node. Phase 4 planning must treat producer-stranding as a first-class failure mode and decide the intended mitigation (stake distribution policy? producer-side chain-preference rules? a liveness floor?) BEFORE running partitions. Not a defect row — a structural property of the chosen topology, recorded so it is designed for rather than rediscovered.
+
+> **LESSON (recorded because it cost ~48 minutes of misreading): a static readout on a chain that should be advancing is a HALT, not steady state.** The BUG-027 capture logged `h=319 … clean=95 contaminated=11 markers=68` unchanged for 48 minutes and it was reported as stable — every *derived* field was indeed stable, which is exactly what made it read as healthy. Height is the liveness signal and it must be judged against **elapsed wall-clock and the target block time**, never against its own previous sample. Monitors that surface derived state must surface *blocks-since-last-advance* alongside it, or a halted chain looks identical to a quiet one.
+
+**Next-free: KDD-081 / ODC-059 / BUG-028.**
 
 ---
 

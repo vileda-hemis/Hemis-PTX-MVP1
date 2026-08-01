@@ -9,13 +9,57 @@
 #include <string>
 #include <sync.h>
 
+#include "serialize.h"
+#include "uint256.h"
+
 struct PTXNodeRecord {
     std::string node_id;
     int  pose_score{0};
     bool quorum_eligible{true};
     int  lottery_tickets{0};
     bool window_zeroed{false};
+
+    // BUG-027 / ODC-056(c): binary serialization for the evoDb per-block
+    // snapshot.  The flat file uses UniValue JSON and stays that way — this is
+    // the evoDb representation, mirroring LastSettlement/LotteryState.
+    SERIALIZE_METHODS(PTXNodeRecord, obj) {
+        READWRITE(obj.node_id);
+        READWRITE(obj.pose_score);
+        READWRITE(obj.quorum_eligible);
+        READWRITE(obj.lottery_tickets);
+        READWRITE(obj.window_zeroed);
+    }
 };
+
+// ── BUG-027 / ODC-056(c): per-block pose snapshots in evoDb ────────────────
+//
+// WHY THIS EXISTS.  UndoSpecialTxsInBlock restored LotteryState from its pprev
+// snapshot but touched pose nowhere, so a disconnected block's
+// RecordHonestParticipation credits were never removed and pose grew monotonic
+// across reorgs.  Measured on the Phase-2 rebuild: with total_rolls=2 (expected
+// 11*2 = 22 tickets) nodes read 22 / 33 / 44 / 88 in proportion to how many
+// chain switches they had seen (gm01: 48 tip regressions -> 88 tickets; gm03:
+// 14 -> 22).  Divergent pose selects a different settlement winner, which
+// rejected the h300 boundary and — because wallet-less GMs cannot stake, so the
+// callers ARE the producer set — stranded the producers on 7 tips until the
+// majority chain held 0.4% of stake and HALTED.
+//
+// The accumulator never diverged, because it already had exactly this
+// mechanism.  These functions are a deliberate mirror of
+// ptx_lottery_state.{h,cpp}: same key shape, same hash-list for purging, same
+// refuse-on-missing posture at disconnect.  Kept as free functions (not
+// members) for the same reason LotteryState does: the evoDb dependency stays
+// out of the tracker class.
+void WritePoseSnapshotForBlock(const uint256& blockHash,
+                               const std::map<std::string, PTXNodeRecord>& records);
+
+// false when absent — the caller MUST treat that as an integrity failure and
+// refuse the disconnect rather than restoring a default-constructed map, which
+// would silently zero every node's pose.
+bool ReadPoseSnapshotForBlock(const uint256& blockHash,
+                              std::map<std::string, PTXNodeRecord>& recordsOut);
+
+void PurgeStalePoseSnapshots(int keepCount);
 
 class PTXPoSeTracker {
 public:
