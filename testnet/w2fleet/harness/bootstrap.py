@@ -79,6 +79,15 @@ GM_MIN_CONF = 1            # nGMCollateralMinConf (chainparams.cpp:875)
 REG_BATCH = 10             # confirm-every-K registration pacing (W2.0a plan §5)
 CALLER_SPLIT_AMOUNT = 2.0
 CALLER_SPLIT_COUNT = 500
+# ★ PRODUCER-SET STAKE (Phase 2).  Each NON-treasury caller gets its own
+# stakeable coin.  Sizes chosen so every producer carries real weight rather
+# than a token balance: staking probability is stake-weighted, so a producer
+# funded with dust is a producer on paper only.  Many mid-size UTXOs beat one
+# large one — each is an independent stake attempt, and nStakeMinDepth=20 /
+# nCoinbaseMaturity=10 (ptxbea) are both cleared long before the fleet reaches
+# its first settlement boundary.
+PRODUCER_UTXO_COUNT = 20
+PRODUCER_UTXO_AMOUNT = 500.0
 
 
 def wait_for_height(node: Node, target: int, timeout: int = 900) -> int:
@@ -131,6 +140,50 @@ def fund_caller(treasury: Node, caller: Node,
     wait_for_height(treasury, height + 1, timeout=900)
     wait_for_height(caller, height + 1, timeout=120)
     print(f"[bootstrap] caller funded: {len(caller.listunspent(1))} UTXOs")
+    return txid
+
+
+def fund_producer_set(treasury: Node, producers: List[Node],
+                      utxos: int = PRODUCER_UTXO_COUNT,
+                      amount: float = PRODUCER_UTXO_AMOUNT) -> Optional[str]:
+    """★ Fund every NON-treasury caller so the producer set is REAL.
+
+    THE FOOTGUN THIS CLOSES.  Before Phase 2 the recipe funded only the primary
+    caller, and that was harmless: 98 wallet-holding GMs could stake, so block
+    production never depended on callers.  Under wallet-less GMs no GM can
+    stake, so the callers ARE the producer set — and funding only caller1 leaves
+    a fleet that reports 8 producers and has ONE.  Observed exactly that on the
+    first Phase-2 rebuild: callers 2-8 at 0.0 HMS with -staking=1 inert, so a
+    single caller death would have halted the chain, with the compose and the
+    container list both claiming eight-way redundancy.
+
+    Funding is what ACTIVATES -staking=1; the flag alone does nothing. This step
+    is therefore not an optional extra — it is the second half of
+    `--caller-staking 1`, and gen_fleet's no-producer guard has a blind spot
+    without it (it can check the flag, not the balance).
+
+    No-op (returns None) when there is only a treasury, which keeps the
+    single-caller fixtures working unchanged.
+    """
+    others = [c for c in producers if c.name != treasury.name]
+    if not others:
+        print("[bootstrap] producer set = treasury only; no extra funding needed")
+        return None
+    amounts = {}
+    for c in others:
+        for _ in range(utxos):
+            amounts[c.getnewaddress()] = amount
+    total = len(amounts) * amount
+    print(f"[bootstrap] funding producer set: {len(others)} caller(s) x {utxos} "
+          f"x {amount} HMS = {total} HMS total")
+    txid = treasury.sendmany("", amounts)
+    height = treasury.getblockcount()
+    wait_for_height(treasury, height + 1, timeout=900)
+    for c in others:
+        wait_for_height(c, height + 1, timeout=300)
+    for c in others:
+        print(f"[bootstrap]   {c.name}: {len(c.listunspent(1))} UTXO(s), "
+              f"balance {c.getbalance()}")
     return txid
 
 
@@ -372,6 +425,12 @@ def bootstrap(cluster: W2Cluster,
 
     if fund_caller_utxos:
         fund_caller(treasury, caller, split_count=fund_caller_utxos)
+
+    # ★ Activate the rest of the producer set BEFORE registration, so their coin
+    # has the longest possible run-up to nStakeMinDepth=20 and they are eligible
+    # to produce by the time formation starts. Ordering matters: fund late and
+    # the fleet spends its first boundaries single-producer anyway.
+    fund_producer_set(treasury, cluster.callers)
 
     registration = register_gms(treasury, cluster, gm_labels)
 

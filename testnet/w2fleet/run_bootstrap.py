@@ -25,6 +25,10 @@ def main():
     ap.add_argument("--env", default="/mnt/pve/Node14TB/hemis-ptx/docker-w2/.env")
     ap.add_argument("--project", default="ptx-w2",
                     help="compose project (use e.g. bfleet for a 2nd isolated instance)")
+    ap.add_argument("--callers", type=int, default=1,
+                    help="caller count — MUST match gen_fleet's --callers. Under "
+                         "the wallet-less-GM topology the callers ARE the block "
+                         "producer set, so this also sizes producer-set funding.")
     ap.add_argument("--port-base", type=int, default=31000)
     ap.add_argument("--subnet-base", default="172.31.0")
     ap.add_argument("--fund-caller-utxos", type=int, default=500)
@@ -33,10 +37,12 @@ def main():
     args = ap.parse_args()
 
     c = W2Cluster(args.n, compose_file=args.compose, project=args.project,
-                  port_base=args.port_base, subnet_base=args.subnet_base)
+                  port_base=args.port_base, subnet_base=args.subnet_base,
+                  callers=args.callers)
     c.up()
     c.wait_ready()
-    print(f"[run] fleet up: {args.n} GMs + caller")
+    print(f"[run] fleet up: {args.n} GMs + {args.callers} caller(s) "
+          f"(producer set = callers; GMs are wallet-less)")
 
     reg = bs.bootstrap(c, env_path=args.env,
                        fund_caller_utxos=args.fund_caller_utxos)

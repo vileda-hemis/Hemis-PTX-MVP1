@@ -147,8 +147,10 @@ class W2Cluster:
                  host: str = _HOST,
                  port_base: int = 31000,
                  subnet_base: str = "172.31.0",
-                 project: str = PROJECT):
+                 project: str = PROJECT,
+                 callers: int = 1):
         self.n = n
+        self.n_callers = callers
         self.compose_file = compose_file
         self.rpc_user = rpc_user
         self.rpc_pass = rpc_pass
@@ -157,12 +159,30 @@ class W2Cluster:
         self.subnet_base = subnet_base
         self.project = project
 
-        self.caller = Node("caller", host, port_base, rpc_user, rpc_pass)
+        # ★ THE PRODUCER SET (Phase 2).  Under the wallet-less-GM topology the
+        # callers are not just demand generators and drill spares — they are the
+        # ENTIRE block-producing population, because no GM can stake.  The
+        # cluster therefore has to model all of them, not just the primary:
+        # modelling one caller is what let the fleet sit in a silent
+        # single-producer state (7 of 8 callers funded 0.0 HMS, -staking=1 inert)
+        # while the compose claimed 8 producers.
+        # Port allocation MIRRORS gen_fleet.py exactly — caller1 at port_base,
+        # caller_k>1 at port_base + n + (k-1). Keep the two in step.
+        self.callers = [
+            Node(f"caller{k}" if callers > 1 else "caller", host,
+                 port_base if k == 1 else port_base + n + (k - 1),
+                 rpc_user, rpc_pass)
+            for k in range(1, callers + 1)
+        ]
+        # Primary caller: the treasury and the harness's drive endpoint.
+        # `self.caller` kept as the long-standing name for it (back-compat with
+        # every recipe and battery that already says cluster.caller).
+        self.caller = self.callers[0]
         self.gms = [
             Node(f"gm{i:02d}", host, port_base + i, rpc_user, rpc_pass)
             for i in range(1, n + 1)
         ]
-        self.all_nodes = [self.caller] + self.gms
+        self.all_nodes = list(self.callers) + self.gms
         # ★ TREASURY (Phase 2, wallet-less-GM topology): the single wallet-
         # holding node that mines the PoW prefix, funds collateral, registers
         # every GM and holds the per-GM scriptPTXPayment addresses.  This was
