@@ -38,7 +38,17 @@ from harness.node import RPCError
 
 def topology_gate(cluster: W2Cluster) -> dict:
     subnet = cluster.subnet_base + "."
-    names_by_ip = {f"{cluster.subnet_base}.10": "caller"}
+    # ★ Caller IPs derived from cluster.callers, not hardcoded to one ".10 =
+    # caller".  Two bugs lived in that literal: it named the primary "caller"
+    # while a multi-caller cluster calls it "caller1" (the union-find is keyed
+    # by node NAME, so the mismatched edge raised KeyError and killed the gate),
+    # and it mapped only ONE caller, so callers 2..8 were invisible to the
+    # connectivity check — the fleet could have been split across them and this
+    # gate would still have passed.  Mirrors gen_fleet's allocator: caller_k
+    # sits at subnet.(10-(k-1)), walking DOWN from .10.
+    names_by_ip = {}
+    for k, nd in enumerate(cluster.callers, start=1):
+        names_by_ip[f"{cluster.subnet_base}.{10 - (k - 1)}"] = nd.name
     for i in range(1, cluster.n + 1):
         names_by_ip[f"{cluster.subnet_base}.{10+i}"] = f"gm{i:02d}"
 
