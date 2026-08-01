@@ -455,6 +455,205 @@ static void SetupBug024State(const COutPoint& accumOp, CAmount accumValue,
     payoutOut = *payout;
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// BUG-026 (A) — the POSE-axis fJustCheck asymmetry (the h420 fleet wedge).
+//
+// ProcessSpecialTxsInBlock used to credit RecordHonestParticipation for THIS
+// block's PTXSESS members BEFORE CheckAndApplyPTXPayout.  Under fJustCheck the
+// credit is skipped, so the assembler selected on pre-block pose while connect
+// selected on post-block pose: different winners, and every settlement boundary
+// carrying a roll self-rejected with ptxpayout-wrong-recipient.  The fix is
+// ordering — selection strictly precedes the mutation — so both paths read the
+// same state by construction.  These cases pin the SELECTION BASIS, which is
+// where the divergence actually lives.
+// ─────────────────────────────────────────────────────────────────────────
+
+// Build a multi-GM fixture whose winner is ticket-sensitive.
+static void SetupBug026Pose(const std::string& suf,
+                             CDeterministicGMList& gmListOut,
+                             std::vector<std::string>& memberIdsOut)
+{
+    std::vector<CDeterministicGMCPtr> gms;
+    memberIdsOut.clear();
+    for (int i = 0; i < 6; ++i) {
+        const std::string nid = strprintf("gm%02d:%s", i + 1, suf);
+        memberIdsOut.push_back(nid);
+        uint256 h; h.SetHex(strprintf("%064x", 0x26000 + i));
+        gms.push_back(MakeDGM(nid, MakeWinnerScript((uint8_t)(0x60 + i)), h, i + 1));
+    }
+    gmListOut = MakeGMList(gms);
+    std::vector<std::tuple<std::string, int, bool>> entries;
+    for (size_t i = 0; i < memberIdsOut.size(); ++i)
+        entries.emplace_back(memberIdsOut[i], (int)i + 1, true);   // 1..6 tickets
+    PopulateTracker(entries);
+}
+
+// MECHANISM PIN: crediting this block's own participants moves the winner.
+// total_tickets is PTX_SelectWinner's modulus, so the credit re-maps the
+// entropy — this is why the asymmetry is deterministic, not incidental.
+BOOST_AUTO_TEST_CASE(Bug026_PoseCreditMovesWinner_MechanismPin)
+{
+    CDeterministicGMList gmList;
+    std::vector<std::string> members;
+    SetupBug026Pose("b0260001", gmList, members);
+
+    const uint256 entropy = uint256S(
+        "5151515151515151515151515151515151515151515151515151515151515151");
+
+    const Optional<CScript> before = PTX_SelectWinner(gmList, g_ptx_pose_tracker, entropy);
+    BOOST_REQUIRE(before);
+
+    // Simulate the block's own PTXSESS crediting its quorum members.
+    for (const std::string& nid : members)
+        g_ptx_pose_tracker.RecordHonestParticipation(nid);
+
+    const Optional<CScript> after = PTX_SelectWinner(gmList, g_ptx_pose_tracker, entropy);
+    BOOST_REQUIRE(after);
+
+    // Same gmList, same entropy — only pose changed.  If this ever stops
+    // differing the scenario no longer discriminates and the two cases below
+    // prove nothing; pick different tickets/entropy rather than delete it.
+    BOOST_CHECK_MESSAGE(*before != *after,
+        "pose credit did not move the winner — fixture no longer discriminates");
+}
+
+// RED (the h420 wedge, reproduced): a payout built from PRE-block pose is
+// rejected when judged against POST-block pose — exactly ptxpayout-wrong-recipient.
+BOOST_AUTO_TEST_CASE(Bug026_PayoutBuiltPreBlock_RejectedAgainstPostBlockPose)
+{
+    CDeterministicGMList gmList;
+    std::vector<std::string> members;
+    SetupBug026Pose("b0260002", gmList, members);
+
+    const int height = Params().PTXSettlementWindow();
+    const uint256 prevHash = uint256S(
+        "2222222222222222222222222222222222222222222222222222222222222222");
+
+    LotteryState ls;
+    ls.Reset();
+    ls.accumulator_outpoint = COutPoint(uint256S(
+        "a026a026a026a026a026a026a026a026a026a026a026a026a026a026a026a026"), 0);
+    ls.accumulator_value = 500000;
+
+    // The ASSEMBLER builds against pre-block pose.
+    const Optional<CTransactionRef> payout =
+        PTX_BuildPayoutTx(ls, gmList, g_ptx_pose_tracker, height, prevHash);
+    BOOST_REQUIRE_MESSAGE(payout, "PTX_BuildPayoutTx returned nullopt in BUG-026 setup");
+
+    // Pre-fix connect ordering: credit this block's members FIRST...
+    for (const std::string& nid : members)
+        g_ptx_pose_tracker.RecordHonestParticipation(nid);
+
+    // ...then judge the payout.  This is the defect.
+    LOCK(cs_main);
+    GetLotteryState() = ls;
+    CBlock block; block.vtx = {*payout};
+    CValidationState state;
+    uint256 prevBlockHash = prevHash;
+    CBlockIndex dummyPrev; dummyPrev.phashBlock = &prevBlockHash;
+    uint256 blockHash = uint256S(
+        "3333333333333333333333333333333333333333333333333333333333333333");
+    CBlockIndex dummyIndex;
+    dummyIndex.nHeight = height;
+    dummyIndex.phashBlock = &blockHash;
+    dummyIndex.pprev = &dummyPrev;
+
+    const bool ok = CheckAndApplyPTXPayout(block, &dummyIndex, gmList, g_ptx_pose_tracker,
+                                           ls.accumulator_outpoint, ls.accumulator_value,
+                                           state, /*fJustCheck=*/true);
+    BOOST_CHECK_MESSAGE(!ok, "post-block pose accepted a pre-block payout — "
+                             "fixture no longer reproduces the h420 wedge");
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "ptxpayout-wrong-recipient");
+}
+
+// GREEN (what the fix guarantees by ordering): the SAME payout is accepted when
+// judged against the pre-block pose the assembler used.  Selection basis is the
+// only variable between this case and the one above.
+BOOST_AUTO_TEST_CASE(Bug026_PayoutBuiltPreBlock_AcceptsAgainstPreBlockPose)
+{
+    CDeterministicGMList gmList;
+    std::vector<std::string> members;
+    SetupBug026Pose("b0260003", gmList, members);
+
+    const int height = Params().PTXSettlementWindow();
+    const uint256 prevHash = uint256S(
+        "2222222222222222222222222222222222222222222222222222222222222222");
+
+    LotteryState ls;
+    ls.Reset();
+    ls.accumulator_outpoint = COutPoint(uint256S(
+        "a026a026a026a026a026a026a026a026a026a026a026a026a026a026a026a026"), 0);
+    ls.accumulator_value = 500000;
+
+    const Optional<CTransactionRef> payout =
+        PTX_BuildPayoutTx(ls, gmList, g_ptx_pose_tracker, height, prevHash);
+    BOOST_REQUIRE(payout);
+
+    // NO credit before the check — the post-fix ordering.
+    LOCK(cs_main);
+    GetLotteryState() = ls;
+    CBlock block; block.vtx = {*payout};
+    CValidationState state;
+    uint256 prevBlockHash = prevHash;
+    CBlockIndex dummyPrev; dummyPrev.phashBlock = &prevBlockHash;
+    uint256 blockHash = uint256S(
+        "3333333333333333333333333333333333333333333333333333333333333333");
+    CBlockIndex dummyIndex;
+    dummyIndex.nHeight = height;
+    dummyIndex.phashBlock = &blockHash;
+    dummyIndex.pprev = &dummyPrev;
+
+    BOOST_CHECK_MESSAGE(CheckAndApplyPTXPayout(block, &dummyIndex, gmList, g_ptx_pose_tracker,
+                                               ls.accumulator_outpoint, ls.accumulator_value,
+                                               state, /*fJustCheck=*/true),
+                        "pre-block pose rejected its own payout: " + state.GetRejectReason());
+}
+
+// BUG-026 (B): the rollback primitive the failure sentry relies on.  A block
+// that fails to connect must leave the tracker exactly as it found it.
+BOOST_AUTO_TEST_CASE(Bug026_RestoreRecords_RoundTrips)
+{
+    CDeterministicGMList gmList;
+    std::vector<std::string> members;
+    SetupBug026Pose("b0260004", gmList, members);
+
+    // PTXNodeRecord has no operator==, so compare the fields that matter to
+    // winner selection (tickets, score, eligibility) node by node.
+    auto sameRecords = [](const std::map<std::string, PTXNodeRecord>& a,
+                          const std::map<std::string, PTXNodeRecord>& b) {
+        if (a.size() != b.size()) return false;
+        for (const auto& kv : a) {
+            auto it = b.find(kv.first);
+            if (it == b.end()) return false;
+            if (it->second.lottery_tickets != kv.second.lottery_tickets) return false;
+            if (it->second.pose_score      != kv.second.pose_score) return false;
+            if (it->second.quorum_eligible != kv.second.quorum_eligible) return false;
+        }
+        return true;
+    };
+
+    const auto saved = g_ptx_pose_tracker.GetAllRecords();
+    for (const std::string& nid : members)
+        g_ptx_pose_tracker.RecordHonestParticipation(nid);
+    BOOST_REQUIRE_MESSAGE(!sameRecords(g_ptx_pose_tracker.GetAllRecords(), saved),
+                          "credit did not mutate the tracker — fixture is inert");
+
+    g_ptx_pose_tracker.RestoreRecords(saved);
+    BOOST_CHECK_MESSAGE(sameRecords(g_ptx_pose_tracker.GetAllRecords(), saved),
+                        "RestoreRecords did not restore the pre-mutation record set");
+
+    // ★ PERSISTENCE half (the h480 partition's lesson): RecordHonestParticipation
+    // Save()s every credit, so a rejected block has already written its credits to
+    // ptx_pose.dat.  If the rollback does not reach the FILE, the leak returns at
+    // the next restart and the node diverges from its peers forever.  Reload from
+    // disk and require the restored values — an in-memory-only rollback fails here.
+    PTXPoSeTracker reloaded;
+    reloaded.Load();
+    BOOST_CHECK_MESSAGE(sameRecords(reloaded.GetAllRecords(), saved),
+                        "rollback did not reach ptx_pose.dat — the flat file still "
+                        "carries the rejected block's credits (h480 partition shape)");
+}
+
 // The fix: coalesce+payout validates under fJustCheck=true (TestBlockValidity path).
 BOOST_AUTO_TEST_CASE(Bug024_CoalescePlusPayout_AcceptsUnderJustCheck)
 {

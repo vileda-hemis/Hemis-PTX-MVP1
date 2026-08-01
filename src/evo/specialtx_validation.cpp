@@ -1315,6 +1315,42 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
 {
     AssertLockHeld(cs_main);
 
+    // BUG-026 (B): a block that FAILS to connect must leave in-memory PTX state
+    // exactly as it found it.  LotteryState and the PoSe tracker are bare
+    // globals mutated PART-WAY through this function; every `return false`
+    // below leaves those mutations behind, because neither the throwaway coins
+    // cache nor the evoDb transaction covers them.  Observed live on the h420
+    // wedge: a rejected boundary block left its coalesce applied, so the live
+    // accumulator read 22.00 against a true on-chain 16.00, and the producer
+    // then built 48 consecutive templates spending an outpoint that does not
+    // exist (bad-txns-inputs-missingorspent, one per block for 48 minutes)
+    // until a restart reloaded clean persisted state.  That is what makes the
+    // wedge SELF-PERPETUATING rather than a single bad block.
+    //
+    // Same invariant BUG-023 established for CVerifyDB's dry run, on the other
+    // untransacted path: this one is the real apply, so it commits on success
+    // and rolls back only on failure.  Armed only when !fJustCheck — under
+    // fJustCheck nothing here mutates.  Destroyed before the caller releases
+    // cs_main, so the lock requirement on GetLotteryState() holds in the dtor.
+    struct PTXStateFailureSentry {
+        bool armed;
+        LotteryState savedLottery;
+        std::map<std::string, PTXNodeRecord> savedPose;
+        explicit PTXStateFailureSentry(bool arm) : armed(arm) {
+            if (armed) {
+                savedLottery = GetLotteryState();
+                savedPose    = g_ptx_pose_tracker.GetAllRecords();
+            }
+        }
+        void commit() { armed = false; }
+        ~PTXStateFailureSentry() {
+            if (armed) {
+                GetLotteryState() = savedLottery;
+                g_ptx_pose_tracker.RestoreRecords(std::move(savedPose));
+            }
+        }
+    } ptxStateSentry(!fJustCheck);
+
     // check special txes
     for (const CTransactionRef& tx: block.vtx) {
         if (!CheckSpecialTx(*tx, pindex->pprev, view, state)) {
@@ -1354,6 +1390,31 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
         PTX_DKG_Commitments_EraseMined(block);
     }
 
+    // Fetch DGM list and pose tracker once for both P10 and the state update.
+    CDeterministicGMList gmList;
+    if (pindex->pprev != nullptr) {
+        gmList = deterministicGMManager->GetListForBlock(pindex->pprev);
+    }
+    // BUG-026 (A): the payout MUST be judged against the PRE-BLOCK pose.  The
+    // pose update below used to run BEFORE this call, so the winner was selected
+    // from post-block pose at connect but from pre-block pose under fJustCheck
+    // (where the update is skipped) — the assembler and the validator therefore
+    // selected different winners and every settlement boundary carrying a roll
+    // self-rejected with ptxpayout-wrong-recipient (the h420 fleet wedge).  This
+    // is BUG-024's fJustCheck asymmetry on the pose axis; BUG-024 fixed it for
+    // the accumulator by exporting the effective value, and the same invariant
+    // is restored here by ORDERING: selection strictly precedes the mutation, so
+    // both fJustCheck paths read identical state by construction.
+    // ★ It is deterministic, not incidental: PTX_SelectWinner uses total_tickets
+    // as its modulus (winning_ticket = entropy % total_tickets + 1), so crediting
+    // this block's own participants re-maps the entropy (measured live: 330 ->
+    // 396 for a 6-roll boundary block) and additionally admits 0-ticket GMs into
+    // the candidate set.  Nothing between here and the pose update reads pose.
+    if (!CheckAndApplyPTXPayout(block, pindex, gmList, g_ptx_pose_tracker,
+                                effAccumOutpoint, effAccumValue, state, fJustCheck)) {
+        return false;
+    }
+
     // Update pose tracker from PTXSESS quorum_members in this block.
     // ptx_roll (caller-side) calls RecordHonestParticipation for the nodes it observed
     // sign, but that only updates the caller's g_ptx_pose_tracker. Validators (staking
@@ -1362,6 +1423,8 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
     // (consensus split at every settlement boundary). The fix: when a PTXSESS confirms
     // in a block, all validators apply RecordHonestParticipation for its quorum_members,
     // making the pose tracker consensus-derived from the chain.
+    // BUG-026 (A): MOVED to after the payout check (see above).  Placement is
+    // load-bearing, not cosmetic — do not hoist it back above the selection.
     if (!fJustCheck) {
         for (const CTransactionRef& tx : block.vtx) {
             if (!tx->IsProbabilisticTx()) continue;
@@ -1371,16 +1434,6 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
                 g_ptx_pose_tracker.RecordHonestParticipation(nid);
             }
         }
-    }
-
-    // Fetch DGM list and pose tracker once for both P10 and the state update.
-    CDeterministicGMList gmList;
-    if (pindex->pprev != nullptr) {
-        gmList = deterministicGMManager->GetListForBlock(pindex->pprev);
-    }
-    if (!CheckAndApplyPTXPayout(block, pindex, gmList, g_ptx_pose_tracker,
-                                effAccumOutpoint, effAccumValue, state, fJustCheck)) {
-        return false;
     }
 
     if (!llmq::quorumBlockProcessor->ProcessBlock(block, pindex, state, fJustCheck)) {
@@ -1406,6 +1459,9 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
         return false;
     }
 
+    // BUG-026 (B): the block is accepted — keep every mutation made above.
+    // Reaching here is the ONLY path that disarms the rollback sentry.
+    ptxStateSentry.commit();
     return true;
 }
 

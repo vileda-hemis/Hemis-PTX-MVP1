@@ -55,6 +55,16 @@ public:
     // are known, so the file alone is not enough.  Never throws.
     void ResetForReindex();
 
+    // BUG-026 (B): wholesale restore of the in-memory record set.  A block that
+    // FAILS to connect must leave in-memory PTX state exactly as it found it —
+    // the same invariant BUG-023 established for CVerifyDB, on the other
+    // untransacted path.  Pose is mutated part-way through
+    // ProcessSpecialTxsInBlock; when a later check rejects the block, those
+    // credits survived and permanently skewed the live tracker (observed on the
+    // h420 wedge alongside the accumulator leak).  Used only by the failure
+    // sentry there; not a general-purpose setter.
+    void RestoreRecords(std::map<std::string, PTXNodeRecord> records);
+
 private:
     mutable RecursiveMutex cs_pose;
     std::map<std::string, PTXNodeRecord> records_;

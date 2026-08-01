@@ -122,6 +122,29 @@ std::map<std::string, PTXNodeRecord> PTXPoSeTracker::GetAllRecords() const
     return records_;
 }
 
+void PTXPoSeTracker::RestoreRecords(std::map<std::string, PTXNodeRecord> records)
+{
+    LOCK(cs_pose);
+    records_ = std::move(records);
+    // BUG-026 (B): the rollback MUST reach the file, not just memory.
+    // RecordHonestParticipation() calls Save() on every credit, so a block that
+    // is later rejected has ALREADY written its credits to ptx_pose.dat.
+    // Restoring only the in-memory map would leave the flat file contaminated
+    // and the leak would return at the next restart — which is exactly what the
+    // h480 partition showed: gm01's restart reloaded a clean ACCUMULATOR (evoDb,
+    // per-block snapshot) but pose came back from the file, so the two
+    // populations stayed divergent across restarts.  Save() re-locks a
+    // RecursiveMutex, which its own contract permits.
+    //
+    // ★ SCOPE, stated honestly: this makes the rollback DURABLE, not
+    // TRANSACTIONAL.  A crash between the contaminating Save() and this one
+    // still leaves the file dirty, and pose still has no per-block snapshot or
+    // disconnect undo.  Full transactionality means moving pose to evoDb with
+    // snapshot+undo exactly as LotteryState has (ODC-056 option (c)) — owed,
+    // and NOT closed here.
+    Save();
+}
+
 void PTXPoSeTracker::Save() const
 {
     // Caller must hold cs_pose; RecursiveMutex makes re-lock safe.

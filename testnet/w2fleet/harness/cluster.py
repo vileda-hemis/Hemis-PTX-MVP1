@@ -51,18 +51,38 @@ def relock_collaterals(gm01: Node, expect_n: Optional[int] = None) -> int:
     This harness relock is therefore a BELT + the input to an ASSERTED
     invariant (validate_fleet lock_gate), not the primary protection.
 
-    HONEST RESIDUALS (a) cannot close — both live BEFORE RPC exists:
-      R1: ThreadStakeMinter starts at init.cpp:1855; the auto-lock runs
-          inside InitActiveGM at :1860 — a staker-live-before-locks gap of
-          seconds on every start.
-      R2: any init failure between those points aborts InitActiveGM BEFORE
-          the auto-lock while the staker is already live (observed 2026-07-10
-          Piece-1 crash-loop: 33 blocks staked lock-free, clean by luck).
-    BUG-019 (d) redefined by this finding: lock at WALLET LOAD / before the
-    staker thread starts + cover the abort path (closes R1+R2); owed,
-    pre-testnet-bound. gm44's 2026-07-07 death mechanism remains an OPEN
-    sub-question (the recorded "no auto-lock exists" root cause is FALSIFIED
-    — the auto-lock exists in the 40b109c binary; see standup 2026-07-10).
+    ★ R1/R2 ARE FIXED AT 870acc7 — do NOT read the historical framing below as
+    current state (this docstring previously described the pre-fix world and
+    produced a wrong "unmitigated exposure" analysis on 2026-07-30; corrected
+    here). BUG-019 (d) was DISCHARGED by hoisting the lock ahead of the staker:
+        init.cpp:1886  LockGamemasterCollaterals()          <- lock FIRST
+        init.cpp:1891  create_thread(ThreadStakeMinter)     <- staker SECOND
+        init.cpp:1896  InitActiveGM()                       <- no longer locks
+    See tiertwo/init.cpp:231-239 for the contract. This closes BOTH residuals
+    STRUCTURALLY: R1 (the staker's first stakeable-coins snapshot is now
+    post-lock) and R2 (an init abort before the lock is also before the staker
+    start, since the lock precedes it on the same code path). Runtime is covered
+    too: LockIfMyCollateral, called from AddToWalletIfInvolvingMe
+    (wallet.cpp:1102), locks a ProRegTx collateral the moment it lands, so a GM
+    registered while the node is running does not wait for a restart.
+    VERIFIED LIVE on the N98 fleet 2026-07-30: across 98 nodes x 3 boots, ZERO
+    staker-starts occurred without a preceding "Locking gamemaster collaterals".
+
+    HISTORICAL (pre-870acc7, retained for provenance — NOT current):
+      R1: ThreadStakeMinter started at init.cpp:1855 while the auto-lock ran
+          inside InitActiveGM at :1860 — a staker-live-before-locks gap.
+      R2: an init failure between those points aborted InitActiveGM BEFORE the
+          auto-lock while the staker was already live (2026-07-10 Piece-1
+          crash-loop: 33 blocks staked lock-free, clean by luck).
+    gm44's 2026-07-07 death mechanism: the recorded "no auto-lock exists" root
+    cause is FALSIFIED — the auto-lock existed even in 40b109c; the real
+    mechanism was R1 (see standup 2026-07-10/12).
+
+    ONLY REMAINING silent-collateral-loss path: an operator explicitly setting
+    -gmconflock=0 with collateral IsMine in a staking-enabled wallet (combined
+    topology). Self-inflicted, single-node, requires an opt-out; a loud warning
+    is owed. Correct hot/cold topology is immune regardless (StakeableCoins
+    skips ISMINE_NO), as is any fresh collateral (nStakeMinDepth = 300 mainnet).
 
     Returns the number of collaterals covered (0 pre-registration)."""
     try:

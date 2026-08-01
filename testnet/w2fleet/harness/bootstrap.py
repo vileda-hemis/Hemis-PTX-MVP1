@@ -108,6 +108,24 @@ def register_gms(gm01: Node, cluster: W2Cluster,
     funding_txid = gm01.sendmany("", {a: collateral_amt for a in collateral_addrs})
     print(f"[bootstrap] collateral funding tx: {funding_txid}")
 
+    # ★ LOCK FIRST, CONFIRM SECOND (2026-07-30).  These outputs become stakeable
+    # at nStakeMinDepth (20 blocks on ptxbea) and gm01 IS the staker, so every
+    # block between funding and locking is a chance for the staker to eat a
+    # future collateral.  Locking after the confirmation wait means winning a
+    # >20-block race; under load (a concurrent build starving RPC) that race was
+    # LOST — the staker consumed 5 of 98 collaterals at h189-h205 and
+    # lockunspent then failed with "expected unspent output", killing the
+    # bootstrap.  The outputs are in the wallet the moment sendmany returns, so
+    # lock them immediately: the window closes to zero instead of being raced.
+    # Same family as BUG-019 R1 — anything not yet locked is fair game.
+    collateral_outpoints = []
+    for coll_addr in collateral_addrs:
+        vout_n = _find_vout(gm01, funding_txid, coll_addr, collateral_amt)
+        collateral_outpoints.append({"txid": funding_txid, "vout": vout_n})
+    gm01.call("lockunspent", False, True, collateral_outpoints)
+    print(f"[bootstrap] locked {len(collateral_outpoints)} collateral UTXOs "
+          f"(pre-confirmation — closes the staker race)")
+
     current = gm01.getblockcount()
     wait_for_height(gm01, current + 1, timeout=900)
 
@@ -120,14 +138,27 @@ def register_gms(gm01: Node, cluster: W2Cluster,
     gm01.wait_for_condition(_funding_confirmed, "collateral funding confirmed",
                             timeout=120)
 
-    # Lock all collateral so FundSpecialTx never selects a future GM's
-    # collateral as a fee input (origin :136-148; BUG-018-adjacent).
-    collateral_outpoints = []
-    for coll_addr in collateral_addrs:
-        vout_n = _find_vout(gm01, funding_txid, coll_addr, collateral_amt)
-        collateral_outpoints.append({"txid": funding_txid, "vout": vout_n})
-    gm01.call("lockunspent", False, True, collateral_outpoints)
-    print(f"[bootstrap] locked {len(collateral_outpoints)} collateral UTXOs")
+    # Re-assert after confirmation: locks are in-memory only, and a restart or
+    # wallet reload between here and registration would drop them.
+    # ★ lockunspent ERRORS with "output already locked" if ANY outpoint in the
+    # batch is already held, so re-locking the whole set unconditionally fails
+    # on the happy path.  Lock only what is actually missing — the same idiom
+    # relock_collaterals() uses (cluster.py) — then assert the full set.
+    locked_now = {(l["txid"], l["vout"])
+                  for l in gm01.call("listlockunspent")["transparent"]}
+    todo = [o for o in collateral_outpoints
+            if (o["txid"], o["vout"]) not in locked_now]
+    if todo:
+        gm01.call("lockunspent", False, True, todo)
+        print(f"[bootstrap] re-locked {len(todo)} collateral(s) dropped since funding")
+    locked_now = {(l["txid"], l["vout"])
+                  for l in gm01.call("listlockunspent")["transparent"]}
+    missing = [o for o in collateral_outpoints
+               if (o["txid"], o["vout"]) not in locked_now]
+    if missing:
+        raise AssertionError(
+            f"collateral lock incomplete: {len(missing)}/{len(collateral_outpoints)} "
+            f"not in listlockunspent — the staker may have consumed them")
 
     results = {}
     for i, (gm, label, outpoint) in enumerate(
