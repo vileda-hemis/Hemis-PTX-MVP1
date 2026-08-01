@@ -81,6 +81,17 @@ class Node:
     def ptx_gm_pose(self, node_id: str) -> dict:
         return self.call("ptx_gm_pose", node_id)
 
+    # ── WALLET-GATED (rpc/ptx.cpp EnsureWalletIsAvailable) ────────────────
+    # ★ These three REQUIRE a wallet and must be called on the TREASURY/caller,
+    # never on a GM: under -disablewallet the wallet RPCs are unregistered
+    # entirely (rpcwallet.cpp RegisterWalletRPCCommands early-return), so a
+    # GM-side call fails RPC_METHOD_NOT_FOUND "Method not found (disabled)".
+    # ptx_lottery_history is the easy one to miss — it does not read as
+    # wallet-scoped from its name, but it filters settlements by wallet
+    # ownership (rpc/ptx.cpp:1455-1458).
+    # Everything ELSE on this class is wallet-free and safe against GMs:
+    # ptx_lottery_status / ptx_pose_status / ptx_gm_pose / protx_list /
+    # getdeterministicgmlist / generateblskeypair / getblock*.
     def ptx_wallet_lottery_status(self) -> dict:
         return self.call("ptx_wallet_lottery_status")
 

@@ -195,13 +195,26 @@ def gmauth_gate(cluster: W2Cluster, registration_path: str) -> dict:
 
 def lock_gate(cluster: W2Cluster, expected_n: int) -> dict:
     """SG-0 Piece 2: BUG-019 (a) lock-coverage ASSERT (a gate, not a print).
-    Every registered GM collateral must be in gm01's listlockunspent. N-generic
-    (22 fixture / 60 fleet). HONEST LIMIT: PASS proves coverage NOW; it cannot
-    retro-protect the pre-RPC residuals R1/R2 (staker-starts-before-auto-lock,
-    init-abort-skips-auto-lock — see relock_collaterals docstring). Those are
-    BUG-019 (d)'s to close (lock before staker start), owed pre-testnet."""
-    gm01 = cluster.gms[0]
-    protx = gm01.protx_list(detailed=True, valid_only=True)
+    Every registered GM collateral must be in the TREASURY's listlockunspent.
+    N-generic (22 fixture / 98 fleet).
+
+    ★ RETARGETED gm01 -> TREASURY (caller) for the wallet-less-GM topology, and
+    deliberately KEPT rather than retired. Wallet-less GMs cannot stake at all,
+    so the GM-side BUG-019 exposure is gone by construction — but the collateral
+    moved into the caller wallet and the caller is the staker, so the
+    holds-collateral-AND-stakes condition now lives there. This gate is the
+    caller-side assertion of the protection, which the daemon supplies
+    automatically because LockGamemasterCollaterals() is wallet-scoped, not
+    role-scoped (init.cpp:1886 fires it on !vpwallets.empty(), no -gamemaster
+    required) and at 870acc7 runs BEFORE the staker thread starts.
+
+    HONEST LIMIT: PASS proves coverage NOW. The historical residuals R1/R2 are
+    discharged at 870acc7 (lock precedes staker start on the same code path),
+    but this gate asserts the outcome rather than the ordering — it would still
+    pass on a build where the ordering regressed and the race simply was not
+    lost. Order is proven by the init.cpp source contract, not here."""
+    treasury = cluster.treasury
+    protx = treasury.protx_list(detailed=True, valid_only=True)
     outs = {(e["collateralHash"], e["collateralIndex"]) for e in protx}
     if len(outs) != expected_n:
         raise AssertionError(
@@ -209,14 +222,14 @@ def lock_gate(cluster: W2Cluster, expected_n: int) -> dict:
             f"protx_list gave {len(outs)} (a consumed collateral DEREGISTERS "
             f"its GM — the BUG-019 signal)")
     locked = {(l["txid"], l["vout"])
-              for l in gm01.call("listlockunspent")["transparent"]}
+              for l in treasury.call("listlockunspent")["transparent"]}
     missing = outs - locked
     if missing:
         raise AssertionError(
             f"LOCK GATE FAILED: {len(missing)}/{len(outs)} collaterals NOT in "
-            f"listlockunspent — stake-consumable RIGHT NOW")
+            f"{treasury.name}'s listlockunspent — stake-consumable RIGHT NOW")
     print(f"[locks] GATE PASS — {len(outs)}/{len(outs)} registered collaterals "
-          f"in listlockunspent (start->lock residual: see BUG-019 (d))")
+          f"locked in {treasury.name} (caller-side: BUG-019 follows the wallet)")
     return {"n": len(outs)}
 
 
@@ -268,21 +281,33 @@ def bank_gate(cluster: W2Cluster) -> dict:
     forever; a restore just replays into the freeze).  On PASS this writes the
     stamp file bank_fleet.sh REQUIRES (fresh) before it will bank; on FAIL it
     raises — DO NOT BANK."""
+    # ★ PRODUCER SET RETARGETED (Phase 2).  The premise "one coin per producer,
+    # gm01 + caller" assumed GMs stake.  Under the wallet-less-GM topology GMs
+    # have no wallet and no staker thread, so the producer set is exactly the
+    # STAKING CALLERS — and asking a wallet-less GM for listunspent would fail
+    # with "Method not found (disabled)" rather than return 0.  The invariant
+    # itself is unchanged: every node that can produce must hold a deep coin, or
+    # a restore replays into the permanent-deadlock freeze.
     def deep_count(node):
         us = node.call("listunspent", 1, 9999999)
         return sum(1 for u in us if u["confirmations"] >= 120)
-    h = cluster.gms[0].getblockcount()
-    g01 = deep_count(cluster.gms[0])
-    cal = deep_count(cluster.caller)
-    print(f"[bank] tip={h} deep(>=120) coins: gm01={g01} caller={cal}")
-    if g01 < 1 or cal < 1:
+
+    producers = [n for n in cluster.all_nodes if n.name.startswith("caller")]
+    if not producers:
+        producers = [cluster.treasury]
+    h = cluster.treasury.getblockcount()
+    deep = {p.name: deep_count(p) for p in producers}
+    print(f"[bank] tip={h} deep(>=120) coins per producer: {deep}")
+    starved = [name for name, c in deep.items() if c < 1]
+    if starved:
         raise AssertionError(
-            f"BANK GATE FAILED — a producer has NO depth>=120 coin at the bank "
-            f"tip (gm01={g01}, caller={cal}).  Banking this state plants a "
+            f"BANK GATE FAILED — producer(s) {starved} have NO depth>=120 coin "
+            f"at the bank tip (counts={deep}).  Banking this state plants a "
             f"permanent post-restore deadlock.  ABORT the re-bank.")
     import time as _t
+    stamp = " ".join(f"{k}_deep={v}" for k, v in sorted(deep.items()))
     with open(BANK_MARGIN_STAMP, "w") as f:
-        f.write(f"height={h} gm01_deep={g01} caller_deep={cal} ts={int(_t.time())}\n")
+        f.write(f"height={h} {stamp} ts={int(_t.time())}\n")
     print(f"[bank] GATE PASS — margin stamped ({BANK_MARGIN_STAMP})")
     return {"height": h, "gm01_deep": g01, "caller_deep": cal}
 

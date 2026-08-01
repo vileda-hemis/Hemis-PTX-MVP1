@@ -37,6 +37,12 @@ GM01_DATADIR = "/mnt/pve/Node14TB/hemis-ptx/w2-fleet/datadirs/gm01"
 IMAGE = "hemis-ptx-w2:w21-dev"
 
 gm01 = Node("gm01", "127.0.0.1", 31001, "ptxw2rpc", "ptxw2pass2026")
+# ★ TREASURY (Phase 2): the wallet-holding node. Under the wallet-less-GM
+# topology GMs run -disablewallet=1, so every wallet RPC — including the
+# BUG-019 collateral relock below — must target the caller, not gm01.
+# gm01 is retained above for the chain/PTX status RPCs, which are NOT
+# wallet-gated (ptx_lottery_status / ptx_pose_status / ptx_quorum_* / getblock*).
+treasury = Node("caller", "127.0.0.1", 31000, "ptxw2rpc", "ptxw2pass2026")
 
 
 def die(msg):
@@ -143,10 +149,11 @@ def row_relock():
     close, owed pre-testnet — see relock_collaterals docstring."""
     from harness.cluster import relock_collaterals
     try:
-        n = relock_collaterals(gm01, expect_n=22)
+        n = relock_collaterals(treasury, expect_n=22)
     except AssertionError as e:
         die(str(e))
-    ok(f"all {n} collaterals locked (listlockunspent gate passed)")
+    ok(f"all {n} collaterals locked in {treasury.name} "
+       f"(listlockunspent gate passed — caller-side, BUG-019 follows the wallet)")
 
 
 def inject_at_tip(exclude=None, members_override=None, expect_reject=None,

@@ -40,9 +40,26 @@ def poc_snapshot() -> str:
     return ps.strip() + "\n---\n" + vols
 
 
-def relock_collaterals(gm01: Node, expect_n: Optional[int] = None) -> int:
+def relock_collaterals(treasury: Node, expect_n: Optional[int] = None) -> int:
     """BUG-019 (a) INTERIM guard: lock every registered GM collateral UTXO in
-    gm01's wallet (in-memory lockunspent), idempotent.
+    the TREASURY wallet (in-memory lockunspent), idempotent.
+
+    ★ RETARGETED gm01 -> CALLER for the wallet-less-GM topology (Phase 2).
+    GMs now run -disablewallet=1 + -gmoperatorprivatekey, so a GM has no wallet,
+    holds no collateral, and cannot stake (ThreadStakeMinter is inside
+    #ifdef ENABLE_WALLET *and* gated on !vpwallets.empty(), init.cpp:1889-1891)
+    — the GM-side BUG-019 exposure is gone BY CONSTRUCTION, not mitigated.
+    But the exposure MOVES rather than vanishing: collateral now lives in the
+    caller wallet, and the caller is the staker. Caller = holds collateral +
+    stakes = exactly the "combined topology" this docstring flags below as the
+    remaining silent-loss path. So this guard is RETARGETED AND KEPT, never
+    retired.
+    The daemon-side protection follows it automatically, because it is
+    WALLET-scoped and not GM-role-scoped: init.cpp:1886 calls
+    LockGamemasterCollaterals() on `!vpwallets.empty()` (NOT on fGameMaster),
+    and that function iterates every wallet in vpwallets locking any DGM
+    collateral that is IsMine. The caller therefore auto-locks before its own
+    staker thread starts, with no -gamemaster flag required.
 
     MECHANISM (corrected 2026-07-10, SG-0 Piece 2): the daemon ALREADY
     auto-locks all IsMine DGM collaterals at init (-gmconflock default ON,
@@ -84,9 +101,17 @@ def relock_collaterals(gm01: Node, expect_n: Optional[int] = None) -> int:
     is owed. Correct hot/cold topology is immune regardless (StakeableCoins
     skips ISMINE_NO), as is any fresh collateral (nStakeMinDepth = 300 mainnet).
 
-    Returns the number of collaterals covered (0 pre-registration)."""
+    Returns the number of collaterals covered (0 pre-registration).
+
+    NOTE protx_list is wallet-SAFE (rpcevo.cpp:868-880 handles pwallet==nullptr;
+    only wallet_only=true throws, and we pass False), so this still reads
+    correctly even if pointed at a wallet-less node — but the lockunspent /
+    listlockunspent calls below do NOT: under -disablewallet those RPCs are
+    unregistered outright (rpcwallet.cpp RegisterWalletRPCCommands early-return)
+    and fail RPC_METHOD_NOT_FOUND "Method not found (disabled)". Point this at
+    the wallet-holding treasury, never at a GM."""
     try:
-        protx = gm01.protx_list(detailed=True, valid_only=True)
+        protx = treasury.protx_list(detailed=True, valid_only=True)
     except Exception:
         return 0  # pre-registration bootstrap stage — nothing to lock yet
     outs = [{"txid": e["collateralHash"], "vout": e["collateralIndex"]}
@@ -97,18 +122,19 @@ def relock_collaterals(gm01: Node, expect_n: Optional[int] = None) -> int:
     if not outs:
         return 0
     already = {(l["txid"], l["vout"])
-               for l in gm01.call("listlockunspent")["transparent"]}
+               for l in treasury.call("listlockunspent")["transparent"]}
     todo = [o for o in outs if (o["txid"], o["vout"]) not in already]
     if todo:
-        gm01.call("lockunspent", False, True, todo)
+        treasury.call("lockunspent", False, True, todo)
     locked = {(l["txid"], l["vout"])
-              for l in gm01.call("listlockunspent")["transparent"]}
+              for l in treasury.call("listlockunspent")["transparent"]}
     missing = [o for o in outs if (o["txid"], o["vout"]) not in locked]
     if missing:
         raise AssertionError(
             f"relock: {len(missing)}/{len(outs)} collaterals NOT in listlockunspent")
-    print(f"[relock] {len(outs)} collaterals locked "
-          f"(in-memory; start->lock residual applies — BUG-019 (d) owed)")
+    print(f"[relock] {len(outs)} collaterals locked in {treasury.name} "
+          f"(in-memory belt; daemon auto-lock is the primary, and at 870acc7 it "
+          f"precedes the staker start)")
     return len(outs)
 
 
@@ -137,6 +163,14 @@ class W2Cluster:
             for i in range(1, n + 1)
         ]
         self.all_nodes = [self.caller] + self.gms
+        # ★ TREASURY (Phase 2, wallet-less-GM topology): the single wallet-
+        # holding node that mines the PoW prefix, funds collateral, registers
+        # every GM and holds the per-GM scriptPTXPayment addresses.  This was
+        # gm01 while GMs carried wallets; under -disablewallet=1 GMs have no
+        # wallet at all, so EVERY wallet RPC must land here instead.  Kept as an
+        # attribute rather than hardcoded so a spare caller can take the role
+        # after a restore without editing the recipes.
+        self.treasury = self.caller
         self._poc_baseline = poc_snapshot()
 
     # ── PoC guard ───────────────────────────────────────────────────────
@@ -211,9 +245,11 @@ class W2Cluster:
                 # EARLIEST harness moment after every fleet start — this hook
                 # covers every recipe that goes through wait_ready (bootstrap
                 # Phase-2 restart, run_bootstrap, restore->validate, batteries).
-                # The start->lock residual before this point is NOT closed
-                # here — see relock_collaterals docstring; (d) owed.
-                relock_collaterals(self.gms[0])
+                # ★ Targets the TREASURY (caller), not gms[0]: under the
+                # wallet-less-GM topology the collateral lives in the caller
+                # wallet and a GM would answer these RPCs with
+                # "Method not found (disabled)".
+                relock_collaterals(self.treasury)
                 return
             time.sleep(poll)
         not_ready = [nd.name for nd in self.all_nodes if not nd.is_rpc_ready()]

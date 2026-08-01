@@ -143,7 +143,7 @@ def caller_name(k, callers):
 
 
 def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser,
-                 caller_staking=0,
+                 caller_staking=0, gm_wallet_less=1,
                  wire_operators=False, project=DEF_PROJECT, callers=1):
     lines = [HEADER.format(n=n, image=image, rpcuser=rpcuser, project=project)]
 
@@ -214,6 +214,18 @@ def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser,
     command:
       - -externalip={gm_ip(subnet_base, i)}
 """)
+        # ★ WALLET-LESS GM (Phase 2 corrected topology).  A GM's entire PTX duty
+        # — DKG ceremony, quorum signing, pose — runs on the operator BLS key;
+        # nothing GM-side needs a coin wallet (the nType=11 result has no vin/
+        # vout and is block-injected per KDD-058, so there is nothing to fund).
+        # Emitting -disablewallet=1 leaves vpwallets EMPTY, and ThreadStakeMinter
+        # is both inside #ifdef ENABLE_WALLET and gated on !vpwallets.empty()
+        # (init.cpp:1889-1891) — so the staker thread is NEVER CREATED and the
+        # BUG-019 collateral-consumption class is gone BY CONSTRUCTION rather
+        # than mitigated.  Collateral, payouts and staking all live caller-side.
+        # Set 0 only to reproduce the legacy combined topology.
+        if gm_wallet_less:
+            lines.append("      - -disablewallet=1\n")
         if wire_operators:
             # GMAUTH-live (SG-0 Piece 1): value comes from .env at compose
             # time — the reference pattern is the ONLY thing committed here.
@@ -261,6 +273,12 @@ def main():
                          "N producers, so one staker dying DEGRADES rather than "
                          "HALTS the chain - BUG-024 topology hardening). "
                          "Default 0 preserves the drill-spare posture.")
+    ap.add_argument("--gm-wallet-less", type=int, default=1, choices=[0, 1],
+                    help="1 (DEFAULT, Phase-2 corrected topology) = GMs run "
+                         "-disablewallet=1: no wallet, no collateral, no staker "
+                         "thread (BUG-019 gone by construction). Collateral, "
+                         "payouts and staking are caller-side. 0 = legacy "
+                         "combined topology where GMs also hold wallets and stake.")
     ap.add_argument("--callers", type=int, default=1,
                     help="caller count (1 = primary only; 2+ adds funded staking-off "
                          "spares for drill redundancy — a wedged primary restores, not re-bootstraps)")
@@ -287,6 +305,19 @@ def main():
         sys.exit("refusing PoC-colliding subnet/ports")
 
     os.makedirs(args.out, exist_ok=True)
+    # ★ NO-PRODUCER GUARD.  Wallet-less GMs cannot stake (no wallet -> no staker
+    # thread), so if the callers are also staking-off NOTHING on the fleet can
+    # produce a block: the chain would stop dead at PoS activation and the
+    # bootstrap would hang in wait_for_pos with no diagnosable cause.  This is a
+    # new footgun created by the Phase-2 topology — refuse to emit it.
+    if args.gm_wallet_less and not args.caller_staking:
+        ap.error(
+            "REFUSED: --gm-wallet-less 1 with --caller-staking 0 emits a fleet "
+            "with NO block producer at all (wallet-less GMs have no staker "
+            "thread; staking-off callers have none either). The chain would "
+            "halt at PoS activation. Pass --caller-staking 1 for the corrected "
+            "topology, or --gm-wallet-less 0 for the legacy combined topology.")
+
     os.makedirs(args.data_root, exist_ok=True)
     caller_dirs = [caller_name(k, args.callers) for k in range(1, args.callers + 1)]
     for name in caller_dirs + [gm_name(i) for i in range(1, args.n + 1)]:
@@ -300,7 +331,8 @@ def main():
                              args.port_base, args.data_root, args.rpcuser,
                              wire_operators=reg is not None, project=args.project,
                              callers=args.callers,
-                             caller_staking=args.caller_staking))
+                             caller_staking=args.caller_staking,
+                             gm_wallet_less=args.gm_wallet_less))
 
     env_path = os.path.join(args.out, ".env")
     if os.path.exists(env_path):

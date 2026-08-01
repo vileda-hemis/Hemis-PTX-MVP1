@@ -24,9 +24,45 @@ copy:
 Everything load-bearing in the original is preserved verbatim in spirit and
 cited to its origin: external-collateral protx_register with the KDD-033
 suffix (bootstrap.py:98-109 rationale), the lockunspent guard against
-FundSpecialTx eating future collateral (:136-148), per-GM own-wallet
-scriptPTXPayment for wallet attribution (:164-168, KDD-035), the two-phase
+FundSpecialTx eating future collateral (:136-148), per-GM scriptPTXPayment for
+attribution (:164-168, KDD-035 as amended — see below), the two-phase
 compound-id restart (:227-296).
+
+★ PHASE 2 — WALLET-LESS GM TOPOLOGY (the treasury retarget)
+-----------------------------------------------------------
+GMs now run `-disablewallet=1 -gamemaster=1 -gmoperatorprivatekey=<bls>`.  A GM
+has no wallet, so it cannot hold coins, cannot register anything, and — the
+point of the change — cannot stake: ThreadStakeMinter is inside
+`#ifdef ENABLE_WALLET` AND gated on `!vpwallets.empty()` (init.cpp:1889-1891),
+so with no wallet the staker thread is never created.  The BUG-019 class is
+gone at the root for GMs rather than mitigated.
+
+Consequence for this recipe: gm01 was the treasury — it mined the PoW prefix,
+held every collateral, and signed every registration.  That role moves WHOLESALE
+to a caller (`cluster.treasury`, the primary caller).  Under -disablewallet the
+wallet RPCs are not merely permission-denied, they are UNREGISTERED
+(rpcwallet.cpp RegisterWalletRPCCommands early-returns), so a stray GM-side call
+fails loudly with RPC_METHOD_NOT_FOUND "Method not found (disabled)".
+Wallet-SAFE and deliberately left node-agnostic: protx_list (handles
+pwallet==nullptr; only wallet_only=true throws), generateblskeypair (pure
+keygen), getblockcount/getrawtransaction/getpeerinfo.
+★ generatetoaddress is NOT wallet-safe despite taking an explicit address — it
+calls EnsureWalletIsAvailable (mining.cpp:155), so PoW mining must run on the
+treasury too.
+
+★ KDD-035 AMENDMENT (necessary, not optional)
+---------------------------------------------
+Original intent: each GM's scriptPTXPayment came from the GM's OWN wallet, so
+"the winning GM's wallet reflects the win" — attribution by wallet ownership.
+A wallet-less GM cannot hold a payment address, so that intent cannot survive
+the topology.  AMENDED: the payment addresses are minted caller-side, but
+PER-GM and DISTINCT — one fresh treasury address per GM, never a single shared
+caller address.  What CHANGES is where the win is reflected (a caller-side
+per-GM address, not the GM's wallet); what is PRESERVED is the function that
+mattered — you can still say exactly which GM won, by looking the address up in
+the registration map, which is recorded in registration-N*.json as
+`ptx_payment_addr` per label.  A single shared address would have collapsed
+per-GM attribution and is explicitly rejected.
 """
 
 import time
@@ -49,41 +85,57 @@ def wait_for_height(node: Node, target: int, timeout: int = 900) -> int:
     return node.wait_for_height(target, timeout=timeout)
 
 
-def mine_pow_blocks(gm01: Node, n: int = POW_BLOCKS) -> str:
-    addr = gm01.getnewaddress()
-    print(f"[bootstrap] mining {n} PoW blocks to {addr}")
+def mine_pow_blocks(treasury: Node, n: int = POW_BLOCKS) -> str:
+    """★ Runs on the TREASURY: generatetoaddress is wallet-gated
+    (EnsureWalletIsAvailable, mining.cpp:155) even though it takes an explicit
+    address, so a wallet-less GM cannot mine the PoW prefix."""
+    addr = treasury.getnewaddress()
+    print(f"[bootstrap] mining {n} PoW blocks to {addr} (treasury={treasury.name})")
     t0 = time.time()
-    gm01.generatetoaddress(n, addr)
+    treasury.generatetoaddress(n, addr)
     print(f"[bootstrap] {n} PoW blocks in {time.time()-t0:.1f}s; "
-          f"height={gm01.getblockcount()}")
+          f"height={treasury.getblockcount()}")
     return addr
 
 
-def wait_for_pos(gm01: Node, timeout: int = 900) -> int:
+def wait_for_pos(treasury: Node, timeout: int = 900) -> int:
+    """PoS activates at POS_ACTIVATION. ★ Under the wallet-less-GM topology the
+    treasury caller is the ONLY node that can stake, so it alone carries the
+    chain past this point — it must be launched with -staking=1 and hold the
+    PoW coinbases (mature at nCoinbaseMaturity=10, stakeable at
+    nStakeMinDepth=20, both satisfied by the 49-block prefix)."""
     print(f"[bootstrap] waiting for PoS activation at {POS_ACTIVATION}")
-    wait_for_height(gm01, POS_ACTIVATION, timeout=timeout)
-    h = wait_for_height(gm01, POS_ACTIVATION + 1, timeout=timeout)
+    wait_for_height(treasury, POS_ACTIVATION, timeout=timeout)
+    h = wait_for_height(treasury, POS_ACTIVATION + 1, timeout=timeout)
     print(f"[bootstrap] PoS active; height={h}")
     return h
 
 
-def fund_caller(gm01: Node, caller: Node,
+def fund_caller(treasury: Node, caller: Node,
                 split_count: int = CALLER_SPLIT_COUNT,
                 amount_each: float = CALLER_SPLIT_AMOUNT) -> str:
-    print(f"[bootstrap] funding caller with {split_count}x{amount_each} HMS UTXOs")
+    """Split coin into many small UTXOs so ptx_roll always has a fee input.
+
+    ★ When treasury IS the caller (the default Phase-2 topology) this is a
+    SELF-SPLIT: the treasury sends to its own fresh addresses. That is not a
+    no-op — the point was never to move value between nodes, it was to break
+    one huge coinbase UTXO into `split_count` spendable pieces."""
+    same = (treasury.name == caller.name)
+    print(f"[bootstrap] {'self-splitting treasury' if same else 'funding caller'} "
+          f"into {split_count}x{amount_each} HMS UTXOs")
     amounts = {}
     for _ in range(split_count):
         amounts[caller.getnewaddress()] = amount_each
-    txid = gm01.sendmany("", amounts)
-    height = gm01.getblockcount()
-    wait_for_height(gm01, height + 1, timeout=900)
+    txid = treasury.sendmany("", amounts)
+    height = treasury.getblockcount()
+    wait_for_height(treasury, height + 1, timeout=900)
     wait_for_height(caller, height + 1, timeout=120)
     print(f"[bootstrap] caller funded: {len(caller.listunspent(1))} UTXOs")
     return txid
 
 
-def _find_vout(gm01: Node, txid: str, addr: str, amount: float) -> int:
-    raw = gm01.call("getrawtransaction", txid, True)
+def _find_vout(treasury: Node, txid: str, addr: str, amount: float) -> int:
+    raw = treasury.call("getrawtransaction", txid, True)
     for vout in raw["vout"]:
         addrs = vout.get("scriptPubKey", {}).get("addresses", [])
         if addr in addrs and abs(vout["value"] - amount) < 1e-6:
@@ -91,7 +143,7 @@ def _find_vout(gm01: Node, txid: str, addr: str, amount: float) -> int:
     raise RuntimeError(f"collateral output {amount} to {addr} not in {txid}")
 
 
-def register_gms(gm01: Node, cluster: W2Cluster,
+def register_gms(treasury: Node, cluster: W2Cluster,
                  gm_labels: List[str]) -> Dict[str, dict]:
     """External-collateral protx_register for each GM, batched.
 
@@ -99,44 +151,56 @@ def register_gms(gm01: Node, cluster: W2Cluster,
     collateral UTXO; requires a stable external outpoint known before the
     registration tx is built (self-funded registration is circular — see
     origin bootstrap.py:98-109).
+
+    ★ Every wallet RPC below runs on the TREASURY (a caller). GMs are
+    -disablewallet=1 and would answer "Method not found (disabled)".
+    protx_register in particular is wallet-bound: it funds and signs the
+    registration tx from the wallet (ProTxRegister -> EnsureWalletIsAvailable,
+    rpcevo.cpp:490-494). generateblskeypair is pure keygen and node-agnostic,
+    but is kept on the treasury so the operator secrets are produced in one
+    place and recorded in the registration map.
     """
     collateral_amt = float(GM_COLLATERAL)
     n_gms = len(gm_labels)
 
-    print(f"[bootstrap] funding {n_gms} collateral outputs ({collateral_amt} HMS each)")
-    collateral_addrs = [gm01.getnewaddress() for _ in range(n_gms)]
-    funding_txid = gm01.sendmany("", {a: collateral_amt for a in collateral_addrs})
+    print(f"[bootstrap] funding {n_gms} collateral outputs ({collateral_amt} HMS each) "
+          f"from treasury={treasury.name}")
+    collateral_addrs = [treasury.getnewaddress() for _ in range(n_gms)]
+    funding_txid = treasury.sendmany("", {a: collateral_amt for a in collateral_addrs})
     print(f"[bootstrap] collateral funding tx: {funding_txid}")
 
     # ★ LOCK FIRST, CONFIRM SECOND (2026-07-30).  These outputs become stakeable
-    # at nStakeMinDepth (20 blocks on ptxbea) and gm01 IS the staker, so every
-    # block between funding and locking is a chance for the staker to eat a
-    # future collateral.  Locking after the confirmation wait means winning a
+    # at nStakeMinDepth (20 blocks on ptxbea) and the TREASURY IS the staker, so
+    # every block between funding and locking is a chance for the staker to eat
+    # a future collateral.  Locking after the confirmation wait means winning a
     # >20-block race; under load (a concurrent build starving RPC) that race was
     # LOST — the staker consumed 5 of 98 collaterals at h189-h205 and
     # lockunspent then failed with "expected unspent output", killing the
     # bootstrap.  The outputs are in the wallet the moment sendmany returns, so
     # lock them immediately: the window closes to zero instead of being raced.
     # Same family as BUG-019 R1 — anything not yet locked is fair game.
+    # ★ Phase 2: this hazard did NOT go away when GMs lost their wallets — it
+    # moved here with the collateral, because the treasury caller both holds the
+    # collateral and stakes.  Wallet-less GMs remove the GM-side exposure only.
     collateral_outpoints = []
     for coll_addr in collateral_addrs:
-        vout_n = _find_vout(gm01, funding_txid, coll_addr, collateral_amt)
+        vout_n = _find_vout(treasury, funding_txid, coll_addr, collateral_amt)
         collateral_outpoints.append({"txid": funding_txid, "vout": vout_n})
-    gm01.call("lockunspent", False, True, collateral_outpoints)
+    treasury.call("lockunspent", False, True, collateral_outpoints)
     print(f"[bootstrap] locked {len(collateral_outpoints)} collateral UTXOs "
           f"(pre-confirmation — closes the staker race)")
 
-    current = gm01.getblockcount()
-    wait_for_height(gm01, current + 1, timeout=900)
+    current = treasury.getblockcount()
+    wait_for_height(treasury, current + 1, timeout=900)
 
     def _funding_confirmed():
         try:
-            return gm01.call("getrawtransaction", funding_txid, True).get(
+            return treasury.call("getrawtransaction", funding_txid, True).get(
                 "confirmations", 0) >= 1
         except Exception:
             return False
-    gm01.wait_for_condition(_funding_confirmed, "collateral funding confirmed",
-                            timeout=120)
+    treasury.wait_for_condition(_funding_confirmed, "collateral funding confirmed",
+                                timeout=120)
 
     # Re-assert after confirmation: locks are in-memory only, and a restart or
     # wallet reload between here and registration would drop them.
@@ -145,14 +209,14 @@ def register_gms(gm01: Node, cluster: W2Cluster,
     # on the happy path.  Lock only what is actually missing — the same idiom
     # relock_collaterals() uses (cluster.py) — then assert the full set.
     locked_now = {(l["txid"], l["vout"])
-                  for l in gm01.call("listlockunspent")["transparent"]}
+                  for l in treasury.call("listlockunspent")["transparent"]}
     todo = [o for o in collateral_outpoints
             if (o["txid"], o["vout"]) not in locked_now]
     if todo:
-        gm01.call("lockunspent", False, True, todo)
+        treasury.call("lockunspent", False, True, todo)
         print(f"[bootstrap] re-locked {len(todo)} collateral(s) dropped since funding")
     locked_now = {(l["txid"], l["vout"])
-                  for l in gm01.call("listlockunspent")["transparent"]}
+                  for l in treasury.call("listlockunspent")["transparent"]}
     missing = [o for o in collateral_outpoints
                if (o["txid"], o["vout"]) not in locked_now]
     if missing:
@@ -164,17 +228,23 @@ def register_gms(gm01: Node, cluster: W2Cluster,
     for i, (gm, label, outpoint) in enumerate(
             zip(cluster.gms, gm_labels, collateral_outpoints)):
         ip_port = f"{cluster.subnet_base}.{11 + i}:29994"
-        owner_addr  = gm01.getnewaddress()
-        voting_addr = gm01.getnewaddress()
-        payout_addr = gm01.getnewaddress()
-        # scriptPTXPayment on the GM's OWN wallet (KDD-035 wallet attribution;
-        # origin :164-168): the winning GM's wallet reflects the win.
-        ptx_pay_addr = gm.getnewaddress()
+        owner_addr  = treasury.getnewaddress()
+        voting_addr = treasury.getnewaddress()
+        payout_addr = treasury.getnewaddress()
+        # ★ KDD-035 AS AMENDED (Phase 2): scriptPTXPayment is minted on the
+        # TREASURY, not on the GM — a wallet-less GM has no wallet to mint from,
+        # so the original "the winning GM's wallet reflects the win" is not
+        # implementable under this topology.  A FRESH address PER GM keeps the
+        # property that actually mattered: attribution stays per-GM and is
+        # resolved by looking the address up in the registration map below
+        # (persisted to registration-N*.json as ptx_payment_addr).  Reusing one
+        # shared caller address here would collapse that and is rejected.
+        ptx_pay_addr = treasury.getnewaddress()
 
-        bls = gm01.bls_generate()
+        bls = treasury.bls_generate()
         print(f"[bootstrap] registering {label} at {ip_port} "
               f"({i+1}/{n_gms}, collateral {funding_txid[:12]}:{outpoint['vout']})")
-        reg = gm01.call(
+        reg = treasury.call(
             "protx_register",
             funding_txid, outpoint["vout"], ip_port,
             owner_addr, bls["public"], voting_addr, payout_addr,
@@ -198,25 +268,28 @@ def register_gms(gm01: Node, cluster: W2Cluster,
         # Amendment-1 pacing: flush the mempool every REG_BATCH registrations
         # so N=60 never stacks the full set as one unconfirmed chain.
         if (i + 1) % REG_BATCH == 0 and (i + 1) < n_gms:
-            h = gm01.getblockcount()
+            h = treasury.getblockcount()
             print(f"[bootstrap] batch of {REG_BATCH} done — waiting 1 block")
-            wait_for_height(gm01, h + 1, timeout=900)
+            wait_for_height(treasury, h + 1, timeout=900)
 
     return results
 
 
-def wait_for_dgm_stability(gm01: Node, expected: int, timeout: int = 900) -> None:
+def wait_for_dgm_stability(observer: Node, expected: int, timeout: int = 900) -> None:
+    """protx_list is wallet-SAFE (rpcevo.cpp:868-880 tolerates pwallet==nullptr;
+    only wallet_only=true throws), so `observer` may be any node — but the
+    recipes pass the treasury so registration and observation share one view."""
     print(f"[bootstrap] waiting for {expected} GMs in DGM list")
 
     def check():
         try:
-            return len(gm01.protx_list(detailed=False, valid_only=True)) >= expected
+            return len(observer.protx_list(detailed=False, valid_only=True)) >= expected
         except RPCError:
             return False
-    gm01.wait_for_condition(check, f"DGM list has {expected}", timeout=timeout)
+    observer.wait_for_condition(check, f"DGM list has {expected}", timeout=timeout)
 
 
-def wait_for_gm_confirmation(gm01: Node, expected: int, timeout: int = 900) -> None:
+def wait_for_gm_confirmation(observer: Node, expected: int, timeout: int = 900) -> None:
     """Amendment 1 (the reconcile's core): wait until EVERY GM is confirmed —
     tip >= registeredHeight + GM_MIN_CONF + 1, the point confirmedHash is set
     (deterministicgms.cpp:597-600) and the GM becomes visible to
@@ -225,25 +298,25 @@ def wait_for_gm_confirmation(gm01: Node, expected: int, timeout: int = 900) -> N
 
     def check():
         try:
-            lst = gm01.protx_list(detailed=True, valid_only=True)
+            lst = observer.protx_list(detailed=True, valid_only=True)
             if len(lst) < expected:
                 return False
-            tip = gm01.getblockcount()
+            tip = observer.getblockcount()
             return all(
                 tip >= e["dgmstate"]["registeredHeight"] + GM_MIN_CONF + 1
                 for e in lst)
         except (RPCError, KeyError):
             return False
-    gm01.wait_for_condition(check, "all GMs confirmation-deep", timeout=timeout)
+    observer.wait_for_condition(check, "all GMs confirmation-deep", timeout=timeout)
     print(f"[bootstrap] all {expected} GMs confirmation-deep at "
-          f"tip={gm01.getblockcount()}")
+          f"tip={observer.getblockcount()}")
 
 
-def assert_all_eligible(gm01: Node, expected: int) -> None:
+def assert_all_eligible(observer: Node, expected: int) -> None:
     """KDD-060 leg check from exposed state: every registered GM carries a
     compound node_id (ptxNodeId 'label:8hex'). The end-to-end selection proof
     (validate_fleet.eligibility_gate) complements this via the real V5 core."""
-    lst = gm01.protx_list(detailed=True, valid_only=True)
+    lst = observer.protx_list(detailed=True, valid_only=True)
     assert len(lst) == expected, f"DGM list {len(lst)} != {expected}"
     bad = []
     for e in lst:
@@ -280,28 +353,33 @@ def bootstrap(cluster: W2Cluster,
         gm_labels = [f"gm{i:02d}" for i in range(1, cluster.n + 1)]
     assert len(gm_labels) == cluster.n
 
-    gm01 = cluster.gms[0]
+    # ★ Phase 2 topology: the treasury is a CALLER, not gm01.  Every wallet RPC
+    # in this recipe runs here; GMs are -disablewallet=1 and answer wallet RPCs
+    # with "Method not found (disabled)".  cluster.treasury defaults to the
+    # primary caller and is overridable so a spare can take the role.
+    treasury = cluster.treasury
     caller = cluster.caller
 
     print(f"[bootstrap] === Phase 1 (N={cluster.n}): PoW + funding + ProRegPL ===")
-    mine_pow_blocks(gm01, POW_BLOCKS)
-    wait_for_pos(gm01)
+    print(f"[bootstrap] treasury={treasury.name} (wallet-holder; GMs are wallet-less)")
+    mine_pow_blocks(treasury, POW_BLOCKS)
+    wait_for_pos(treasury)
     for node in cluster.all_nodes:
         wait_for_height(node, POS_ACTIVATION, timeout=300)
 
-    current = gm01.getblockcount()
-    wait_for_height(gm01, current + phase1_warmup_blocks, timeout=4500)
+    current = treasury.getblockcount()
+    wait_for_height(treasury, current + phase1_warmup_blocks, timeout=4500)
 
     if fund_caller_utxos:
-        fund_caller(gm01, caller, split_count=fund_caller_utxos)
+        fund_caller(treasury, caller, split_count=fund_caller_utxos)
 
-    registration = register_gms(gm01, cluster, gm_labels)
+    registration = register_gms(treasury, cluster, gm_labels)
 
-    current = gm01.getblockcount()
-    wait_for_height(gm01, current + 1, timeout=900)
-    wait_for_dgm_stability(gm01, len(gm_labels))
-    wait_for_gm_confirmation(gm01, len(gm_labels))   # Amendment 1
-    assert_all_eligible(gm01, len(gm_labels))        # Amendment 1
+    current = treasury.getblockcount()
+    wait_for_height(treasury, current + 1, timeout=900)
+    wait_for_dgm_stability(treasury, len(gm_labels))
+    wait_for_gm_confirmation(treasury, len(gm_labels))   # Amendment 1
+    assert_all_eligible(treasury, len(gm_labels))        # Amendment 1
 
     print("[bootstrap] === Phase 2: restart with compound node_ids ===")
     env_overrides = build_phase2_env(registration)
