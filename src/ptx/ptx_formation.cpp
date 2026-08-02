@@ -536,9 +536,8 @@ void StartFormationAtAnchor(const CBlockIndex* pindexNew,
     std::vector<PTXDKGMember> members;
     uint256 anchorHash;
     int anchorHeight = 0;
-    // KDD-072 P-b6a: null on the fresh path (the overwhelming majority, and the
-    // ONLY path reachable while RotationDueAt is stubbed false); set to the
-    // predecessor when a rotation is due. Bound into the session below — that
+    // KDD-072 P-b6a: null on the fresh path (the overwhelming majority); set to
+    // the predecessor when a rotation is due. Bound into the session below — that
     // one field then feeds the Phase-4 sign-hash (P-b2), the v2 payload +
     // predecessor (P-b2), and the KDD-070 PENDING share role (ClosePhase5).
     uint256 rotationPredecessor;
@@ -585,9 +584,17 @@ void StartFormationAtAnchor(const CBlockIndex* pindexNew,
             return;
         }
 
-        // KDD-072 P-b6a — THE ROTATION BRANCH. The decision is P-b6b's policy;
-        // the stub returns due=false today, so the else-arm below is the only
-        // reachable path and the fresh behaviour is byte-identical to pre-P-b6a.
+        // KDD-072 P-b6a — THE ROTATION BRANCH. The decision is P-b6b's policy,
+        // and it is LIVE: PTX_Formation_RotationDueAt below is the real
+        // implementation (age >= nRotationInterval measured from the quorum's own
+        // formation anchor, lowest-hash tie-break, KDD-079 fairness floor at
+        // nRotationInterval + 2*nBoundaryInterval).  ★ The note that stood here
+        // until 2026-08-02 — "the stub returns due=false today, so the else-arm
+        // below is the only reachable path" — was a P-b6a-era statement left
+        // behind when P-b6b landed the policy, and it is FALSE: both arms are
+        // reachable.  It is corrected rather than deleted because it actively
+        // misled a rotation analysis (ODC-059 amendment (iv)): a reader trusting
+        // it concludes periodic re-key is dead, when ptxbea runs R=1440.
         // W2.4 W4-e — the production eligibility sources: blocks from disk
         // (the authenticated attributions W4-b verified at connect), and the
         // resolver composed with the boundary-time DGM lists.  Fail-safe
