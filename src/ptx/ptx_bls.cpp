@@ -165,13 +165,17 @@ size_t PTX_BLS_Promote(const uint256& successor_qh, const uint256& predecessor_q
 {
     LOCK(cs_ptx_my_bls_sk);
     auto sit = g_ptx_my_shares.find(successor_qh);
-    // KEY ISOLATION: only a PENDING share for THIS connecting quorum promotes.
-    // A connect for a quorum with no PENDING (or a non-PENDING share) is a NO-OP
-    // — it never touches PENDING(X) for some other X.
-    if (sit == g_ptx_my_shares.end() || sit->second.role != PTXShareRole::PENDING)
+    // KEY ISOLATION: only a promotable share for THIS connecting quorum promotes.
+    // A connect for a quorum with no promotable share is a NO-OP — it never
+    // touches a share for some other X. Isolation is keyed on QUORUM_HASH (the
+    // find above), NOT on role, so admitting a second role below does not widen
+    // which keys are reachable (BUG-028 contract amendment, see the header).
+    if (sit == g_ptx_my_shares.end() ||
+        (sit->second.role != PTXShareRole::PENDING &&
+         sit->second.role != PTXShareRole::UNDONE_RETAINED))   // BUG-028: the REDO path
         return 0;
 
-    // PENDING(successor) -> CURRENT.
+    // PENDING (first promotion) or UNDONE_RETAINED (redo after a reorg) -> CURRENT.
     sit->second.role             = PTXShareRole::CURRENT;
     sit->second.promotion_height = -1;
 
@@ -274,8 +278,36 @@ size_t PTX_BLS_DiscardSuperseded(int tip_height, CEvoDB* evoDb)
     return discarded;
 }
 
+size_t PTX_BLS_DiscardUndone(int tip_height, CEvoDB* evoDb)
+{
+    LOCK(cs_ptx_my_bls_sk);
+    // Exact mirror of DiscardSuperseded, for the other half of the promotion:
+    // buried this far below the tip, no permitted reorg can re-apply the
+    // disconnected block, so the retained successor can no longer be redone.
+    const int discard_depth = DEFAULT_MAX_REORG_DEPTH + PTX_SUPERSEDED_REORG_MARGIN;
+    size_t discarded = 0;
+    for (auto it = g_ptx_my_shares.begin(); it != g_ptx_my_shares.end(); ) {
+        if (it->second.role == PTXShareRole::UNDONE_RETAINED &&
+            it->second.promotion_height >= 0 &&
+            (tip_height - it->second.promotion_height) >= discard_depth) {
+            LogPrintf("PTX BUG-028: discarding UNDONE share for quorum %s "
+                      "(undone %d >= %d blocks ago; beyond redo reach)\n",
+                      it->first.ToString(),
+                      tip_height - it->second.promotion_height, discard_depth);
+            if (evoDb != nullptr)                    // erase from DISK too (P2 defect (a))
+                evoDb->GetRawDB().Erase(std::make_pair(DB_PTX_SKSHARE, it->first));
+            g_ptx_memory_only_shares.erase(it->first);
+            it = g_ptx_my_shares.erase(it);
+            ++discarded;
+        } else {
+            ++it;
+        }
+    }
+    return discarded;
+}
+
 size_t PTX_BLS_UndoPromote(const uint256& successor_qh, const uint256& predecessor_qh,
-                           CEvoDB* evoDb)
+                           int undo_height, CEvoDB* evoDb)
 {
     LOCK(cs_ptx_my_bls_sk);
     // Reversible ONLY if the successor is CURRENT (was promoted) AND the
@@ -298,16 +330,24 @@ size_t PTX_BLS_UndoPromote(const uint256& successor_qh, const uint256& predecess
     pit->second.role             = PTXShareRole::CURRENT;
     pit->second.promotion_height = -1;
 
-    // successor: the promotion that added this CURRENT is being unwound -> DISCARD.
-    g_ptx_memory_only_shares.erase(successor_qh);
-    g_ptx_my_shares.erase(sit);   // pit stays valid (distinct element)
+    // successor: CURRENT -> UNDONE_RETAINED, stamping the UNDO height as its
+    // retention clock (BUG-028). NOT erased: the promotion did not create this
+    // share (it pre-existed as PENDING from the ceremony), so erasing it would
+    // destroy material the promotion never brought into being and no redo could
+    // rebuild. Retained on the SAME depth basis as the predecessor, and — like
+    // the predecessor — NOT signable while retained (GetCurrentShare wants
+    // CURRENT). A re-connect of the same block promotes it back.
+    sit->second.role             = PTXShareRole::UNDONE_RETAINED;
+    sit->second.promotion_height = undo_height;
 
-    // Persist the revert via the RAW layer: re-persist the restored predecessor,
-    // erase the discarded successor from DISK (else it reloads on next start).
+    // Persist the revert via the RAW layer: BOTH shares changed role, so both are
+    // re-persisted (else a restart reloads stale roles — the restored predecessor
+    // as SUPERSEDED, the retained successor as CURRENT and wrongly signable).
     if (evoDb != nullptr) {
         if (!PTX_BLS_PersistShare(*evoDb, predecessor_qh, pit->second))
             g_ptx_memory_only_shares.insert(predecessor_qh);
-        evoDb->GetRawDB().Erase(std::make_pair(DB_PTX_SKSHARE, successor_qh));
+        if (!PTX_BLS_PersistShare(*evoDb, successor_qh, sit->second))
+            g_ptx_memory_only_shares.insert(successor_qh);
     }
     return 1;
 }

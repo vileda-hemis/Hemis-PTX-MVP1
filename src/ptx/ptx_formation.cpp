@@ -301,6 +301,7 @@ void PTX_Formation_RunTipSweeps(int tip_height)
     if (evoDb != nullptr) {
         PTX_BLS_ExpirePending(tip_height, evoDb.get());      // KDD-070 §7 TTL
         PTX_BLS_DiscardSuperseded(tip_height, evoDb.get());  // KDD-070 §6 depth
+        PTX_BLS_DiscardUndone(tip_height, evoDb.get());      // BUG-028 same depth, other half
     }
     if (ptxQuorumStore != nullptr) {
         ptxQuorumStore->RetireSupersededResidues(tip_height); // KDD-070 §5 bound

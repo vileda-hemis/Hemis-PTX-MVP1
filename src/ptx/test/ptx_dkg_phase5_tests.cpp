@@ -880,6 +880,7 @@ BOOST_AUTO_TEST_CASE(P2_WarnMissing_InQualNoShare_LogsNoThrow)
     PTX_TEST_ClearSkShareSlot();
 }
 
+
 // wipe clears ALL held shares (memory-only path, evoDb == nullptr).
 // RED (inversion): a wipe that clears nothing leaves shares held -> Get succeeds.
 BOOST_AUTO_TEST_CASE(P2_Wipe_ClearsAll)
@@ -1303,22 +1304,32 @@ BOOST_AUTO_TEST_CASE(P4_DiscardedSuperseded_GoneFromDisk)
     PTX_TEST_ClearSkShareSlot();
 }
 
-// undo revert: SUPERSEDED(pred) -> CURRENT, the reverted CURRENT(succ) discarded,
-// promotion_height cleared.
-// RED (inversion): an undo that does not clear promotion_height, or does not
-// discard the successor, or does not restore the predecessor role.
-BOOST_AUTO_TEST_CASE(P4_UndoRevert_RestoresPred_DiscardsSucc_ClearsHeight)
+// undo revert: SUPERSEDED(pred) -> CURRENT with promotion_height cleared, and
+// CURRENT(succ) -> UNDONE_RETAINED stamped with the undo height.
+//
+// ★ AMENDED BY BUG-028. This case previously asserted `!P3_held_role(succ, rs)`
+// — that the successor was DISCARDED — and so encoded the defect as the expected
+// behaviour. The erase is what made the undo a one-way door: the promotion never
+// created the successor's share (it pre-existed as PENDING from the ceremony), so
+// erasing it destroyed material no redo could rebuild. The predecessor half was
+// always retained-and-restorable; the successor half now matches it.
+//
+// RED (inversion): an undo that does not clear promotion_height, does not retain
+// the successor on its undo clock, or does not restore the predecessor role.
+BOOST_AUTO_TEST_CASE(P4_UndoRevert_RestoresPred_RetainsSucc_ClearsHeight)
 {
     PTX_TEST_ClearSkShareSlot();
     uint256 pred = QHk(0x54), succ = QHk(0x55);
     P4_make_promoted(pred, succ, 150, 0x54, 0x55);
 
-    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(succ, pred), 1u);
+    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(succ, pred, 200), 1u);
     PTXShareRole rp;
     BOOST_REQUIRE(P3_held_role(pred, rp)); BOOST_CHECK(rp == PTXShareRole::CURRENT);   // restored
     BOOST_CHECK_EQUAL(P3_promo_height(pred), -1);                                       // height cleared
     PTXShareRole rs;
-    BOOST_CHECK(!P3_held_role(succ, rs));                                               // successor discarded
+    BOOST_REQUIRE(P3_held_role(succ, rs));                                              // RETAINED, not discarded
+    BOOST_CHECK(rs == PTXShareRole::UNDONE_RETAINED);
+    BOOST_CHECK_EQUAL(P3_promo_height(succ), 200);                                      // undo height stamped
     PTX_TEST_ClearSkShareSlot();
 }
 
@@ -1334,7 +1345,7 @@ BOOST_AUTO_TEST_CASE(P4_PostRevert_Signs_PreRevert_Refuses)
     uint8_t out[32];
     BOOST_CHECK(!PTX_BLS_GetCurrentShare(pred, out));   // pre-revert: SUPERSEDED refuses
 
-    BOOST_REQUIRE_EQUAL(PTX_BLS_UndoPromote(succ, pred), 1u);
+    BOOST_REQUIRE_EQUAL(PTX_BLS_UndoPromote(succ, pred, 200), 1u);
     BOOST_CHECK(PTX_BLS_GetCurrentShare(pred, out));    // post-revert: CURRENT signs
     uint8_t sp[32]; std::memset(sp, 0x56, 32);
     BOOST_CHECK(std::memcmp(out, sp, 32) == 0);         // and it is the predecessor's own bytes
@@ -1350,8 +1361,8 @@ BOOST_AUTO_TEST_CASE(P4_Undo_Idempotent_SecondCallNoOps)
     uint256 pred = QHk(0x58), succ = QHk(0x59);
     P4_make_promoted(pred, succ, 150, 0x58, 0x59);
 
-    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(succ, pred), 1u);   // first: reverts
-    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(succ, pred), 0u);   // second: clean no-op
+    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(succ, pred, 200), 1u);   // first: reverts
+    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(succ, pred, 200), 0u);   // second: clean no-op
     PTXShareRole rp;
     BOOST_REQUIRE(P3_held_role(pred, rp)); BOOST_CHECK(rp == PTXShareRole::CURRENT);
     BOOST_CHECK_EQUAL(P3_promo_height(pred), -1);
@@ -1369,7 +1380,7 @@ BOOST_AUTO_TEST_CASE(P4_Undo_NoPromotion_CleanNoOp)
     uint8_t sp[32]; std::memset(sp, 0x5A, 32); std::string e;
     BOOST_REQUIRE(PTX_BLS_SetSkShare(pred, 100, sp, e));   // CURRENT, never superseded; succ never held
 
-    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(succ, pred), 0u);   // successor not held -> no-op
+    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(succ, pred, 200), 0u);   // successor not held -> no-op
     PTXShareRole rp;
     BOOST_REQUIRE(P3_held_role(pred, rp)); BOOST_CHECK(rp == PTXShareRole::CURRENT);   // untouched
     PTX_TEST_ClearSkShareSlot();
@@ -1385,12 +1396,162 @@ BOOST_AUTO_TEST_CASE(P4_Undo_KeyIsolation_LeavesOtherLineageUntouched)
     P4_make_promoted(predX, succX, 150, 0x5C, 0x5D);   // promoted lineage X
 
     uint256 succY = QHk(0x6A), predY = QHk(0x6B);      // unrelated Y, not held
-    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(succY, predY), 0u);   // no-op
+    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(succY, predY, 200), 0u);   // no-op
 
     PTXShareRole r;
     BOOST_REQUIRE(P3_held_role(succX, r)); BOOST_CHECK(r == PTXShareRole::CURRENT);              // X intact
     BOOST_REQUIRE(P3_held_role(predX, r)); BOOST_CHECK(r == PTXShareRole::SUPERSEDED_RETAINED);
     BOOST_CHECK_EQUAL(P3_promo_height(predX), 150);
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// ---------------------------------------------------------------------------
+// BUG-028 — the undo/redo asymmetry.
+//
+// A promotion has two halves, and only one of them was reversible:
+//
+//   predecessor  on undo: SUPERSEDED_RETAINED -> CURRENT   retained 120 blocks
+//                         on a reorg-DEPTH clock (promotion_height)   RESTORABLE
+//   successor    on undo: ERASED                            no retention, no
+//                         clock                                  NOT RESTORABLE
+//
+// That asymmetry IS BUG-028. A reorg that disconnects a PTXDKG block and then
+// re-applies it left the node holding NO share for the quorum: the redo's
+// Promote requires PENDING(successor_qh), but the undo had erased it, so the
+// redo no-opped and the node could not sign the rolls it was selected for.
+//
+// The successor now demotes to UNDONE_RETAINED and is retained on the SAME
+// basis as the predecessor. PENDING's TTL is deliberately not the mechanism:
+// PTX_PENDING_TTL_BLOCKS expires on tip_height - formation_height, and reorg
+// survival has to be measured from the UNDO, so no value of that constant can
+// be correct here — the clock is wrong, not the number.
+// ---------------------------------------------------------------------------
+
+// RED-1 (the defect itself): disconnect a PTXDKG block, then RE-CONNECT the same
+// block — the node must hold a signable CURRENT share again.
+// RED (inversion): an undo that ERASES the successor -> the redo's Promote finds
+// no share for successor_qh, no-ops (returns 0), and the node cannot sign.
+BOOST_AUTO_TEST_CASE(BUG028_UndoThenRedo_SuccessorSignableAgain)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 pred = QHk(0x70), succ = QHk(0x71);
+    P4_make_promoted(pred, succ, 150, 0x70, 0x71);
+
+    BOOST_REQUIRE_EQUAL(PTX_BLS_UndoPromote(succ, pred, 200), 1u);   // block DISCONNECTED
+
+    // the reorg RE-APPLIES the same block at the same height
+    BOOST_CHECK_EQUAL(PTX_BLS_Promote(succ, pred, 150), 1u);    // RED: returns 0 today
+
+    PTXShareRole rs;
+    BOOST_REQUIRE(P3_held_role(succ, rs));                      // RED: not held at all today
+    BOOST_CHECK(rs == PTXShareRole::CURRENT);
+    uint8_t out[32];
+    BOOST_CHECK(PTX_BLS_GetCurrentShare(succ, out));            // RED: cannot sign today
+    uint8_t ss[32]; std::memset(ss, 0x71, 32);
+    BOOST_CHECK(std::memcmp(out, ss, 32) == 0);                 // and it is the successor's own bytes
+
+    PTXShareRole rp;                                            // predecessor re-superseded by the redo
+    BOOST_REQUIRE(P3_held_role(pred, rp));
+    BOOST_CHECK(rp == PTXShareRole::SUPERSEDED_RETAINED);
+    BOOST_CHECK_EQUAL(P3_promo_height(pred), 150);
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// RED-1b: the undone successor is HELD but NOT SIGNABLE while retained — the
+// same guarantee SUPERSEDED_RETAINED already carries. Retention must not become
+// a second signing path for a quorum whose activating block is off the chain.
+// RED (inversion): a demote that leaves the successor CURRENT -> it signs for a
+// quorum that the active chain no longer activates.
+BOOST_AUTO_TEST_CASE(BUG028_UndoneSuccessor_HeldButNotSignable)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 pred = QHk(0x72), succ = QHk(0x73);
+    P4_make_promoted(pred, succ, 150, 0x72, 0x73);
+
+    BOOST_REQUIRE_EQUAL(PTX_BLS_UndoPromote(succ, pred, 200), 1u);
+
+    PTXShareRole rs;
+    BOOST_REQUIRE(P3_held_role(succ, rs));                      // RED: erased today
+    BOOST_CHECK(rs == PTXShareRole::UNDONE_RETAINED);
+    uint8_t out[32];
+    BOOST_CHECK(!PTX_BLS_GetCurrentShare(succ, out));           // retained != signable
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// RED-3 — the retention BOUNDARY for the undone successor, and the limit of the
+// basis. Depth 119 kept, depth 120 discarded, measured from the UNDO height:
+// DEFAULT_MAX_REORG_DEPTH + PTX_SUPERSEDED_REORG_MARGIN, the same constant the
+// predecessor half uses.
+//
+// ★ KNOWN LIMIT — pinned here rather than left implicit. DEFAULT_MAX_REORG_DEPTH
+// is the DEFAULT of a runtime option, not a hard constant: validation.cpp reads
+// `gArgs.GetArg("-maxreorg", DEFAULT_MAX_REORG_DEPTH)` and rejects forks at or
+// beyond that depth. A node started with -maxreorg ABOVE 120 therefore PERMITS
+// reorgs deeper than either retained role is kept for. Such a node could accept a
+// reorg that re-applies a PTXDKG block whose UNDONE_RETAINED share this sweep had
+// already discarded — reproducing BUG-028 exactly, from configuration rather than
+// from the erase. This test asserts the boundary the DEFAULT gives; it does NOT
+// assert safety under a widened window, and no share-slot change can provide that
+// (the bound is a consensus-layer parameter). Raising -maxreorg above 120 without
+// raising PTX_SUPERSEDED_REORG_MARGIN with it is an unsupported configuration.
+BOOST_AUTO_TEST_CASE(BUG028_UndoneRetentionBoundary_119Kept_120Discarded)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 pred = QHk(0x74), succ = QHk(0x75);
+    P4_make_promoted(pred, succ, 150, 0x74, 0x75);
+    BOOST_REQUIRE_EQUAL(PTX_BLS_UndoPromote(succ, pred, 200), 1u);   // undo height = 200
+    const int depth = DEFAULT_MAX_REORG_DEPTH + PTX_SUPERSEDED_REORG_MARGIN;   // 120
+    PTXShareRole r;
+
+    // depth 119 (tip = 200 + 119): kept, still redoable.
+    BOOST_CHECK_EQUAL(PTX_BLS_DiscardUndone(200 + depth - 1), 0u);
+    BOOST_REQUIRE(P3_held_role(succ, r)); BOOST_CHECK(r == PTXShareRole::UNDONE_RETAINED);
+
+    // depth 120 (tip = 200 + 120): discarded — no permitted reorg can re-apply it.
+    BOOST_CHECK_EQUAL(PTX_BLS_DiscardUndone(200 + depth), 1u);
+    BOOST_CHECK(!P3_held_role(succ, r));
+
+    // the sweep is role-scoped: the restored predecessor (CURRENT) is untouched.
+    BOOST_REQUIRE(P3_held_role(pred, r)); BOOST_CHECK(r == PTXShareRole::CURRENT);
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// BUG-028 SAFETY NET (explicitly NOT the fix — the fix is the UNDONE_RETAINED
+// retention in PTX_BLS_UndoPromote). The missing-share warning is about SIGNING
+// capacity, so it must key on the CURRENT subset, not on held-any: a share in a
+// retained role is HELD yet cannot sign, so a held-any test reports healthy while
+// the quorum is short a signer.
+//
+// This is not hypothetical bookkeeping — the retention itself created the hole.
+// Before the fix a node stranded by a reorg held NOTHING and so did warn; with
+// retention it holds an UNDONE_RETAINED share, and a held-any test would have
+// gone SILENT on exactly the state BUG-028 leaves behind.
+// RED (inversion): a warn keyed on PTX_BLS_HeldQuorumHashes() returns 0 here.
+BOOST_AUTO_TEST_CASE(BUG028_WarnMissing_RetainedRoleIsNotSignable)
+{
+    PTX_TEST_ClearSkShareSlot();
+    const std::string me = "node-me:bb";
+
+    uint256 pred = QHk(0x76), succ = QHk(0x77);
+    P4_make_promoted(pred, succ, 150, 0x76, 0x77);       // succ CURRENT, pred SUPERSEDED
+
+    CPTXQuorumRecord rec;
+    rec.quorum_hash = succ;
+    PTXQuorumMemberRecord m; m.node_id = me; m.in_qual = true; m.share_index = 3;
+    rec.members.push_back(m);
+    std::vector<CPTXQuorumRecord> active{rec};
+
+    // CURRENT: signable, no warning.
+    BOOST_CHECK_EQUAL(PTX_WarnMissingSharesForNode(active, me), 0);
+
+    // the reorg strands it: still HELD, but UNDONE_RETAINED and unsignable.
+    BOOST_REQUIRE_EQUAL(PTX_BLS_UndoPromote(succ, pred, 200), 1u);
+    PTXShareRole rr;
+    BOOST_REQUIRE(P3_held_role(succ, rr)); BOOST_CHECK(rr == PTXShareRole::UNDONE_RETAINED);
+    uint8_t out[32];
+    BOOST_REQUIRE(!PTX_BLS_GetCurrentShare(succ, out));               // cannot sign
+    BOOST_CHECK_EQUAL(PTX_WarnMissingSharesForNode(active, me), 1);   // and it SAYS so
+
     PTX_TEST_ClearSkShareSlot();
 }
 
@@ -1410,14 +1571,25 @@ BOOST_AUTO_TEST_CASE(P4_Revert_SurvivesLoadShares)
     BOOST_REQUIRE(PTX_BLS_SetSkShare(succ, 140, ss, PTXShareRole::PENDING, e));
     BOOST_REQUIRE_EQUAL(PTX_BLS_Promote(succ, pred, 150, evoDb.get()), 1u);   // persisted
 
-    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(succ, pred, evoDb.get()), 1u);      // persisted revert
+    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(succ, pred, 200, evoDb.get()), 1u);      // persisted revert
     PTX_TEST_ClearSkShareSlot();
     BOOST_REQUIRE_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);
     PTXShareRole rp;
     BOOST_REQUIRE(P3_held_role(pred, rp)); BOOST_CHECK(rp == PTXShareRole::CURRENT);   // reloaded restored
     BOOST_CHECK_EQUAL(P3_promo_height(pred), -1);
+    // BUG-028 / RED-2 (durability): this ASSERTED the successor was gone from disk.
+    // It is now RETAINED, so it must reload as UNDONE_RETAINED carrying its undo
+    // height — otherwise the redo path survives a reorg but not a restart, and the
+    // node comes back up unable to sign for a quorum the chain still activates.
     PTXShareRole rs;
-    BOOST_CHECK(!P3_held_role(succ, rs));                                              // successor gone from disk
+    BOOST_REQUIRE(P3_held_role(succ, rs));                                             // reloaded, not erased
+    BOOST_CHECK(rs == PTXShareRole::UNDONE_RETAINED);
+    BOOST_CHECK_EQUAL(P3_promo_height(succ), 200);                                     // undo height persisted
+    uint8_t out[32];
+    BOOST_CHECK(!PTX_BLS_GetCurrentShare(succ, out));                                  // retained != signable
+    // and the redo still works AFTER the restart
+    BOOST_CHECK_EQUAL(PTX_BLS_Promote(succ, pred, 210, evoDb.get()), 1u);
+    BOOST_CHECK(PTX_BLS_GetCurrentShare(succ, out));                                   // signable again
     PTX_BLS_WipeShares(evoDb.get());
     PTX_TEST_ClearSkShareSlot();
 }
@@ -1449,18 +1621,33 @@ BOOST_AUTO_TEST_CASE(P4_MultiBlockDisconnect_ReversesEachKeyedPromotion)
     BOOST_REQUIRE(P3_held_role(C, r)); BOOST_CHECK(r == PTXShareRole::CURRENT);
 
     // a disconnect of a block that promoted nothing -> clean no-op.
-    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(QHk(0x6F), QHk(0x6E)), 0u);
+    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(QHk(0x6F), QHk(0x6E), 200), 0u);
 
     // disconnect tip-first: reverse promote2 (C,B), then promote1 (B,A).
-    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(C, B), 1u);
+    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(C, B, 200), 1u);
     BOOST_REQUIRE(P3_held_role(B, r)); BOOST_CHECK(r == PTXShareRole::CURRENT);
     BOOST_CHECK_EQUAL(P3_promo_height(B), -1);
-    BOOST_CHECK(!P3_held_role(C, r));
+    // BUG-028: C is RETAINED (was: discarded), so the re-connect below can redo it.
+    BOOST_REQUIRE(P3_held_role(C, r)); BOOST_CHECK(r == PTXShareRole::UNDONE_RETAINED);
 
-    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(B, A), 1u);
+    BOOST_CHECK_EQUAL(PTX_BLS_UndoPromote(B, A, 200), 1u);
     BOOST_REQUIRE(P3_held_role(A, r)); BOOST_CHECK(r == PTXShareRole::CURRENT);
     BOOST_CHECK_EQUAL(P3_promo_height(A), -1);
-    BOOST_CHECK(!P3_held_role(B, r));
+    BOOST_REQUIRE(P3_held_role(B, r)); BOOST_CHECK(r == PTXShareRole::UNDONE_RETAINED);
+
+    // BUG-028 — the multi-block REDO, which is the shape a real reorg takes: the
+    // new branch re-applies both blocks in order, and the lineage must return to
+    // exactly the state it was in before the disconnect. Under the old erase this
+    // was unreachable — both promotions no-opped and the node held no CURRENT
+    // share for its own quorum at all.
+    BOOST_CHECK_EQUAL(PTX_BLS_Promote(B, A, 150), 1u);   // re-connect block 1
+    BOOST_CHECK_EQUAL(PTX_BLS_Promote(C, B, 200), 1u);   // re-connect block 2
+    BOOST_REQUIRE(P3_held_role(A, r)); BOOST_CHECK(r == PTXShareRole::SUPERSEDED_RETAINED);
+    BOOST_REQUIRE(P3_held_role(B, r)); BOOST_CHECK(r == PTXShareRole::SUPERSEDED_RETAINED);
+    BOOST_REQUIRE(P3_held_role(C, r)); BOOST_CHECK(r == PTXShareRole::CURRENT);
+    uint8_t out[32];
+    BOOST_CHECK(PTX_BLS_GetCurrentShare(C, out));        // and the tip quorum signs again
+    BOOST_CHECK(std::memcmp(out, sc, 32) == 0);
     PTX_TEST_ClearSkShareSlot();
 }
 
@@ -1492,7 +1679,7 @@ BOOST_AUTO_TEST_CASE(P4_SupersededNeverSignable_AcrossCycle)
     BOOST_CHECK(PTX_BLS_GetCurrentShare(S, out));
 
     // stage 2: revert. P -> CURRENT (signs again), S discarded (not signable).
-    BOOST_REQUIRE_EQUAL(PTX_BLS_UndoPromote(S, P), 1u);
+    BOOST_REQUIRE_EQUAL(PTX_BLS_UndoPromote(S, P, 200), 1u);
     BOOST_CHECK(PTX_BLS_GetCurrentShare(P, out));
     BOOST_CHECK(!PTX_BLS_GetCurrentShare(S, out));     // gone -> refused
 

@@ -335,7 +335,7 @@ bool CPTXQuorumStore::UndoBlock(const CBlock& block, const CBlockIndex* pindex)
         !payload.predecessor_quorum_hash.IsNull()) {
         RestoreActiveOnUndo(payload.predecessor_quorum_hash);
         PTX_BLS_UndoPromote(payload.quorum_hash, payload.predecessor_quorum_hash,
-                            &evoDb);
+                            pindex->nHeight, &evoDb);   // BUG-028: retention clock
         // KDD-072 P-b5: the reorg RE-ALLOW — erasing pq_p lets a different
         // successor rotate this predecessor on the new branch (the V9
         // erase-on-disconnect pattern). Idempotent; no ordering constraint
@@ -880,7 +880,17 @@ int PTX_WarnMissingSharesForNode(const std::vector<CPTXQuorumRecord>& active,
                                  const std::string& node_id)
 {
     if (node_id.empty()) return 0;
-    const std::set<uint256> held = PTX_BLS_HeldQuorumHashes();
+    // BUG-028 safety net (NOT the fix — the fix is the UNDONE_RETAINED retention
+    // in PTX_BLS_UndoPromote). HELD is not the right test here: this warning is
+    // about SIGNING capacity ("may fall below threshold"), and signing requires
+    // role CURRENT (PTX_BLS_GetCurrentShare). A share held as PENDING /
+    // SUPERSEDED_RETAINED / UNDONE_RETAINED cannot sign, so a held-any test
+    // reports healthy while the quorum is short a signer. This mattered
+    // immediately: before the retention landed, a node stranded by a reorg held
+    // NOTHING and so did warn; with retention it holds an UNDONE_RETAINED share
+    // and a held-any test would have gone SILENT on precisely the case BUG-028
+    // is about. Scope it to the CURRENT subset.
+    const std::set<uint256> held = PTX_BLS_HeldCurrentQuorumHashes();
     int warned = 0;
     for (const CPTXQuorumRecord& rec : active) {
         for (const PTXQuorumMemberRecord& m : rec.members) {

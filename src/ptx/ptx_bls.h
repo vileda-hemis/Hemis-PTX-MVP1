@@ -41,13 +41,19 @@ enum class PTXShareRole : uint8_t {
     CURRENT             = 0,  // the servicing signer for its quorum
     PENDING             = 1,  // rotation successor, not yet promoted (P3)
     SUPERSEDED_RETAINED = 2,  // former CURRENT, retained for reorg undo (P4)
+    UNDONE_RETAINED     = 3,  // former CURRENT, promotion UNDONE, retained for redo (BUG-028)
 };
 
 struct HeldShare {
     uint8_t      bytes[32]         = {};   // 32-byte big-endian blst scalar
     int          formation_height  = 0;    // height of the quorum's formation anchor
     PTXShareRole role              = PTXShareRole::CURRENT;
-    int          promotion_height  = -1;   // set at promotion (P3); -1 until then
+    // The RETENTION CLOCK for both retained roles — "the height of the event that
+    // put me in this role", and the basis for the depth-discard. For
+    // SUPERSEDED_RETAINED it is the promotion's connect height (P3/P4); for
+    // UNDONE_RETAINED it is the DISCONNECT height (BUG-028). One field, one
+    // meaning, so the 41-byte flat form is unchanged.
+    int          promotion_height  = -1;   // set at promotion/undo; -1 until then
 };
 
 extern std::map<uint256, HeldShare> g_ptx_my_shares;  // key = quorum_hash
@@ -179,15 +185,37 @@ static const int PTX_PENDING_TTL_BLOCKS = 8;
 // (120 blocks), no permitted reorg can reach it, so the retained predecessor can
 // be dropped. Named here beside PENDING_TTL; the sum is formed in the .cpp where
 // DEFAULT_MAX_REORG_DEPTH is in scope (keeps this header free of consensus.h).
+// BUG-028: the SAME sum is the retention basis for UNDONE_RETAINED. Both halves
+// of a promotion move together — if 20 is ever wrong, it is wrong for both.
+//
+// ★ KNOWN LIMIT (pinned by BUG-028 RED-3): DEFAULT_MAX_REORG_DEPTH is the
+// DEFAULT of the -maxreorg runtime option (validation.cpp:
+// `gArgs.GetArg("-maxreorg", DEFAULT_MAX_REORG_DEPTH)`), not a hard constant. A
+// node started with -maxreorg ABOVE 120 permits reorgs deeper than either
+// retained role is kept for, so a promotion could be undone after its retained
+// counterpart had already been discarded. This basis is the DEFAULT permitted
+// depth plus margin — it is not a guarantee against an operator-widened window.
 static const int PTX_SUPERSEDED_REORG_MARGIN = 20;
 
 // promote(successor): PENDING(successor_qh) -> CURRENT, and CURRENT(predecessor_qh)
 // -> SUPERSEDED_RETAINED with promotion_height stamped = connect_height (P4's
 // depth-discard basis). PURE over explicit inputs — ProcessBlock at block-connect
-// merely calls this. KEY ISOLATION: if there is no PENDING share for successor_qh,
-// it is a NO-OP (returns 0) — a connect for quorum Y never promotes PENDING(X).
-// Re-persists changed shares via the RAW layer (P2). ★ IRREVERSIBLE until P4:
-// there is no undo yet (P4 adds the UndoBlock revert). Returns 1 if promoted, else 0.
+// merely calls this.
+//
+// ★ CONTRACT AMENDMENT (BUG-028): the promotable set is PENDING **or**
+// UNDONE_RETAINED. The second is the REDO path — a reorg that disconnects a
+// PTXDKG block and then re-applies it. Before BUG-028 the undo erased the
+// successor, so the redo found nothing, no-opped, and left the node holding NO
+// share for the quorum (it could not sign the rolls it was selected for).
+//
+// KEY ISOLATION IS UNCHANGED and still holds: it is keyed on QUORUM_HASH, not on
+// role. A connect for quorum Y still never promotes a share for some other X —
+// the lookup is find(successor_qh), and only that key can be promoted. The
+// amendment widens which ROLES at that key are promotable; it does not widen
+// which KEYS are reachable. If there is no PENDING/UNDONE_RETAINED share for
+// successor_qh, it remains a NO-OP (returns 0).
+//
+// Re-persists changed shares via the RAW layer (P2). Returns 1 if promoted, else 0.
 size_t PTX_BLS_Promote(const uint256& successor_qh, const uint256& predecessor_qh,
                        int connect_height, CEvoDB* evoDb = nullptr);
 
@@ -210,15 +238,32 @@ size_t PTX_BLS_DiscardSuperseded(int tip_height, CEvoDB* evoDb = nullptr);
 
 // undo(successor, predecessor): the SLOT-SIDE revert of a promotion, invoked on
 // block-DISCONNECT (reorg). SUPERSEDED_RETAINED(predecessor_qh) -> CURRENT with
-// promotion_height cleared to -1; the reverted CURRENT(successor_qh) is DISCARDED.
-// PURE keyed function over explicit inputs — mirrors PTX_BLS_Promote, and is its
-// inverse. Mutates role IN PLACE (NOT via the guarded setter — that would refuse
-// on §C1 and would be a SECOND write path, §1 forbids it) and erases the successor
-// directly; re-persists via the RAW layer. IDEMPOTENT + KEY-ISOLATED: a call for a
-// quorum with no reversible promotion (successor not held/not CURRENT, or
-// predecessor not SUPERSEDED_RETAINED) is a clean NO-OP (returns 0, never an
-// error) — so a multi-block disconnect that unwinds a block promoting nothing, or
-// a second call, does no harm. Returns 1 if a promotion was reverted, else 0.
+// promotion_height cleared to -1; CURRENT(successor_qh) -> UNDONE_RETAINED with
+// promotion_height stamped = undo_height (its retention clock).
+//
+// ★ BUG-028: the successor used to be ERASED here. That made the undo a
+// one-way door and broke the "is its inverse" property this contract claims:
+// the inverse of PENDING -> CURRENT is CURRENT -> (retained, re-promotable),
+// NOT deletion. The promotion did not CREATE the successor's share — the share
+// already existed as PENDING (stored at ceremony FINALIZE, ptx_dkg.cpp) — so
+// erasing it destroyed material the promotion never brought into being, and no
+// later redo could reconstruct it. Retention makes the inverse actually total.
+//
+// SYMMETRY: both halves of a promotion are now retained on the same reorg-DEPTH
+// clock and the same constant (DEFAULT_MAX_REORG_DEPTH + margin) — predecessor
+// as SUPERSEDED_RETAINED, successor as UNDONE_RETAINED. Neither retained role is
+// SIGNABLE: PTX_BLS_GetCurrentShare requires CURRENT.
+//
+// PURE keyed function over explicit inputs — mirrors PTX_BLS_Promote. Mutates
+// role IN PLACE (NOT via the guarded setter — that would refuse on §C1 and would
+// be a SECOND write path, §1 forbids it); re-persists BOTH shares via the RAW
+// layer. IDEMPOTENT + KEY-ISOLATED: a call for a quorum with no reversible
+// promotion (successor not held/not CURRENT, or predecessor not
+// SUPERSEDED_RETAINED) is a clean NO-OP (returns 0, never an error) — so a
+// multi-block disconnect that unwinds a block promoting nothing, or a second
+// call, does no harm. Idempotency is UNCHANGED by the retention: after the first
+// call the successor is UNDONE_RETAINED, so the successor-must-be-CURRENT guard
+// still rejects the second. Returns 1 if a promotion was reverted, else 0.
 //
 // SCOPE (KDD-070 = the share slot): this is the SHARE-SLOT half only. The
 // record-side revert (successor de-activated, predecessor SUPERSEDED->ACTIVE in
@@ -227,7 +272,16 @@ size_t PTX_BLS_DiscardSuperseded(int tip_height, CEvoDB* evoDb = nullptr);
 // disconnect: keyed by quorum_hash, idempotent, no assumption about call order
 // relative to the record store.
 size_t PTX_BLS_UndoPromote(const uint256& successor_qh, const uint256& predecessor_qh,
-                           CEvoDB* evoDb = nullptr);
+                           int undo_height, CEvoDB* evoDb = nullptr);
+
+// BUG-028 — discard every UNDONE_RETAINED share buried at least
+// DEFAULT_MAX_REORG_DEPTH + PTX_SUPERSEDED_REORG_MARGIN (120) blocks below the
+// tip, DEPTH-based on tip_height - promotion_height (here: the UNDO height).
+// Exact mirror of PTX_BLS_DiscardSuperseded — same basis, same constant, same
+// disk-erase shape — for the other half of the promotion. Past this depth no
+// permitted reorg can re-apply the disconnected block, so the retained successor
+// is dropped. Returns the number discarded; other roles are untouched.
+size_t PTX_BLS_DiscardUndone(int tip_height, CEvoDB* evoDb = nullptr);
 
 // Sign msg with a raw 32-byte blst scalar (the GM's stored share).
 // Called by gm_bls_sign RPC handler on GM nodes.
