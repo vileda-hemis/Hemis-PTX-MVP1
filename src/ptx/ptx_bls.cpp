@@ -278,6 +278,35 @@ size_t PTX_BLS_DiscardSuperseded(int tip_height, CEvoDB* evoDb)
     return discarded;
 }
 
+std::map<uint256, HeldShare> PTX_BLS_SnapshotShares()
+{
+    LOCK(cs_ptx_my_bls_sk);
+    return g_ptx_my_shares;   // by value — the caller owns the snapshot
+}
+
+void PTX_BLS_RestoreShares(std::map<uint256, HeldShare> shares, CEvoDB* evoDb)
+{
+    LOCK(cs_ptx_my_bls_sk);
+    if (evoDb != nullptr) {
+        // Keys the walk ADDED are not in the snapshot; their raw writes already
+        // reached disk, so erase them or they reload on the next start.
+        for (const auto& kv : g_ptx_my_shares) {
+            if (shares.count(kv.first) == 0)
+                evoDb->GetRawDB().Erase(std::make_pair(DB_PTX_SKSHARE, kv.first));
+        }
+    }
+    g_ptx_my_shares = std::move(shares);
+    // Re-persist every restored share: the walk's raw writes bypassed the evoDb
+    // rollback, so memory-only restoration would leave disk holding the mutated
+    // roles and the regression would survive the restart (BUG-023's shape).
+    if (evoDb != nullptr) {
+        for (const auto& kv : g_ptx_my_shares) {
+            if (!PTX_BLS_PersistShare(*evoDb, kv.first, kv.second))
+                g_ptx_memory_only_shares.insert(kv.first);
+        }
+    }
+}
+
 size_t PTX_BLS_DiscardUndone(int tip_height, CEvoDB* evoDb)
 {
     LOCK(cs_ptx_my_bls_sk);

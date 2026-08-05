@@ -1516,6 +1516,102 @@ BOOST_AUTO_TEST_CASE(BUG028_UndoneRetentionBoundary_119Kept_120Discarded)
     PTX_TEST_ClearSkShareSlot();
 }
 
+// ---------------------------------------------------------------------------
+// BUG-029 — the VerifyDB dry-run walk mutates the share store.
+//
+// VerifyDB at nCheckLevel>=3 runs the REAL DisconnectBlock over the last
+// -checkblocks (default 6) blocks:
+//
+//   VerifyDB -> DisconnectBlock (validation.cpp:1346)
+//            -> UndoSpecialTxsInBlock (specialtx_validation.cpp:1571)
+//            -> ptxQuorumStore->UndoBlock (:1625)
+//            -> PTX_BLS_UndoPromote  ==> mutates g_ptx_my_shares
+//
+// Two sandboxes protect that walk — a throwaway CCoinsViewCache and an evoDb
+// rollback transaction — and the share store is outside BOTH. The memory half is
+// a bare global; the DISK half escapes because PTX_BLS_PersistShare writes through
+// GetRawDB(), which bypasses CDBTransaction by design (ODC-035). Level 3 never
+// reconnects, so nothing promotes the share back.
+//
+// This is BUG-023's mechanism on a different global — there LotteryState, here the
+// share store. BUG-023's sentry saves only LotteryState.
+//
+// ★ BUG-028 INTERACTION, pinned rather than assumed: before 56c938a the same path
+// ERASED the share (and the erase was a raw write too), so a startup verify could
+// destroy key material irrecoverably. Retention converted that into a recoverable
+// wrong-role. These tests assert the mid-walk role explicitly so the seam between
+// the two fixes stays visible.
+// ---------------------------------------------------------------------------
+
+// RED (memory half): snapshot, run the walk's mutation, restore — the share must
+// come back CURRENT and signable.
+// RED (inversion): no snapshot/restore around the walk -> the share is left
+// UNDONE_RETAINED and the node cannot sign for a quorum the chain still activates.
+BOOST_AUTO_TEST_CASE(BUG029_WalkMutationRestoredByShareSnapshot)
+{
+    PTX_TEST_ClearSkShareSlot();
+    uint256 pred = QHk(0x78), succ = QHk(0x79);
+    P4_make_promoted(pred, succ, 150, 0x78, 0x79);
+
+    auto snap = PTX_BLS_SnapshotShares();          // what VerifyDB must leave behind
+    BOOST_CHECK_EQUAL(snap.size(), 2u);
+
+    // the walk: a disconnect of the rotation block, exactly as UndoBlock issues it
+    BOOST_REQUIRE_EQUAL(PTX_BLS_UndoPromote(succ, pred, 200), 1u);
+
+    // ★ BUG-028 cross-check — the mid-walk state, observed not assumed.
+    PTXShareRole mid;
+    BOOST_REQUIRE(P3_held_role(succ, mid));
+    BOOST_CHECK(mid == PTXShareRole::UNDONE_RETAINED);   // retained (was: erased)
+    uint8_t out[32];
+    BOOST_CHECK(!PTX_BLS_GetCurrentShare(succ, out));    // and unsignable mid-walk
+
+    PTX_BLS_RestoreShares(snap);                    // the sentry's restore
+
+    PTXShareRole after;
+    BOOST_REQUIRE(P3_held_role(succ, after));
+    BOOST_CHECK(after == PTXShareRole::CURRENT);         // restored
+    BOOST_CHECK(PTX_BLS_GetCurrentShare(succ, out));     // signable again
+    PTXShareRole rp;
+    BOOST_REQUIRE(P3_held_role(pred, rp));
+    BOOST_CHECK(rp == PTXShareRole::SUPERSEDED_RETAINED);
+    BOOST_CHECK_EQUAL(P3_promo_height(pred), 150);       // and its clock survived
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// RED (disk half): the walk's raw writes ALREADY reached disk, so a memory-only
+// restore leaves the regression persisted — it would survive the restart, and
+// every restart re-runs the walk, so it could never self-heal.
+// RED (inversion): a restore that does not re-persist -> after reload the share
+// comes back UNDONE_RETAINED.
+BOOST_AUTO_TEST_CASE(BUG029_RestoreReachesDisk)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_TEST_ClearSkShareSlot();
+    uint256 pred = QHk(0x7A), succ = QHk(0x7B);
+    uint8_t sp[32]; std::memset(sp, 0x7A, 32);
+    uint8_t ss[32]; std::memset(ss, 0x7B, 32);
+    std::string e;
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(pred, 100, sp, e));
+    BOOST_REQUIRE(PTX_BLS_SetSkShare(succ, 140, ss, PTXShareRole::PENDING, e));
+    BOOST_REQUIRE_EQUAL(PTX_BLS_Promote(succ, pred, 150, evoDb.get()), 1u);
+
+    auto snap = PTX_BLS_SnapshotShares();
+    BOOST_REQUIRE_EQUAL(PTX_BLS_UndoPromote(succ, pred, 200, evoDb.get()), 1u);  // raw write hits disk
+    PTX_BLS_RestoreShares(snap, evoDb.get());
+
+    // simulate the restart the operator would do next
+    PTX_TEST_ClearSkShareSlot();
+    BOOST_REQUIRE_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);
+    PTXShareRole r;
+    BOOST_REQUIRE(P3_held_role(succ, r));
+    BOOST_CHECK(r == PTXShareRole::CURRENT);        // disk was restored, not just memory
+    uint8_t out[32];
+    BOOST_CHECK(PTX_BLS_GetCurrentShare(succ, out));
+    PTX_BLS_WipeShares(evoDb.get());
+    PTX_TEST_ClearSkShareSlot();
+}
+
 // BUG-028 SAFETY NET (explicitly NOT the fix — the fix is the UNDONE_RETAINED
 // retention in PTX_BLS_UndoPromote). The missing-share warning is about SIGNING
 // capacity, so it must key on the CURRENT subset, not on held-any: a share in a

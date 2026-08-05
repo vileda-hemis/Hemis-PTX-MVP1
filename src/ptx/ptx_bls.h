@@ -283,6 +283,27 @@ size_t PTX_BLS_UndoPromote(const uint256& successor_qh, const uint256& predecess
 // is dropped. Returns the number discarded; other roles are untouched.
 size_t PTX_BLS_DiscardUndone(int tip_height, CEvoDB* evoDb = nullptr);
 
+// ---------------------------------------------------------------------------
+// BUG-029 — snapshot/restore of the whole share store, for validation dry runs.
+//
+// VerifyDB's level-3 walk (validation.cpp) runs the REAL DisconnectBlock, which
+// reaches PTX_BLS_UndoPromote and MUTATES g_ptx_my_shares. That mutation is
+// outside both sandboxes protecting the walk: the throwaway CCoinsViewCache, and
+// the evoDb rollback transaction — the latter because PTX_BLS_PersistShare writes
+// through GetRawDB(), which bypasses CDBTransaction by design (ODC-035's degraded
+// path wants persistence untied from block atomicity). These two mirror pose's
+// GetAllRecords()/RestoreRecords() so a caller restores each global with one call.
+//
+// RestoreShares is DURABLE, not transactional: it re-persists every restored share
+// and erases keys that the walk added, because the walk's raw writes have already
+// reached disk and no rollback will remove them. Same scope caveat as pose's
+// RestoreRecords — a crash mid-restore still leaves disk dirty.
+//
+// NOT snapshotted: g_ptx_memory_only_shares (a diagnostic set, not consensus
+// state). A dry run that provokes a persist failure can leave a residue there.
+std::map<uint256, HeldShare> PTX_BLS_SnapshotShares();
+void PTX_BLS_RestoreShares(std::map<uint256, HeldShare> shares, CEvoDB* evoDb = nullptr);
+
 // Sign msg with a raw 32-byte blst scalar (the GM's stored share).
 // Called by gm_bls_sign RPC handler on GM nodes.
 bool PTX_BLS_PartialSign(const uint8_t sk_bytes[32], const uint256& msg,

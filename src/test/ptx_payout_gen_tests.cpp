@@ -24,6 +24,10 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <fstream>      // BUG-029: structural check reads validation.cpp
+#include <sstream>
+#include <string>
+
 struct PTXBeaTestingSetup : public BasicTestingSetup {
     PTXBeaTestingSetup() : BasicTestingSetup(CBaseChainParams::PTXBEATESTNET) {}
 };
@@ -921,6 +925,62 @@ BOOST_AUTO_TEST_CASE(Bug023x024_ClobberedGlobalRejectsAtCoalesceNotPayout)
     BOOST_CHECK_EQUAL(RunCoalescePlusPayout({coalesceTx, payoutTx}, gmList, height,
                                             /*fJustCheck=*/true),
                       "ptxcoalesce-wrong-input");
+}
+
+// ---------------------------------------------------------------------------
+// BUG-029 — THE INVARIANT, ENFORCED RATHER THAN STATED.
+//
+// VerifyDB's level-3 walk runs the real DisconnectBlock, so every
+// consensus-affecting PTX global that UndoSpecialTxsInBlock mutates must be
+// saved and restored by the sentry in CVerifyDB::VerifyDB. Three are known:
+//
+//   LotteryState            (BUG-023 — the original clobber)
+//   pose records            (reachable since BUG-027 added the pose restore to
+//                            UndoSpecialTxsInBlock on 2026-08-01, AFTER BUG-023's
+//                            sentry was written — the sentry was not widened)
+//   g_ptx_my_shares         (BUG-029 — reachable via UndoBlock -> UndoPromote)
+//
+// ★ WHY THIS TEST EXISTS. Three defects of this exact shape have now been found
+// by MEASUREMENT on a live fleet (BUG-023, BUG-024, BUG-029), each costing an
+// incident. The pattern is that a correct change elsewhere widens what validation
+// mutates, and the sentry — which enumerates globals explicitly — is not updated,
+// because nothing forces it to be. This test forces it: add a global to the walk
+// without adding it here and the suite goes red at review time.
+//
+// ★ HONEST LIMIT. This pins the three KNOWN globals against removal, rename, or a
+// sentry that silently narrows. It CANNOT detect a fourth global that nobody has
+// named yet — completeness is not cheaply enforceable, and pretending otherwise
+// would be worse than saying so. The comment at the sentry carries the invariant
+// for the reader; this test carries it for the build.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(Bug029_VerifyDBSentryCoversEveryMutatedPTXGlobal)
+{
+    const std::string path = std::string(PTX_SRCDIR) + "/src/validation.cpp";
+    std::ifstream f(path, std::ios::binary);
+    BOOST_REQUIRE_MESSAGE(f.good(), "cannot open " << path);
+    std::stringstream ss;
+    ss << f.rdbuf();
+    const std::string src = ss.str();
+    BOOST_REQUIRE(!src.empty());
+
+    // Locate the sentry that guards the verify walk.
+    const size_t s = src.find("PTXStateSentry");
+    BOOST_REQUIRE_MESSAGE(s != std::string::npos,
+                          "VerifyDB's PTXStateSentry not found — was it renamed or removed?");
+    // Bound the region to the struct body so a match elsewhere cannot satisfy this.
+    const size_t end = src.find("} ptxVerifySentry", s);
+    BOOST_REQUIRE_MESSAGE(end != std::string::npos, "PTXStateSentry instance not found");
+    const std::string body = src.substr(s, end - s);
+
+    // Every known consensus-affecting PTX global must appear in the sentry body.
+    BOOST_CHECK_MESSAGE(body.find("GetLotteryState") != std::string::npos,
+                        "sentry does not cover LotteryState (BUG-023)");
+    BOOST_CHECK_MESSAGE(body.find("g_ptx_pose_tracker") != std::string::npos,
+                        "sentry does not cover pose records (BUG-027 widened the walk)");
+    BOOST_CHECK_MESSAGE(body.find("PTX_BLS_RestoreShares") != std::string::npos,
+                        "sentry does not cover the BLS share store (BUG-029)");
+    BOOST_CHECK_MESSAGE(body.find("PTX_BLS_SnapshotShares") != std::string::npos,
+                        "sentry does not snapshot the BLS share store (BUG-029)");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

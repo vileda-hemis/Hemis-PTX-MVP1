@@ -50,7 +50,9 @@
 #include "warnings.h"
 #include "zpiv/zpivmodule.h"
 #include "ptx/ptx_accum_script.h"
+#include "ptx/ptx_bls.h"            // BUG-029: share-store snapshot/restore
 #include "ptx/ptx_lottery_state.h"
+#include "ptx/ptx_pose.h"           // BUG-029: pose snapshot/restore
 
 #include <future>
 
@@ -3738,22 +3740,54 @@ bool CVerifyDB::VerifyDB(CCoinsView* coinsview, int nCheckLevel, int nCheckDepth
     // begin tx and let it rollback
     auto dbTx = evoDb->BeginTransaction();
 
-    // BUG-023: the level-3 walk below runs the REAL DisconnectBlock, whose
-    // UndoSpecialTxsInBlock assigns the in-memory LotteryState global — state
-    // outside BOTH sandboxes protecting this dry run (the throwaway coins
-    // cache and the evoDb transaction above, which rolls back on scope exit).
-    // Level 3 never reconnects and nothing reloads afterwards, so without a
-    // restore every startup with a PTXCOALESCE inside the -checkblocks window
-    // left the live state regressed to the pre-window snapshot (the h720
-    // fleet wedge).  Save/restore so verification leaves in-memory state
-    // exactly as found — init and the verifychain RPC both reach this.
-    // Destroyed before the LOCK above releases, so the cs_main requirement
-    // on GetLotteryState() holds in the destructor.
-    struct LotteryStateSentry {
-        LotteryState saved;
-        LotteryStateSentry() EXCLUSIVE_LOCKS_REQUIRED(cs_main) { saved = GetLotteryState(); }
-        ~LotteryStateSentry() { GetLotteryState() = saved; }
-    } lotteryStateSentry;
+    // ★ THE INVARIANT (BUG-023, BUG-027, BUG-029):
+    //   EVERY consensus-affecting PTX global that validation can mutate restores
+    //   HERE. If you add one to the disconnect path, add it to this sentry.
+    //
+    // The level-3 walk below runs the REAL DisconnectBlock, whose
+    // UndoSpecialTxsInBlock mutates in-memory PTX globals — state outside BOTH
+    // sandboxes protecting this dry run (the throwaway coins cache, and the evoDb
+    // transaction above which rolls back on scope exit). Level 3 never reconnects
+    // and nothing reloads afterwards, so an unrestored mutation is permanent.
+    //
+    //   LotteryState      BUG-023 — the h720 fleet wedge: every startup with a
+    //                     PTXCOALESCE inside the -checkblocks window regressed the
+    //                     live state to the pre-window snapshot.
+    //   pose records      Reachable since BUG-027 added the pose restore to
+    //                     UndoSpecialTxsInBlock (2026-08-01) — AFTER this sentry
+    //                     was written for LotteryState alone, and it was not
+    //                     widened. RestoreRecords() also Save()s, so the flat file
+    //                     ptx_pose.dat is regressed too, not just memory.
+    //   share store       BUG-029 — UndoBlock -> PTX_BLS_UndoPromote demotes the
+    //                     held share. PTX_BLS_PersistShare writes through
+    //                     GetRawDB(), which bypasses the evoDb transaction BY
+    //                     DESIGN (ODC-035 wants the degraded path's persistence
+    //                     untied from block atomicity), so the disk half escapes
+    //                     the rollback as well. Restore is therefore durable, not
+    //                     merely in-memory.
+    //
+    // ★ Routing PersistShare through the transactional evoDb was considered as the
+    // alternative fix and REJECTED: it would change persistence semantics for every
+    // caller to repair one walk, and would break ODC-035's deliberately
+    // non-atomic degraded path. Do not "fix" the raw write — fix it here.
+    //
+    // Init and the verifychain RPC both reach this. Destroyed before the LOCK above
+    // releases, so the cs_main requirement on GetLotteryState() holds in the dtor.
+    struct PTXStateSentry {
+        LotteryState                          savedLottery;
+        std::map<std::string, PTXNodeRecord>  savedPose;
+        std::map<uint256, HeldShare>          savedShares;
+        PTXStateSentry() EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+            savedLottery = GetLotteryState();
+            savedPose    = g_ptx_pose_tracker.GetAllRecords();
+            savedShares  = PTX_BLS_SnapshotShares();
+        }
+        ~PTXStateSentry() {
+            GetLotteryState() = savedLottery;
+            g_ptx_pose_tracker.RestoreRecords(std::move(savedPose));
+            PTX_BLS_RestoreShares(std::move(savedShares), evoDb.get());
+        }
+    } ptxVerifySentry;
 
     // Verify blocks in the best chain
     if (nCheckDepth <= 0)
