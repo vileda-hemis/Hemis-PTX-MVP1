@@ -145,8 +145,16 @@ class Node:
         raise TimeoutError(f"{self.name}: timed out waiting for '{desc}' after {timeout}s")
 
     def is_rpc_ready(self) -> bool:
+        # ★ ODC-064-class fix (2026-08-06): this used to discard the exception
+        # entirely, so an AUTH failure (wrong rpcpassword) was indistinguishable
+        # from a dead daemon — 106 nodes reported "non-responsive" while every
+        # one of them was answering correctly to a curl with the right creds.
+        # Keep the boolean contract, but RETAIN the reason so wait_ready's
+        # timeout can say WHY instead of just listing names.
         try:
             self.getblockcount()
+            self.last_rpc_error = None
             return True
-        except Exception:
+        except Exception as e:
+            self.last_rpc_error = f"{type(e).__name__}: {str(e)[:120]}"
             return False

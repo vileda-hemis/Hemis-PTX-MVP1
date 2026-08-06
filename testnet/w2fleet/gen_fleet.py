@@ -186,6 +186,32 @@ def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser,
 """)
         for p in caller_peers:
             lines.append(f"      - -addnode={gm_ip(subnet_base, p)}\n")
+        # ★ ODC-060 PRODUCER MESH (2026-08-06) — the dominant fork-rate lever.
+        #
+        # Under the Phase-2 wallet-less topology the BLOCK PRODUCERS are the
+        # CALLERS, not the GMs (GMs run -disablewallet=1: no wallet, no staker
+        # thread). Until now callers peered ONLY to spread GMs (caller_peers
+        # above) and NEVER to each other, so one producer's block reached
+        # another producer only via GM relay hops. That is exactly the
+        # shadowed-producer condition ODC-060 measured: a producer that has not
+        # yet seen the winner hashes the same slot boundaries and mints a stale
+        # competitor, and amendment (i) showed the resulting collision is
+        # indistinguishable from an independent one by block time alone.
+        #
+        # ALL-TO-ALL among producers: with `callers` producers each gains
+        # callers-1 direct edges, so a mint propagates producer->producer in ONE
+        # hop instead of >=2. ODC-060's mesh experiment (degree 7 -> ~47) moved
+        # the race rate 0.739 -> 0.166/blk and stale mints 22% -> 0%; this is the
+        # same intervention applied where the producers actually are.
+        #
+        # Cheap and bounded: callers is single digits, so this is O(callers^2)
+        # edges (8 producers -> 56 directed addnodes), not an N-squared GM mesh.
+        if callers > 1:
+            lines.append("      # ODC-060: direct producer<->producer edges (all-to-all)\n")
+            for j in range(1, callers + 1):
+                if j == k:
+                    continue
+                lines.append(f"      - -addnode={subnet_base}.{10 - (j - 1)}\n")
         lines.append("      # PTX node registry (legacy trusted-dealer roll path; id@host:port per KDD-033)\n")
         for i in range(1, n + 1):
             g = gm_name(i)

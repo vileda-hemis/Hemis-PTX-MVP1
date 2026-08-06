@@ -22,7 +22,34 @@ from .node import Node
 
 DEF_COMPOSE = "/mnt/pve/Node14TB/hemis-ptx/docker-w2/docker-compose.generated.yml"
 DEF_RPC_USER = "ptxw2rpc"
-DEF_RPC_PASS = "ptxw2pass2026"
+
+
+def _env_cred(key: str, fallback: str) -> str:
+    """Read a credential from the generated .env, falling back to the literal.
+
+    ★ WHY THIS EXISTS (2026-08-06): DEF_RPC_PASS used to be the hardcoded
+    fixture password. When the fleet's RPC credentials were rotated at rebuild,
+    gen_fleet wrote the new value to .env and the containers picked it up — but
+    the harness kept sending the OLD one, so every RPC failed AUTH. is_rpc_ready
+    swallows the exception, so 106 auth failures presented as 106 "non-responsive"
+    nodes and burned a 50-minute wait_ready timeout before anything said "401".
+    The credential now has ONE source of truth: the .env gen_fleet writes.
+    """
+    env_path = os.path.join(os.path.dirname(DEF_COMPOSE), ".env")
+    try:
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith(key + "="):
+                    val = line.split("=", 1)[1].strip()
+                    if val:
+                        return val
+    except OSError:
+        pass
+    return fallback
+
+
+DEF_RPC_PASS = _env_cred("RPCPASSWORD", "ptxw2pass2026")
 _HOST = "127.0.0.1"
 PROJECT = "ptx-w2"
 
@@ -272,6 +299,16 @@ class W2Cluster:
                 relock_collaterals(self.treasury)
                 return
             time.sleep(poll)
-        not_ready = [nd.name for nd in self.all_nodes if not nd.is_rpc_ready()]
+        stragglers = [nd for nd in self.all_nodes if not nd.is_rpc_ready()]
+        not_ready = [nd.name for nd in stragglers]
+        # ★ Report WHY, not just WHO. A uniform reason across every node means a
+        # CONFIG fault (auth, port, host), not N independent node failures — the
+        # fleet-identical signature. Without this the operator sees only a list.
+        reasons = {}
+        for nd in stragglers:
+            r = getattr(nd, "last_rpc_error", None) or "unknown"
+            reasons.setdefault(r, []).append(nd.name)
+        summary = "; ".join(f"{r} [{len(v)} nodes, e.g. {v[0]}]" for r, v in reasons.items())
         raise TimeoutError(
-            f"W2 cluster not ready after {timeout}s; non-responsive: {not_ready}")
+            f"W2 cluster not ready after {timeout}s; non-responsive: {len(not_ready)}/"
+            f"{len(self.all_nodes)}\n  REASONS: {summary}\n  nodes: {not_ready}")
