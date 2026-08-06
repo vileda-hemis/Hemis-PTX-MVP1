@@ -32,7 +32,7 @@ chain_extends — restore-proof helper: the restored fleet must EXTEND (PoS
 
 import sys
 import time
-from harness.cluster import W2Cluster
+from harness.cluster import W2Cluster, ptxbea_boundary_interval
 from harness.node import RPCError
 
 
@@ -121,15 +121,38 @@ def eligibility_gate(cluster: W2Cluster, expected_n: int) -> dict:
     # end-to-end selection proof through the real V5 core.  V11 (SG-1b-iii)
     # requires the anchor ON the formation schedule, so probe the latest
     # boundary <= tip; a boundary already carrying a formed quorum refuses at
-    # V9 (duplicate-formation, also pre-V5) — walk back one boundary, bounded.
-    FORMATION_N = 80  # dev-net nFormationInterval (chainparams, SG-1b-i)
-    anchor_h = tip - (tip % FORMATION_N)
+    # V9 (duplicate-formation, also pre-V5) — walk back one boundary, bounded
+    # BELOW by the registration floor.
+    # ★ TWO DEFECTS KILLED HERE (2026-08-06), both live-caught on the W2.5b
+    # fleet stand-up:
+    #   1. FORMATION_N was a hand-copied literal (80, the SG-1b dev value).
+    #      W2.5b moved ptxbea's boundary cadence to 30 (KDD-079 decouple) and
+    #      the gate refused every anchor as off-boundary (h400 instance).
+    #      N now comes from chainparams via the harness parser — no literal.
+    #   2. The anchor was picked from the tip with no regard for bootstrap
+    #      progress: V4 snapshots the DGM list AT THE ANCHOR, so an anchor
+    #      predating the last registration (+2 confirmation depth) sees an
+    #      incomplete list and fails quorum-underfull on a healthy fleet
+    #      (h240 instance).  The anchor floor is registration-complete
+    #      height; if no boundary postdates it yet, WAIT for the next one.
+    N = ptxbea_boundary_interval()
+    reg_complete = max(
+        e.get("dgmstate", {}).get("registeredHeight", 0) for e in lst) + 2
+    floor = max(reg_complete, N)
+
+    def next_boundary_after_tip():
+        t = gm01.getblockcount()
+        nb = (t // N + 1) * N
+        print(f"[eligibility] no probeable boundary in [h{floor}, h{t}] — "
+              f"waiting for boundary h{nb} (N={N})")
+        gm01.wait_for_height(nb, timeout=N * 90)
+        return nb
+
+    anchor_h = tip - (tip % N)
+    if anchor_h < floor:
+        anchor_h = next_boundary_after_tip()
     reason = None
     for _ in range(4):
-        if anchor_h < FORMATION_N:
-            raise AssertionError(
-                "no probeable formation boundary below tip (all recent "
-                "boundaries carry formed quorums or chain too short)")
         anchor_hash = gm01.call("getblockhash", anchor_h)
         spec = {"quorum_hash": anchor_hash, "formation_height": anchor_h,
                 "members": 11, "premits": 6}
@@ -140,13 +163,24 @@ def eligibility_gate(cluster: W2Cluster, expected_n: int) -> dict:
         except RPCError as e:
             reason = e.message
         if "ptxdkg-duplicate-formation" in reason:
-            anchor_h -= FORMATION_N
+            anchor_h -= N
+            if anchor_h < floor:
+                # every boundary in [floor, tip] carries a formed quorum —
+                # probe a fresh one instead of anchoring into pre-bootstrap
+                # history (defect 2's exact failure mode).
+                anchor_h = next_boundary_after_tip()
             continue
         break
+    else:
+        raise AssertionError(
+            f"no probeable formation boundary after 4 attempts (last "
+            f"h{anchor_h}, floor h{floor}): every candidate refused "
+            f"duplicate-formation: {reason!r}")
     if "ptxdkg-anchor-not-boundary" in reason:
         raise AssertionError(
             f"boundary-anchored probe refused as off-boundary at h{anchor_h} — "
-            f"harness/params mismatch (FORMATION_N?): {reason!r}")
+            f"the RUNNING binary disagrees with the tree's chainparams (N={N}); "
+            f"stale image (re-point/rebuild)?: {reason!r}")
     # Either reason proves V5 assembled a full quorum-of-11: V10
     # member-containment (W2.1 C4) runs only after the underfull check on the
     # assembled selection, and the fake-mode dbggm ids always trip it before

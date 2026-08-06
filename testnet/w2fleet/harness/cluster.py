@@ -14,9 +14,11 @@ timestamps) and the docker-bea volume list; call it before and after every
 W2 lifecycle operation and compare — any drift is an abort.
 """
 
+import re
 import subprocess
 import time
 import os
+from pathlib import Path
 from typing import Optional
 from .node import Node
 
@@ -50,6 +52,35 @@ def _env_cred(key: str, fallback: str) -> str:
 
 
 DEF_RPC_PASS = _env_cred("RPCPASSWORD", "ptxw2pass2026")
+
+
+def ptxbea_boundary_interval() -> int:
+    """nBoundaryInterval for the fleet's chain (-ptxbea), parsed from the
+    tree's chainparams.cpp — the same tree that builds the fleet image.
+
+    ★ WHY THIS EXISTS (2026-08-06): the eligibility gate carried
+    FORMATION_N = 80, a hand-copied SG-1b dev-net value. W2.5b's fleet shape
+    (KDD-079 decouple) moved ptxbea's boundary cadence to 30; the copy kept
+    80, the gate anchored off-boundary and refused a chain that satisfied it.
+    Same defect class as the RPCPASSWORD literal above: a copied constant
+    rotting while its source of truth moved. NO fallback — a parse failure
+    raises, because a silent default IS the class this kills.
+
+    HONEST LIMIT: binds to the SOURCE TREE, not the running binary. A tree
+    moved ahead of the running image is the standing stale-image trap; it is
+    caught downstream — an off-boundary refusal from the boundary-anchored
+    probe names the tree-vs-binary mismatch explicitly."""
+    src = Path(__file__).resolve().parents[3] / "src" / "chainparams.cpp"
+    m = re.search(r'consensus\.ptxFormation\s*=\s*\{\s*"ptxbea"\s*,\s*(\d+)',
+                  src.read_text())
+    if not m:
+        raise RuntimeError(
+            f"cannot parse ptxbea ptxFormation from {src} — chainparams "
+            f"moved; fix this parse, do NOT reintroduce a literal")
+    n = int(m.group(1))
+    if n < 1:
+        raise RuntimeError(f"parsed nonsense boundary interval {n} from {src}")
+    return n
 _HOST = "127.0.0.1"
 PROJECT = "ptx-w2"
 
