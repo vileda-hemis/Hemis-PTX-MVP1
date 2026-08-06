@@ -543,14 +543,26 @@ UniValue gm_bls_sign(const JSONRPCRequest& request)
     // P4's SUPERSEDED does not have to add it). Not held → hard-error naming the
     // quorum — never a wrong-key signature, never a fallback.
     uint8_t sk_bytes[32];
-    if (!PTX_BLS_GetCurrentShare(quorum_hash, sk_bytes))
+    if (!PTX_BLS_GetCurrentShare(quorum_hash, sk_bytes)) {
+        // ODC-064: this branch logged NOTHING — only the success path below did.
+        // A node that could not sign was therefore indistinguishable in the logs
+        // from one that was never asked, and BUG-028's diagnosis had to fall back
+        // to a live RPC probe. Absence of a log line is not evidence a branch did
+        // not fire; give the branch a voice, naming the quorum and the reason.
+        LogPrintf("PTX gm_bls_sign: FAILED node=%s quorum=%s reason=no CURRENT sk_share held\n",
+                  g_ptx_my_node_id, quorum_hash.ToString());
         throw JSONRPCError(RPC_MISC_ERROR,
             "this node holds no CURRENT sk_share for quorum " + quorum_hash.ToString() +
             " (complete/await a ceremony for it first)");
+    }
 
     uint8_t sig_buf[PTX_SIG_BYTES];
-    if (!PTX_BLS_PartialSign(sk_bytes, round_seed, sig_buf))
+    if (!PTX_BLS_PartialSign(sk_bytes, round_seed, sig_buf)) {
+        // ODC-064: same reasoning — the other silent arm of the same RPC.
+        LogPrintf("PTX gm_bls_sign: FAILED node=%s quorum=%s reason=BLS partial signing failed\n",
+                  g_ptx_my_node_id, quorum_hash.ToString());
         throw JSONRPCError(RPC_MISC_ERROR, "BLS signing failed");
+    }
 
     LogPrintf("PTX gm_bls_sign: node=%s sig[0..3]=%02x%02x%02x%02x\n",
               g_ptx_my_node_id, sig_buf[0],sig_buf[1],sig_buf[2],sig_buf[3]);

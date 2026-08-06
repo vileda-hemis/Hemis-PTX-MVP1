@@ -1823,6 +1823,73 @@ size_t P5_count(const std::string& hay, const std::string& needle)
 }
 } // namespace
 
+// ---------------------------------------------------------------------------
+// ODC-064 — THE SILENT FAILURE BRANCHES.
+//
+// BUG-028's cause could not be recovered from four days of fleet logs. Two
+// branches produced no output at all:
+//
+//   ptx_fanout.cpp   the non-200 arm logged only the HTTP status and DISCARDED
+//                    response.body — the server's error text, which names the
+//                    exact condition, was never written anywhere.
+//   rpc/ptx.cpp      gm_bls_sign's failure arms threw without logging; only the
+//                    SUCCESS path logged. A node that could not sign was
+//                    indistinguishable from one that was never asked.
+//
+// Diagnosis therefore required a live read-only probe of a running node. Had the
+// fleet been rebuilt first, the cause would have been unrecoverable.
+//
+// ★ WHAT THIS PROVES, STATED HONESTLY: that the failure branches CONTAIN the
+// logging, with the fields that would have closed the diagnosis. It does NOT
+// prove the line fires at runtime — this codebase has no log-capture harness and
+// building one is a larger change than the logging it would verify. A deliberate
+// trade, not an oversight. ODC-065's argument (observability changes get verified
+// like behaviour changes) is honoured as far as the harness allows, and the
+// remaining gap is named rather than papered over.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(ODC064_FailureBranchesLogTheirCause)
+{
+    // --- site 1: the fan-out non-200 arm must log the BODY, not just the status
+    const std::string fanout = P5_slurp(std::string(PTX_SRCDIR) + "/src/ptx/ptx_fanout.cpp");
+    BOOST_REQUIRE(!fanout.empty());
+    // ★ Target the FanOutSign arm specifically — the braced one. There is a second
+    // non-200 arm at the generic RPC helper (`... != 200) return result;`) which is
+    // BENIGN: it sets `result.body = response.body` one line earlier, so the body is
+    // PROPAGATED to the caller rather than discarded. Matching the first occurrence
+    // pointed the check at that helper and made it unfixable-by-construction.
+    const size_t nz = fanout.find("response.status != 200) {");
+    BOOST_REQUIRE_MESSAGE(nz != std::string::npos, "FanOutSign non-200 branch not found");
+    // ★ ANTI-VACUITY: bound the window to the ARM ITSELF (up to its `continue;`).
+    // A loose window passes on the success path's own `res.read(response.body)`
+    // further down — i.e. it would go green without the fix. Caught by observing
+    // which sub-checks passed in the RED run.
+    const size_t armEnd = fanout.find("continue;", nz);
+    BOOST_REQUIRE_MESSAGE(armEnd != std::string::npos, "non-200 arm has no continue");
+    const std::string arm = fanout.substr(nz, armEnd - nz);
+    BOOST_CHECK_MESSAGE(arm.find("LogPrintf") != std::string::npos,
+                        "ODC-064: non-200 arm does not log at all");
+    BOOST_CHECK_MESSAGE(arm.find("response.body") != std::string::npos,
+                        "ODC-064: non-200 arm still discards response.body");
+    BOOST_CHECK_MESSAGE(arm.find("ODC-064") != std::string::npos,
+                        "ODC-064: the branch is not marked with its rationale");
+    // bounded — a broken or hostile peer must not be able to flood the log
+    BOOST_CHECK_MESSAGE(arm.find("substr") != std::string::npos,
+                        "ODC-064: response.body is logged UNTRIMMED (flood risk)");
+
+    // --- site 2: gm_bls_sign's failure arms must log quorum_hash + reason
+    const std::string rpc = P5_slurp(std::string(PTX_SRCDIR) + "/src/rpc/ptx.cpp");
+    BOOST_REQUIRE(!rpc.empty());
+    const size_t gs = rpc.find("no CURRENT sk_share for quorum");
+    BOOST_REQUIRE_MESSAGE(gs != std::string::npos, "gm_bls_sign no-share branch not found");
+    // look BACK from the throw — the log must precede it
+    const size_t from = gs > 700 ? gs - 700 : 0;
+    const std::string before = rpc.substr(from, gs - from);
+    BOOST_CHECK_MESSAGE(before.find("gm_bls_sign: FAILED") != std::string::npos,
+                        "ODC-064: gm_bls_sign's no-share branch still throws without logging");
+    BOOST_CHECK_MESSAGE(before.find("quorum_hash.ToString()") != std::string::npos,
+                        "ODC-064: the failure log does not name the quorum_hash");
+}
+
 // §1 (widened by P4): g_ptx_my_shares has EIGHT mutators — one guarded
 // (PTX_BLS_SetSkShare) and seven not, including the undo revert (which must
 // bypass the §C1 setter). §1's guarantee is NO RPC-REACHABLE write path. This

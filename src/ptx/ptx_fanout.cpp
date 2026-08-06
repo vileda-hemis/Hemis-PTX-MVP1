@@ -315,7 +315,18 @@ std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
         event_base_dispatch(base.get());
 
         if (response.status != 200) {
-            LogPrintf("PTX: FanOutSign: %s HTTP %d\n", node_id, response.status);
+            // ODC-064: the status ALONE made BUG-028's cause unrecoverable from
+            // four days of fleet logs — the server's error text is what names the
+            // exact condition ("this node holds no CURRENT sk_share for quorum
+            // …"), and it was discarded here. Diagnosis needed a live probe of a
+            // running node; had the fleet been rebuilt first it would have been
+            // lost. TRIMMED and newline-flattened: a broken or hostile peer must
+            // not be able to flood the log or forge extra log lines.
+            static const size_t ODC064_BODY_MAX = 200;
+            std::string body = response.body.substr(0, ODC064_BODY_MAX);
+            for (char& c : body) { if (c == '\n' || c == '\r' || c == '\t') c = ' '; }
+            LogPrintf("PTX: FanOutSign: %s HTTP %d body=%s%s\n", node_id, response.status,
+                      body, response.body.size() > ODC064_BODY_MAX ? " …[truncated]" : "");
             continue;
         }
 
