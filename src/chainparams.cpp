@@ -879,7 +879,17 @@ public:
         consensus.powLimit   = uint256S("0x000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
         consensus.posLimitV1 = uint256S("0x000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
         consensus.posLimitV2 = uint256S("0x0000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
-        consensus.nBudgetCycleBlocks = 144;
+        // ★ FLEET-ONLY DIVERGENCE (2026-08-06): 144 -> 720, one superblock per ~12h at
+        // 60s spacing, so budget cycles are a ROUTINE event inside a soak rather than
+        // one-per-fleet-month (mainnet is 43,200 = ~30 days).
+        // ★ DELIBERATELY HOSTILE, and by how much: the payout window is
+        // `nHeight % nBudgetCycleBlocks < 100` (gamemaster-payments.cpp:205), so here
+        // 100/720 = ~14% OF ALL BLOCKS sit in the window, against mainnet's
+        // 100/43,200 = 0.23% — a ~60x over-exposure. Same logic as the old fleet's
+        // nTimeSlotLength accident, except on purpose this time: the MECHANISM is
+        // under test, not the cadence. Do not read fleet superblock frequency as
+        // representative of mainnet.
+        consensus.nBudgetCycleBlocks = 720;
         consensus.nBudgetFeeConfirmations = 3;
         consensus.nCoinbaseMaturity = 10;
         consensus.nFutureTimeDriftPoW = 7200;
@@ -895,10 +905,31 @@ public:
         consensus.nTargetTimespan = 20 * 60;
         consensus.nTargetTimespanV2 = 20 * 60;
         consensus.nTargetSpacing = 1 * 60;
-        consensus.nTimeSlotLength = 60;   // 60-second blocks (mainnet-timing rehearsal)
+        // ★ FIDELITY CHANGE (2026-08-06): 60 -> 15 to MATCH MAINNET
+        // (mainnet nTimeSlotLength = 15). nTargetSpacing stays 60, so block cadence
+        // is unchanged; what changes is the PoS time-slot quantisation the kernel
+        // hashes against. Consequence noted though irrelevant on one host: the peer
+        // time-offset acceptance window narrows to +/-30s
+        // (net_processing.cpp:1494-1496 derives it from nTimeSlotLength).
+        consensus.nTimeSlotLength = 15;
         consensus.nMaxProposalPayments = 6;
 
-        consensus.strSporkPubKey = "04BC0DB7CAE39D7D9B1ABA8CF1D98F5F6AE64D85F57192AD739E4C70F554FF110E2C81001C55BD61F95F7A95B4D1034CE27E44C13252D4E426AA4A90D11BC839A3";
+        // ★ FLEET-ONLY DIVERGENCE (2026-08-06) — spork key the harness actually holds.
+        // The previous ptxbea spork pubkey had no matching private key anywhere in the
+        // harness or repo, so SPORK_13_ENABLE_SUPERBLOCKS (which defaults OFF,
+        // spork.cpp:20 = 4070908800) could never be switched on and the DAO/budget path
+        // was untestable. Replaced with a keypair generated for the fleet; the PRIVATE
+        // half lives in $PTXBEA_SPORK_KEY in the environment, never in this repo
+        // (testnet/scenarios/spork_gm_payment.py already reads it from there and mounts
+        // it chmod-600 read-only).
+        //
+        // ★ ASYMMETRY WORTH REMEMBERING WHEN SUPERBLOCK TESTS PASS HERE: mainnet spork
+        // key CUSTODY IS AN OPEN INHERITED QUESTION (flagged in
+        // doc/ptx/INHERITED_PARAMS_AUDIT.md). This fleet can drive sporks because we
+        // made it able to; mainnet's ability to do so is UNVERIFIED. A green superblock
+        // test on ptxbea therefore proves the MECHANISM works — it proves nothing about
+        // whether anyone can actually operate it on mainnet.
+        consensus.strSporkPubKey = "04E54CED11E486341A9AB5A67A7790379BD2A15273E8CF3C726A34C372D035D6176D78017F905C517922B22F8B8FFBE9A814AD3BB4B9AC05AD6A01B62D4491302E";
 
         consensus.height_last_invalid_UTXO = -1;
         consensus.height_last_ZC_AccumCheckpoint = -1;
