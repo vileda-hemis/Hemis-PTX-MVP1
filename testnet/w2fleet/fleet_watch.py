@@ -42,7 +42,10 @@ import time
 from harness.node import Node
 
 DEF_RPC_USER = "ptxw2rpc"
-DEF_RPC_PASS = "ptxw2pass2026"
+# ★ single source of truth: the .env gen_fleet writes (9e41d79 auth fix) —
+# this file used to carry its own copied literal, which kept polling with a
+# rotated-away password and presented 106 healthy nodes as unreachable.
+from harness.cluster import DEF_RPC_PASS
 DEF_DATA_ROOT = "/mnt/pve/Node14TB/hemis-ptx/w2-fleet/datadirs"
 
 EVENT_PATTERNS = [
