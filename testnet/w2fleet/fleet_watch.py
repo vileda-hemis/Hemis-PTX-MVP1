@@ -56,6 +56,13 @@ EVENT_PATTERNS = [
     ("FORM+",  re.compile(r"ceremony session STARTED")),
     ("DONE",   re.compile(r"ceremony DONE")),
     ("ABORT",  re.compile(r"ceremony ABORTED")),
+    # ── succession events (rotation gate, first observation ~h2220).
+    # PTX_BLS_Promote logs nothing on success; SUPERSEDE (same connect, store
+    # side) is its proxy. PENDEXP near a rotation = the TTL reaped a PENDING
+    # share before its PTXDKG connected — promotion FAILURE, a finding.
+    ("SUPERSEDE", re.compile(r"quorum SUPERSEDED at height (\d+)")),
+    ("PENDEXP",   re.compile(r"expiring stale PENDING share")),
+    ("DISCARD",   re.compile(r"discarding SUPERSEDED share")),
 ]
 ROLL_RE = re.compile(r"PTX roll: DKG signing material — quorum_hash=([0-9a-f]+)")
 
@@ -183,7 +190,8 @@ def main():
             f"{k}={cum[k]}" + (f"(+{len([1 for _ in new[k]]) if new[k] else 0})" if new[k] else "")
             for k, _ in EVENT_PATTERNS)
         print(ev_line)
-        for key in ("GUARD2", "REFORM", "ABORT"):   # the ones worth line-detail
+        for key in ("GUARD2", "REFORM", "ABORT",
+                    "SUPERSEDE", "PENDEXP", "ROTATE"):   # the ones worth line-detail
             for detail in new[key]:
                 print(f"    [{key}] {detail}")
         if rolls_per_quorum:
