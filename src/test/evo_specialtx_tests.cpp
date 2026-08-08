@@ -5,7 +5,9 @@
 #include "test/test_Hemis.h"
 
 #include "activegamemaster.h"
+#include "chainparamsbase.h"
 #include "consensus/validation.h"
+#include "net.h"
 #include "evo/providertx.h"
 #include "evo/specialtx_validation.h"
 #include "llmq/quorums_commitment.h"
@@ -265,6 +267,32 @@ BOOST_AUTO_TEST_CASE(service_ipport_roundtrip_v6_test)
     BOOST_CHECK(Lookup(v6.ToStringIPPort().c_str(), back, 0, false));
     BOOST_CHECK_EQUAL(v6.ToStringIPPort(), back.ToStringIPPort());
     BOOST_CHECK(back == v6);
+}
+
+// ODC-066 — the ptxbea fleet carve-out must recognise the fleet's v6 ULA
+// (fd00:31::/64) as well as its v4 subnet, or a v6 fleet GM's non-routable
+// address fails IsValidNetAddr/AddLocal and never reaches READY.  Runs under
+// ptxbea params (the carve-out is chain-gated); the per-case fixture restores
+// MAIN for the following cases, and we restore explicitly for hygiene.
+BOOST_AUTO_TEST_CASE(ptxbea_fleet_addr_v6_test)
+{
+    SelectParams(CBaseChainParams::PTXBEATESTNET);
+
+    CNetAddr v4_fleet, v6_fleet, v6_offnet;
+    BOOST_CHECK(LookupHost("172.31.0.16", v4_fleet, false));
+    BOOST_CHECK(LookupHost("fd00:31::16", v6_fleet, false));
+    BOOST_CHECK(LookupHost("fd00:99::16", v6_offnet, false));  // a DIFFERENT ULA
+
+    // v4 fleet addr still matches (regression); v6 fleet addr now matches (fix);
+    // a v6 ULA outside the fleet prefix must NOT match (over-match guard).
+    BOOST_CHECK(IsPTXBeaFleetAddr(v4_fleet));
+    BOOST_CHECK(IsPTXBeaFleetAddr(v6_fleet));
+    BOOST_CHECK(!IsPTXBeaFleetAddr(v6_offnet));
+
+    SelectParams(CBaseChainParams::MAIN);
+    // off the ptxbea chain the carve-out is inert (production-safe): even the
+    // fleet v6 addr does not match.
+    BOOST_CHECK(!IsPTXBeaFleetAddr(v6_fleet));
 }
 
 BOOST_AUTO_TEST_CASE(proreg_setpayload_test)

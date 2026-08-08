@@ -220,10 +220,19 @@ bool IsPTXBeaFleetAddr(const CNetAddr& addr)
 {
     if (!Params().IsPTXBeaTestNet())
         return false;
-    CSubNet fleet;
-    if (!LookupSubNet("172.31.0.0/24", fleet))
-        return false;
-    return fleet.Match(addr);
+    // ODC-066 dual-stack proof: the fleet's v4 subnet AND its v6 ULA parallel.
+    // fd00:31::/64 mirrors 172.31.0.0/24 (GMs at ::11.. == .11..); ULA, non-
+    // routable, so it can only ever match here, gated on the ptxbea chain — inert
+    // on every real network, the same production-safe-by-construction class as
+    // the v4 carve-out.  ★ THIS PREFIX MUST STAY IN LOCKSTEP with gen_fleet's
+    // allocator and the docker-compose v6 IPAM; a drift is the blocker this was
+    // opened on.
+    for (const char* cidr : {"172.31.0.0/24", "fd00:31::/64"}) {
+        CSubNet fleet;
+        if (LookupSubNet(cidr, fleet) && fleet.Match(addr))
+            return true;
+    }
+    return false;
 }
 
 // learn a new local address
