@@ -36,6 +36,24 @@ from harness.cluster import W2Cluster, ptxbea_boundary_interval
 from harness.node import RPCError
 
 
+def peer_host(addr: str) -> str:
+    """Bare host from a getpeerinfo `addr`, family-agnostic (ODC-066).
+
+    ★ WHY: the old `rsplit(":",1)[0]` leaves the BRACKETS on an IPv6 peer
+    (`[2a07::49]:49165` -> `[2a07::49]`), so a v6 fleet node never matches the
+    bracket-free keys in names_by_ip and reads as a NON-peer — a dual-stack node
+    would present as isolated and false-fail the topology gate.  Fixed BEFORE the
+    v6 nodes come up, so v6 is not the probe-artefact class's next instance.
+    `[v6]:port` -> `v6`; `v4:port` -> `v4`; a bare host (no port) is returned
+    as-is (a bare v6 has >1 colon and no brackets, so we must not rsplit it)."""
+    addr = addr.strip()
+    if addr.startswith("["):                 # [v6]:port  or  [v6]
+        return addr[1:addr.index("]")]
+    if addr.count(":") == 1:                  # v4:port
+        return addr.rsplit(":", 1)[0]
+    return addr                              # bare v4 or bare v6
+
+
 def topology_gate(cluster: W2Cluster) -> dict:
     subnet = cluster.subnet_base + "."
     # ★ Caller IPs derived from cluster.callers, not hardcoded to one ".10 =
@@ -58,7 +76,7 @@ def topology_gate(cluster: W2Cluster) -> dict:
         peers = nd.call("getpeerinfo")
         fleet_peers = set()
         for p in peers:
-            ip = p.get("addr", "").rsplit(":", 1)[0]
+            ip = peer_host(p.get("addr", ""))
             if ip.startswith(subnet) and ip in names_by_ip:
                 fleet_peers.add(names_by_ip[ip])
         peer_counts[nd.name] = len(fleet_peers)
