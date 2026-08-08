@@ -4,6 +4,7 @@
 
 #include "test/test_Hemis.h"
 
+#include "activegamemaster.h"
 #include "consensus/validation.h"
 #include "evo/providertx.h"
 #include "evo/specialtx_validation.h"
@@ -232,6 +233,38 @@ BOOST_AUTO_TEST_CASE(protx_ipv6_service_test)
         BOOST_CHECK(!CheckSpecialTxNoContext(CTransaction(mtx), st2));
         BOOST_CHECK_EQUAL(st2.GetRejectReason(), "bad-protx-ipaddr");
     }
+}
+
+// ODC-066 — the active-GM side of the widen (activegamemaster.cpp:237).  A GM
+// whose registered service address is IPv6 must pass IsValidNetAddr, mirroring
+// the consensus site; a non-routable address (either family) must still fail.
+BOOST_AUTO_TEST_CASE(active_gm_ipv6_netaddr_test)
+{
+    CService v6, v4, v6_linklocal;
+    BOOST_CHECK(Lookup("[2a07:244:46:6400::49]:49165", v6, 0, false));
+    BOOST_CHECK(Lookup("57.12.210.11:49165", v4, 0, false));
+    BOOST_CHECK(Lookup("[fe80::1]:49165", v6_linklocal, 0, false));
+
+    // routable IPv4 and IPv6 both valid (v4 = regression, v6 = the widen).
+    BOOST_CHECK(CActiveDeterministicGamemasterManager::IsValidNetAddr(v4));
+    BOOST_CHECK(CActiveDeterministicGamemasterManager::IsValidNetAddr(v6));
+    // non-routable IPv6 still rejected (the widen opens family, not routability).
+    BOOST_CHECK(!CActiveDeterministicGamemasterManager::IsValidNetAddr(v6_linklocal));
+}
+
+// ODC-066 — pin the tiertwo outbound connect round-trip (net_gamemasters.cpp:
+// openConnection uses addr.ToStringIPPort() -> string -> Lookup).  Verified
+// family-clean in recon; pinned so a v6 CService cannot silently regress it.
+BOOST_AUTO_TEST_CASE(service_ipport_roundtrip_v6_test)
+{
+    CService v6;
+    BOOST_CHECK(Lookup("[2a07:244:46:6400::49]:49165", v6, 0, false));
+    BOOST_CHECK(v6.IsIPv6());
+    // the exact transform openConnection performs, then reparsed:
+    CService back;
+    BOOST_CHECK(Lookup(v6.ToStringIPPort().c_str(), back, 0, false));
+    BOOST_CHECK_EQUAL(v6.ToStringIPPort(), back.ToStringIPPort());
+    BOOST_CHECK(back == v6);
 }
 
 BOOST_AUTO_TEST_CASE(proreg_setpayload_test)

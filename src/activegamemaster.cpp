@@ -21,26 +21,35 @@
 // Keep track of the active Gamemaster
 CActiveDeterministicGamemasterManager* activeGamemasterManager{nullptr};
 
-static bool GetLocalAddress(CService& addrRet)
+static bool GetLocalAddress(CService& addrRet, const CService& registeredAddr)
 {
-    // First try to find whatever our own local address is known internally.
-    // Addresses could be specified via 'externalip' or 'bind' option, discovered via UPnP
-    // or added by TorController. Use some random dummy IPv4 peer to prefer the one
-    // reachable via IPv4.
+    // ODC-066: discover an address of the SAME FAMILY the GM registered with.
+    // GetLocal scores candidate local addresses by reachability toward a
+    // reference peer, so the reference must match the registered family or a
+    // v6-only host (no v4 local reachable toward a v4 reference) discovers
+    // nothing and never reaches READY.  DUAL-STACK RULE (explicit): the family
+    // is the REGISTERED address's, not "whatever the host has" — a v6-registered
+    // GM advertises v6 even on a dual-stack host, because Init's exact-match
+    // check (info.service == pdgmState->addr) demands it.  Addresses come from
+    // 'externalip'/'bind'/UPnP/TorController via GetLocal.
+    const bool wantV6 = registeredAddr.IsIPv6();
     CNetAddr addrDummyPeer;
     bool fFound{false};
-    if (LookupHost("8.8.8.8", addrDummyPeer, false)) {
+    const char* dummyRef = wantV6 ? "2001:4860:4860::8888" : "8.8.8.8";
+    if (LookupHost(dummyRef, addrDummyPeer, false)) {
         fFound = GetLocal(addrRet, &addrDummyPeer) && CActiveDeterministicGamemasterManager::IsValidNetAddr(addrRet);
     }
     if (!fFound && Params().IsRegTestNet()) {
-        if (Lookup("127.0.0.1", addrRet, GetListenPort(), false)) {
+        if (Lookup(wantV6 ? "[::1]" : "127.0.0.1", addrRet, GetListenPort(), false)) {
             fFound = true;
         }
     }
     if (!fFound) {
-        // If we have some peers, let's try to find our local address from one of them
-        g_connman->ForEachNodeContinueIf([&fFound, &addrRet](CNode* pnode) {
-            if (pnode->addr.IsIPv4())
+        // If we have some peers, let's try to find our local address from one of
+        // the same family.
+        g_connman->ForEachNodeContinueIf([&fFound, &addrRet, wantV6](CNode* pnode) {
+            const bool famMatch = wantV6 ? pnode->addr.IsIPv6() : pnode->addr.IsIPv4();
+            if (famMatch)
                 fFound = GetLocal(addrRet, &pnode->addr) && CActiveDeterministicGamemasterManager::IsValidNetAddr(addrRet);
             return !fFound;
         });
@@ -122,13 +131,10 @@ void CActiveDeterministicGamemasterManager::Init(const CBlockIndex* pindexTip)
         return;
     }
 
-    if (!GetLocalAddress(info.service)) {
-        state = GAMEMASTER_ERROR;
-        strError = "Can't detect valid external address. Please consider using the externalip configuration option if problem persists. Make sure to use IPv4 address only.";
-        LogPrintf("%s ERROR: %s\n", __func__, strError);
-        return;
-    }
-
+    // ODC-066: fetch our registered entry FIRST, so discovery below can target
+    // the address family we registered with (a v6-only host cannot discover a v4
+    // address to advertise).  If the ProTx has not appeared yet there is nothing
+    // to discover toward — stay in the waiting state, exactly as before.
     CDeterministicGMList gmList = deterministicGMManager->GetListForBlock(pindexTip);
 
     CDeterministicGMCPtr dgm = gmList.GetGMByOperatorKey(info.pubKeyOperator);
@@ -143,6 +149,13 @@ void CActiveDeterministicGamemasterManager::Init(const CBlockIndex* pindexTip)
     }
 
     LogPrintf("%s: proTxHash=%s, proTx=%s\n", __func__, dgm->proTxHash.ToString(), dgm->ToString());
+
+    if (!GetLocalAddress(info.service, dgm->pdgmState->addr)) {
+        state = GAMEMASTER_ERROR;
+        strError = "Can't detect valid external address. Please consider using the externalip configuration option if problem persists.";
+        LogPrintf("%s ERROR: %s\n", __func__, strError);
+        return;
+    }
 
     if (info.service != dgm->pdgmState->addr) {
         state = GAMEMASTER_ERROR;
@@ -230,11 +243,13 @@ void CActiveDeterministicGamemasterManager::UpdatedBlockTip(const CBlockIndex* p
 
 bool CActiveDeterministicGamemasterManager::IsValidNetAddr(const CService& addrIn)
 {
-    // TODO: check IPv6 and TOR addresses
-    // IsPTXBeaFleetAddr: ptxbea-chain-gated + fleet-subnet-scoped (net.cpp) —
-    // production-safe by construction; inert on every real network.
+    // ODC-066: accept IPv4 OR IPv6 (mirrors the consensus site CheckService).
+    // Tor stays out (addrv2 wire, separate change).  IsPTXBeaFleetAddr:
+    // ptxbea-chain-gated + fleet-subnet-scoped (net.cpp) — production-safe by
+    // construction; inert on every real network, and the path by which the
+    // fleet's non-routable ULA v6 passes.
     return Params().IsRegTestNet() || IsPTXBeaFleetAddr(addrIn) ||
-           (addrIn.IsIPv4() && IsReachable(addrIn) && addrIn.IsRoutable());
+           ((addrIn.IsIPv4() || addrIn.IsIPv6()) && IsReachable(addrIn) && addrIn.IsRoutable());
 }
 
 
