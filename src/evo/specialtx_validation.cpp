@@ -51,8 +51,14 @@ static bool CheckService(const CService& addr, CValidationState& state)
         return state.DoS(10, false, REJECT_INVALID, "bad-protx-ipaddr-port");
     }
 
-    // !TODO: add support for IPv6 and Tor
-    if (!addr.IsIPv4()) {
+    // ODC-066: accept IPv4 OR IPv6 (routability already enforced above).  Tor is
+    // deliberately still excluded — an onion-v3 address needs BIP155/addrv2 wire
+    // support, which the flat CService serialization here does not carry, so it is
+    // a separate (wire-format) change, not this family widen.  This check is
+    // reached only post-Evo: all special txs are rejected below UPGRADE_V6_0 by
+    // the bad-txns-v6-not-active gate (CheckSpecialTx), so the v6 activation gate
+    // is that pre-existing height gate — no new constant here.
+    if (!addr.IsIPv4() && !addr.IsIPv6()) {
         return state.DoS(10, false, REJECT_INVALID, "bad-protx-ipaddr");
     }
 

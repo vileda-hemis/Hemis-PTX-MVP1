@@ -183,6 +183,57 @@ BOOST_AUTO_TEST_CASE(protx_validation_test)
     BOOST_CHECK(CheckSpecialTxNoContext(CTransaction(mtx), state));
 }
 
+// ODC-066 — a ProRegTx service address is accepted when IPv4 OR IPv6, but only
+// when routable.  Pre-fix, CheckService rejects every non-IPv4 address with
+// bad-protx-ipaddr (the inherited "!TODO: add support for IPv6 and Tor").  The
+// three states this pins: (A) a routable IPv6 address must be ACCEPTED — the
+// widen; (B) a NON-routable IPv6 (link-local) must still be REJECTED — the widen
+// opens the family, it does not drop the routability check; (C) the V6-activation
+// gate that makes the whole ProTx path valid only post-Evo is the pre-existing
+// contextual bad-txns-v6-not-active check (specialtx_validation.cpp, needs
+// pindexPrev) — the widen RIDES it, does not create it, so it is asserted where
+// it lives (the contextual suite), not here.  Unit tests run under MAIN params,
+// so IsRoutable IS enforced (main is not the regtest/ptxbea exemption).
+static void SetValidProRegInputs(CMutableTransaction& mtx, ProRegPL& pl)
+{
+    mtx.nType = CTransaction::TxType::PROREG;
+    mtx.nVersion = CTransaction::TxVersion::SAPLING;
+    mtx.vin.clear();
+    mtx.vin.emplace_back(GetRandHash(), 0);
+    pl.inputsHash = CalcTxInputsHash(CTransaction(mtx));
+    SetTxPayload(mtx, pl);
+}
+
+BOOST_AUTO_TEST_CASE(protx_ipv6_service_test)
+{
+    LOCK(cs_main);
+    CValidationState state;
+
+    // (A) routable IPv6 + mainnet default port --> ACCEPTED post-widen.
+    {
+        CMutableTransaction mtx;
+        ProRegPL pl = GetRandomProRegPayload();
+        BOOST_CHECK(Lookup("[2a07:244:46:6400::49]:49165", pl.addr,
+                           Params().GetDefaultPort(), false));
+        BOOST_CHECK(pl.addr.IsIPv6());
+        SetValidProRegInputs(mtx, pl);
+        BOOST_CHECK_MESSAGE(CheckSpecialTxNoContext(CTransaction(mtx), state),
+                            "routable IPv6 ProRegTx rejected: " + state.GetRejectReason());
+    }
+
+    // (B) non-routable IPv6 (link-local) --> STILL REJECTED (over-open guard).
+    {
+        CMutableTransaction mtx;
+        CValidationState st2;
+        ProRegPL pl = GetRandomProRegPayload();
+        BOOST_CHECK(Lookup("[fe80::1]:49165", pl.addr,
+                           Params().GetDefaultPort(), false));
+        SetValidProRegInputs(mtx, pl);
+        BOOST_CHECK(!CheckSpecialTxNoContext(CTransaction(mtx), st2));
+        BOOST_CHECK_EQUAL(st2.GetRejectReason(), "bad-protx-ipaddr");
+    }
+}
+
 BOOST_AUTO_TEST_CASE(proreg_setpayload_test)
 {
     const ProRegPL& pl = GetRandomProRegPayload();
