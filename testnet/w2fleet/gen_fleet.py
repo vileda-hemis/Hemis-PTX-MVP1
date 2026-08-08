@@ -92,6 +92,21 @@ def gm_ip(base, i):
     return f"{base}.{10 + i}"
 
 
+# ODC-066 dual-stack: the fleet's v6 ULA parallel to the v4 subnet.  fd00:31::/64
+# mirrors 172.31.0.0/24 — the v6 host literal EQUALS the v4 last octet (::11 <->
+# .11), a legible parallel.  ★ THIS PREFIX MUST MATCH IsPTXBeaFleetAddr (net.cpp)
+# and the docker v6 IPAM below — a drift is the blocker this was opened on.
+V6_PREFIX = "fd00:31::"
+
+
+def gm_v6(i):
+    return f"{V6_PREFIX}{10 + i}"
+
+
+def caller_v6(k):
+    return f"{V6_PREFIX}{10 - (k - 1)}"
+
+
 def peers_of(i, n):
     """Ring-plus-skips peer set for gm_i (1-indexed), excluding self."""
     out = []
@@ -144,7 +159,7 @@ def caller_name(k, callers):
 
 def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser,
                  caller_staking=0, gm_wallet_less=1,
-                 wire_operators=False, project=DEF_PROJECT, callers=1):
+                 wire_operators=False, project=DEF_PROJECT, callers=1, v6_gm=0):
     lines = [HEADER.format(n=n, image=image, rpcuser=rpcuser, project=project)]
 
     # ── caller ──────────────────────────────────────────────────────────
@@ -173,6 +188,7 @@ def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser,
     networks:
       {project}-net:
         ipv4_address: {cip}
+        ipv6_address: {caller_v6(k)}
     volumes:
       - {data_root}/{cname}:/root/.hemis-ptxbea
     ports:
@@ -222,6 +238,11 @@ def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser,
     # ── GMs ─────────────────────────────────────────────────────────────
     for i in range(1, n + 1):
         g = gm_name(i)
+        # ODC-066: every GM is dual-stack (v4 + v6 ULA), so the fleet can reach a
+        # v6-registered peer.  The DESIGNATED v6 GM (--v6-gm) advertises its v6
+        # address instead of v4 — it registers v6 and must reach READY via the
+        # family-directed discovery fix.  All others advertise v4.
+        ext_ip = f"[{gm_v6(i)}]" if i == v6_gm else gm_ip(subnet_base, i)
         lines.append(f"""\
   {g}:
     <<: *node-defaults
@@ -230,6 +251,7 @@ def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser,
     networks:
       {project}-net:
         ipv4_address: {gm_ip(subnet_base, i)}
+        ipv6_address: {gm_v6(i)}
     volumes:
       - {data_root}/{g}:/root/.hemis-ptxbea
     ports:
@@ -238,7 +260,7 @@ def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser,
       <<: *node-env
       PTX_NODE_ID: ${{{g.upper()}_NODE_ID:-{g}}}
     command:
-      - -externalip={gm_ip(subnet_base, i)}
+      - -externalip={ext_ip}
 """)
         # ★ WALLET-LESS GM (Phase 2 corrected topology).  A GM's entire PTX duty
         # — DKG ceremony, quorum signing, pose — runs on the operator BLS key;
@@ -268,9 +290,11 @@ networks:
   {project}-net:
     name: {project}-net
     driver: bridge
+    enable_ipv6: true
     ipam:
       config:
         - subnet: {subnet_base}.0/24
+        - subnet: {V6_PREFIX}/64
 """)
     return "".join(lines)
 
@@ -305,6 +329,11 @@ def main():
                          "thread (BUG-019 gone by construction). Collateral, "
                          "payouts and staking are caller-side. 0 = legacy "
                          "combined topology where GMs also hold wallets and stake.")
+    ap.add_argument("--v6-gm", type=int, default=0,
+                    help="ODC-066: GM index (1-based) that registers+advertises its "
+                         "v6 ULA address instead of v4 (0 = all-v4). The rest of the "
+                         "fleet is dual-stack so it can reach this GM. Proves "
+                         "READY-on-a-v6-host + PTX over v6.")
     ap.add_argument("--callers", type=int, default=1,
                     help="caller count (1 = primary only; 2+ adds funded staking-off "
                          "spares for drill redundancy — a wedged primary restores, not re-bootstraps)")
@@ -358,7 +387,8 @@ def main():
                              wire_operators=reg is not None, project=args.project,
                              callers=args.callers,
                              caller_staking=args.caller_staking,
-                             gm_wallet_less=args.gm_wallet_less))
+                             gm_wallet_less=args.gm_wallet_less,
+                             v6_gm=args.v6_gm))
 
     env_path = os.path.join(args.out, ".env")
     if os.path.exists(env_path):

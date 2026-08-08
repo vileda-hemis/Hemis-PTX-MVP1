@@ -32,6 +32,9 @@ def main():
     ap.add_argument("--port-base", type=int, default=31000)
     ap.add_argument("--subnet-base", default="172.31.0")
     ap.add_argument("--fund-caller-utxos", type=int, default=500)
+    ap.add_argument("--v6-gm", type=int, default=0,
+                    help="ODC-066: GM index (1-based) to register with a v6 ULA "
+                         "service address (0 = all-v4). MUST match gen_fleet's --v6-gm.")
     ap.add_argument("--reg-out", default=None,
                     help="write registration dict (incl. operator secrets) here")
     args = ap.parse_args()
@@ -45,7 +48,8 @@ def main():
           f"(producer set = callers; GMs are wallet-less)")
 
     reg = bs.bootstrap(c, env_path=args.env,
-                       fund_caller_utxos=args.fund_caller_utxos)
+                       fund_caller_utxos=args.fund_caller_utxos,
+                       v6_gm=args.v6_gm)
     if args.reg_out:
         with open(args.reg_out, "w") as f:
             json.dump(reg, f, indent=1)

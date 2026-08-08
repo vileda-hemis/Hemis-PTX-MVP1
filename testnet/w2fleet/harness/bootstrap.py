@@ -197,7 +197,7 @@ def _find_vout(treasury: Node, txid: str, addr: str, amount: float) -> int:
 
 
 def register_gms(treasury: Node, cluster: W2Cluster,
-                 gm_labels: List[str]) -> Dict[str, dict]:
+                 gm_labels: List[str], v6_gm: int = 0) -> Dict[str, dict]:
     """External-collateral protx_register for each GM, batched.
 
     KDD-033: suffix = hash(collateralOutpoint) fingerprints the specific
@@ -280,7 +280,14 @@ def register_gms(treasury: Node, cluster: W2Cluster,
     results = {}
     for i, (gm, label, outpoint) in enumerate(
             zip(cluster.gms, gm_labels, collateral_outpoints)):
-        ip_port = f"{cluster.subnet_base}.{11 + i}:29994"
+        # ODC-066: the designated v6 GM registers its ULA v6 service address
+        # (fd00:31:: MUST match gen_fleet.V6_PREFIX and IsPTXBeaFleetAddr).
+        # protx_register's ip_port arg goes through Lookup, which parses the
+        # bracketed-v6 form.  All other GMs register v4.
+        if v6_gm and (i + 1) == v6_gm:
+            ip_port = f"[fd00:31::{11 + i}]:29994"
+        else:
+            ip_port = f"{cluster.subnet_base}.{11 + i}:29994"
         owner_addr  = treasury.getnewaddress()
         voting_addr = treasury.getnewaddress()
         payout_addr = treasury.getnewaddress()
@@ -400,7 +407,8 @@ def bootstrap(cluster: W2Cluster,
               env_path: str,
               gm_labels: Optional[List[str]] = None,
               phase1_warmup_blocks: int = 5,
-              fund_caller_utxos: int = CALLER_SPLIT_COUNT) -> Dict[str, dict]:
+              fund_caller_utxos: int = CALLER_SPLIT_COUNT,
+              v6_gm: int = 0) -> Dict[str, dict]:
     """Full two-phase bootstrap at N = cluster.n."""
     if gm_labels is None:
         gm_labels = [f"gm{i:02d}" for i in range(1, cluster.n + 1)]
@@ -432,7 +440,7 @@ def bootstrap(cluster: W2Cluster,
     # the fleet spends its first boundaries single-producer anyway.
     fund_producer_set(treasury, cluster.callers)
 
-    registration = register_gms(treasury, cluster, gm_labels)
+    registration = register_gms(treasury, cluster, gm_labels, v6_gm=v6_gm)
 
     current = treasury.getblockcount()
     wait_for_height(treasury, current + 1, timeout=900)
