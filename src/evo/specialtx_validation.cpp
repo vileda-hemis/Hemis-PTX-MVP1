@@ -1034,18 +1034,23 @@ bool CheckSpecialTx(const CTransaction& tx, const CBlockIndex* pindexPrev, const
                 return state.Invalid(false, REJECT_INVALID, "ptx-missing-sig");
             if (payload.nSeedHeight == 0)
                 return state.Invalid(false, REJECT_INVALID, "ptx-bad-height");
-            // ODC-022 §3.3: every PTXSESS must carry exactly one output to
-            // LOTTERY_ACCUM_SCRIPT at value nPTXServiceFee.
+            // BUG-032 2b-iii FEE RELOCATION: the service fee has moved to the
+            // PTXROLLCOMMIT (fund-then-sign — the payment is forfeited at commit,
+            // before the result is knowable; only fee-in-commitment closes the
+            // free preview, because the commitment is standalone-mineable via the
+            // settle→requires→commitment direction of mandatory-iff). The PTXSESS
+            // reveal must therefore NOT carry an accum fee output, else the roll
+            // pays twice.  The pool is fed identically — the commitment's accum
+            // output is swept by the same coalesce (C1) and read by the same
+            // payout — so this is a RELOCATION of the one fee, not a model change
+            // (ODC-022 §3.3's fee obligation now lives in CheckPTXRollCommitTx).
             {
                 const CScript& accumScript = GetLotteryAccumScript();
                 const CAmount  serviceFee  = Params().PTXServiceFee();
-                int accumCount = 0;
                 for (const CTxOut& out : tx.vout) {
                     if (out.scriptPubKey == accumScript && out.nValue == serviceFee)
-                        ++accumCount;
+                        return state.Invalid(false, REJECT_INVALID, "ptxsess-redundant-fee");
                 }
-                if (accumCount != 1)
-                    return state.Invalid(false, REJECT_INVALID, "ptx-bad-accum-output");
             }
             // W2.4 W4-b (KDD-076 prerequisite) — consensus verification of the
             // threshold signature, keyed by the W4-a attribution field.  Closes

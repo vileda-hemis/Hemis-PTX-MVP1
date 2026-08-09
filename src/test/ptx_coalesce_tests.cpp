@@ -149,8 +149,9 @@ static CMutableTransaction MakePTXSESS()
     CScript opret;
     opret << OP_RETURN << std::vector<uint8_t>{0xDE, 0xAD};
     mtx.vout.push_back(CTxOut(0, opret));
-    // Accum output at vout[1]
-    mtx.vout.push_back(CTxOut(Params().PTXServiceFee(), GetLotteryAccumScript()));
+    // BUG-032 2b-iii: the settle carries NO accum fee output (fee relocated to the
+    // PTXROLLCOMMIT). These C7/C8 tests exercise the coalesce block rules, which
+    // run before the 2c pairing rule; the settle just needs to be a valid PTXSESS.
 
     CProbabilisticTxPayload payload;
     payload.nSeedHeight     = 1;

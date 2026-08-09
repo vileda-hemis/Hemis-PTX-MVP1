@@ -72,43 +72,48 @@ BOOST_AUTO_TEST_CASE(RpcErrorCodeDefined)
     BOOST_CHECK_EQUAL(RPC_PTX_SETTLEMENT_FAILED, -32050);
 }
 
-BOOST_AUTO_TEST_CASE(PTXSESSValidOutput_AcceptsExactlyOne)
+// BUG-032 2b-iii FEE RELOCATION: the service fee moved to the PTXROLLCOMMIT
+// (fund-then-sign). A PTXSESS (reveal) is now FORBIDDEN an accum fee output —
+// else the roll pays twice. These were the old "settle must carry the fee"
+// tests, flipped to the new rule.
+
+// The settle with NO accum output is now the valid shape (fee is in the commitment).
+BOOST_AUTO_TEST_CASE(PTXSESSFee_NoAccumAccepted)
 {
-    CMutableTransaction mtx = MakePTXSESSBase();
-    // vout[1]: correct accum output
-    mtx.vout.push_back(CTxOut(Params().PTXServiceFee(), GetLotteryAccumScript()));
+    CMutableTransaction mtx = MakePTXSESSBase();   // no accum output
     BOOST_CHECK_EQUAL(RunCheck(mtx), "");
 }
 
-BOOST_AUTO_TEST_CASE(PTXSESSValidOutput_RejectsZeroAccumOutputs)
+// A settle carrying the accum fee output is rejected (the double-fee it prevents).
+BOOST_AUTO_TEST_CASE(PTXSESSFee_AccumOutputRejected)
 {
     CMutableTransaction mtx = MakePTXSESSBase();
-    // No accum output added — only the OP_RETURN at vout[0].
-    BOOST_CHECK_EQUAL(RunCheck(mtx), "ptx-bad-accum-output");
+    mtx.vout.push_back(CTxOut(Params().PTXServiceFee(), GetLotteryAccumScript()));
+    BOOST_CHECK_EQUAL(RunCheck(mtx), "ptxsess-redundant-fee");
 }
 
-BOOST_AUTO_TEST_CASE(PTXSESSValidOutput_RejectsWrongValue)
+// An accum-script output at a NON-fee value is not the service fee → allowed
+// (the rule forbids only an output at exactly the service fee).
+BOOST_AUTO_TEST_CASE(PTXSESSFee_WrongValueOutputAllowed)
 {
     CMutableTransaction mtx = MakePTXSESSBase();
-    // Accum output present but value is off by one satoshi.
     mtx.vout.push_back(CTxOut(Params().PTXServiceFee() - 1, GetLotteryAccumScript()));
-    BOOST_CHECK_EQUAL(RunCheck(mtx), "ptx-bad-accum-output");
+    BOOST_CHECK_EQUAL(RunCheck(mtx), "");
 }
 
-BOOST_AUTO_TEST_CASE(PTXSESSValidOutput_RejectsTwoAccumOutputs)
+// Two accum fee outputs — the first already trips the forbid.
+BOOST_AUTO_TEST_CASE(PTXSESSFee_TwoAccumOutputsRejected)
 {
     CMutableTransaction mtx = MakePTXSESSBase();
     mtx.vout.push_back(CTxOut(Params().PTXServiceFee(), GetLotteryAccumScript()));
     mtx.vout.push_back(CTxOut(Params().PTXServiceFee(), GetLotteryAccumScript()));
-    BOOST_CHECK_EQUAL(RunCheck(mtx), "ptx-bad-accum-output");
+    BOOST_CHECK_EQUAL(RunCheck(mtx), "ptxsess-redundant-fee");
 }
 
-BOOST_AUTO_TEST_CASE(PTXSESSValidOutput_IgnoresNonAccumExtraOutputs)
+// Anti-vacuity: non-accum outputs do not trip the rule (not blanket-rejecting).
+BOOST_AUTO_TEST_CASE(PTXSESSFee_NonAccumExtraOutputsAllowed)
 {
     CMutableTransaction mtx = MakePTXSESSBase();
-    // vout[1]: correct accum output
-    mtx.vout.push_back(CTxOut(Params().PTXServiceFee(), GetLotteryAccumScript()));
-    // vout[2]: change output to an unrelated P2PKH script — must not affect the check
     CScript change;
     change << OP_DUP << OP_HASH160 << std::vector<uint8_t>(20, 0xCC)
            << OP_EQUALVERIFY << OP_CHECKSIG;

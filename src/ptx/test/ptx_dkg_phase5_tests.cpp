@@ -3570,7 +3570,10 @@ static CMutableTransaction W4bMakeRollTx(const uint256& qh, const uint256& msg,
     mtx.nVersion = CTransaction::TxVersion::SAPLING;
     mtx.nType    = CTransaction::TxType::PTX;
     mtx.vin.push_back(CTxIn(COutPoint(QHk(0xAA), 0)));
-    mtx.vout.push_back(CTxOut(Params().PTXServiceFee(), GetLotteryAccumScript()));
+    // BUG-032 2b-iii: the settle carries NO accum fee output (the fee relocated to
+    // the commitment). A single non-accum output keeps the tx realistically shaped.
+    CScript nonAccum; nonAccum << OP_TRUE;
+    mtx.vout.push_back(CTxOut(1 * COIN, nonAccum));
 
     CProbabilisticTxPayload payload;
     payload.nSeedHeight     = 1;
@@ -5195,6 +5198,50 @@ BOOST_AUTO_TEST_CASE(Bug032_2c_SeedMismatchRejected)
     CMutableTransaction s = SettleMakeTx(seedS, qh, ctxid);
     BOOST_CHECK_EQUAL(RunPairing({MakeTransactionRef(c), MakeTransactionRef(s)}),
                       "ptxsess-seed-mismatch");
+}
+
+// ---------------------------------------------------------------------------
+// BUG-032 2b-iii FEE RELOCATION. The service fee lives in the PTXROLLCOMMIT now
+// (fund-then-sign: payment is forfeited at commit, before the result is knowable
+// — only fee-in-commitment closes the free preview). The PTXSESS (reveal) is
+// FORBIDDEN an accum fee output, else the roll pays twice. The pool is fed
+// identically (the commitment's accum output is swept by the same coalesce C1),
+// so this is a RELOCATION, not a model change.
+// RED against the current "settle must carry the fee" rule:
+//   with-fee: current ACCEPTS → the "reject" leg fails; without-fee: current
+//   REJECTS (ptx-bad-accum-output) → the "accept" leg fails. GREEN on the flip.
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(Bug032_2biii_SettleWithFeeRejected)
+{
+    W4bStoreGuard g;
+    const uint256 qh = QHk(0xD1), msg = QHk(0x77);
+    std::vector<uint8_t> sig;
+    W4bMakeQuorumAndSig(qh, msg, sig);
+    // Add an accum fee output to the (now fee-less) settle → forbidden.
+    CMutableTransaction s = W4bMakeRollTx(qh, msg, sig);
+    s.vout.push_back(CTxOut(Params().PTXServiceFee(), GetLotteryAccumScript()));
+    BOOST_CHECK_EQUAL(W4bRunContextual(s), "ptxsess-redundant-fee");
+}
+
+// Anti-vacuity: a settle with NO accum fee output validates (not blanket-reject).
+BOOST_AUTO_TEST_CASE(Bug032_2biii_SettleWithoutFeeAccepted)
+{
+    W4bStoreGuard g;
+    const uint256 qh = QHk(0xD2), msg = QHk(0x77);
+    std::vector<uint8_t> sig;
+    W4bMakeQuorumAndSig(qh, msg, sig);
+    // W4bMakeRollTx now carries no accum fee output → the valid new-semantics settle.
+    BOOST_CHECK_EQUAL(W4bRunContextual(W4bMakeRollTx(qh, msg, sig)), "");
+}
+
+// Leg 3: the fee's NEW home — a commitment carrying the accum fee is accepted (2a).
+BOOST_AUTO_TEST_CASE(Bug032_2biii_CommitmentCarriesFee)
+{
+    W4bStoreGuard g;
+    const uint256 qh = QHk(0xD3), seed = QHk(0x71);
+    CommitSeedRecord(qh, 1, -1, PTXQuorumState::ACTIVE);
+    BOOST_CHECK_EQUAL(W4bRunContextual(CommitMakeTx(qh, seed, 10)), "");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
