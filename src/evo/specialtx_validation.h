@@ -85,6 +85,18 @@ bool CheckPTXPayoutBlockRules(const CBlock& block,
                                const CBlockIndex* pindex,
                                CValidationState& state) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
+// BUG-032 2c: the coin-chained matched-pair rule. Every PTXSESS (settle, the
+// reveal) must be the child of a same-block PTXROLLCOMMIT (2a, the commitment) —
+// it spends an output of the commitment, so the UTXO layer forbids separating
+// them (a reorg that drops the commitment makes the settle's input nonexistent →
+// the settle is not a valid tx at all, with no PTX rule involved). On that coin
+// binding it binds the payloads: settle.round_seed / quorum_hash must equal the
+// parent commitment's (Q2 / BUG-033 settle-side); Q1 (results == MapBeacon) lands
+// in 2c-iii. Block-level (needs block.vtx) — the coalesce→payout / mandatory-iff
+// precedent; per-tx CheckSpecialTx cannot see sibling txs. Exposed for unit tests.
+bool CheckPTXRollCommitSettlePairing(const CBlock& block,
+                                     CValidationState& state) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
 // ODC-022 Step 8: PTXPAYOUT contextual checks (P2, P5, P10) + LotteryState update.
 // gmList and poseTracker are pre-fetched by the caller so unit tests can inject
 // hand-built fixtures without needing a live deterministicGMManager or chain.

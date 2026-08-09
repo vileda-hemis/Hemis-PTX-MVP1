@@ -1258,6 +1258,55 @@ bool CheckPTXPayoutBlockRules(const CBlock& block, const CBlockIndex* pindex, CV
     return true;
 }
 
+// BUG-032 2c: the coin-chained matched-pair rule (see header). Every PTXSESS
+// must spend an output of a same-block PTXROLLCOMMIT and reveal the SAME round
+// (round_seed) under the SAME quorum (quorum_hash) the commitment fixed.
+bool CheckPTXRollCommitSettlePairing(const CBlock& block, CValidationState& state)
+{
+    AssertLockHeld(cs_main);
+    // Index the same-block commitments by txid.
+    std::map<uint256, CPTXRollCommitPayload> commits;
+    for (const CTransactionRef& tx : block.vtx) {
+        if (!tx->IsPTXRollCommitTx()) continue;
+        CPTXRollCommitPayload p;
+        if (GetTxPayload(*tx, p)) commits[tx->GetHash()] = p;
+    }
+    for (const CTransactionRef& tx : block.vtx) {
+        if (!tx->IsProbabilisticTx()) continue;   // PTXSESS = the settle/reveal
+        CProbabilisticTxPayload s;
+        if (!GetTxPayload(*tx, s))
+            return state.DoS(100, error("%s: PTXSESS payload failed to deserialize", __func__),
+                             REJECT_INVALID, "ptxsess-bad-payload");
+        // The coin-chained parent: the settle must SPEND an output of a same-block
+        // PTXROLLCOMMIT. One input whose prevout names a sibling commitment's txid
+        // is the matched-pair binding (and the reorg-atomicity: drop the parent,
+        // the settle's input ceases to exist).
+        const CPTXRollCommitPayload* parent = nullptr;
+        for (const CTxIn& in : tx->vin) {
+            auto it = commits.find(in.prevout.hash);
+            if (it != commits.end()) { parent = &it->second; break; }
+        }
+        // 2c-i: the coin-chained parent must exist — no commitment, no reveal.
+        if (parent == nullptr)
+            return state.DoS(100, error("%s: PTXSESS %s has no coin-chained PTXROLLCOMMIT "
+                                        "parent in this block (payment-before-reveal unbound)",
+                                        __func__, tx->GetHash().ToString()),
+                             REJECT_INVALID, "ptxsess-no-commitment-parent");
+        // 2c-ii Q2 (BUG-033 settle-side): the reveal must name the SAME canonical
+        // quorum the commitment paid for — no quorum-shop at settle.
+        if (s.quorum_hash != parent->quorum_hash)
+            return state.DoS(100, error("%s: PTXSESS quorum_hash does not match its commitment "
+                                        "(quorum-shop at settle)", __func__),
+                             REJECT_INVALID, "ptxsess-quorum-mismatch");
+        // The reveal must be of the SAME round the commitment fixed.
+        if (s.round_seed != parent->round_seed)
+            return state.DoS(100, error("%s: PTXSESS round_seed does not match its commitment",
+                                        __func__),
+                             REJECT_INVALID, "ptxsess-seed-mismatch");
+    }
+    return true;
+}
+
 bool CheckPTXDKGBlockRules(const CBlock& block, CValidationState& state)
 {
     AssertLockHeld(cs_main);
@@ -1458,6 +1507,12 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
     }
 
     if (!CheckPTXDKGBlockRules(block, state)) {
+        return false;
+    }
+
+    // BUG-032 2c: every PTXSESS (reveal) must be coin-chained to a same-block
+    // PTXROLLCOMMIT (payment) and reveal the same round under the same quorum.
+    if (!CheckPTXRollCommitSettlePairing(block, state)) {
         return false;
     }
 

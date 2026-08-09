@@ -5112,4 +5112,89 @@ BOOST_AUTO_TEST_CASE(Bug032_2b_NoShareIsTerminal)
     mempool.clear();
 }
 
+// ---------------------------------------------------------------------------
+// BUG-032 increment 2c (i+ii) — the coin-chained matched-pair rule (block-level).
+// Every PTXSESS (reveal) must SPEND an output of a same-block PTXROLLCOMMIT
+// (payment) and reveal the SAME round (round_seed) under the SAME quorum
+// (quorum_hash) the commitment fixed. The coin-chain puts the never-separate
+// guarantee in the UTXO layer; the payload binding closes the settle-side
+// quorum-shop (Q2 / BUG-033). Q1 (results == MapBeacon) lands in 2c-iii.
+// RED (NoCommitmentParent + QuorumMismatch + SeedMismatch): the bad settles pass
+//   the permissive (commented-out) gate → CHECKs fail. GREEN once the gate lands.
+// ---------------------------------------------------------------------------
+
+// A settle (PTXSESS) that coin-chains to a parent commitment (spends its output).
+// parentTxid null → an orphan input (no commitment parent, for the RED).
+static CMutableTransaction SettleMakeTx(const uint256& round_seed, const uint256& qh,
+                                        const uint256& parentTxid)
+{
+    CMutableTransaction mtx;
+    mtx.nVersion = CTransaction::TxVersion::SAPLING;
+    mtx.nType    = CTransaction::TxType::PTX;
+    mtx.vin.push_back(CTxIn(COutPoint(parentTxid.IsNull() ? QHk(0xBB) : parentTxid, 0)));
+    mtx.vout.push_back(CTxOut(Params().PTXServiceFee(), GetLotteryAccumScript()));
+    CProbabilisticTxPayload p;
+    p.nSeedHeight     = 10;
+    p.count = 1; p.low = 1; p.high = 100; p.results = {42};
+    p.round_seed      = round_seed;
+    p.quorum_hash     = qh;
+    p.quorum_sig_hash = QHk(0xAB);   // non-null: satisfies the per-tx structural check
+    SetTxPayload(mtx, p);
+    return mtx;
+}
+
+static std::string RunPairing(const std::vector<CTransactionRef>& txs)
+{
+    LOCK(cs_main);
+    CBlock block;
+    block.vtx = txs;
+    CValidationState state;
+    if (CheckPTXRollCommitSettlePairing(block, state)) return "";
+    return state.GetRejectReason();
+}
+
+// Anti-vacuity: a settle coin-chained to its commitment, matching seed + quorum → accepted.
+BOOST_AUTO_TEST_CASE(Bug032_2c_MatchedPairAccepted)
+{
+    const uint256 qh = QHk(0xE1), seed = QHk(0x71);
+    CMutableTransaction c = CommitMakeTx(qh, seed, 10);
+    const uint256 ctxid = CTransaction(c).GetHash();
+    CMutableTransaction s = SettleMakeTx(seed, qh, ctxid);
+    BOOST_CHECK_EQUAL(RunPairing({MakeTransactionRef(c), MakeTransactionRef(s)}), "");
+}
+
+// 2c-i RED: a settle with NO coin-chained commitment parent → rejected.
+BOOST_AUTO_TEST_CASE(Bug032_2c_NoCommitmentParentRejected)
+{
+    const uint256 qh = QHk(0xE1), seed = QHk(0x71);
+    CMutableTransaction c = CommitMakeTx(qh, seed, 10);        // present, but unspent by settle
+    CMutableTransaction s = SettleMakeTx(seed, qh, uint256()); // orphan input
+    BOOST_CHECK_EQUAL(RunPairing({MakeTransactionRef(c), MakeTransactionRef(s)}),
+                      "ptxsess-no-commitment-parent");
+}
+
+// 2c-ii Q2 RED: coin-chained, but the settle names a DIFFERENT quorum than its
+// commitment (the settle-side quorum-shop, BUG-033) → rejected.
+BOOST_AUTO_TEST_CASE(Bug032_2c_QuorumMismatchRejected)
+{
+    const uint256 qhC = QHk(0xE1), qhS = QHk(0xE9), seed = QHk(0x71);
+    CMutableTransaction c = CommitMakeTx(qhC, seed, 10);
+    const uint256 ctxid = CTransaction(c).GetHash();
+    CMutableTransaction s = SettleMakeTx(seed, qhS, ctxid);
+    BOOST_CHECK_EQUAL(RunPairing({MakeTransactionRef(c), MakeTransactionRef(s)}),
+                      "ptxsess-quorum-mismatch");
+}
+
+// 2c-ii RED: coin-chained, same quorum, but the settle reveals a DIFFERENT round
+// than its commitment fixed → rejected.
+BOOST_AUTO_TEST_CASE(Bug032_2c_SeedMismatchRejected)
+{
+    const uint256 qh = QHk(0xE1), seedC = QHk(0x71), seedS = QHk(0x79);
+    CMutableTransaction c = CommitMakeTx(qh, seedC, 10);
+    const uint256 ctxid = CTransaction(c).GetHash();
+    CMutableTransaction s = SettleMakeTx(seedS, qh, ctxid);
+    BOOST_CHECK_EQUAL(RunPairing({MakeTransactionRef(c), MakeTransactionRef(s)}),
+                      "ptxsess-seed-mismatch");
+}
+
 BOOST_AUTO_TEST_SUITE_END()
