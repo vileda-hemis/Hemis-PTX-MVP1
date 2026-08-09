@@ -27,6 +27,7 @@
 #include "evo/evodb.h"              // KDD-070 P2: the in-memory evoDb from BasicTestingSetup
 #include "evo/specialtx_validation.h"
 #include "ptx/ptx_accum_script.h"  // W2.4 W4-b: accum output for the roll-tx shape
+#include "ptx/ptx_mempool.h"       // BUG-032: the fund-then-sign gate under test
 #include "consensus/validation.h"
 #include "primitives/block.h"       // W2.4 W4-d: CBlock for the idle-scan fakes
 #include "primitives/transaction.h"
@@ -4845,6 +4846,66 @@ BOOST_AUTO_TEST_CASE(P1b_StallOutUsesCeremonyBudgetNotBoundary)
     BOOST_REQUIRE(!form.empty());
     BOOST_CHECK(P5_count(form, "max_span = Params().GetConsensus().ptxFormation.nCeremonyBudget") == 1);
     BOOST_CHECK(P5_count(form, "max_span = Params().GetConsensus().ptxFormation.nBoundaryInterval") == 0);
+}
+
+// ---------------------------------------------------------------------------
+// Bug032_SignRefusesWithoutFundedCommitment  — THE INVARIANT RED (BUG-032)
+//
+// A roll's threshold signature IS its result (beacon = SigToBeacon(sig)). The
+// current signing path (gm_bls_sign / FanOutSign) signs a round_seed the instant
+// a share is held — BEFORE any funded commitment exists. That is the free
+// preview/reroll: a caller learns the outcome for free and simply declines to
+// commit if it dislikes it. The fix (Option A, fund-then-sign) gates signing on
+// a funded commitment for the EXACT (round_seed, quorum_hash) — binding the
+// result to payment AND to the canonical quorum (closing BUG-033's quorum-shop).
+//
+// PRIMARY (RED against current code): with a CURRENT share held but NO funded
+//   commitment, the signing entry MUST refuse. Today it signs → CHECK fails → RED.
+// ANTI-VACUITY (green before AND after the fix): once a funded commitment for the
+//   SAME pair is present, signing MUST succeed — proving the gate is payment-
+//   gated, not a blanket refusal. (Guards against the fix degenerating to
+//   "always refuse", per the anti-vacuity discipline.)
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(Bug032_SignRefusesWithoutFundedCommitment)
+{
+    // A real DKG share (valid scalar) to sign with, installed under a synthetic
+    // quorum_hash so the CURRENT-share store is populated and GetCurrentShare
+    // succeeds — isolating the variable under test to the COMMITMENT gate alone.
+    std::map<uint256, CBLSSecretKey> key_map;
+    std::vector<PTXDKGSession> sessions;
+    AdvanceToFinalize(key_map, sessions);
+
+    uint8_t sk_bytes[32];
+    blst_bendian_from_scalar(sk_bytes, &sessions[0].sk_share_i);
+
+    uint256 quorum_hash = uint256S(
+        "1111111111111111111111111111111111111111111111111111111111111111");
+    uint256 round_seed = uint256S(
+        "2222222222222222222222222222222222222222222222222222222222222222");
+
+    std::string serr;
+    BOOST_REQUIRE_MESSAGE(PTX_BLS_SetSkShare(quorum_hash, 1000, sk_bytes, serr),
+                          "precondition: CURRENT share install failed: " + serr);
+
+    // ── PRIMARY: no funded commitment for (round_seed, quorum_hash) → refuse.
+    uint8_t sig[PTX_SIG_BYTES];
+    std::string err;
+    bool signed_uncommitted =
+        PTX_SignRoundIfCommitted(round_seed, quorum_hash, sig, err);
+    BOOST_CHECK_MESSAGE(!signed_uncommitted,
+        "BUG-032: signing path produced a partial signature with NO funded "
+        "commitment for round_seed (free preview / reroll). The fund-then-sign "
+        "gate is absent.");
+
+    // ── ANTI-VACUITY: with a funded commitment present, signing must succeed.
+    PTX_RegisterRollCommitment(round_seed, quorum_hash);
+    std::string err2;
+    bool signed_committed =
+        PTX_SignRoundIfCommitted(round_seed, quorum_hash, sig, err2);
+    BOOST_CHECK_MESSAGE(signed_committed,
+        "with a funded commitment present for the same (round_seed, quorum_hash), "
+        "signing must succeed — the gate must be payment-gated, not blanket: " + err2);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
