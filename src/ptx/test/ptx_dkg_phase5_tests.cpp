@@ -4908,4 +4908,88 @@ BOOST_AUTO_TEST_CASE(Bug032_SignRefusesWithoutFundedCommitment)
         "signing must succeed — the gate must be payment-gated, not blanket: " + err2);
 }
 
+// ---------------------------------------------------------------------------
+// BUG-032 increment 2a — the roll COMMITMENT tx (nType=12) + canonical-quorum gate
+//
+// The commitment is sig-less and results-less: it must be mempool-valid BEFORE
+// signing (payment-before-reveal). Its contextual validity binds the round to
+// the CANONICAL quorum — the one ACTIVE at nSeedHeight — closing the quorum-shop
+// (BUG-033) at the commitment: the settle's sig will later be required to verify
+// against exactly this quorum, chosen before any signature exists.
+//
+// RED  (NonCanonicalQuorumRejected): a commitment naming a recorded-but-NOT-
+//   active-at-nSeedHeight quorum (superseded before the seed height) must be
+//   REJECTED. Against the permissive stub it is accepted → CHECK fails → RED.
+// ANTI-VACUITY (CanonicalQuorumAccepted): a commitment naming the quorum ACTIVE
+//   at nSeedHeight is ACCEPTED — canonical-gated, not blanket-refuse. Green both.
+// SIG-LESS (SigLessValid): a well-formed commitment carries no signature and no
+//   results and is still valid — the whole point of fund-then-sign. Green both.
+// ---------------------------------------------------------------------------
+
+// Seed a PRIMARY quorum record (no DKG / no sig — the commitment verifies no
+// signature) with controllable lineage so a test can make it active or not at a
+// chosen height. GetQuorumRecord + PTX_QuorumRecordActiveAt read this.
+static void CommitSeedRecord(const uint256& qh, int mined_h, int superseded_h,
+                             PTXQuorumState st)
+{
+    CPTXQuorumRecord r;
+    r.quorum_hash       = qh;
+    r.formation_height  = mined_h;
+    r.formed_size       = 11;
+    r.completed_size    = 11;
+    r.state             = static_cast<uint8_t>(st);
+    r.mined_height      = mined_h;
+    r.superseded_height = superseded_h;
+    evoDb->Write(std::make_pair(PTX_QuorumRecordDBPrefix(), qh), r);
+}
+
+// A structurally-valid roll COMMITMENT tx: non-coinbase vin, one accum output at
+// the service fee, sig-less/results-less payload, same-block window (expiry==seed).
+static CMutableTransaction CommitMakeTx(const uint256& qh, const uint256& seed,
+                                        uint32_t nSeedHeight)
+{
+    CMutableTransaction mtx;
+    mtx.nVersion = CTransaction::TxVersion::SAPLING;
+    mtx.nType    = CTransaction::TxType::PTXROLLCOMMIT;
+    mtx.vin.push_back(CTxIn(COutPoint(QHk(0xAB), 0)));
+    mtx.vout.push_back(CTxOut(Params().PTXServiceFee(), GetLotteryAccumScript()));
+
+    CPTXRollCommitPayload p;
+    p.nSeedHeight   = nSeedHeight;
+    p.nExpiryHeight = nSeedHeight;   // same-block mandate: window 0
+    p.count = 1; p.low = 1; p.high = 100;
+    p.round_seed  = seed;
+    p.quorum_hash = qh;
+    SetTxPayload(mtx, p);
+    return mtx;
+}
+
+BOOST_AUTO_TEST_CASE(Bug032_Commit_CanonicalQuorumAccepted)
+{
+    W4bStoreGuard g;
+    const uint256 qh = QHk(0xE1), seed = QHk(0x71);
+    CommitSeedRecord(qh, /*mined*/1, /*superseded*/-1, PTXQuorumState::ACTIVE);
+    BOOST_CHECK_EQUAL(W4bRunContextual(CommitMakeTx(qh, seed, /*nSeedHeight*/10)), "");
+}
+
+BOOST_AUTO_TEST_CASE(Bug032_Commit_NonCanonicalQuorumRejected)
+{
+    W4bStoreGuard g;
+    const uint256 qh = QHk(0xE2), seed = QHk(0x71);
+    // Recorded, but SUPERSEDED at height 5 — NOT active at seed height 10. The
+    // quorum-shop vector: an old/rotated quorum must not commit a current round.
+    CommitSeedRecord(qh, /*mined*/1, /*superseded*/5, PTXQuorumState::SUPERSEDED);
+    BOOST_CHECK_EQUAL(W4bRunContextual(CommitMakeTx(qh, seed, /*nSeedHeight*/10)),
+                      "ptxcommit-noncanonical-quorum");
+}
+
+BOOST_AUTO_TEST_CASE(Bug032_Commit_SigLessValid)
+{
+    W4bStoreGuard g;
+    const uint256 qh = QHk(0xE3), seed = QHk(0x71);
+    CommitSeedRecord(qh, 1, -1, PTXQuorumState::ACTIVE);
+    // No signature, no results anywhere in the payload — and it validates.
+    BOOST_CHECK_EQUAL(W4bRunContextual(CommitMakeTx(qh, seed, /*nSeedHeight*/10)), "");
+}
+
 BOOST_AUTO_TEST_SUITE_END()

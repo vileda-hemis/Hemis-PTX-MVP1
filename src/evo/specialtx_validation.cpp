@@ -896,6 +896,75 @@ static bool CheckSpecialTxBasic(const CTransaction& tx, CValidationState& state)
     return true;
 }
 
+// BUG-032 (Option A, fund-then-sign): validate a roll COMMITMENT (nType=12).
+// The commitment is sig-less and results-less by construction — that is the
+// point: it must be mempool-valid BEFORE the quorum signs, so payment is bound
+// to the round before any result is revealed. Its validity establishes:
+//   - structural sanity of the round (seed present, params in order, height set);
+//   - the same-block mandate: nExpiryHeight == nSeedHeight (window 0) — settle
+//     must ride the commitment's block, collapsing reorg exposure to today's
+//     single-tx level (a window > 0 would be a deliberate future exception, not
+//     the default);
+//   - a fee output to LOTTERY_ACCUM_SCRIPT at the service fee (the payment);
+//   - (contextual) quorum_hash is the CANONICAL quorum — ACTIVE at nSeedHeight —
+//     which is what closes the quorum-shop (BUG-033): the settle's sig will be
+//     required to verify against this exact quorum, chosen before it signs.
+// No signature is checked here (there is none). Structural path (pindexPrev ==
+// nullptr, CheckBlock) skips the contextual canonical-quorum check, mirroring
+// the PTXSESS posture (the store is chain state).
+static bool CheckPTXRollCommitTx(const CTransaction& tx, const CBlockIndex* pindexPrev,
+                                 const CCoinsViewCache* view, CValidationState& state)
+{
+    CPTXRollCommitPayload payload;
+    if (!GetTxPayload(tx, payload))
+        return state.Invalid(false, REJECT_INVALID, "ptxcommit-bad-payload");
+    if (payload.round_seed.IsNull())
+        return state.Invalid(false, REJECT_INVALID, "ptxcommit-missing-seed");
+    if (payload.low > payload.high)
+        return state.Invalid(false, REJECT_INVALID, "ptxcommit-bad-range");
+    if (payload.count == 0)
+        return state.Invalid(false, REJECT_INVALID, "ptxcommit-zero-count");
+    if (payload.nSeedHeight == 0)
+        return state.Invalid(false, REJECT_INVALID, "ptxcommit-bad-height");
+    // Same-block mandate (the reorg-safety property): the settle deadline is the
+    // seed height itself. Enforced as the default; a positive window is a
+    // deliberate future exception, not an open default.
+    if (payload.nExpiryHeight != payload.nSeedHeight)
+        return state.Invalid(false, REJECT_INVALID, "ptxcommit-window-nonzero");
+    // The payment: exactly one output to LOTTERY_ACCUM_SCRIPT at the service fee.
+    {
+        const CScript& accumScript = GetLotteryAccumScript();
+        const CAmount  serviceFee  = Params().PTXServiceFee();
+        int accumCount = 0;
+        for (const CTxOut& out : tx.vout) {
+            if (out.scriptPubKey == accumScript && out.nValue == serviceFee)
+                ++accumCount;
+        }
+        if (accumCount != 1)
+            return state.Invalid(false, REJECT_INVALID, "ptxcommit-bad-accum-output");
+    }
+    // Contextual: the committed quorum must be the canonical one — ACTIVE at
+    // nSeedHeight. Chain state, so structural-only path (pindexPrev == nullptr)
+    // skips it, as PTXSESS does.
+    if (pindexPrev != nullptr) {
+        // ★ BUG-033 CANONICAL-QUORUM GATE: the committed quorum must be a real
+        // record that is ACTIVE at nSeedHeight. Per-record (GetQuorumRecord +
+        // PTX_QuorumRecordActiveAt) is equivalent to membership in
+        // GetActiveQuorumsAtHeight(nSeedHeight) for a specific quorum_hash — the
+        // predicate already requires mined_height <= nSeedHeight — and needs only
+        // the primary record, not the by-inv-height index walk. Closes the
+        // quorum-shop at the commitment: the settle's sig will be required to
+        // verify against exactly this quorum, chosen before any signature exists.
+        CPTXQuorumRecord qrec;
+        if (ptxQuorumStore == nullptr ||
+            !ptxQuorumStore->GetQuorumRecord(payload.quorum_hash, qrec) ||
+            !PTX_QuorumRecordActiveAt(qrec, (int)payload.nSeedHeight)) {
+            return state.Invalid(false, REJECT_INVALID, "ptxcommit-noncanonical-quorum");
+        }
+    }
+    return true;
+}
+
 // contextual and non-contextual per-type checks
 // - pindexPrev=null: CheckBlock-->CheckSpecialTxNoContext
 // - pindexPrev=chainActive.Tip: AcceptToMemoryPoolWorker-->CheckSpecialTx
@@ -912,6 +981,7 @@ bool CheckSpecialTx(const CTransaction& tx, const CBlockIndex* pindexPrev, const
         // reject special transactions before enforcement
         if (!tx.IsNormalType() && !tx.IsProbabilisticTx() &&
             !tx.IsPTXCoalesceTx() && !tx.IsPTXPayoutTx() &&
+            !tx.IsPTXRollCommitTx() &&
             !Params().GetConsensus().NetworkUpgradeActive(pindexPrev->nHeight + 1, Consensus::UPGRADE_V6_0)) {
             return state.DoS(100, error("%s: Special tx when v6 upgrade not enforced yet", __func__),
                              REJECT_INVALID, "bad-txns-v6-not-active");
@@ -942,6 +1012,10 @@ bool CheckSpecialTx(const CTransaction& tx, const CBlockIndex* pindexPrev, const
         case CTransaction::TxType::LLMQCOMM: {
             // quorum commitment
             return CheckLLMQCommitmentTx(tx, pindexPrev, state);
+        }
+        case CTransaction::TxType::PTXROLLCOMMIT: {
+            // BUG-032 fund-then-sign commitment (sig-less, results-less).
+            return CheckPTXRollCommitTx(tx, pindexPrev, view, state);
         }
         case CTransaction::TxType::PTX: {
             CProbabilisticTxPayload payload;

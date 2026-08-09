@@ -265,6 +265,10 @@ public:
         PTXDKG = 11,       // DKG ceremony result: group_pk + vvec_hash + signed premature commitments
                            // nTypes 7 (PTXSETTLE) and 8 (PTXCONSOLIDATE) deliberately left as gaps —
                            // do not reuse; see KDD-056.
+        PTXROLLCOMMIT = 12, // BUG-032 Option A: the fund-then-sign commitment. A sig-less,
+                            // results-less roll commitment (round_seed + canonical quorum_hash +
+                            // params + fee) broadcast BEFORE signing — payment-before-reveal.
+                            // nType 12 was recorded "unclaimed" by KDD-056; this claims it.
     };
 
     static const int16_t CURRENT_VERSION = TxVersion::LEGACY;
@@ -362,6 +366,8 @@ public:
     bool IsPTXPayoutTx()   const { return isSaplingVersion() && nType == TxType::PTXPAYOUT; }
     // PTXDKG carries populated extraPayload so IsSpecialTx() is true; use IsSpecialTx()-based form.
     bool IsPTXDKGTx()      const { return IsSpecialTx() && nType == TxType::PTXDKG; }
+    // BUG-032: the roll commitment carries a populated (sig-less) payload → IsSpecialTx() true.
+    bool IsPTXRollCommitTx() const { return IsSpecialTx() && nType == TxType::PTXROLLCOMMIT; }
 
     // Ensure that special and sapling fields are signed
     SigVersion GetRequiredSigVersion() const
@@ -544,6 +550,44 @@ struct CProbabilisticTxPayload {
                   obj.round_seed, obj.beacon, obj.results,
                   obj.quorum_sig_hash, obj.quorum_members,
                   obj.quorum_sig, obj.quorum_hash);
+    }
+};
+
+// BUG-032 (Option A, fund-then-sign): the roll COMMITMENT payload. A roll's
+// threshold signature IS its result, so the commitment must exist — funded and
+// broadcast — BEFORE the quorum signs. This payload is therefore deliberately
+// sig-less and results-less: it carries only what pins the round to payment and
+// to the canonical quorum. It is the PTX (PTXSESS) payload minus the reveal
+// fields {beacon, results, quorum_sig(_hash), quorum_members}. The settle tx
+// (PTXSESS, nType=6) rides the SAME block and carries the reveal, referencing
+// this commitment by round_seed + quorum_hash (same-block mandate).
+struct CPTXRollCommitPayload {
+    std::string game_id;
+    uint32_t nSeedHeight{0};
+    uint32_t nExpiryHeight{0};        // same-block mandate: MUST equal nSeedHeight (window 0)
+    std::vector<uint8_t> caller_pubkey;
+    uint256 nonce;
+    uint256 ptx_params_hash;
+    uint32_t count{0};
+    int64_t low{0};
+    int64_t high{0};
+    bool unique{false};
+    std::vector<int64_t> exclude_integers;
+    std::vector<std::string> exclude_txids;
+    uint256 round_seed;
+    // The canonical selection at nSeedHeight — the quorum that consensus says is
+    // ACTIVE at the seed height. Binding it here (validated) closes the
+    // quorum-shop (BUG-033): the settle's quorum_sig must verify against THIS
+    // quorum, chosen before any signature exists.
+    uint256 quorum_hash;
+
+    SERIALIZE_METHODS(CPTXRollCommitPayload, obj)
+    {
+        READWRITE(obj.game_id, obj.nSeedHeight, obj.nExpiryHeight,
+                  obj.caller_pubkey, obj.nonce, obj.ptx_params_hash,
+                  obj.count, obj.low, obj.high, obj.unique,
+                  obj.exclude_integers, obj.exclude_txids,
+                  obj.round_seed, obj.quorum_hash);
     }
 };
 
