@@ -538,30 +538,26 @@ UniValue gm_bls_sign(const JSONRPCRequest& request)
     uint256 round_seed  = uint256S(seed_hex);
     uint256 quorum_hash = uint256S(qh_hex);
 
-    // KDD-070 P1: select the CURRENT share for the named quorum by key. Only a
-    // CURRENT-role share signs (the only role in P1; the check is written now so
-    // P4's SUPERSEDED does not have to add it). Not held → hard-error naming the
-    // quorum — never a wrong-key signature, never a fallback.
-    uint8_t sk_bytes[32];
-    if (!PTX_BLS_GetCurrentShare(quorum_hash, sk_bytes)) {
-        // ODC-064: this branch logged NOTHING — only the success path below did.
-        // A node that could not sign was therefore indistinguishable in the logs
-        // from one that was never asked, and BUG-028's diagnosis had to fall back
-        // to a live RPC probe. Absence of a log line is not evidence a branch did
-        // not fire; give the branch a voice, naming the quorum and the reason.
-        LogPrintf("PTX gm_bls_sign: FAILED node=%s quorum=%s reason=no CURRENT sk_share held\n",
-                  g_ptx_my_node_id, quorum_hash.ToString());
-        throw JSONRPCError(RPC_MISC_ERROR,
-            "this node holds no CURRENT sk_share for quorum " + quorum_hash.ToString() +
-            " (complete/await a ceremony for it first)");
-    }
-
+    // BUG-032 2b: route signing through the fund-then-sign gate. It refuses to
+    // reveal (sign) unless a REAL PTXROLLCOMMIT for this exact (round_seed,
+    // quorum_hash) is present in the local mempool — payment-before-reveal, and
+    // by binding quorum_hash, the signing-path close of the quorum-shop (BUG-033).
+    // KDD-070 P1 CURRENT-share selection now lives inside the gate. It also
+    // reports whether a refusal is RETRYABLE (commitment not seen yet —
+    // propagation delay) versus terminal (no share / sign failure).
     uint8_t sig_buf[PTX_SIG_BYTES];
-    if (!PTX_BLS_PartialSign(sk_bytes, round_seed, sig_buf)) {
-        // ODC-064: same reasoning — the other silent arm of the same RPC.
-        LogPrintf("PTX gm_bls_sign: FAILED node=%s quorum=%s reason=BLS partial signing failed\n",
-                  g_ptx_my_node_id, quorum_hash.ToString());
-        throw JSONRPCError(RPC_MISC_ERROR, "BLS signing failed");
+    std::string sign_err;
+    bool retryable = false;
+    if (!PTX_SignRoundIfCommitted(round_seed, quorum_hash, sig_buf, sign_err, &retryable)) {
+        // ODC-064: give every refusal branch a voice, naming the quorum + reason.
+        LogPrintf("PTX gm_bls_sign: %s node=%s quorum=%s reason=%s\n",
+                  retryable ? "RETRY" : "FAILED",
+                  g_ptx_my_node_id, quorum_hash.ToString(), sign_err);
+        // wait-not-reject: a not-yet-propagated commitment is RETRYABLE, not
+        // terminal — the coordinator's retry budget bounds the wait, so a
+        // legitimate roll is not failed by ordinary network delay.
+        throw JSONRPCError(retryable ? RPC_PTX_COMMITMENT_NOT_SEEN : RPC_MISC_ERROR,
+                           sign_err);
     }
 
     LogPrintf("PTX gm_bls_sign: node=%s sig[0..3]=%02x%02x%02x%02x\n",

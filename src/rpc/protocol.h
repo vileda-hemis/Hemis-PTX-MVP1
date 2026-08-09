@@ -54,6 +54,7 @@ enum RPCErrorCode {
 
     //! PTX errors
     RPC_PTX_SETTLEMENT_FAILED           = -32050, //! PTX_AutoCommit could not build/fund/sign/submit the PTXSESS tx
+    RPC_PTX_COMMITMENT_NOT_SEEN         = -32051, //! BUG-032: no roll commitment seen yet for this round_seed — RETRYABLE (propagation delay), not terminal
 
     //! Aliases for backward compatibility
     RPC_TRANSACTION_ERROR               = RPC_VERIFY_ERROR,

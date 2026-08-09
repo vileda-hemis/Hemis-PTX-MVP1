@@ -130,25 +130,27 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
 // ===========================================================================
 // BUG-032 (Option A, fund-then-sign): the payment-before-reveal gate.
 // ===========================================================================
-// In-memory registry of funded roll commitments, keyed (round_seed, quorum_hash).
-// This is the gatable seam PTX_SignRoundIfCommitted consults. The full fix wires
-// it to the real commitment tx (new nType) seen in mempool/chain; until that tx
-// type lands, callers register a commitment here once the funded tx is broadcast.
-namespace {
-RecursiveMutex cs_ptx_roll_commit;
-std::set<std::pair<uint256, uint256>> g_ptx_roll_commitments GUARDED_BY(cs_ptx_roll_commit);
-} // anonymous namespace
-
-void PTX_RegisterRollCommitment(const uint256& round_seed, const uint256& quorum_hash)
-{
-    LOCK(cs_ptx_roll_commit);
-    g_ptx_roll_commitments.insert(std::make_pair(round_seed, quorum_hash));
-}
-
+// PTX_RollCommitmentPresent — the REAL commitment lookup (2b). Scans the local
+// mempool for a PTXROLLCOMMIT (nType=12) whose payload names this exact
+// (round_seed, quorum_hash). This replaces increment 1's in-memory registry
+// seam: the commitment is now a real, funded, broadcast transaction, and the
+// signing decision reads the same mempool the rest of the node does. With the
+// same-block mandate (nExpiryHeight == nSeedHeight) the commitment sits in
+// mempool at sign time — settle rides its block — so the mempool scan is the
+// authoritative signing-time check; a chain scan is unnecessary for the
+// same-block flow and would only matter if a window > 0 were ever allowed.
 bool PTX_RollCommitmentPresent(const uint256& round_seed, const uint256& quorum_hash)
 {
-    LOCK(cs_ptx_roll_commit);
-    return g_ptx_roll_commitments.count(std::make_pair(round_seed, quorum_hash)) > 0;
+    LOCK(mempool.cs);
+    for (const auto& e : mempool.mapTx) {
+        const CTransactionRef tx = e.GetSharedTx();
+        if (!tx->IsPTXRollCommitTx()) continue;
+        CPTXRollCommitPayload p;
+        if (!GetTxPayload(*tx, p)) continue;
+        if (p.round_seed == round_seed && p.quorum_hash == quorum_hash)
+            return true;
+    }
+    return false;
 }
 
 // The gated signing entry. Signs round_seed with this node's CURRENT share for
@@ -160,12 +162,20 @@ bool PTX_RollCommitmentPresent(const uint256& round_seed, const uint256& quorum_
 // quorum finds no commitment and is refused). Signing logic mirrors gm_bls_sign
 // (rpc/ptx.cpp) minus the RPC/JSON; that RPC path routes through here.
 bool PTX_SignRoundIfCommitted(const uint256& round_seed, const uint256& quorum_hash,
-                              uint8_t out_sig[96], std::string& err)
+                              uint8_t out_sig[96], std::string& err,
+                              bool* out_retryable)
 {
+    if (out_retryable) *out_retryable = false;
     // ── BUG-032 GATE: refuse to reveal (sign) before payment is committed.
     if (!PTX_RollCommitmentPresent(round_seed, quorum_hash)) {
-        err = "no funded commitment for round_seed " + round_seed.ToString() +
-              " under quorum " + quorum_hash.ToString() + " — refuse to sign";
+        // ★ 2b-ii wait-not-reject: absence is NOT proof the commitment was never
+        // made — it may still be in flight (propagation delay). The member cannot
+        // distinguish "not yet arrived" from "never broadcast", so it defaults to
+        // RETRYABLE and lets the coordinator's retry budget bound the wait. A hard
+        // reject here would fail legitimate rolls under ordinary network delay.
+        if (out_retryable) *out_retryable = true;
+        err = "no commitment seen yet for round_seed " + round_seed.ToString() +
+              " under quorum " + quorum_hash.ToString() + " — retry after propagation";
         return false;
     }
 

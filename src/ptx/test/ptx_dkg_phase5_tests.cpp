@@ -28,6 +28,8 @@
 #include "evo/specialtx_validation.h"
 #include "ptx/ptx_accum_script.h"  // W2.4 W4-b: accum output for the roll-tx shape
 #include "ptx/ptx_mempool.h"       // BUG-032: the fund-then-sign gate under test
+#include "validation.h"            // BUG-032 2b: the global mempool the signing scan reads
+#include "txmempool.h"             // BUG-032 2b: TestMemPoolEntryHelper / addUnchecked
 #include "consensus/validation.h"
 #include "primitives/block.h"       // W2.4 W4-d: CBlock for the idle-scan fakes
 #include "primitives/transaction.h"
@@ -1880,15 +1882,31 @@ BOOST_AUTO_TEST_CASE(ODC064_FailureBranchesLogTheirCause)
     // --- site 2: gm_bls_sign's failure arms must log quorum_hash + reason
     const std::string rpc = P5_slurp(std::string(PTX_SRCDIR) + "/src/rpc/ptx.cpp");
     BOOST_REQUIRE(!rpc.empty());
-    const size_t gs = rpc.find("no CURRENT sk_share for quorum");
-    BOOST_REQUIRE_MESSAGE(gs != std::string::npos, "gm_bls_sign no-share branch not found");
-    // look BACK from the throw — the log must precede it
-    const size_t from = gs > 700 ? gs - 700 : 0;
-    const std::string before = rpc.substr(from, gs - from);
-    BOOST_CHECK_MESSAGE(before.find("gm_bls_sign: FAILED") != std::string::npos,
-                        "ODC-064: gm_bls_sign's no-share branch still throws without logging");
-    BOOST_CHECK_MESSAGE(before.find("quorum_hash.ToString()") != std::string::npos,
+    // BUG-032 2b consolidated gm_bls_sign's per-branch failure arms into ONE
+    // gated call (PTX_SignRoundIfCommitted); the ODC-064 "every failure branch
+    // has a voice" property is preserved — the unified arm logs quorum_hash +
+    // reason before throwing, and the underlying no-share reason is now named by
+    // the gate itself.
+    const size_t gs = rpc.find("if (!PTX_SignRoundIfCommitted(");
+    BOOST_REQUIRE_MESSAGE(gs != std::string::npos, "gm_bls_sign gated-sign failure arm not found");
+    const size_t th = rpc.find("throw JSONRPCError", gs);
+    BOOST_REQUIRE_MESSAGE(th != std::string::npos, "gm_bls_sign failure arm has no throw");
+    const std::string gsArm = rpc.substr(gs, th - gs);   // the arm up to (not incl.) the throw
+    BOOST_CHECK_MESSAGE(gsArm.find("LogPrintf") != std::string::npos,
+                        "ODC-064: gm_bls_sign's failure arm throws without logging");
+    BOOST_CHECK_MESSAGE(gsArm.find("quorum_hash.ToString()") != std::string::npos,
                         "ODC-064: the failure log does not name the quorum_hash");
+    BOOST_CHECK_MESSAGE(gsArm.find("reason=") != std::string::npos,
+                        "ODC-064: the failure log does not name the reason");
+    // 2b-ii: the arm must distinguish a RETRYABLE refusal (commitment not seen)
+    // from a terminal one — the property the coordinator's wait-and-retry needs.
+    BOOST_CHECK_MESSAGE(rpc.substr(gs, (th - gs) + 200).find("RPC_PTX_COMMITMENT_NOT_SEEN") != std::string::npos,
+                        "2b-ii: gm_bls_sign does not signal the retryable (commitment-not-seen) case distinctly");
+    // The no-share reason moved into the gate — verify it still names its cause.
+    const std::string mp = P5_slurp(std::string(PTX_SRCDIR) + "/src/ptx/ptx_mempool.cpp");
+    BOOST_REQUIRE(!mp.empty());
+    BOOST_CHECK_MESSAGE(mp.find("no CURRENT sk_share held for quorum") != std::string::npos,
+                        "ODC-064: the gate's no-share branch no longer names its cause");
 }
 
 // §1 (widened by P4): g_ptx_my_shares has EIGHT mutators — one guarded
@@ -4867,8 +4885,15 @@ BOOST_AUTO_TEST_CASE(P1b_StallOutUsesCeremonyBudgetNotBoundary)
 //   "always refuse", per the anti-vacuity discipline.)
 // ---------------------------------------------------------------------------
 
+// Forward decls (defined with the 2b helpers below): the invariant test now
+// proves itself against the REAL mempool commitment, not the retired seam.
+static CMutableTransaction CommitMakeTx(const uint256& qh, const uint256& seed,
+                                        uint32_t nSeedHeight);
+static void CommitInjectToMempool(const uint256& round_seed, const uint256& qh);
+
 BOOST_AUTO_TEST_CASE(Bug032_SignRefusesWithoutFundedCommitment)
 {
+    mempool.clear();
     // A real DKG share (valid scalar) to sign with, installed under a synthetic
     // quorum_hash so the CURRENT-share store is populated and GetCurrentShare
     // succeeds — isolating the variable under test to the COMMITMENT gate alone.
@@ -4898,14 +4923,15 @@ BOOST_AUTO_TEST_CASE(Bug032_SignRefusesWithoutFundedCommitment)
         "commitment for round_seed (free preview / reroll). The fund-then-sign "
         "gate is absent.");
 
-    // ── ANTI-VACUITY: with a funded commitment present, signing must succeed.
-    PTX_RegisterRollCommitment(round_seed, quorum_hash);
+    // ── ANTI-VACUITY: with a real funded commitment in mempool, signing succeeds.
+    CommitInjectToMempool(round_seed, quorum_hash);
     std::string err2;
     bool signed_committed =
         PTX_SignRoundIfCommitted(round_seed, quorum_hash, sig, err2);
     BOOST_CHECK_MESSAGE(signed_committed,
         "with a funded commitment present for the same (round_seed, quorum_hash), "
         "signing must succeed — the gate must be payment-gated, not blanket: " + err2);
+    mempool.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -4990,6 +5016,100 @@ BOOST_AUTO_TEST_CASE(Bug032_Commit_SigLessValid)
     CommitSeedRecord(qh, 1, -1, PTXQuorumState::ACTIVE);
     // No signature, no results anywhere in the payload — and it validates.
     BOOST_CHECK_EQUAL(W4bRunContextual(CommitMakeTx(qh, seed, /*nSeedHeight*/10)), "");
+}
+
+// ---------------------------------------------------------------------------
+// BUG-032 increment 2b — signing consults the REAL on-chain/mempool commitment
+// (promotes increment 1's invariant off the in-memory registry seam) + the
+// wait-not-reject latency property.
+// ---------------------------------------------------------------------------
+
+// Inject a REAL PTXROLLCOMMIT into the global mempool (mapTx) so the signing
+// path's mempool scan finds it — the real commitment, not incr1's registry seam.
+static void CommitInjectToMempool(const uint256& round_seed, const uint256& qh)
+{
+    CMutableTransaction mtx = CommitMakeTx(qh, round_seed, /*nSeedHeight*/10);
+    TestMemPoolEntryHelper helper;
+    LOCK(mempool.cs);
+    mempool.addUnchecked(mtx.GetHash(), helper.FromTx(mtx));
+}
+
+// Install a real CURRENT share for qh so signing can proceed past the gate.
+static void CommitInstallShare(const uint256& qh)
+{
+    std::map<uint256, CBLSSecretKey> key_map;
+    std::vector<PTXDKGSession> sessions;
+    AdvanceToFinalize(key_map, sessions);
+    uint8_t sk_bytes[32];
+    blst_bendian_from_scalar(sk_bytes, &sessions[0].sk_share_i);
+    std::string serr;
+    BOOST_REQUIRE_MESSAGE(PTX_BLS_SetSkShare(qh, 1000, sk_bytes, serr),
+                          "share install failed: " + serr);
+}
+
+// 2b-i: a PTXROLLCOMMIT broadcast to mempool (never registered via the retired
+// in-memory seam) must ENABLE signing.
+// RED against the in-memory registry: the mempool commitment is invisible to the
+//   registry-based PTX_RollCommitmentPresent → signing refuses → CHECK fails.
+// GREEN once the scan lands: the mempool commitment is found → signs.
+BOOST_AUTO_TEST_CASE(Bug032_2b_SignsOnRealMempoolCommitment)
+{
+    mempool.clear();
+    const uint256 qh = QHk(0xF1), seed = QHk(0x72);
+    CommitInstallShare(qh);
+    CommitInjectToMempool(seed, qh);   // the REAL commitment; retired registry NOT used
+    uint8_t sig[PTX_SIG_BYTES]; std::string err;
+    BOOST_CHECK_MESSAGE(PTX_SignRoundIfCommitted(seed, qh, sig, err),
+        "signing must consult the real mempool PTXROLLCOMMIT, not the retired "
+        "in-memory registry: " + err);
+    mempool.clear();
+}
+
+// 2b-i anti-vacuity: with NO commitment anywhere (empty mempool), signing refuses.
+BOOST_AUTO_TEST_CASE(Bug032_2b_RefusesWithNoMempoolCommitment)
+{
+    mempool.clear();
+    const uint256 qh = QHk(0xF2), seed = QHk(0x72);
+    CommitInstallShare(qh);
+    uint8_t sig[PTX_SIG_BYTES]; std::string err;
+    BOOST_CHECK_MESSAGE(!PTX_SignRoundIfCommitted(seed, qh, sig, err),
+        "with no commitment in mempool or chain, signing must refuse");
+    mempool.clear();
+}
+
+// 2b-ii — wait-not-reject (THE LATENCY PROPERTY). An ABSENT commitment is
+// RETRYABLE (it may be in flight — propagation delay), a present-commitment-but-
+// no-share is TERMINAL. The distinction is what lets the coordinator wait-and-
+// retry legitimate rolls under network delay instead of failing them.
+// RED against the stubbed-off retryable signal: absence returns retryable=false
+//   → CHECK fails. GREEN once the fix sets retryable=true on absence.
+BOOST_AUTO_TEST_CASE(Bug032_2b_UnseenCommitmentIsRetryable)
+{
+    mempool.clear();
+    const uint256 qh = QHk(0xF3), seed = QHk(0x73);
+    CommitInstallShare(qh);
+    uint8_t sig[PTX_SIG_BYTES]; std::string err; bool retryable = false;
+    BOOST_CHECK(!PTX_SignRoundIfCommitted(seed, qh, sig, err, &retryable));
+    BOOST_CHECK_MESSAGE(retryable,
+        "2b-ii: an unseen commitment must be RETRYABLE (wait for propagation), "
+        "not a terminal refusal — else legitimate rolls fail under network delay");
+    mempool.clear();
+}
+
+// 2b-ii terminal branch (anti-vacuity for the retryable signal): commitment
+// present, but this node holds NO CURRENT share for the quorum → TERMINAL refusal
+// (waiting cannot help). Proves retryable is a real discriminator, not always-true.
+BOOST_AUTO_TEST_CASE(Bug032_2b_NoShareIsTerminal)
+{
+    mempool.clear();
+    const uint256 qh = QHk(0xF4), seed = QHk(0x73);   // no share installed for 0xF4
+    CommitInjectToMempool(seed, qh);                   // commitment present → past the gate
+    uint8_t sig[PTX_SIG_BYTES]; std::string err; bool retryable = true; // init true; must be cleared
+    BOOST_CHECK(!PTX_SignRoundIfCommitted(seed, qh, sig, err, &retryable));
+    BOOST_CHECK_MESSAGE(!retryable,
+        "2b-ii: no CURRENT share is a TERMINAL refusal (waiting cannot help), "
+        "not retryable");
+    mempool.clear();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

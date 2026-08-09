@@ -20,21 +20,28 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
 // BUG-032 (Option A, fund-then-sign): the payment-before-reveal gate.
 // ---------------------------------------------------------------------------
 // A roll's signature IS its result, so signing must not happen until a funded
-// commitment for the exact round_seed is irrevocably broadcast.  The full fix
-// checks the mempool/chain for the commitment tx (new nType); this registry is
-// the gatable seam the signing entry consults — wired to real commitments as the
-// commitment tx type lands.  Keyed on (round_seed, quorum_hash): the commitment
-// binds BOTH (quorum_hash = the canonical selection at nSeedHeight, closing
-// BUG-033), so the gate also rejects a sign request for a non-committed quorum.
-void PTX_RegisterRollCommitment(const uint256& round_seed, const uint256& quorum_hash);
+// commitment for the exact round_seed is irrevocably broadcast.  PTX_RollCommitmentPresent
+// scans the local mempool for a real PTXROLLCOMMIT (nType=12) naming this exact
+// (round_seed, quorum_hash) — the commitment binds BOTH (quorum_hash = the
+// canonical selection active at nSeedHeight, closing BUG-033), so the gate also
+// refuses a sign request for a non-committed quorum. (Increment 2b replaced the
+// earlier in-memory registry seam with this real mempool lookup.)
 bool PTX_RollCommitmentPresent(const uint256& round_seed, const uint256& quorum_hash);
 
 // The gated signing entry the RPC/fan-out path uses.  Signs round_seed with this
 // node's CURRENT share for quorum_hash and returns the partial sig — ONLY if a
 // funded commitment for (round_seed, quorum_hash) is present.  Returns false
-// (err set) if no share is held OR (post-fix) no commitment exists.  ★ INITIALLY
-// UNGATED so the invariant RED proves the current hole; the fix adds the gate.
+// (err set) if no share is held OR no commitment is present.
+//
+// out_retryable (2b-ii, the LATENCY property): when the refusal is "no commitment
+// SEEN YET", *out_retryable is set true — the member cannot distinguish a
+// commitment still in flight (propagation delay) from one never broadcast, so it
+// defaults to RETRYABLE and lets the coordinator's retry budget bound the wait.
+// A hard reject on a not-yet-propagated commitment would fail legitimate rolls
+// under normal network delay. Terminal refusals (no share, sign failure) set it
+// false. On success it is false. nullptr is accepted (caller does not care).
 bool PTX_SignRoundIfCommitted(const uint256& round_seed, const uint256& quorum_hash,
-                              uint8_t out_sig[96], std::string& err);
+                              uint8_t out_sig[96], std::string& err,
+                              bool* out_retryable = nullptr);
 
 #endif // HEMIS_PTX_MEMPOOL_H
