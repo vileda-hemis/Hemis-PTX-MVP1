@@ -268,7 +268,8 @@ std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
     const std::string& round_id,
     const uint256& round_seed,
     const uint256& quorum_hash,
-    const std::vector<std::string>& member_ids)
+    const std::vector<std::string>& member_ids,
+    size_t threshold)
 {
     std::map<std::string, std::vector<uint8_t>> collected;
 
@@ -378,7 +379,20 @@ std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
                 continue;
             }
             collected[node_id] = std::move(sig_bytes);
-            LogPrintf("PTX: FanOutSign: %s got partial sig\n", node_id);
+            LogPrintf("PTX: FanOutSign: %s got partial sig (%d/%zu)\n",
+                      node_id, (int)collected.size(), threshold);
+            // STOP-AT-THRESHOLD: a t-of-n threshold signature is fully recoverable
+            // at t. Once t partials are in hand, return immediately — do not wait
+            // for the remaining n-t (pure latency, and under staggered commitment
+            // propagation it would gate the roll on the slowest members, not the
+            // t-th). This is the correctness of the t-of-n contract, not just an
+            // optimization: n=11/t=6 must gate at 6, never at 11.
+            if (threshold > 0 && collected.size() >= threshold) {
+                LogPrintf("PTX: FanOutSign: threshold %zu reached — returning "
+                          "(%zu partials, %d attempt(s))\n",
+                          threshold, collected.size(), attempt + 1);
+                return collected;
+            }
         } catch (...) {
             LogPrintf("PTX: FanOutSign: %s parse error\n", node_id);
         }

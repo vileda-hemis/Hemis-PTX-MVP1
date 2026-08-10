@@ -314,7 +314,11 @@ UniValue ptx_roll(const JSONRPCRequest& request)
               commit_txid, round_seed.ToString());
 
     // Collect partial BLS signatures from each quorum member.
-    auto partial_sigs_raw = PTX_FanOutSign(round_id, round_seed, dkg_ctx.quorum_hash, member_ids);
+    // stop-at-threshold: FanOutSign returns as soon as `signing_threshold` partials
+    // are collected — recovery needs only t, and waiting for the rest is latency
+    // (gating on the slowest members under staggered commitment propagation).
+    auto partial_sigs_raw = PTX_FanOutSign(round_id, round_seed, dkg_ctx.quorum_hash,
+                                           member_ids, (size_t)signing_threshold);
 
     // Collect blst partial signatures and 1-indexed polynomial positions.
     std::vector<std::vector<uint8_t>> bls_sigs;

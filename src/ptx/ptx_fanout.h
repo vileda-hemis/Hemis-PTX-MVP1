@@ -47,13 +47,18 @@ void PTX_FanOutReveal(const std::string& round_id,
 
 // --- BLS threshold signing (Phase 2) ---
 
-// Ask each GM in member_ids to sign round_seed via gm_bls_sign.
-// Returns node_id -> 96-byte partial signature for every node that responds.
-// cs_ptx_rounds is NOT held during HTTP calls.
+// Ask GMs in member_ids to sign round_seed via gm_bls_sign, collecting partial
+// signatures until `threshold` are gathered — then STOP. A t-of-n threshold
+// signature is fully recoverable at t; waiting for the remaining n-t partials is
+// pure latency (and, under staggered commitment propagation, gates the roll on
+// the slowest members instead of the t-th). Returns node_id -> 96-byte partial
+// for the responders collected. cs_ptx_rounds is NOT held during HTTP calls.
+// threshold==0 collects from all members (legacy behaviour).
 std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
     const std::string& round_id,
     const uint256& round_seed,
     const uint256& quorum_hash,
-    const std::vector<std::string>& member_ids);
+    const std::vector<std::string>& member_ids,
+    size_t threshold = 0);
 
 #endif // HEMIS_PTX_FANOUT_H
