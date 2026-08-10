@@ -1216,10 +1216,8 @@ bool CheckSpecialTxNoContext(const CTransaction& tx, CValidationState& state)
 bool CheckPTXCoalesceBlockRules(const CBlock& block, CValidationState& state)
 {
     AssertLockHeld(cs_main);
-    int ptxSessCount  = 0;
     int coalesceCount = 0;
     for (const CTransactionRef& tx : block.vtx) {
-        if (tx->IsProbabilisticTx()) ++ptxSessCount;
         if (tx->IsPTXCoalesceTx())   ++coalesceCount;
     }
     // C7: at most one PTXCOALESCE per block.
@@ -1227,13 +1225,28 @@ bool CheckPTXCoalesceBlockRules(const CBlock& block, CValidationState& state)
         return state.DoS(100, error("%s: block contains %d PTXCOALESCE txs, max 1", __func__, coalesceCount),
                          REJECT_INVALID, "ptxcoalesce-duplicate");
     }
-    // C8: PTXCOALESCE mandatory iff PTXSESS present.
-    if (ptxSessCount > 0 && coalesceCount == 0) {
-        return state.DoS(100, error("%s: block has %d PTXSESS but no PTXCOALESCE", __func__, ptxSessCount),
+    // C8: PTXCOALESCE mandatory-iff a ROLL-FEE SOURCE is present in the block.
+    //
+    // BUG-032 fee relocation, reverse-direction reconciliation (the LAST site —
+    // fleet-audited, no fourth). The fee moved from the PTXSESS (settle) to the
+    // PTXROLLCOMMIT, so "fee present" is no longer "PTXSESS present": an ORPHAN
+    // COMMIT (roll committed, sign abandoned, settle never produced) carries a
+    // real fee output with NO settle in its block. The assembler (blockassembler
+    // .cpp:242) and the value/vin derivation (CheckAndApplyPTXCoalesce) already
+    // key on PTX_CollectRollFeeOutputs; this rule was the straggler still using
+    // ptxSessCount, so it HALTED the chain on the design's own forfeiture path
+    // ("PTXCOALESCE but no PTXSESS"). Keying on the roll-fee-output count — the
+    // SAME source, producer/validator lockstep — makes the orphan-commit block
+    // legal (fee source present) while still rejecting a coalesce with no fee
+    // source at all (anti-vacuity: no commit, no settle → nothing to coalesce).
+    const size_t feeSourceCount = PTX_CollectRollFeeOutputs(block.vtx).size();
+    if (feeSourceCount > 0 && coalesceCount == 0) {
+        return state.DoS(100, error("%s: block has %d roll-fee source(s) but no PTXCOALESCE",
+                                    __func__, (int)feeSourceCount),
                          REJECT_INVALID, "ptxcoalesce-missing");
     }
-    if (ptxSessCount == 0 && coalesceCount > 0) {
-        return state.DoS(100, error("%s: block has PTXCOALESCE but no PTXSESS", __func__),
+    if (feeSourceCount == 0 && coalesceCount > 0) {
+        return state.DoS(100, error("%s: block has PTXCOALESCE but no roll-fee source", __func__),
                          REJECT_INVALID, "ptxcoalesce-unexpected");
     }
     return true;
@@ -1642,9 +1655,10 @@ bool CheckAndApplyPTXCoalesce(const CBlock& block,
         const LotteryState& ls = GetLotteryState();
 
         // Build the expected input list from LotteryState + vtx scan.
-        // Relies on Step 5 invariant: every PTXSESS carries exactly nPTXServiceFee to
-        // LOTTERY_ACCUM_SCRIPT (specialtx_validation.cpp, ptx-bad-accum-output rule).
-        // If that rule changes, this arithmetic must be revisited.
+        // BUG-032 2b-iii: the fee source is the PTXROLLCOMMIT, not the PTXSESS —
+        // PTX_CollectRollFeeOutputs scans commits (the SAME source the assembler and
+        // CheckPTXCoalesceBlockRules use, producer/validator lockstep). Do NOT key
+        // this on PTXSESS presence — that proxy halted the chain at h510.
         std::vector<COutPoint> expectedVin;
         CAmount expectedValue = ls.accumulator_value;
 
@@ -1652,8 +1666,8 @@ bool CheckAndApplyPTXCoalesce(const CBlock& block,
             expectedVin.push_back(ls.accumulator_outpoint);
         }
 
-        std::vector<AccumInput> ptxsessFees = PTX_CollectRollFeeOutputs(block.vtx);
-        for (const AccumInput& inp : ptxsessFees) {
+        std::vector<AccumInput> rollFees = PTX_CollectRollFeeOutputs(block.vtx);
+        for (const AccumInput& inp : rollFees) {
             expectedVin.push_back(inp.outpoint);
             expectedValue += inp.value;
         }
@@ -1689,9 +1703,10 @@ bool CheckAndApplyPTXCoalesce(const CBlock& block,
             LotteryState& mls = GetLotteryState();
             mls.accumulator_outpoint = COutPoint(coalesceTx->GetHash(), 0);
             mls.accumulator_value    = expectedValue;
-            // Semantic count: ptxsessFees is the canonical list from PTX_CollectRollFeeOutputs,
-            // not inferred from vin shape (robust to future PTXCOALESCE schema changes).
-            mls.total_rolls += ptxsessFees.size();
+            // Semantic count: rollFees is the canonical list from PTX_CollectRollFeeOutputs
+            // (one per PTXROLLCOMMIT fee output — incl. an orphan commit whose settle never
+            // came), not inferred from vin shape (robust to future PTXCOALESCE schema changes).
+            mls.total_rolls += rollFees.size();
             WriteLotteryStateSnapshotForBlock(pindex->GetBlockHash(), mls);
         }
     } else {

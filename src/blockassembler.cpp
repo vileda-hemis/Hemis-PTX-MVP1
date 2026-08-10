@@ -228,7 +228,7 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
         pblocktemplate->vTxFees[0] = -nFees;
     }
 
-    // ODC-022 §3.4/§3.5: generate PTXCOALESCE (if PTXSESS present) then PTXPAYOUT
+    // ODC-022 §3.4/§3.5: generate PTXCOALESCE (if a roll-fee source is present) then PTXPAYOUT
     // (at settlement boundaries with eligible winner).  Both must precede header/Merkle
     // finalisation.  PTXCOALESCE must precede PTXPAYOUT (§3.6 ordering).
     {
@@ -238,7 +238,9 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
         COutPoint currentAccumOutpoint = GetLotteryState().accumulator_outpoint;
         CAmount   currentAccumValue    = GetLotteryState().accumulator_value;
 
-        // PTXCOALESCE: generated when any PTXSESS confirmed in this block.
+        // PTXCOALESCE: generated whenever a roll-fee output (PTXROLLCOMMIT) is in
+        // this block — including an orphan commit whose settle never came. C8
+        // (CheckPTXCoalesceBlockRules) validates against this SAME source.
         std::vector<AccumInput> newFees = PTX_CollectRollFeeOutputs(pblock->vtx);
         if (!newFees.empty()) {
             CTransactionRef coalesceTx = PTX_BuildCoalesceTx(

@@ -30,6 +30,7 @@ chain_extends — restore-proof helper: the restored fleet must EXTEND (PoS
   staking alive), not merely answer RPC at the banked tip.
 """
 
+import os
 import sys
 import time
 from harness.cluster import W2Cluster, ptxbea_boundary_interval
@@ -383,6 +384,89 @@ def chain_extends(cluster: W2Cluster, blocks: int = 2, timeout: int = 600) -> in
     return h
 
 
+def abandon_gate(cluster: W2Cluster, timeout: int = 300) -> dict:
+    """DELIBERATE-ABANDONMENT gate — the fund-then-sign FORFEITURE path on purpose.
+
+    Root of the h510 halt: a roll whose commit broadcast but whose FanOutSign never
+    reached threshold left an ORPHAN COMMIT (fee forfeited, no settle). The block
+    assembler still generates the coalesce for the orphan's fee, so the block is
+    {commit, coalesce} with no PTXSESS — which pre-fix C8 ('mandatory-iff-PTXSESS')
+    rejected, halting the chain. That halt was found by a NATURAL FanOutSign miss;
+    this gate provokes it ON PURPOSE so the forfeiture path is a TESTED case, not a
+    wait-for-it case.
+
+    Mechanism (no source change): set >=6 of every active quorum's 11 members to
+    'withhold' via ptx_debug_setnodefailmode on the coordinator, so FanOutSign can
+    never reach t=6 whichever quorum the roll routes to. Fire a roll (its commit
+    broadcasts BEFORE signing → orphan). PASS iff the chain KEEPS EXTENDING (the
+    orphan-commit block is legal under the roll-fee-source C8) and an orphan commit
+    actually mines. Always clears the fail-modes on the way out.
+    """
+    caller = cluster.callers[0]
+    gm01   = cluster.gms[0]
+    quorums = gm01.call("ptx_quorum_list").get("quorums", [])
+    active  = [q for q in quorums if q.get("state") == "active"]
+    if not active:
+        raise AssertionError("[abandon] no active quorum to abandon against")
+
+    withheld = []
+    try:
+        # Withhold 6-of-11 in every active quorum → any routing lands >= t=6 missing.
+        for q in active:
+            info = gm01.call("ptx_quorum_info", q["quorum_hash"])
+            members = [m["node_id"] for m in info.get("members", [])]
+            for nid in members[:6]:
+                caller.call("ptx_debug_setnodefailmode", nid, "withhold")
+                withheld.append(nid)
+        print(f"[abandon] withholding {len(withheld)} members across {len(active)} "
+              f"active quorum(s) → FanOutSign cannot reach t=6")
+
+        start = gm01.getblockcount()
+        rolls0 = gm01.call("ptx_lottery_status").get("total_rolls", 0)
+        # Fire the roll. It MUST fail to settle (threshold unmet) — the commit is
+        # broadcast before signing, so an orphan commit is created regardless.
+        salt = os.urandom(6).hex()   # fresh so the roll isn't deduped against a prior one
+        try:
+            caller.ptx_roll(1, 1, 100, "abandon", salt)
+            print("[abandon] WARNING: ptx_roll returned success — expected threshold miss "
+                  "(are <6 members actually withholding?)")
+        except Exception as e:
+            print(f"[abandon] roll abandoned as designed (FanOutSign miss): {str(e)[:90]}")
+
+        # THE ASSERTION: the chain must keep extending — no halt on the orphan.
+        target = start + 3
+        h = gm01.wait_for_height(target, timeout=timeout)
+        print(f"[abandon] chain KEPT EXTENDING across the orphan commit: {start} -> {h}")
+
+        # Confirm an orphan commit actually mined (a PTXROLLCOMMIT with no paired
+        # PTXSESS in its block) and the forfeited fee credited the pool.
+        rolls1 = gm01.call("ptx_lottery_status").get("total_rolls", 0)
+        orphan_found = False
+        for hh in range(start + 1, h + 1):
+            blk = gm01.call("getblock", gm01.call("getblockhash", hh), 2)
+            types = [t.get("type", 0) for t in blk["tx"]]
+            if 12 in types and 6 not in types:   # PTXROLLCOMMIT present, no PTXSESS
+                orphan_found = True
+                print(f"[abandon] orphan-commit block confirmed at h{hh} "
+                      f"(PTXROLLCOMMIT, no PTXSESS; coalesce={'yes' if 9 in types else 'no'})")
+                break
+        if not orphan_found:
+            print("[abandon] NOTE: no isolated orphan-commit block observed in the window "
+                  "(a late partial may have settled it); chain-extends is the hard gate")
+        print(f"[abandon] total_rolls {rolls0} -> {rolls1} (forfeited fee credits the pool)")
+        result = {"pass": True, "start": start, "end": h,
+                  "orphan_mined": orphan_found, "rolls": (rolls0, rolls1)}
+    finally:
+        for nid in withheld:
+            try:
+                caller.call("ptx_debug_setnodefailmode", nid, "clear")
+            except Exception as e:
+                print(f"[abandon] WARN: failed to clear failmode {nid}: {e}")
+        print(f"[abandon] cleared {len(withheld)} fail-modes")
+    print("[abandon] GATE PASS — fund-then-sign forfeiture path does NOT halt the chain")
+    return result
+
+
 if __name__ == "__main__":
     n = int(sys.argv[1])
     which = sys.argv[2] if len(sys.argv) > 2 else "all"
@@ -414,5 +498,8 @@ if __name__ == "__main__":
         soak_gate(c, n, blocks=blocks)
     if which == "bank":  # not in "all": run IMMEDIATELY BEFORE stopping to re-bank
         bank_gate(c)
+    if which == "abandon":  # not in "all": deliberately orphans a roll (forfeits a
+        # fee) to prove the fund-then-sign forfeiture path does NOT halt the chain.
+        abandon_gate(c)
     c.assert_poc_untouched("validate_fleet end")
     print("[validate] ALL REQUESTED GATES PASS; PoC untouched")

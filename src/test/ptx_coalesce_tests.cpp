@@ -164,6 +164,43 @@ static CMutableTransaction MakePTXSESS()
     return mtx;
 }
 
+// Build a PTXROLLCOMMIT (nType=12). withFee=true gives it the relocated service
+// fee as an accum-script output — the roll-fee SOURCE that PTX_CollectRollFeeOutputs
+// recognises (BUG-032 2b-iii: the fee lives in the commitment now, not the settle).
+static CMutableTransaction MakeCommit(bool withFee = true)
+{
+    CMutableTransaction mtx;
+    mtx.nVersion = CTransaction::TxVersion::SAPLING;
+    mtx.nType    = CTransaction::TxType::PTXROLLCOMMIT;
+    mtx.vin.push_back(CTxIn(COutPoint(
+        uint256S("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"), 0)));
+    if (withFee)
+        mtx.vout.push_back(CTxOut(Params().PTXServiceFee(), GetLotteryAccumScript()));
+    else
+        mtx.vout.push_back(CTxOut(0, CScript() << OP_RETURN << std::vector<uint8_t>{0x00}));
+    CPTXRollCommitPayload p;
+    p.nSeedHeight   = 1;
+    p.nExpiryHeight = 1;
+    p.count = 1; p.low = 1; p.high = 100;
+    p.round_seed  = uint256S("1111111111111111111111111111111111111111111111111111111111111111");
+    p.quorum_hash = uint256S("abcdef0000000000000000000000000000000000000000000000000000000000");
+    SetTxPayload(mtx, p);
+    return mtx;
+}
+
+// Run CheckPTXCoalesceBlockRules directly (C7/C8, in isolation from the coalesce
+// value-derivation). Returns "" on accept, else the reject reason.
+static std::string RunC78(const std::vector<CTransactionRef>& txs)
+{
+    LOCK(cs_main);
+    CBlock block;
+    block.vtx = txs;
+    CValidationState state;
+    if (CheckPTXCoalesceBlockRules(block, state))
+        return "";
+    return state.GetRejectReason();
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -313,29 +350,59 @@ BOOST_AUTO_TEST_CASE(RuleC7_AtMostOneCoalescePerBlock)
     BOOST_CHECK_EQUAL(RunBlockCheck({sess, coal1, coal2}, view), "ptxcoalesce-duplicate");
 }
 
-// C8a (block-level): PTXCOALESCE is mandatory when PTXSESS is present.
-BOOST_AUTO_TEST_CASE(RuleC8_MissingCoalesceWhenSessPresent)
-{
-    CCoinsView base;
-    CCoinsViewCache view(&base);
+// ── C8 mandatory-iff-ROLL-FEE-SOURCE (BUG-032 reverse-direction reconciliation) ──
+// The fee moved from the settle (PTXSESS) to the commitment (PTXROLLCOMMIT), so
+// C8 now keys on roll-fee-output presence, NOT PTXSESS presence. The three cases
+// below prove the fix separates two the old "no PTXSESS" rule conflated:
+//   #2 orphan commit (fee source present, no settle)  → VALID
+//   #3 coalesce with no fee source at all             → REJECTED (anti-vacuity)
+// The dummy outpoint in the coalesce is irrelevant here — CheckPTXCoalesceBlockRules
+// only COUNTS coalesces and scans PTX_CollectRollFeeOutputs; the input/value
+// derivation is CheckAndApplyPTXCoalesce's job, exercised elsewhere.
+static const COutPoint kDummyAccum(
+    uint256S("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 0);
 
-    auto sess = MakeTransactionRef(MakePTXSESS());
-    // Block has a PTXSESS but no PTXCOALESCE.
-    BOOST_CHECK_EQUAL(RunBlockCheck({sess}, view), "ptxcoalesce-missing");
+// C8 case #1 (happy path): commit(fee) + settle + coalesce → VALID.
+BOOST_AUTO_TEST_CASE(RuleC8_CommitSettleCoalesce_Valid)
+{
+    auto commit = MakeTransactionRef(MakeCommit(/*withFee=*/true));
+    auto sess   = MakeTransactionRef(MakePTXSESS());
+    auto coal   = MakeTransactionRef(MakePTXCoalesce({kDummyAccum}, 1 * COIN));
+    BOOST_CHECK_EQUAL(RunC78({commit, sess, coal}), "");
 }
 
-// C8b (block-level): PTXCOALESCE is rejected when no PTXSESS is present.
-BOOST_AUTO_TEST_CASE(RuleC8_UnexpectedCoalesceWithoutSess)
+// C8 case #2 (THE FIX — forfeiture path): orphan commit(fee) + coalesce, NO
+// settle → VALID. The fee SOURCE is present, so the coalesce is expected. Under
+// the pre-fix rule this returned "ptxcoalesce-unexpected" (ptxSessCount==0) and
+// halted the chain on the design's own abandoned-roll path.
+BOOST_AUTO_TEST_CASE(RuleC8_OrphanCommitCoalesce_Valid)
 {
-    COutPoint op(uint256S("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 0);
+    auto commit = MakeTransactionRef(MakeCommit(/*withFee=*/true));
+    auto coal   = MakeTransactionRef(MakePTXCoalesce({kDummyAccum}, 1 * COIN));
+    BOOST_CHECK_EQUAL(RunC78({commit, coal}), "");
+}
 
-    CCoinsView base;
-    CCoinsViewCache view(&base);
-    InsertAccumCoin(view, op, 1 * COIN);
+// C8 case #3 (ANTI-VACUITY): coalesce with NO fee source (no commit, no settle)
+// → STILL REJECTED. The fix must not over-correct into "accept any coalesce".
+BOOST_AUTO_TEST_CASE(RuleC8_CoalesceWithoutFeeSource_Rejected)
+{
+    auto coal = MakeTransactionRef(MakePTXCoalesce({kDummyAccum}, 1 * COIN));
+    BOOST_CHECK_EQUAL(RunC78({coal}), "ptxcoalesce-unexpected");
+}
 
-    auto coal = MakeTransactionRef(MakePTXCoalesce({op}, 1 * COIN));
-    // Block has a PTXCOALESCE but no PTXSESS.
-    BOOST_CHECK_EQUAL(RunBlockCheck({coal}, view), "ptxcoalesce-unexpected");
+// C8 forward direction, re-keyed: a roll-fee source (commit) with NO coalesce
+// → "ptxcoalesce-missing" (was keyed on PTXSESS; now on the fee source).
+BOOST_AUTO_TEST_CASE(RuleC8_FeeSourceWithoutCoalesce_Missing)
+{
+    auto commit = MakeTransactionRef(MakeCommit(/*withFee=*/true));
+    BOOST_CHECK_EQUAL(RunC78({commit}), "ptxcoalesce-missing");
+}
+
+// A commit WITHOUT its fee output is not a fee source: no coalesce needed → VALID.
+BOOST_AUTO_TEST_CASE(RuleC8_CommitWithoutFee_NeedsNoCoalesce)
+{
+    auto commit = MakeTransactionRef(MakeCommit(/*withFee=*/false));
+    BOOST_CHECK_EQUAL(RunC78({commit}), "");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -290,6 +290,23 @@ std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
     std::set<std::string> retry_next;
 
     for (const auto& node_id : pending) {
+        // Test hook (mirrors FanOutReveal's fail-mode handling): a 'withhold' or
+        // 'abstain' fail-mode set via ptx_debug_setnodefailmode makes the
+        // coordinator NEVER collect this member's partial. This is the deliberate
+        // way to drive FanOutSign below threshold and exercise the fund-then-sign
+        // FORFEITURE / orphan-commit path on purpose (validate_fleet abandon_gate) —
+        // the h510-class halt found by a NATURAL FanOutSign miss, now a tested case.
+        // Not retried (not added to retry_next) → stays uncollected. Never set in prod.
+        {
+            LOCK(cs_ptx_failmodes);
+            auto fit = g_ptx_node_failmodes.find(node_id);
+            if (fit != g_ptx_node_failmodes.end() &&
+                (fit->second == "withhold" || fit->second == "abstain")) {
+                LogPrintf("PTX: FanOutSign: %s %s (failmode) — not collecting\n",
+                          node_id, fit->second);
+                continue;
+            }
+        }
         const PTXNodeInfo* ni = PTX_FindNode(node_id);
         if (!ni) {
             LogPrintf("PTX: FanOutSign: no node info for %s\n", node_id);

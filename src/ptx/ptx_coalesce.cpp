@@ -25,10 +25,13 @@ CTransactionRef PTX_BuildCoalesceTx(
         total += priorValue;
     }
 
-    // Remaining inputs: PTXSESS fee outputs from this block, in block order.
-    // Relies on Step 5 invariant: every PTXSESS carries exactly nPTXServiceFee to
-    // LOTTERY_ACCUM_SCRIPT (specialtx_validation.cpp, ptx-bad-accum-output rule).
-    // If that rule changes, this arithmetic must be revisited.
+    // Remaining inputs: the roll-fee outputs from this block, in block order.
+    // BUG-032 2b-iii: the fee lives in the PTXROLLCOMMIT now, NOT the PTXSESS —
+    // every PTXROLLCOMMIT carries exactly nPTXServiceFee to LOTTERY_ACCUM_SCRIPT
+    // (ptxcommit-bad-accum-output), the settle carries none (ptxsess-redundant-fee).
+    // "fee present" is COMMIT-present, not settle-present — do NOT reintroduce a
+    // ptxSessCount/PTXSESS proxy here (that's the class that halted the chain at
+    // h510; see CheckPTXCoalesceBlockRules). If that rule changes, revisit this.
     for (const AccumInput& inp : newFeeInputs) {
         mtx.vin.emplace_back(CTxIn(inp.outpoint));
         total += inp.value;

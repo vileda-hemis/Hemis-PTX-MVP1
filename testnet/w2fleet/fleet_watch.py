@@ -196,9 +196,16 @@ def main():
                 print(f"    [{key}] {detail}")
         if rolls_per_quorum:
             total = sum(rolls_per_quorum.values())
-            dist = "  ".join(f"{q}…:{c}" for q, c in
-                             sorted(rolls_per_quorum.items(), key=lambda kv: -kv[1])[:10])
-            print(f"  rolls/quorum (§7.4, from caller logs, {total} total): {dist}")
+            shown = sorted(rolls_per_quorum.items(), key=lambda kv: -kv[1])
+            dist = "  ".join(f"{q}…:{c}" for q, c in shown[:10])
+            more = f"  (+{len(shown) - 10} more quorums)" if len(shown) > 10 else ""
+            # ★ FIRED, not mined: this counts "PTX roll" LogPrintf emissions from
+            # caller logs SINCE THIS WATCH STARTED — a routing-distribution signal,
+            # NOT a chain roll count. It over-counts vs mined when a roll fails to
+            # mine and under-counts fleet-lifetime (start-at-EOF). For authoritative
+            # mined rolls/quorum use ptx_dashboard's QUORUMS table (chain-sourced).
+            print(f"  rolls/quorum FIRED (§7.4, caller logs since watch-start, "
+                  f"{total} total; mined→dashboard): {dist}{more}")
 
         time.sleep(args.interval)
 
