@@ -10,11 +10,25 @@
 
 #include <string>
 
-// Build and submit a PTX special transaction to the memory pool.
+// BUG-032 2b-iii producer: build+fund+sign+broadcast the roll COMMITMENT
+// (PTXROLLCOMMIT, nType=12) BEFORE the quorum signs. It carries the relocated
+// accum service fee (the payment, forfeited at commit) AND a purpose-built chain
+// output that the settle will spend — the coin-chain 2c requires. Returns the
+// commitment txid; out_chain receives that chain output's outpoint (the settle
+// must spend EXACTLY this outpoint — deterministic, never left to coin selection,
+// or the coin-chain breaks and 2c rejects the settle).
+std::string PTX_BuildRollCommitment(const CPTXRollCommitPayload& payload,
+                                    COutPoint& out_chain);
+
+// Build and submit the PTXSESS (settle/reveal) to the memory pool.
 // Returns the txid hex on acceptance, or "pending" if mempool rejected.
 // KDD-027: called immediately after TryResolve — no delay.
+// BUG-032 2b-iii: the settle SPENDS chain_input (the commitment's chain output,
+// still UNCONFIRMED in mempool — signed via a mempool-aware coins view) and
+// carries NO accum fee (the fee relocated to the commitment).
 std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
-                            const CProbabilisticTxPayload& payload);
+                            const CProbabilisticTxPayload& payload,
+                            const COutPoint& chain_input);
 
 // ---------------------------------------------------------------------------
 // BUG-032 (Option A, fund-then-sign): the payment-before-reveal gate.

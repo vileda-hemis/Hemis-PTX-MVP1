@@ -5201,6 +5201,45 @@ BOOST_AUTO_TEST_CASE(Bug032_2c_SeedMismatchRejected)
 }
 
 // ---------------------------------------------------------------------------
+// MULTI-PAIR IN ONE BLOCK — coin-chain isolation. Rolls anchored to the same tip
+// select the SAME quorum (PTX_LoadDKGSigningCtx keys on the block hash), so N
+// rolls put N commit->settle pairs in ONE block under the same quorum. Each
+// settle must pair with ITS OWN commitment by the COIN-CHAIN (the spent output),
+// not loosely by quorum_hash/round_seed — or two pairs could cross-contaminate.
+// A serial (one-caller-one-roll-per-block) test never exercises this; it is core
+// coin-chain correctness, not deferred fleet coverage.
+// ---------------------------------------------------------------------------
+
+// POSITIVE: two distinct pairs in one block, each settle spends its own
+// commitment (same quorum, different round_seeds) → both validate.
+BOOST_AUTO_TEST_CASE(Bug032_2c_MultiPair_BothPairCorrectly)
+{
+    const uint256 qh = QHk(0xE1), seedA = QHk(0x71), seedB = QHk(0x72);
+    CMutableTransaction cA = CommitMakeTx(qh, seedA, 10); const uint256 tA = CTransaction(cA).GetHash();
+    CMutableTransaction cB = CommitMakeTx(qh, seedB, 10); const uint256 tB = CTransaction(cB).GetHash();
+    BOOST_REQUIRE(tA != tB);   // real two pairs (anti-vacuity)
+    CMutableTransaction sA = SettleMakeTx(seedA, qh, tA);   // A settles A
+    CMutableTransaction sB = SettleMakeTx(seedB, qh, tB);   // B settles B
+    BOOST_CHECK_EQUAL(RunPairing({MakeTransactionRef(cA), MakeTransactionRef(cB),
+                                  MakeTransactionRef(sA), MakeTransactionRef(sB)}), "");
+}
+
+// NEGATIVE (the discriminator — proves pairing is by-coin, not by-seed): a settle
+// carrying A's round_seed but SPENDING B's output must bind to B by the coin-chain
+// and then be rejected on the seed check. A LOOSE match-by-round_seed impl would
+// wrongly accept it (find A by seed, ignore which output it spent).
+BOOST_AUTO_TEST_CASE(Bug032_2c_MultiPair_CrossSpendRejected)
+{
+    const uint256 qh = QHk(0xE1), seedA = QHk(0x71), seedB = QHk(0x72);
+    CMutableTransaction cA = CommitMakeTx(qh, seedA, 10);
+    CMutableTransaction cB = CommitMakeTx(qh, seedB, 10); const uint256 tB = CTransaction(cB).GetHash();
+    CMutableTransaction sCross = SettleMakeTx(seedA, qh, tB);   // A's seed, spends B
+    BOOST_CHECK_EQUAL(RunPairing({MakeTransactionRef(cA), MakeTransactionRef(cB),
+                                  MakeTransactionRef(sCross)}),
+                      "ptxsess-seed-mismatch");
+}
+
+// ---------------------------------------------------------------------------
 // BUG-032 2b-iii FEE RELOCATION. The service fee lives in the PTXROLLCOMMIT now
 // (fund-then-sign: payment is forfeited at commit, before the result is knowable
 // — only fee-in-commitment closes the free preview). The PTXSESS (reveal) is

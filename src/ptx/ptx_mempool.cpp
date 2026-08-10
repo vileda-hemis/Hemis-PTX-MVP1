@@ -31,8 +31,110 @@
 extern void TryATMP(const CMutableTransaction& mtx, bool fOverrideFees);
 extern void RelayTx(const uint256& hashTx);
 
+#ifdef ENABLE_WALLET
+// Non-dust chain-output value; reclaimed by the settle's change, so nothing leaks.
+static const CAmount PTX_CHAIN_OUTPUT_VALUE = 100000;   // 0.001 HMS
+#endif
+
+std::string PTX_BuildRollCommitment(const CPTXRollCommitPayload& payload,
+                                    COutPoint& out_chain)
+{
+#ifndef ENABLE_WALLET
+    throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED, "wallet not compiled in");
+#else
+    if (vpwallets.empty())
+        throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED, "no wallet available");
+    CWallet* pwallet = vpwallets[0];
+
+    CMutableTransaction mtx;
+    mtx.nVersion = CTransaction::TxVersion::SAPLING;
+    mtx.nType    = CTransaction::TxType::PTXROLLCOMMIT;
+
+    // vout[0]: the RELOCATED service fee to LOTTERY_ACCUM_SCRIPT — the payment,
+    // forfeited at commit (before the result is knowable): this closes the preview.
+    mtx.vout.push_back(CTxOut(Params().PTXServiceFee(), GetLotteryAccumScript()));
+
+    // vout[1]: the purpose-built chain output the settle spends (the 2c coin-chain).
+    // A fresh wallet key (so the settle can sign it), non-dust; value reclaimed by
+    // the settle's change.
+    CReserveKey reservekey(pwallet);
+    CPubKey chainPubKey;
+    if (!reservekey.GetReservedKey(chainPubKey, true))
+        throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED, "keypool exhausted (chain output)");
+    const CScript chainScript = GetScriptForDestination(chainPubKey.GetID());
+    mtx.vout.push_back(CTxOut(PTX_CHAIN_OUTPUT_VALUE, chainScript));
+
+    SetTxPayload(mtx, payload);
+
+    {
+        CAmount nFee; int nChangePos = -1; std::string strFailReason;
+        if (!pwallet->FundTransaction(mtx, nFee, false, CFeeRate(0), nChangePos,
+                                      strFailReason, false, true, {}))
+            throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED,
+                               "commitment FundTransaction failed: " + strFailReason);
+    }
+
+    auto unlockFundedInputs = [&]() {
+        LOCK(pwallet->cs_wallet);
+        for (const CTxIn& txin : mtx.vin) pwallet->UnlockCoin(txin.prevout);
+    };
+
+    // FundTransaction may insert change, shifting indices — locate the chain output
+    // by its unique reservekey script, never a fixed index.
+    int chainIdx = -1;
+    for (size_t i = 0; i < mtx.vout.size(); i++)
+        if (mtx.vout[i].scriptPubKey == chainScript &&
+            mtx.vout[i].nValue == PTX_CHAIN_OUTPUT_VALUE) { chainIdx = (int)i; break; }
+    if (chainIdx < 0) {
+        unlockFundedInputs();
+        throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED, "chain output vanished after funding");
+    }
+
+    // Sign funding inputs (all confirmed → pcoinsTip).
+    {
+        LOCK2(cs_main, pwallet->cs_wallet);
+        for (unsigned int i = 0; i < mtx.vin.size(); i++) {
+            CTxIn& txin = mtx.vin[i];
+            const Coin& coin = pcoinsTip->AccessCoin(txin.prevout);
+            if (coin.IsSpent()) {
+                unlockFundedInputs();
+                throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED, "commitment input already spent");
+            }
+            const SigVersion sv = mtx.GetRequiredSigVersion();
+            txin.scriptSig.clear();
+            SignatureData sigdata;
+            if (!ProduceSignature(MutableTransactionSignatureCreator(pwallet, &mtx, i, coin.out.nValue, SIGHASH_ALL),
+                                  coin.out.scriptPubKey, sigdata, sv, false)) {
+                unlockFundedInputs();
+                throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED, "commitment signing failed");
+            }
+            UpdateTransaction(mtx, i, sigdata);
+        }
+    }
+
+    const uint256 txid = mtx.GetHash();
+    try {
+        TryATMP(mtx, false);
+        RelayTx(txid);
+        reservekey.KeepKey();   // the chain key is now in use (the settle spends it)
+        out_chain = COutPoint(txid, (uint32_t)chainIdx);
+        LogPrintf("PTX: commitment %s broadcast; chain output %s:%d\n",
+                  txid.GetHex(), txid.GetHex(), chainIdx);
+        return txid.GetHex();
+    } catch (const UniValue& objError) {
+        unlockFundedInputs();
+        throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED,
+                           "commitment mempool rejected: " + objError["message"].getValStr());
+    } catch (const std::exception& e) {
+        unlockFundedInputs();
+        throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED, std::string("commitment error: ") + e.what());
+    }
+#endif
+}
+
 std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
-                            const CProbabilisticTxPayload& payload)
+                            const CProbabilisticTxPayload& payload,
+                            const COutPoint& chain_input)
 {
 #ifndef ENABLE_WALLET
     LogPrintf("PTX: wallet not compiled in, cannot fund PTXSESS transaction\n");
@@ -53,8 +155,11 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
     opret << OP_RETURN << ToByteVector(round.round_seed);
     mtx.vout.push_back(CTxOut(0, opret));
 
-    // vout[1]: 1 HMS service fee to LOTTERY_ACCUM_SCRIPT (ODC-022 §3.3)
-    mtx.vout.push_back(CTxOut(Params().PTXServiceFee(), GetLotteryAccumScript()));
+    // BUG-032 2b-iii: NO accum fee output — the fee relocated to the commitment.
+    // Coin-chain: spend the commitment's chain output. Pre-adding it to vin makes
+    // FundTransaction FORCE-select it (coinControl.Select) — deterministic, never
+    // left to coin selection — while adding any additional funding + change.
+    mtx.vin.push_back(CTxIn(chain_input));
 
     // Embed payload before FundTransaction so tx size (and thus fee) is accurate
     SetTxPayload(mtx, payload);
@@ -82,12 +187,17 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
             pwallet->UnlockCoin(txin.prevout);
     };
 
-    // Sign all inputs added by FundTransaction
+    // Sign all inputs. The coin-chain input spends the commitment's UNCONFIRMED
+    // output, so resolve coins through a mempool-aware view (pcoinsTip alone would
+    // not find it) — the standard spending-unconfirmed-chained-output pattern.
     {
-        LOCK2(cs_main, pwallet->cs_wallet);
+        LOCK2(cs_main, mempool.cs);
+        LOCK(pwallet->cs_wallet);
+        CCoinsViewMemPool viewMemPool(pcoinsTip.get(), mempool);
+        CCoinsViewCache view(&viewMemPool);
         for (unsigned int i = 0; i < mtx.vin.size(); i++) {
             CTxIn& txin = mtx.vin[i];
-            const Coin& coin = pcoinsTip->AccessCoin(txin.prevout);
+            const Coin& coin = view.AccessCoin(txin.prevout);
             if (coin.IsSpent()) {
                 LogPrintf("PTX: input %d already spent\n", i);
                 unlockFundedInputs();

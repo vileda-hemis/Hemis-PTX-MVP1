@@ -289,6 +289,19 @@ BOOST_AUTO_TEST_CASE(ptxbea_fleet_addr_v6_test)
     BOOST_CHECK(IsPTXBeaFleetAddr(v6_fleet));
     BOOST_CHECK(!IsPTXBeaFleetAddr(v6_offnet));
 
+    // ★ /16 DUAL-FAMILY carve-out (permanent fresh fleet, 2026-08-10): the fresh
+    // fleet uses 172.32.0.0/16 (removes the /24 254-node ceiling) + fd00:32::/64.
+    // The old /24+fd00:31 stay for the soak during overlap.
+    CNetAddr v4_16, v6_32, v4_off16, v6_off32;
+    BOOST_CHECK(LookupHost("172.32.5.99", v4_16, false));      // in /16, beyond a /24
+    BOOST_CHECK(LookupHost("fd00:32::99", v6_32, false));
+    BOOST_CHECK(LookupHost("172.33.0.16", v4_off16, false));   // outside the /16
+    BOOST_CHECK(LookupHost("fd00:33::16", v6_off32, false));   // outside the v6 prefix
+    BOOST_CHECK(IsPTXBeaFleetAddr(v4_16));       // RED vs current (only /24)
+    BOOST_CHECK(IsPTXBeaFleetAddr(v6_32));       // RED vs current (only fd00:31)
+    BOOST_CHECK(!IsPTXBeaFleetAddr(v4_off16));   // over-match guard (/16, not /15)
+    BOOST_CHECK(!IsPTXBeaFleetAddr(v6_off32));   // over-match guard
+
     SelectParams(CBaseChainParams::MAIN);
     // off the ptxbea chain the carve-out is inert (production-safe): even the
     // fleet v6 addr does not match.

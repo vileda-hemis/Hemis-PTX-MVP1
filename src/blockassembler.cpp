@@ -239,7 +239,7 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
         CAmount   currentAccumValue    = GetLotteryState().accumulator_value;
 
         // PTXCOALESCE: generated when any PTXSESS confirmed in this block.
-        std::vector<AccumInput> newFees = PTX_CollectPTXSESSFeeOutputs(pblock->vtx);
+        std::vector<AccumInput> newFees = PTX_CollectRollFeeOutputs(pblock->vtx);
         if (!newFees.empty()) {
             CTransactionRef coalesceTx = PTX_BuildCoalesceTx(
                 currentAccumOutpoint, currentAccumValue, newFees);

@@ -288,6 +288,31 @@ UniValue ptx_roll(const JSONRPCRequest& request)
     // DKG members already hold their ceremony-produced share (ptx_dkg.cpp:1338);
     // there is no key fan-out (KDD-069: the dealer's gm_bls_keyset path is gone).
 
+    // BUG-032 2b-iii COMMIT-BEFORE-SIGN: build+fund+broadcast the PTXROLLCOMMIT
+    // NOW, before FanOutSign. The quorum members' gm_bls_sign gates on seeing this
+    // commitment in their mempool (2b), so payment is irrevocably committed before
+    // any signature — and thus any result — exists. The settle will spend this
+    // commitment's chain output (the 2c coin-chain).
+    CPTXRollCommitPayload commit_payload;
+    commit_payload.game_id          = game_id;
+    commit_payload.nSeedHeight      = block_height;
+    commit_payload.nExpiryHeight    = block_height;   // same-block window (2a mandate)
+    commit_payload.caller_pubkey    = caller_salt_bytes;
+    commit_payload.nonce            = nonce;
+    commit_payload.ptx_params_hash  = params_hash;
+    commit_payload.count            = (uint32_t)count;
+    commit_payload.low              = low;
+    commit_payload.high             = high;
+    commit_payload.unique           = unique;
+    commit_payload.exclude_integers = exc_ints;
+    commit_payload.exclude_txids    = exc_txids;
+    commit_payload.round_seed       = round_seed;
+    commit_payload.quorum_hash      = dkg_ctx.quorum_hash;
+    COutPoint chain_outpoint;
+    const std::string commit_txid = PTX_BuildRollCommitment(commit_payload, chain_outpoint);
+    LogPrintf("PTX roll: commitment %s broadcast BEFORE signing (round_seed=%s)\n",
+              commit_txid, round_seed.ToString());
+
     // Collect partial BLS signatures from each quorum member.
     auto partial_sigs_raw = PTX_FanOutSign(round_id, round_seed, dkg_ctx.quorum_hash, member_ids);
 
@@ -399,7 +424,8 @@ UniValue ptx_roll(const JSONRPCRequest& request)
 
     PTXCommitRevealRound round_copy;
     { LOCK(cs_ptx_rounds); round_copy = g_ptx_rounds[round_id]; }
-    std::string txid = PTX_AutoCommit(round_copy, payload);
+    // BUG-032 2b-iii: the settle spends the commitment's chain output (coin-chain).
+    std::string txid = PTX_AutoCommit(round_copy, payload, chain_outpoint);
 
     UniValue ret(UniValue::VOBJ);
     UniValue res_arr(UniValue::VARR);

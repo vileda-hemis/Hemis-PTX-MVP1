@@ -44,18 +44,25 @@ CTransactionRef PTX_BuildCoalesceTx(
     return MakeTransactionRef(std::move(mtx));
 }
 
-std::vector<AccumInput> PTX_CollectPTXSESSFeeOutputs(
+std::vector<AccumInput> PTX_CollectRollFeeOutputs(
     const std::vector<CTransactionRef>& vtx)
 {
     const CScript& accumScript = GetLotteryAccumScript();
     std::vector<AccumInput> result;
 
+    // BUG-032 2b-iii: the service fee RELOCATED from the PTXSESS (settle) to the
+    // PTXROLLCOMMIT (commitment) — the settle is now forbidden an accum output
+    // (specialtx_validation.cpp, ptxsess-redundant-fee), the commitment mandates
+    // exactly one (ptxcommit-bad-accum-output). So the coalesce sweeps the
+    // COMMITMENT's accum output now, not the settle's. Producer (blockassembler)
+    // and validator (CheckAndApplyPTXCoalesce) both call this, so they stay in
+    // lockstep on which fee outputs the coalesce must consume. One commit per roll.
     for (const CTransactionRef& tx : vtx) {
-        if (!tx->IsProbabilisticTx()) continue;
+        if (!tx->IsPTXRollCommitTx()) continue;
         for (uint32_t i = 0; i < tx->vout.size(); ++i) {
             if (tx->vout[i].scriptPubKey == accumScript) {
                 result.push_back({COutPoint(tx->GetHash(), i), tx->vout[i].nValue});
-                break;  // exactly one per PTXSESS (Step 5 enforces this invariant)
+                break;  // exactly one accum output per commitment (2a enforces this)
             }
         }
     }

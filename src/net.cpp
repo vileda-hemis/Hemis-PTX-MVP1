@@ -224,10 +224,17 @@ bool IsPTXBeaFleetAddr(const CNetAddr& addr)
     // fd00:31::/64 mirrors 172.31.0.0/24 (GMs at ::11.. == .11..); ULA, non-
     // routable, so it can only ever match here, gated on the ptxbea chain — inert
     // on every real network, the same production-safe-by-construction class as
-    // the v4 carve-out.  ★ THIS PREFIX MUST STAY IN LOCKSTEP with gen_fleet's
+    // the v4 carve-out.  ★ THESE PREFIXES MUST STAY IN LOCKSTEP with gen_fleet's
     // allocator and the docker-compose v6 IPAM; a drift is the blocker this was
     // opened on.
-    for (const char* cidr : {"172.31.0.0/24", "fd00:31::/64"}) {
+    //
+    // 2026-08-10 — the PERMANENT fresh fleet (mixed ~85% v6 / 15% v4, at scale)
+    // uses 172.32.0.0/16 (a /16, not /24 — removes the 254-node ceiling) and
+    // fd00:32::/64.  The old 172.31.0.0/24 + fd00:31::/64 stay so the retiring
+    // soak keeps validating during the overlap; both are ULA/private, both inert
+    // off the ptxbea chain.
+    for (const char* cidr : {"172.31.0.0/24", "fd00:31::/64",
+                             "172.32.0.0/16", "fd00:32::/64"}) {
         CSubNet fleet;
         if (LookupSubNet(cidr, fleet) && fleet.Match(addr))
             return true;

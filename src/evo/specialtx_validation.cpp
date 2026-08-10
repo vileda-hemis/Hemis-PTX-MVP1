@@ -1652,7 +1652,7 @@ bool CheckAndApplyPTXCoalesce(const CBlock& block,
             expectedVin.push_back(ls.accumulator_outpoint);
         }
 
-        std::vector<AccumInput> ptxsessFees = PTX_CollectPTXSESSFeeOutputs(block.vtx);
+        std::vector<AccumInput> ptxsessFees = PTX_CollectRollFeeOutputs(block.vtx);
         for (const AccumInput& inp : ptxsessFees) {
             expectedVin.push_back(inp.outpoint);
             expectedValue += inp.value;
@@ -1689,7 +1689,7 @@ bool CheckAndApplyPTXCoalesce(const CBlock& block,
             LotteryState& mls = GetLotteryState();
             mls.accumulator_outpoint = COutPoint(coalesceTx->GetHash(), 0);
             mls.accumulator_value    = expectedValue;
-            // Semantic count: ptxsessFees is the canonical list from PTX_CollectPTXSESSFeeOutputs,
+            // Semantic count: ptxsessFees is the canonical list from PTX_CollectRollFeeOutputs,
             // not inferred from vin shape (robust to future PTXCOALESCE schema changes).
             mls.total_rolls += ptxsessFees.size();
             WriteLotteryStateSnapshotForBlock(pindex->GetBlockHash(), mls);

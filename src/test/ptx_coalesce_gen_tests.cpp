@@ -51,7 +51,9 @@ static CMutableTransaction MakePTXSESS()
     CScript opret;
     opret << OP_RETURN << std::vector<uint8_t>{0x01, 0x02};
     mtx.vout.push_back(CTxOut(0, opret));
-    mtx.vout.push_back(CTxOut(Params().PTXServiceFee(), GetLotteryAccumScript()));
+    // BUG-032 2b-iii: the settle carries NO accum fee now (relocated to the
+    // commitment). This is a fee-less new-semantics PTXSESS, used only to satisfy
+    // C8 (PTXSESS present -> coalesce mandatory).
     CProbabilisticTxPayload payload;
     payload.nSeedHeight      = 1;
     payload.count            = 1;
@@ -60,6 +62,32 @@ static CMutableTransaction MakePTXSESS()
     payload.results          = {42};
     payload.quorum_sig_hash  = uint256S("abcdef0000000000000000000000000000000000000000000000000000000000");
     SetTxPayload(mtx, payload);
+    return mtx;
+}
+
+// BUG-032 2b-iii: the accum service fee lives in the PTXROLLCOMMIT now — the
+// coalesce collects+sweeps THIS output (PTX_CollectRollFeeOutputs scans
+// IsPTXRollCommitTx). withFee=false builds a commit with NO accum output, for the
+// anti-vacuity negative (a fee-less commit must NOT yield a valid coalesce). The
+// accum fee, when present, is at vout[0].
+static CMutableTransaction MakeCommit(bool withFee = true)
+{
+    CMutableTransaction mtx;
+    mtx.nVersion = CTransaction::TxVersion::SAPLING;
+    mtx.nType    = CTransaction::TxType::PTXROLLCOMMIT;
+    mtx.vin.push_back(CTxIn(COutPoint(
+        uint256S("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"), 0)));
+    if (withFee)
+        mtx.vout.push_back(CTxOut(Params().PTXServiceFee(), GetLotteryAccumScript()));
+    else
+        mtx.vout.push_back(CTxOut(0, CScript() << OP_RETURN << std::vector<uint8_t>{0x00}));
+    CPTXRollCommitPayload p;
+    p.nSeedHeight  = 1;
+    p.nExpiryHeight = 1;
+    p.count = 1; p.low = 1; p.high = 100;
+    p.round_seed  = uint256S("1111111111111111111111111111111111111111111111111111111111111111");
+    p.quorum_hash = uint256S("abcdef0000000000000000000000000000000000000000000000000000000000");
+    SetTxPayload(mtx, p);
     return mtx;
 }
 
@@ -78,9 +106,11 @@ static std::vector<uint8_t> SerializeState(const LotteryState& s)
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(Coalesce_FirstPTXSESSCreatesAccumulator)
 {
-    CMutableTransaction ptxsess = MakePTXSESS();
-    const CTransaction  ptxsessTx(ptxsess);
-    COutPoint feeOut(ptxsessTx.GetHash(), 1);
+    // BUG-032 2b-iii: the service fee lives in the PTXROLLCOMMIT now — the
+    // coalesce collects+sweeps the commitment's accum output (vout[0]).
+    CMutableTransaction commit = MakeCommit();
+    const CTransaction  commitTx(commit);
+    COutPoint feeOut(commitTx.GetHash(), 0);
     AccumInput inp{feeOut, Params().PTXServiceFee()};
 
     CTransactionRef coalesce = PTX_BuildCoalesceTx(COutPoint(), 0, {inp});
@@ -112,9 +142,11 @@ BOOST_AUTO_TEST_CASE(Coalesce_ExtendsExistingAccumulator)
     COutPoint priorOut(
         uint256S("1111111111111111111111111111111111111111111111111111111111111111"), 0);
 
-    CMutableTransaction ptxsess = MakePTXSESS();
-    const CTransaction  ptxsessTx(ptxsess);
-    COutPoint feeOut(ptxsessTx.GetHash(), 1);
+    // BUG-032 2b-iii: the service fee lives in the PTXROLLCOMMIT now — the
+    // coalesce collects+sweeps the commitment's accum output (vout[0]).
+    CMutableTransaction commit = MakeCommit();
+    const CTransaction  commitTx(commit);
+    COutPoint feeOut(commitTx.GetHash(), 0);
     AccumInput inp{feeOut, Params().PTXServiceFee()};
 
     CTransactionRef coalesce = PTX_BuildCoalesceTx(priorOut, priorValue, {inp});
@@ -143,9 +175,11 @@ BOOST_AUTO_TEST_CASE(Coalesce_LotteryStateUpdatedCorrectly)
         GetLotteryState().Reset();
     }
 
-    CMutableTransaction ptxsess = MakePTXSESS();
-    const CTransaction  ptxsessTx(ptxsess);
-    COutPoint feeOut(ptxsessTx.GetHash(), 1);
+    // BUG-032 2b-iii: the service fee lives in the PTXROLLCOMMIT now — the
+    // coalesce collects+sweeps the commitment's accum output (vout[0]).
+    CMutableTransaction commit = MakeCommit();
+    const CTransaction  commitTx(commit);
+    COutPoint feeOut(commitTx.GetHash(), 0);
     AccumInput inp{feeOut, Params().PTXServiceFee()};
 
     CTransactionRef coalesce = PTX_BuildCoalesceTx(COutPoint(), 0, {inp});
@@ -161,7 +195,7 @@ BOOST_AUTO_TEST_CASE(Coalesce_LotteryStateUpdatedCorrectly)
         cb.nType = CTransaction::TxType::NORMAL;
         CTxIn in; in.prevout.SetNull(); in.scriptSig << CScriptNum(1); cb.vin.push_back(in);
         cb.vout.push_back(CTxOut(0, CScript())); return cb; }()));
-    block.vtx.push_back(MakeTransactionRef(ptxsess));
+    block.vtx.push_back(MakeTransactionRef(commit));
     block.vtx.push_back(coalesce);
 
     uint256 blockHash =
@@ -252,9 +286,11 @@ BOOST_AUTO_TEST_CASE(Coalesce_ReorgReversedCorrectly)
     BOOST_REQUIRE_MESSAGE(poseTickets() > prePoseTickets,
                           "pose credit inert — the reorg assertion would pass vacuously");
 
-    CMutableTransaction ptxsess = MakePTXSESS();
-    const CTransaction  ptxsessTx(ptxsess);
-    COutPoint feeOut(ptxsessTx.GetHash(), 1);
+    // BUG-032 2b-iii: the service fee lives in the PTXROLLCOMMIT now — the
+    // coalesce collects+sweeps the commitment's accum output (vout[0]).
+    CMutableTransaction commit = MakeCommit();
+    const CTransaction  commitTx(commit);
+    COutPoint feeOut(commitTx.GetHash(), 0);
     AccumInput inp{feeOut, Params().PTXServiceFee()};
 
     CTransactionRef coalesce = PTX_BuildCoalesceTx(COutPoint(), 0, {inp});
@@ -269,7 +305,7 @@ BOOST_AUTO_TEST_CASE(Coalesce_ReorgReversedCorrectly)
         cb.nType = CTransaction::TxType::NORMAL;
         CTxIn in; in.prevout.SetNull(); in.scriptSig << CScriptNum(1); cb.vin.push_back(in);
         cb.vout.push_back(CTxOut(0, CScript())); return cb; }()));
-    block.vtx.push_back(MakeTransactionRef(ptxsess));
+    block.vtx.push_back(MakeTransactionRef(commit));
     block.vtx.push_back(coalesce);
 
     // Connect: updates LotteryState and writes currHash snapshot.
@@ -329,9 +365,11 @@ BOOST_AUTO_TEST_CASE(Coalesce_GeneratedTxPassesStep6Rules)
         GetLotteryState().Reset();
     }
 
-    CMutableTransaction ptxsess = MakePTXSESS();
-    const CTransaction  ptxsessTx(ptxsess);
-    COutPoint feeOut(ptxsessTx.GetHash(), 1);
+    // BUG-032 2b-iii: the service fee lives in the PTXROLLCOMMIT now — the
+    // coalesce collects+sweeps the commitment's accum output (vout[0]).
+    CMutableTransaction commit = MakeCommit();
+    const CTransaction  commitTx(commit);
+    COutPoint feeOut(commitTx.GetHash(), 0);
     AccumInput inp{feeOut, Params().PTXServiceFee()};
 
     CTransactionRef coalesce = PTX_BuildCoalesceTx(COutPoint(), 0, {inp});
@@ -364,7 +402,8 @@ BOOST_AUTO_TEST_CASE(Coalesce_GeneratedTxPassesStep6Rules)
             cb.nType = CTransaction::TxType::NORMAL;
             CTxIn in; in.prevout.SetNull(); in.scriptSig << CScriptNum(1); cb.vin.push_back(in);
             cb.vout.push_back(CTxOut(0, CScript())); return cb; }()));
-        block.vtx.push_back(MakeTransactionRef(ptxsess));
+        block.vtx.push_back(MakeTransactionRef(commit));
+        block.vtx.push_back(MakeTransactionRef(MakePTXSESS()));  // C8: a PTXSESS present
         block.vtx.push_back(coalesce);
 
         uint256 blockHash =
@@ -384,6 +423,45 @@ BOOST_AUTO_TEST_CASE(Coalesce_GeneratedTxPassesStep6Rules)
             CheckAndApplyPTXCoalesce(block, &idx, stateStep7, /*fJustCheck=*/true, nullptr, nullptr),
             "CheckAndApplyPTXCoalesce rejected: " + stateStep7.GetRejectReason());
     }
+}
+
+// ANTI-VACUITY (BUG-032 2b-iii): a PTXROLLCOMMIT with NO accum output yields NO
+// collectible fee, so a coalesce claiming to sweep one must be REJECTED — proving
+// PTX_CollectRollFeeOutputs actually reads the commitment, not a stale fixture (the
+// exact way the old PTXSESS-fee tests went vacuous after the fee relocated).
+BOOST_AUTO_TEST_CASE(Coalesce_CommitWithoutFee_RejectsCoalesce)
+{
+    {
+        LOCK(cs_main);
+        GetLotteryState().Reset();
+    }
+    CMutableTransaction commit = MakeCommit(/*withFee=*/false);   // no accum output
+    const CTransaction  commitTx(commit);
+    COutPoint feeOut(commitTx.GetHash(), 0);
+    AccumInput inp{feeOut, Params().PTXServiceFee()};
+    CTransactionRef coalesce = PTX_BuildCoalesceTx(COutPoint(), 0, {inp});
+
+    CBlock block;
+    block.vtx.push_back(MakeTransactionRef([]() {
+        CMutableTransaction cb; cb.nVersion = CTransaction::TxVersion::SAPLING;
+        cb.nType = CTransaction::TxType::NORMAL;
+        CTxIn in; in.prevout.SetNull(); in.scriptSig << CScriptNum(1); cb.vin.push_back(in);
+        cb.vout.push_back(CTxOut(0, CScript())); return cb; }()));
+    block.vtx.push_back(MakeTransactionRef(commit));
+    block.vtx.push_back(coalesce);
+
+    uint256 blockHash =
+        uint256S("7777777777777777777777777777777777777777777777777777777777777777");
+    CBlockIndex idx; idx.phashBlock = &blockHash; idx.nHeight = 9; idx.pprev = nullptr;
+
+    LOCK(cs_main);
+    CValidationState state;
+    // PTX_CollectRollFeeOutputs finds no fee (commit has no accum output) → expected
+    // inputs = [] but the coalesce has 1 → wrong-input-count. The collect is NOT vacuous.
+    BOOST_CHECK_MESSAGE(
+        !CheckAndApplyPTXCoalesce(block, &idx, state, /*fJustCheck=*/false, nullptr, nullptr),
+        "a fee-less commit must not yield a valid coalesce (else the collect is vacuous)");
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "ptxcoalesce-wrong-input-count");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

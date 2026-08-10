@@ -44,7 +44,7 @@ CTransactionRef PTX_BuildCoalesceTx(
  * Called by both the block template builder (blockassembler.cpp) and the
  * block-level structural check in ProcessSpecialTxsInBlock.
  */
-std::vector<AccumInput> PTX_CollectPTXSESSFeeOutputs(
+std::vector<AccumInput> PTX_CollectRollFeeOutputs(
     const std::vector<CTransactionRef>& vtx);
 
 #endif // Hemis_PTX_COALESCE_H

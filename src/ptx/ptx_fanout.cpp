@@ -8,7 +8,12 @@
 #include "ptx/ptx_commit_reveal.h"
 #include "crypto/sha256.h"
 #include "logging.h"
+#include "rpc/protocol.h"
 #include "rpc/server.h"
+
+#include <chrono>
+#include <set>
+#include <thread>
 #include "support/events.h"
 #include "sync.h"
 #include "utilstrencodings.h"
@@ -267,7 +272,23 @@ std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
 {
     std::map<std::string, std::vector<uint8_t>> collected;
 
-    for (const auto& node_id : member_ids) {
+    // BUG-032 2b-iii — coordinator-side wait-not-reject. The commit-before-sign
+    // flow broadcasts the PTXROLLCOMMIT immediately before this fan-out, so on the
+    // first pass a member may not have RECEIVED it yet (relay lag) and returns the
+    // RETRYABLE RPC_PTX_COMMITMENT_NOT_SEEN (-32051). That is "wait", not "fail":
+    // retry ONLY those members, with a short backoff, bounded by a budget (~the
+    // 2000ms real-network target). Terminal refusals (no share, sign failure) and
+    // transport errors drop immediately — retrying cannot help them.
+    static const int FANOUT_MAX_ATTEMPTS = 12;   // ~2s at 150ms/pass
+    static const int FANOUT_RETRY_MS     = 150;
+    std::set<std::string> pending(member_ids.begin(), member_ids.end());
+
+    for (int attempt = 0; attempt < FANOUT_MAX_ATTEMPTS && !pending.empty(); ++attempt) {
+    if (attempt > 0)
+        std::this_thread::sleep_for(std::chrono::milliseconds(FANOUT_RETRY_MS));
+    std::set<std::string> retry_next;
+
+    for (const auto& node_id : pending) {
         const PTXNodeInfo* ni = PTX_FindNode(node_id);
         if (!ni) {
             LogPrintf("PTX: FanOutSign: no node info for %s\n", node_id);
@@ -315,18 +336,30 @@ std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
         event_base_dispatch(base.get());
 
         if (response.status != 200) {
-            // ODC-064: the status ALONE made BUG-028's cause unrecoverable from
-            // four days of fleet logs — the server's error text is what names the
-            // exact condition ("this node holds no CURRENT sk_share for quorum
-            // …"), and it was discarded here. Diagnosis needed a live probe of a
-            // running node; had the fleet been rebuilt first it would have been
-            // lost. TRIMMED and newline-flattened: a broken or hostile peer must
-            // not be able to flood the log or forge extra log lines.
+            // Distinguish the RETRYABLE "commitment not seen yet" (-32051, relay
+            // lag) from terminal refusals — only the former is retried next pass.
+            bool retryable = false;
+            try {
+                UniValue res;
+                if (res.read(response.body)) {
+                    UniValue err = find_value(res, "error");
+                    if (err.isObject()) {
+                        UniValue code = find_value(err, "code");
+                        if (code.isNum() && code.get_int() == RPC_PTX_COMMITMENT_NOT_SEEN)
+                            retryable = true;
+                    }
+                }
+            } catch (...) {}
+            // ODC-064: the server's error TEXT names the exact condition ("no
+            // CURRENT sk_share…", "no commitment seen yet…") — keep it, TRIMMED and
+            // newline-flattened so a broken or hostile peer cannot flood the log.
             static const size_t ODC064_BODY_MAX = 200;
             std::string body = response.body.substr(0, ODC064_BODY_MAX);
             for (char& c : body) { if (c == '\n' || c == '\r' || c == '\t') c = ' '; }
-            LogPrintf("PTX: FanOutSign: %s HTTP %d body=%s%s\n", node_id, response.status,
-                      body, response.body.size() > ODC064_BODY_MAX ? " …[truncated]" : "");
+            LogPrintf("PTX: FanOutSign: %s HTTP %d %s body=%s%s\n", node_id, response.status,
+                      retryable ? "RETRY(not-seen)" : "FAILED", body,
+                      response.body.size() > ODC064_BODY_MAX ? " …[truncated]" : "");
+            if (retryable) retry_next.insert(node_id);
             continue;
         }
 
@@ -350,6 +383,13 @@ std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
             LogPrintf("PTX: FanOutSign: %s parse error\n", node_id);
         }
     }
+
+    pending = std::move(retry_next);
+    }   // attempt loop
+
+    if (!pending.empty())
+        LogPrintf("PTX: FanOutSign: %d member(s) still 'commitment not seen' after %d attempts "
+                  "(propagation budget exhausted)\n", (int)pending.size(), FANOUT_MAX_ATTEMPTS);
 
     return collected;
 }
