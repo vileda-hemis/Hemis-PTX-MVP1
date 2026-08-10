@@ -196,8 +196,20 @@ def _find_vout(treasury: Node, txid: str, addr: str, amount: float) -> int:
     raise RuntimeError(f"collateral output {amount} to {addr} not in {txid}")
 
 
+# ★ LOCKSTEP with gen_fleet.gm_is_v6 — MUST be byte-identical (family assignment
+# must match between the advertised externalip and the registered ip_port, or a
+# GM registers one family and advertises another → never reaches READY). Every
+# 7th GM is v4 → for N=120: 17 v4 / 103 v6 (~85.8%). 1-indexed. Deterministic.
+MIXED_V4_EVERY = 7
+
+
+def gm_is_v6(i):
+    return (i % MIXED_V4_EVERY) != 0
+
+
 def register_gms(treasury: Node, cluster: W2Cluster,
-                 gm_labels: List[str], v6_gm: int = 0) -> Dict[str, dict]:
+                 gm_labels: List[str], v6_gm: int = 0,
+                 mixed_v6: bool = False, v6_prefix: str = "fd00:31::") -> Dict[str, dict]:
     """External-collateral protx_register for each GM, batched.
 
     KDD-033: suffix = hash(collateralOutpoint) fingerprints the specific
@@ -284,8 +296,14 @@ def register_gms(treasury: Node, cluster: W2Cluster,
         # (fd00:31:: MUST match gen_fleet.V6_PREFIX and IsPTXBeaFleetAddr).
         # protx_register's ip_port arg goes through Lookup, which parses the
         # bracketed-v6 form.  All other GMs register v4.
-        if v6_gm and (i + 1) == v6_gm:
-            ip_port = f"[fd00:31::{11 + i}]:29994"
+        # --mixed-v6: ~85% register v6 (gm_is_v6, mainnet-like); else only --v6-gm.
+        # MUST match gen_fleet's advertised externalip family for the same node.
+        if mixed_v6:
+            advertises_v6 = gm_is_v6(i + 1)
+        else:
+            advertises_v6 = bool(v6_gm) and (i + 1) == v6_gm
+        if advertises_v6:
+            ip_port = f"[{v6_prefix}{11 + i}]:29994"
         else:
             ip_port = f"{cluster.subnet_base}.{11 + i}:29994"
         owner_addr  = treasury.getnewaddress()
@@ -408,7 +426,9 @@ def bootstrap(cluster: W2Cluster,
               gm_labels: Optional[List[str]] = None,
               phase1_warmup_blocks: int = 5,
               fund_caller_utxos: int = CALLER_SPLIT_COUNT,
-              v6_gm: int = 0) -> Dict[str, dict]:
+              v6_gm: int = 0,
+              mixed_v6: bool = False,
+              v6_prefix: str = "fd00:31::") -> Dict[str, dict]:
     """Full two-phase bootstrap at N = cluster.n."""
     if gm_labels is None:
         gm_labels = [f"gm{i:02d}" for i in range(1, cluster.n + 1)]
@@ -440,7 +460,8 @@ def bootstrap(cluster: W2Cluster,
     # the fleet spends its first boundaries single-producer anyway.
     fund_producer_set(treasury, cluster.callers)
 
-    registration = register_gms(treasury, cluster, gm_labels, v6_gm=v6_gm)
+    registration = register_gms(treasury, cluster, gm_labels, v6_gm=v6_gm,
+                                mixed_v6=mixed_v6, v6_prefix=v6_prefix)
 
     current = treasury.getblockcount()
     wait_for_height(treasury, current + 1, timeout=900)

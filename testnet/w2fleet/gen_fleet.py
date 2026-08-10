@@ -107,6 +107,18 @@ def caller_v6(k):
     return f"{V6_PREFIX}{10 - (k - 1)}"
 
 
+# ── MIXED-FAMILY (2026-08-10): the permanent fleet is ~85% v6 / 15% v4 to model
+# mainnet (~332-336 of ~392 GMs are v6).  gm_is_v6 assigns family per-node so a
+# quorum's random membership is realistically cross-family.  ★ THIS RULE MUST BE
+# BYTE-IDENTICAL in harness/bootstrap.py (registration) — drift = the split blocker.
+# Every 7th GM is v4 → for N=120: 17 v4 / 103 v6 (~85.8%).  Deterministic (no RNG).
+MIXED_V4_EVERY = 7
+
+
+def gm_is_v6(i):
+    return (i % MIXED_V4_EVERY) != 0
+
+
 def peers_of(i, n):
     """Ring-plus-skips peer set for gm_i (1-indexed), excluding self."""
     out = []
@@ -159,7 +171,8 @@ def caller_name(k, callers):
 
 def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser,
                  caller_staking=0, gm_wallet_less=1,
-                 wire_operators=False, project=DEF_PROJECT, callers=1, v6_gm=0):
+                 wire_operators=False, project=DEF_PROJECT, callers=1, v6_gm=0,
+                 mixed_v6=False):
     lines = [HEADER.format(n=n, image=image, rpcuser=rpcuser, project=project)]
 
     # ── caller ──────────────────────────────────────────────────────────
@@ -239,10 +252,15 @@ def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser,
     for i in range(1, n + 1):
         g = gm_name(i)
         # ODC-066: every GM is dual-stack (v4 + v6 ULA), so the fleet can reach a
-        # v6-registered peer.  The DESIGNATED v6 GM (--v6-gm) advertises its v6
-        # address instead of v4 — it registers v6 and must reach READY via the
-        # family-directed discovery fix.  All others advertise v4.
-        ext_ip = f"[{gm_v6(i)}]" if i == v6_gm else gm_ip(subnet_base, i)
+        # v6-registered peer.  A v6 GM advertises its v6 address instead of v4 — it
+        # registers v6 and must reach READY via the family-directed discovery fix.
+        # --mixed-v6: ~85% of GMs advertise v6 (gm_is_v6, mainnet-like population);
+        # otherwise only the single --v6-gm does (the original single-node probe).
+        if mixed_v6:
+            advertises_v6 = gm_is_v6(i)
+        else:
+            advertises_v6 = (i == v6_gm)
+        ext_ip = f"[{gm_v6(i)}]" if advertises_v6 else gm_ip(subnet_base, i)
         lines.append(f"""\
   {g}:
     <<: *node-defaults
@@ -334,6 +352,14 @@ def main():
                          "v6 ULA address instead of v4 (0 = all-v4). The rest of the "
                          "fleet is dual-stack so it can reach this GM. Proves "
                          "READY-on-a-v6-host + PTX over v6.")
+    ap.add_argument("--mixed-v6", action="store_true",
+                    help="2026-08-10: ~85%% of GMs advertise v6 (gm_is_v6, every 7th "
+                         "node v4) — a mainnet-like mixed population, NOT a single "
+                         "probe node. Random quorums then have cross-family membership.")
+    ap.add_argument("--v6-prefix", default="fd00:31::",
+                    help="v6 ULA prefix (default fd00:31:: = soak). The permanent "
+                         "fresh fleet uses fd00:32:: so it can coexist with the soak "
+                         "(Docker rejects overlapping subnets). MUST match IsPTXBeaFleetAddr.")
     ap.add_argument("--callers", type=int, default=1,
                     help="caller count (1 = primary only; 2+ adds funded staking-off "
                          "spares for drill redundancy — a wedged primary restores, not re-bootstraps)")
@@ -380,6 +406,11 @@ def main():
 
     reg = load_registration(args.registration, args.n) if args.registration else None
 
+    # Override the v6 ULA prefix (default fd00:31:: = soak; fresh fleet = fd00:32::).
+    # gm_v6/caller_v6 and the compose IPAM read the module global.
+    global V6_PREFIX
+    V6_PREFIX = args.v6_prefix
+
     compose_path = os.path.join(args.out, "docker-compose.generated.yml")
     with open(compose_path, "w") as f:
         f.write(emit_compose(args.n, args.image, args.subnet_base,
@@ -388,7 +419,7 @@ def main():
                              callers=args.callers,
                              caller_staking=args.caller_staking,
                              gm_wallet_less=args.gm_wallet_less,
-                             v6_gm=args.v6_gm))
+                             v6_gm=args.v6_gm, mixed_v6=args.mixed_v6))
 
     env_path = os.path.join(args.out, ".env")
     if os.path.exists(env_path):

@@ -35,6 +35,10 @@ def main():
     ap.add_argument("--v6-gm", type=int, default=0,
                     help="ODC-066: GM index (1-based) to register with a v6 ULA "
                          "service address (0 = all-v4). MUST match gen_fleet's --v6-gm.")
+    ap.add_argument("--mixed-v6", action="store_true",
+                    help="~85%% of GMs register v6 (gm_is_v6). MUST match gen_fleet's --mixed-v6.")
+    ap.add_argument("--v6-prefix", default="fd00:31::",
+                    help="v6 ULA prefix. MUST match gen_fleet's --v6-prefix (fresh fleet: fd00:32::).")
     ap.add_argument("--reg-out", default=None,
                     help="write registration dict (incl. operator secrets) here")
     args = ap.parse_args()
@@ -49,7 +53,8 @@ def main():
 
     reg = bs.bootstrap(c, env_path=args.env,
                        fund_caller_utxos=args.fund_caller_utxos,
-                       v6_gm=args.v6_gm)
+                       v6_gm=args.v6_gm,
+                       mixed_v6=args.mixed_v6, v6_prefix=args.v6_prefix)
     if args.reg_out:
         with open(args.reg_out, "w") as f:
             json.dump(reg, f, indent=1)
