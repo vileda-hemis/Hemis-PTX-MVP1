@@ -67,6 +67,8 @@ per-GM attribution and is explicitly rejected.
 
 import time
 import json
+import os
+import subprocess
 from typing import Dict, List, Optional
 from .cluster import W2Cluster
 from .node import Node, RPCError
@@ -458,6 +460,53 @@ def rewrite_env(cluster: W2Cluster, env_overrides: dict, env_path: str):
         f.write("\n".join(lines) + "\n")
 
 
+def arm_rewire(registration: Dict[str, dict], env_path: str) -> bool:
+    """★ Self-arm: fold the manual `gen_fleet --registration` re-wire into Phase-2.
+
+    A first-ever fleet's compose is generated WITHOUT --registration (no operator
+    keys exist yet), so it carries no `-gamemaster=1 -gmoperatorprivatekey` and the
+    Phase-2 recreate brings GMs up UN-ARMED ("not a gamemaster", cannot DKG). This
+    was a manual step every rebuild this session. Here we re-invoke gen_fleet with
+    --registration (the SAME sequence): it re-emits the compose WITH the gamemaster
+    args and appends the operator SKs to .env. The caller must then recreate the
+    GMs (restart_with_env) for the keys to load.
+
+    Params come from the gen_fleet-authored `.fleet-manifest.json` beside the .env —
+    guaranteeing BYTE-IDENTICAL lockstep with the original generation. Returns True
+    if the re-wire ran, False if skipped (no manifest → not a gen_fleet fleet, or a
+    caller-only run); a skip is logged, never silent."""
+    out = os.path.dirname(os.path.abspath(env_path))
+    manifest_path = os.path.join(out, ".fleet-manifest.json")
+    if not os.path.exists(manifest_path):
+        print("[bootstrap] ARM SKIPPED: no .fleet-manifest.json beside .env — "
+              "compose not gen_fleet-authored; GMs will come up UNARMED")
+        return False
+    with open(manifest_path) as f:
+        man = json.load(f)
+    reg_path = os.path.join(out, "registration.json")
+    with open(reg_path, "w") as f:
+        json.dump(registration, f, indent=1)
+    os.chmod(reg_path, 0o600)   # operator secrets — host-side, 0600, never committed
+    gen = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "gen_fleet.py")
+    cmd = ["python3", gen,
+           "--n", str(man["n"]), "--callers", str(man["callers"]),
+           "--caller-staking", str(man["caller_staking"]),
+           "--gm-wallet-less", str(man["gm_wallet_less"]),
+           "--project", man["project"], "--port-base", str(man["port_base"]),
+           "--subnet-base", man["subnet_base"], "--data-root", man["data_root"],
+           "--out", man["out"], "--image", man["image"],
+           "--v6-prefix", man["v6_prefix"],
+           "--registration", reg_path]
+    if man.get("mixed_v6"):
+        cmd.append("--mixed-v6")
+    if man.get("v6_gm"):
+        cmd += ["--v6-gm", str(man["v6_gm"])]
+    print("[bootstrap] ARM: re-wiring compose+.env with operator keys "
+          "(gen_fleet --registration) — GMs will recreate ARMED")
+    subprocess.run(cmd, check=True)
+    return True
+
+
 def bootstrap(cluster: W2Cluster,
               env_path: str,
               gm_labels: Optional[List[str]] = None,
@@ -506,10 +555,16 @@ def bootstrap(cluster: W2Cluster,
     wait_for_gm_confirmation(treasury, len(gm_labels))   # Amendment 1
     assert_all_eligible(treasury, len(gm_labels))        # Amendment 1
 
-    print("[bootstrap] === Phase 2: restart with compound node_ids ===")
+    print("[bootstrap] === Phase 2: restart with compound node_ids + ARM ===")
     env_overrides = build_phase2_env(registration)
     print(f"[bootstrap] compound ids: {json.dumps(env_overrides, indent=1)}")
     rewrite_env(cluster, env_overrides, env_path)
+    # ★ ARM before the recreate: re-wire the compose with -gamemaster/operator keys
+    # (gen_fleet --registration) so the SINGLE restart below brings GMs up ARMED.
+    # Runs AFTER rewrite_env: gen_fleet PRESERVES the just-written .env (compound
+    # node_ids) and APPENDS the operator SKs. No self-arm without a manifest — a GM
+    # fleet then comes up unarmed, exactly as before (logged, not silent).
+    arm_rewire(registration, env_path)
     cluster.restart_with_env()
     cluster.wait_ready()
 

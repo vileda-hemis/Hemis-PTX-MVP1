@@ -435,6 +435,22 @@ def main():
               f"{added} GMxx_OPERATOR_SK line(s) appended to .env "
               f"(values host-side only)")
 
+    # ★ Params manifest (host-side, NOT committed — sits beside the compose/.env,
+    # same gitignore posture). Lets Phase-2 self-arm re-invoke gen_fleet
+    # --registration with BYTE-IDENTICAL params (the lockstep discipline) without
+    # threading every flag through run_bootstrap/bootstrap. NO credentials: rpcpass
+    # is omitted (the .env carries it and is PRESERVED on the arm re-run).
+    manifest = {
+        "n": args.n, "callers": args.callers,
+        "caller_staking": args.caller_staking, "gm_wallet_less": args.gm_wallet_less,
+        "mixed_v6": bool(args.mixed_v6), "v6_prefix": args.v6_prefix, "v6_gm": args.v6_gm,
+        "project": args.project, "port_base": args.port_base,
+        "subnet_base": args.subnet_base, "data_root": args.data_root,
+        "out": args.out, "image": args.image, "rpcuser": args.rpcuser,
+    }
+    with open(os.path.join(args.out, ".fleet-manifest.json"), "w") as f:
+        json.dump(manifest, f, indent=1)
+
     # runtime docker assets ride along from the committed templates
     here = os.path.dirname(os.path.abspath(__file__))
     for asset in ("entrypoint.sh", "Dockerfile"):

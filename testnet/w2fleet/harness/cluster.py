@@ -276,9 +276,23 @@ class W2Cluster:
     def up(self):
         self._assert_w2_compose()
         self.assert_poc_untouched("pre-up")
-        r = self._compose("up", "-d", "--remove-orphans", check=False)
-        if r.returncode != 0:
-            raise RuntimeError(f"compose up failed:\n{r.stderr}")
+        # ★ docker's host-port binding RACES when many containers start in parallel
+        # under host load ("failed to set up container networking … address already
+        # in use") — a transient that clears on retry, because `compose up -d` is
+        # idempotent (already-up containers are untouched; only the stragglers are
+        # (re)started). Bounded retry so a first-ever bootstrap / Phase-2 recreate /
+        # a +N grow under load doesn't die on a flake it would win on the next pass.
+        last = None
+        for attempt in range(1, 6):
+            r = self._compose("up", "-d", "--remove-orphans", check=False)
+            if r.returncode == 0:
+                break
+            last = r.stderr
+            print(f"[cluster] compose up attempt {attempt}/5 failed "
+                  f"(likely a transient port-bind race) — retrying")
+            time.sleep(4)
+        else:
+            raise RuntimeError(f"compose up failed after 5 attempts:\n{last}")
         self.assert_poc_untouched("post-up")
 
     def stop(self):
