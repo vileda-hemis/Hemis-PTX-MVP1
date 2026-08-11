@@ -176,7 +176,22 @@ def main():
 
         # ── render ───────────────────────────────────────────────────────
         active = states.get("ACTIVE", states.get("1", 0))
-        qflag = "" if active == args.expect_quorums else f"  ★ EXPECTED {args.expect_quorums}"
+        # ODC-069: active quorums are POOL-DRIVEN (~⌊eligible/11⌋), NOT capped by
+        # nSupportedQuorums. Flag only a real SHORTFALL vs LIVE capacity — never
+        # active != a stale declared constant (which flagged healthy growth as an
+        # error: "10 ★ EXPECTED 8"). --expect-quorums kept only as an optional floor.
+        cap = None
+        for n in nodes:
+            try:
+                sel = n.call("ptx_debug_selectquorum",
+                             n.call("getblockhash", hmax // 30 * 30))
+                elig = sel.get("eligible")
+                cap = (elig // 11) if elig else None
+                break
+            except Exception:
+                continue
+        qflag = (f"  ★ SHORTFALL (cap ~{cap})" if (cap and active < cap - 1) else
+                 (f"  · ~{cap} cap" if cap else ""))
         print(f"\n══ tick {tick} @ {time.strftime('%H:%M:%S')} "
               f"═ h {hmin}..{hmax} (spread {hmax - hmin}) "
               f"═ ACTIVE quorums {active}{qflag} ═ states {states or '{}'}")

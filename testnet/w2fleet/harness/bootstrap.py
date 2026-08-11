@@ -209,7 +209,8 @@ def gm_is_v6(i):
 
 def register_gms(treasury: Node, cluster: W2Cluster,
                  gm_labels: List[str], v6_gm: int = 0,
-                 mixed_v6: bool = False, v6_prefix: str = "fd00:31::") -> Dict[str, dict]:
+                 mixed_v6: bool = False, v6_prefix: str = "fd00:31::",
+                 start_idx: int = 1) -> Dict[str, dict]:
     """External-collateral protx_register for each GM, batched.
 
     KDD-033: suffix = hash(collateralOutpoint) fingerprints the specific
@@ -225,11 +226,44 @@ def register_gms(treasury: Node, cluster: W2Cluster,
     but is kept on the treasury so the operator secrets are produced in one
     place and recorded in the registration map.
     """
+    # ── GROW-SAFE IDEMPOTENCY GUARD ───────────────────────────────────────
+    # Each GM's fleet service address is DETERMINISTIC from its absolute index
+    # (host = 11 + idx-1; v4 subnet or v6 prefix per gm_is_v6). A target index is
+    # "already registered" iff that address is already in protx_list. Skip any
+    # such target and register only the genuinely-new ones — so an incremental
+    # grow (start_idx=121 over a live 120) can NEVER re-register a standing node,
+    # even if mis-invoked with an overlapping range. start_idx is the 1-based
+    # absolute index of gm_labels[0] (default 1 = original full-fleet behaviour).
+    def _service_for(idx: int) -> str:
+        host = 11 + (idx - 1)
+        v6 = gm_is_v6(idx) if mixed_v6 else (bool(v6_gm) and idx == v6_gm)
+        return f"[{v6_prefix}{host}]:29994" if v6 else f"{cluster.subnet_base}.{host}:29994"
+
+    targets = [(start_idx + k, lbl) for k, lbl in enumerate(gm_labels)]
+    try:
+        registered_svcs = {e.get("dgmstate", {}).get("service", "")
+                           for e in treasury.protx_list(detailed=True, valid_only=True)}
+    except Exception:
+        registered_svcs = set()
+    new_targets = [(idx, lbl) for idx, lbl in targets
+                   if _service_for(idx) not in registered_svcs]
+    skipped = [lbl for idx, lbl in targets if _service_for(idx) in registered_svcs]
+    if skipped:
+        print(f"[bootstrap] grow-guard: {len(skipped)} target(s) already registered "
+              f"(service claimed) — SKIPPING {skipped[:6]}{'...' if len(skipped) > 6 else ''}")
+    if not new_targets:
+        print("[bootstrap] grow-guard: nothing new to register — no-op")
+        return {}
+    abs_indices = [idx for idx, _ in new_targets]
+    gm_labels   = [lbl for _, lbl in new_targets]
+    # ──────────────────────────────────────────────────────────────────────
+
     collateral_amt = float(GM_COLLATERAL)
     n_gms = len(gm_labels)
 
     print(f"[bootstrap] funding {n_gms} collateral outputs ({collateral_amt} HMS each) "
-          f"from treasury={treasury.name}")
+          f"from treasury={treasury.name}"
+          + (f" [grow: registering {gm_labels[0]}..{gm_labels[-1]}]" if start_idx > 1 else ""))
     collateral_addrs = [treasury.getnewaddress() for _ in range(n_gms)]
     funding_txid = treasury.sendmany("", {a: collateral_amt for a in collateral_addrs})
     print(f"[bootstrap] collateral funding tx: {funding_txid}")
@@ -290,22 +324,25 @@ def register_gms(treasury: Node, cluster: W2Cluster,
             f"not in listlockunspent — the staker may have consumed them")
 
     results = {}
-    for i, (gm, label, outpoint) in enumerate(
-            zip(cluster.gms, gm_labels, collateral_outpoints)):
+    for i, (abs_idx, label, outpoint) in enumerate(
+            zip(abs_indices, gm_labels, collateral_outpoints)):
         # ODC-066: the designated v6 GM registers its ULA v6 service address
-        # (fd00:31:: MUST match gen_fleet.V6_PREFIX and IsPTXBeaFleetAddr).
+        # (fd00:3x:: MUST match gen_fleet.V6_PREFIX and IsPTXBeaFleetAddr).
         # protx_register's ip_port arg goes through Lookup, which parses the
         # bracketed-v6 form.  All other GMs register v4.
         # --mixed-v6: ~85% register v6 (gm_is_v6, mainnet-like); else only --v6-gm.
         # MUST match gen_fleet's advertised externalip family for the same node.
+        # ★ keyed on the ABSOLUTE index (abs_idx), not the batch position — an
+        # incremental grow registers gm121.. so the host octet/hextet and the
+        # v6/v4 family must come from the true node number, not 0..N-in-batch.
         if mixed_v6:
-            advertises_v6 = gm_is_v6(i + 1)
+            advertises_v6 = gm_is_v6(abs_idx)
         else:
-            advertises_v6 = bool(v6_gm) and (i + 1) == v6_gm
+            advertises_v6 = bool(v6_gm) and abs_idx == v6_gm
         if advertises_v6:
-            ip_port = f"[{v6_prefix}{11 + i}]:29994"
+            ip_port = f"[{v6_prefix}{11 + (abs_idx - 1)}]:29994"
         else:
-            ip_port = f"{cluster.subnet_base}.{11 + i}:29994"
+            ip_port = f"{cluster.subnet_base}.{11 + (abs_idx - 1)}:29994"
         owner_addr  = treasury.getnewaddress()
         voting_addr = treasury.getnewaddress()
         payout_addr = treasury.getnewaddress()
