@@ -82,6 +82,14 @@ class Stats:
         self.per_caller_fail = {}
         self.first_roll_height = None
         self.last_roll_height = None
+        self.latencies = []       # ms, caller-measured request→answer (ok rolls)
+
+    def latency_pctiles(self):
+        if not self.latencies:
+            return None
+        s = sorted(self.latencies)
+        pick = lambda p: s[min(len(s) - 1, int(p * len(s)))]
+        return pick(0.0), pick(0.50), pick(0.95), pick(0.999)
 
     def mean_interval_blocks(self):
         if self.ok < 2 or self.first_roll_height is None:
@@ -99,6 +107,10 @@ class Stats:
             + (f"{self.mean_interval_blocks():.2f} blocks/roll" if self.mean_interval_blocks() else "n/a")
             + "  (ODC-052 floor: 25)",
         ]
+        if self.latency_pctiles():
+            lo, p50, p95, p999 = self.latency_pctiles()
+            lines.append(f"roll latency (caller req→signed answer): "
+                         f"min {lo:.0f} · p50 {p50:.0f} · p95 {p95:.0f} · max {p999:.0f} ms")
         if self.per_quorum:
             total_q = sum(self.per_quorum.values())
             lines.append("per-quorum distribution (§7.4 routing):")
@@ -171,9 +183,16 @@ def main():
         stats.total += 1
         rec = {"seq": seq, "t": int(time.time()), "h": h,
                "caller": caller.name, "game_id": game_id}
+        # ★ caller-measured latency: wall-clock request → threshold-signed answer
+        # (covers the whole fund-then-sign path: commit broadcast + fan-out to the
+        # quorum + partial-sig collection to threshold + reconstruction). Measured
+        # on BOTH branches so a slow FAILURE is visible, not just successes.
+        t0 = time.perf_counter()
         try:
             r = caller.ptx_roll(args.count, args.low, args.high, game_id, salt)
+            lat_ms = round((time.perf_counter() - t0) * 1000, 1)
             stats.ok += 1
+            stats.latencies.append(lat_ms)
             qh = r.get("quorum_hash", "?")
             stats.per_quorum[qh] = stats.per_quorum.get(qh, 0) + 1
             stats.per_caller_ok[caller.name] = stats.per_caller_ok.get(caller.name, 0) + 1
@@ -181,12 +200,15 @@ def main():
                 stats.first_roll_height = h
             stats.last_roll_height = h
             rec.update(ok=True, quorum_hash=qh,
-                       results=r.get("results"), tx_id=r.get("tx_id"))
+                       results=r.get("results"), tx_id=r.get("tx_id"),
+                       round_seed=r.get("round_seed"),  # join key for the dashboard
+                       latency_ms=lat_ms)
         except (RPCError, Exception) as e:  # noqa: BLE001 — resilience by design
+            lat_ms = round((time.perf_counter() - t0) * 1000, 1)
             stats.fail += 1
             stats.per_caller_fail[caller.name] = stats.per_caller_fail.get(caller.name, 0) + 1
-            rec.update(ok=False, error=str(e)[:200])
-            print(f"[driver] roll {seq} FAILED via {caller.name}: {str(e)[:120]} — continuing")
+            rec.update(ok=False, error=str(e)[:200], latency_ms=lat_ms)
+            print(f"[driver] roll {seq} FAILED via {caller.name} after {lat_ms:.0f}ms: {str(e)[:120]} — continuing")
         jsonl.write(json.dumps(rec) + "\n")
         jsonl.flush()
 
