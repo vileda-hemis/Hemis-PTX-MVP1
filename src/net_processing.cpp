@@ -72,6 +72,17 @@ namespace {
 /** Number of nodes with fSyncStarted. */
 int nSyncStarted = 0;
 
+/** BUG-021 catch-up-IBD FAILOVER (the PIVX-inherited pre-headers-first GETBLOCKS
+ *  sync has none). The gate below starts sync from ONE peer (nSyncStarted keeps it
+ *  to one, preventing GETBLOCKS-floods) but never switches if that peer is behind
+ *  or stalls — a far-behind node (old best header → the 6h clause is false) then
+ *  wedges even with a fully-synced peer connected. These track the single active
+ *  sync source and a tip-progress watchdog so we can SWITCH it (still exactly one
+ *  active sync) when it stalls. cs_main-guarded (SendMessages holds it). */
+NodeId g_block_sync_peer = -1;
+int64_t g_block_sync_progress_time = 0;
+int g_block_sync_progress_height = -1;
+
 /**
  * Sources of received blocks, to be able to send them reject messages or ban
  * them, if processing happens afterwards. Protected by cs_main.
@@ -479,6 +490,8 @@ void PeerLogicValidation::FinalizeNode(NodeId nodeid, bool& fUpdateConnectionTim
 
     if (state->fSyncStarted)
         nSyncStarted--;
+    if (g_block_sync_peer == nodeid)
+        g_block_sync_peer = -1;   // let the next tick re-pick / fail over cleanly
 
     if (state->nMisbehavior == 0 && state->fCurrentlyConnected) {
         fUpdateConnectionTime = true;
@@ -2563,14 +2576,48 @@ bool PeerLogicValidation::SendMessages(CNode* pto, std::atomic<bool>& interruptM
         if (!pindexBestHeader)
             pindexBestHeader = chainActive.Tip();
         bool fFetch = state.fPreferredDownload || (nPreferredDownload == 0 && !pto->fClient && !pto->fOneShot); // Download if this is a nice peer, or we have no nice peers and this one might do.
+
+        // ★ BUG-021 catch-up-IBD FAILOVER watchdog. Tip-progress is the stall
+        // signal: whenever our active chain advances, stamp the time. If the ONE
+        // active sync source then makes no progress for a while AND a peer is well
+        // ahead of us, SWITCH the single active sync to it (below). Healthy sync is
+        // untouched — during IBD/tip-follow the tip advances, so the watchdog never
+        // trips; and once caught up, no peer is "well ahead", so it never trips.
+        {
+            const int nowH = chainActive.Height();
+            if (nowH != g_block_sync_progress_height) {
+                g_block_sync_progress_height = nowH;
+                g_block_sync_progress_time = GetTime();
+            }
+        }
+        const int64_t nowT = GetTime();
+        const bool syncStalled = g_block_sync_progress_time != 0 && (nowT - g_block_sync_progress_time) > 60;
+        // "well ahead" must use the peer's SELF-REPORTED height (nStartingHeight from
+        // its version msg), NOT pindexBestKnownBlock: the latter can only point at a
+        // block in OUR index, so a stuck node (index ends at the wedge height) can
+        // never see a peer as ahead there — exactly the node we must rescue.
+        const bool peerWellAhead = fFetch && pto->nStartingHeight > chainActive.Height() + 16;
+
         if (!state.fSyncStarted && !pto->fClient && !fImporting && !fReindex && pto->CanRelay()) {
-            // Only actively request headers from a single peer, unless we're close to end of initial download.
-            if ((nSyncStarted == 0 && fFetch) || pindexBestHeader->GetBlockTime() > GetAdjustedTime() - 6 * 60 * 60) { // NOTE: was "close to today" and 24h in Bitcoin
+            // Healthy path (unchanged): one peer, unless we're near the end of IBD.
+            const bool startNormal = (nSyncStarted == 0 && fFetch)
+                                     || pindexBestHeader->GetBlockTime() > GetAdjustedTime() - 6 * 60 * 60; // NOTE: was "close to today" and 24h in Bitcoin
+            // Failover: the active sync stalled while THIS peer is well ahead —
+            // switch to it. Preserves single-active-sync (release the old source
+            // right here) so we never GETBLOCKS-flood; that was the gate's purpose.
+            const bool doFailover = syncStalled && peerWellAhead && pto->GetId() != g_block_sync_peer;
+            if (startNormal || doFailover) {
+                if (doFailover && g_block_sync_peer != -1) {
+                    CNodeState* oldState = State(g_block_sync_peer);
+                    if (oldState && oldState->fSyncStarted) { oldState->fSyncStarted = false; nSyncStarted--; }
+                    LogPrintf("PTX net: block-sync FAILOVER at height %d -> peer=%d (startheight %d) after peer=%d stalled %ds\n",
+                              chainActive.Height(), pto->GetId(), pto->nStartingHeight,
+                              (int)g_block_sync_peer, (int)(nowT - g_block_sync_progress_time));
+                }
                 state.fSyncStarted = true;
                 nSyncStarted++;
-                //CBlockIndex *pindexStart = pindexBestHeader->pprev ? pindexBestHeader->pprev : pindexBestHeader;
-                //LogPrint(BCLog::NET, "initial getheaders (%d) to peer=%d (startheight:%d)\n", pindexStart->nHeight, pto->GetId(), pto->nStartingHeight);
-                //pto->PushMessage(NetMsgType::GETHEADERS, chainActive.GetLocator(pindexStart), UINT256_ZERO);
+                g_block_sync_peer = pto->GetId();
+                g_block_sync_progress_time = nowT;   // reset the watchdog on (re)start
                 connman->PushMessage(pto, msgMaker.Make(NetMsgType::GETBLOCKS, chainActive.GetLocator(chainActive.Tip()), UINT256_ZERO));
             }
         }
