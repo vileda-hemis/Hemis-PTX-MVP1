@@ -47,6 +47,7 @@ DEF_OUT = "/mnt/pve/Node14TB/hemis-ptx/docker-w2"
 DEF_DATA_ROOT = "/mnt/pve/Node14TB/hemis-ptx/w2-fleet/datadirs"
 DEF_SUBNET_BASE = "172.31.0"      # caller .10, gm_i .10+i  (N<=60 -> .70)
 DEF_PORT_BASE = 31000             # caller 31000, gm_i 31000+i (N<=60 -> 31060)
+CALLER_PORT_OFFSET = 900          # caller_k>1 at port_base+900+(k-1) — STABLE, above the GM range (supports up to 900 GMs); a grow never moves callers/collides
 DEF_IMAGE = "hemis-ptx-w2:40b109c"
 # subnets that MUST NOT be reused by a second instance (live fleets):
 #   172.30.0 = ptx-bea PoC, 172.28.0 = ptxtestnet, 172.31.0 = live ptx-w2 fleet
@@ -191,7 +192,13 @@ def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser,
     for k in range(1, callers + 1):
         cname = caller_name(k, callers)
         cip = f"{subnet_base}.{10 - (k - 1)}"
-        cport = port_base if k == 1 else port_base + n + (k - 1)
+        # ★ STABLE caller ports (offset well ABOVE any GM index): caller_k>1 used
+        # to sit at port_base+n+(k-1), which SHIFTS with n straight into the GM
+        # host-port range (port_base+i) on a grow — gm151-157 collided with the
+        # standing caller2-8 at N=150→180 and came up port-less/networkless. A
+        # fixed offset (supports up to CALLER_PORT_OFFSET GMs) makes a grow never
+        # move the callers or collide. caller1 stays at port_base (tools rely on it).
+        cport = port_base if k == 1 else port_base + CALLER_PORT_OFFSET + (k - 1)
         cnid = "CALLER_NODE_ID" if callers == 1 else f"CALLER{k}_NODE_ID"
         lines.append(f"""\
   {cname}:

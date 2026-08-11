@@ -225,10 +225,12 @@ class W2Cluster:
         # single-producer state (7 of 8 callers funded 0.0 HMS, -staking=1 inert)
         # while the compose claimed 8 producers.
         # Port allocation MIRRORS gen_fleet.py exactly — caller1 at port_base,
-        # caller_k>1 at port_base + n + (k-1). Keep the two in step.
+        # caller_k>1 at port_base + CALLER_PORT_OFFSET + (k-1) (STABLE, above the
+        # GM range so a grow never moves callers or collides). Keep the two in step.
+        CALLER_PORT_OFFSET = 900
         self.callers = [
             Node(f"caller{k}" if callers > 1 else "caller", host,
-                 port_base if k == 1 else port_base + n + (k - 1),
+                 port_base if k == 1 else port_base + CALLER_PORT_OFFSET + (k - 1),
                  rpc_user, rpc_pass)
             for k in range(1, callers + 1)
         ]
