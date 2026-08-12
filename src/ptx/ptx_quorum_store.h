@@ -480,6 +480,7 @@ struct PTXDKGSigningCtx {
     uint256                   quorum_hash;
     std::vector<std::string>  member_ids;      // in_qual (committed effective-QUAL) only
     std::map<std::string,int> share_index;     // node_id -> 1-based score-order x
+    std::map<std::string,uint256> member_protx; // node_id -> proTxHash (A: live-DGM fan-out addr resolution)
     int                       threshold{0};    // t = majority(formed_size); QUORUM-scoped, NOT registry-derived (ODC-036)
     std::vector<uint8_t>      group_pk;        // 48 compressed bytes, as committed
 };

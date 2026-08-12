@@ -18,6 +18,8 @@
 #include "sync.h"
 #include "utilstrencodings.h"
 #include "util/system.h"
+#include "evo/deterministicgms.h"  // A: live-DGM-derived fan-out address resolution
+#include "chainparamsbase.h"       // A: BaseParams().RPCPort() for the port-convention
 
 #include <event2/buffer.h>
 #include <event2/event.h>
@@ -73,6 +75,47 @@ const PTXNodeInfo* PTX_FindNode(const std::string& node_id)
     for (const auto& n : g_ptx_nodes)
         if (n.node_id == node_id) return &n;
     return nullptr;
+}
+
+// A (2026-08-12) — LIVE-DGM-DERIVED HOST RESOLUTION (the real address-book fix).
+// Member addresses are read from CURRENT on-chain ground truth (the DGM list, by
+// proTxHash) EVERY fan-out, so they track permissionless membership churn — the
+// static -ptxnode snapshot (g_ptx_nodes) went stale on any growth (the 4th
+// declared-vs-ground-truth divergence: ~39% of a grown quorum unaddressable).
+// The DGM-HOST half below is PERMANENT and correct.
+//
+// PORT is a different matter: the DGM address advertises only the P2P port; the
+// PTX-RPC endpoint that serves gm_bls_sign is NOT on-chain.  We combine DGM-host
+// with the chain default RPC port (overridable via -ptxfanoutport).  ★★ THIS
+// PORT-CONVENTION IS A FLEET EXPEDIENT, NOT THE MAINNET DELIVERY ★★ — it embeds
+// "GMs expose PTX-RPC at DGM-IP:standard-port", which a permissionless operator
+// violates (non-standard port, firewalled, unexposed), re-introducing the very
+// address-resolution-assumption class this fix removes.  The MAINNET-CORRECT
+// delivery is SIGN-OVER-P2P (reach the member at its on-chain-advertised address
+// via the protocol it definitely speaks) — the OTHER HALF of this fix, same tier,
+// still OWED (KDD-085).  Do not read "A" as done until P2P delivery lands.
+//
+// Precedence: prefer DGM-derived (real fix); fall back to static -ptxnode (legacy
+// trusted-dealer path / tests / a member not yet in the list).  Returns the
+// source in *via for logging.
+bool PTX_ResolveMemberAddr(const std::string& node_id, const uint256& proTxHash,
+                           std::string& host_out, uint16_t& port_out, const char** via)
+{
+    if (!proTxHash.IsNull() && deterministicGMManager) {
+        const auto dgm = deterministicGMManager->GetListAtChainTip().GetValidGM(proTxHash);
+        if (dgm && dgm->pdgmState) {
+            const CService& addr = dgm->pdgmState->addr;
+            if (addr.IsValid()) {
+                host_out = addr.ToStringIP();
+                port_out = (uint16_t)gArgs.GetArg("-ptxfanoutport", BaseParams().RPCPort());
+                if (via) *via = "dgm";
+                return true;
+            }
+        }
+    }
+    const PTXNodeInfo* ni = PTX_FindNode(node_id);
+    if (ni) { host_out = ni->host; port_out = ni->port; if (via) *via = "static"; return true; }
+    return false;
 }
 
 } // namespace
@@ -269,7 +312,8 @@ std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
     const uint256& round_seed,
     const uint256& quorum_hash,
     const std::vector<std::string>& member_ids,
-    size_t threshold)
+    size_t threshold,
+    const std::map<std::string, uint256>& member_protx)
 {
     std::map<std::string, std::vector<uint8_t>> collected;
 
@@ -307,10 +351,18 @@ std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
                 continue;
             }
         }
-        const PTXNodeInfo* ni = PTX_FindNode(node_id);
-        if (!ni) {
-            LogPrintf("PTX: FanOutSign: no node info for %s\n", node_id);
-            continue;
+        // A: resolve member address from the LIVE DGM list (by proTxHash),
+        // falling back to static -ptxnode config.  Fixes the stale-address-book
+        // failure (unaddressable grown members); DGM-host is the real fix, the
+        // RPC port-convention is the fleet expedient (see PTX_ResolveMemberAddr).
+        std::string mhost; uint16_t mport = 0; const char* via = "none";
+        {
+            auto pit = member_protx.find(node_id);
+            const uint256 mprotx = (pit != member_protx.end()) ? pit->second : uint256();
+            if (!PTX_ResolveMemberAddr(node_id, mprotx, mhost, mport, &via)) {
+                LogPrintf("PTX: FanOutSign: no address for %s (DGM miss + no static node info)\n", node_id);
+                continue;
+            }
         }
 
         // KDD-070 P1: gm_bls_sign takes (round_seed_hex, quorum_hash) — the
@@ -321,7 +373,7 @@ std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
 
         // Use raw HTTP call; parse sig_hex from body directly (not "accepted" pattern).
         raii_event_base base = obtain_event_base();
-        raii_evhttp_connection evcon = obtain_evhttp_connection_base(base.get(), ni->host, ni->port);
+        raii_evhttp_connection evcon = obtain_evhttp_connection_base(base.get(), mhost, mport);
         evhttp_connection_set_timeout(evcon.get(), 5);
 
         PTXHTTPReply response;
@@ -332,7 +384,7 @@ std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
 #endif
 
         struct evkeyvalq* hdrs = evhttp_request_get_output_headers(req.get());
-        evhttp_add_header(hdrs, "Host", ni->host.c_str());
+        evhttp_add_header(hdrs, "Host", mhost.c_str());
         evhttp_add_header(hdrs, "Connection", "close");
         evhttp_add_header(hdrs, "Content-Type", "application/json");
 

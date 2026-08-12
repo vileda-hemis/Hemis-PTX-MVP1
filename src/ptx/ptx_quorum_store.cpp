@@ -860,10 +860,12 @@ PTXDKGSigningCtx PTX_SelectDKGSigningCtx(const std::vector<CPTXQuorumRecord>& ac
         if (m.share_index == 0) continue; // 1-based by construction; 0 means unset
         ctx.member_ids.push_back(m.node_id);
         ctx.share_index[m.node_id] = (int)m.share_index;
+        ctx.member_protx[m.node_id] = m.proTxHash; // A: for live-DGM fan-out addr resolution
     }
     if ((int)ctx.member_ids.size() < ctx.threshold) {
         ctx.member_ids.clear();
         ctx.share_index.clear();
+        ctx.member_protx.clear();
         return ctx;                 // present but sub-threshold -> caller hard-errors
     }
 

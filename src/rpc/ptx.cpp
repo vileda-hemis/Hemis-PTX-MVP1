@@ -318,7 +318,8 @@ UniValue ptx_roll(const JSONRPCRequest& request)
     // are collected — recovery needs only t, and waiting for the rest is latency
     // (gating on the slowest members under staggered commitment propagation).
     auto partial_sigs_raw = PTX_FanOutSign(round_id, round_seed, dkg_ctx.quorum_hash,
-                                           member_ids, (size_t)signing_threshold);
+                                           member_ids, (size_t)signing_threshold,
+                                           dkg_ctx.member_protx); // A: live-DGM addr resolution
 
     // Collect blst partial signatures and 1-indexed polynomial positions.
     std::vector<std::vector<uint8_t>> bls_sigs;

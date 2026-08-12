@@ -59,6 +59,9 @@ std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
     const uint256& round_seed,
     const uint256& quorum_hash,
     const std::vector<std::string>& member_ids,
-    size_t threshold = 0);
+    size_t threshold = 0,
+    // A (2026-08-12): node_id -> proTxHash for LIVE-DGM fan-out address resolution.
+    // Empty map => legacy static -ptxnode resolution only (back-compat default).
+    const std::map<std::string, uint256>& member_protx = {});
 
 #endif // HEMIS_PTX_FANOUT_H
