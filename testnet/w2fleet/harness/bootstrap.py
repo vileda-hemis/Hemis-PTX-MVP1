@@ -239,7 +239,13 @@ def register_gms(treasury: Node, cluster: W2Cluster,
     def _service_for(idx: int) -> str:
         host = 11 + (idx - 1)
         v6 = gm_is_v6(idx) if mixed_v6 else (bool(v6_gm) and idx == v6_gm)
-        return f"[{v6_prefix}{host}]:29994" if v6 else f"{cluster.subnet_base}.{host}:29994"
+        if v6:
+            return f"[{v6_prefix}{host}]:29994"
+        # ★ /16-aware v4 — MUST match gen_fleet.gm_ip (the container's ipv4). host
+        # can exceed 254 (gm252 -> 172.32.1.6); roll across the 3rd/4th octets so
+        # the REGISTERED service address equals the container IP.
+        b2 = cluster.subnet_base.rsplit(".", 1)[0]   # "172.32.0" -> "172.32"
+        return f"{b2}.{host // 256}.{host % 256}:29994"
 
     targets = [(start_idx + k, lbl) for k, lbl in enumerate(gm_labels)]
     try:
@@ -341,10 +347,15 @@ def register_gms(treasury: Node, cluster: W2Cluster,
             advertises_v6 = gm_is_v6(abs_idx)
         else:
             advertises_v6 = bool(v6_gm) and abs_idx == v6_gm
+        host = 11 + (abs_idx - 1)
         if advertises_v6:
-            ip_port = f"[{v6_prefix}{11 + (abs_idx - 1)}]:29994"
+            ip_port = f"[{v6_prefix}{host}]:29994"
         else:
-            ip_port = f"{cluster.subnet_base}.{11 + (abs_idx - 1)}:29994"
+            # ★ /16-aware v4 — MUST equal gen_fleet.gm_ip / _service_for. host can
+            # exceed 254 (gm252 -> 172.32.1.6); roll across the 3rd/4th octets so the
+            # REGISTERED ip_port matches the container's advertised externalip.
+            b2 = cluster.subnet_base.rsplit(".", 1)[0]
+            ip_port = f"{b2}.{host // 256}.{host % 256}:29994"
         owner_addr  = treasury.getnewaddress()
         voting_addr = treasury.getnewaddress()
         payout_addr = treasury.getnewaddress()

@@ -90,7 +90,13 @@ def gm_name(i):
 
 
 def gm_ip(base, i):
-    return f"{base}.{10 + i}"
+    # ★ /16-aware: host index 10+i can exceed 254 (a v4 GM at gm252 wanted
+    # 172.32.0.262 — invalid 4th octet — and killed the 300-grow). Roll the 16-bit
+    # host number across the 3rd/4th octets within the /16. gm1..gm244 stay on
+    # 172.32.0.x (unchanged, registrations valid); gm245+ roll to 172.32.1.x etc.
+    b2 = base.rsplit(".", 1)[0]          # "172.32.0" -> "172.32"
+    h = 10 + i
+    return f"{b2}.{h // 256}.{h % 256}"
 
 
 # ODC-066 dual-stack: the fleet's v6 ULA parallel to the v4 subnet.  fd00:31::/64
@@ -318,7 +324,7 @@ networks:
     enable_ipv6: true
     ipam:
       config:
-        - subnet: {subnet_base}.0/24
+        - subnet: {subnet_base.rsplit('.', 1)[0]}.0.0/16
         - subnet: {V6_PREFIX}/64
 """)
     return "".join(lines)
@@ -382,8 +388,8 @@ def main():
                          "-gmoperatorprivatekey per GM (secrets to .env only)")
     args = ap.parse_args()
 
-    if not (2 <= args.n <= 240):
-        sys.exit("--n out of range (subnet /24: caller .10 + GMs .11..)")
+    if not (2 <= args.n <= 500):
+        sys.exit("--n out of range (subnet /16: caller .10 + GMs roll across octets)")
     # A SECOND instance (--project != default) must not reuse any live fleet's
     # subnet — structural isolation guard (bfleet must not land on live 172.31.0).
     if args.project != DEF_PROJECT and args.subnet_base in RESERVED_SUBNETS:
