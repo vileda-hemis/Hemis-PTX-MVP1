@@ -926,11 +926,19 @@ static bool CheckPTXRollCommitTx(const CTransaction& tx, const CBlockIndex* pind
         return state.Invalid(false, REJECT_INVALID, "ptxcommit-zero-count");
     if (payload.nSeedHeight == 0)
         return state.Invalid(false, REJECT_INVALID, "ptxcommit-bad-height");
-    // Same-block mandate (the reorg-safety property): the settle deadline is the
-    // seed height itself. Enforced as the default; a positive window is a
-    // deliberate future exception, not an open default.
-    if (payload.nExpiryHeight != payload.nSeedHeight)
-        return state.Invalid(false, REJECT_INVALID, "ptxcommit-window-nonzero");
+    // ★ BUG-034 RELAX (no-bound): the same-block mandate (nExpiryHeight ==
+    // nSeedHeight, window 0) is retired. Reorg-safety never came from the
+    // window — it comes from the coin-chain (the settle spends the
+    // commitment's output; drop the commitment and the settle's input — and
+    // the fee — vanish with it, unwinding the roll consistently). Window 0
+    // made every roll whose commitment mined alone in its own signing window
+    // (fund-then-sign broadcasts the commitment before the settle can exist)
+    // silently orphan a SUCCESSFUL roll's result, and the unbound settle then
+    // poisoned block assembly (the h5065 halt). No upper bound is enforced:
+    // no candidate mechanism is consensus-real (see the pairing-rule header
+    // note). Only the structural floor remains.
+    if (payload.nExpiryHeight < payload.nSeedHeight)
+        return state.Invalid(false, REJECT_INVALID, "ptxcommit-window-negative");
     // The payment: exactly one output to LOTTERY_ACCUM_SCRIPT at the service fee.
     {
         const CScript& accumScript = GetLotteryAccumScript();
@@ -1276,12 +1284,53 @@ bool CheckPTXPayoutBlockRules(const CBlock& block, const CBlockIndex* pindex, CV
     return true;
 }
 
+// BUG-034: pre-spend resolver for settle parents mined in EARLIER blocks (see
+// header). MUST run before the caller's spend loop: the coin's nHeight is the
+// only deterministic locator for the parent's block, and SpendCoin erases it.
+// Deterministic by construction — pre-block UTXO view + pindex ancestry are
+// consensus state; deliberately NOT GetTransaction/pcoinsTip (connect-vs-replay
+// divergence, the BUG-029 class). One block read per distinct confirmed parent.
+std::map<uint256, CPTXRollCommitPayload> PTX_CollectConfirmedSettleParents(
+        const CBlock& block, const CBlockIndex* pindex, const CCoinsViewCache* view)
+{
+    AssertLockHeld(cs_main);
+    std::map<uint256, CPTXRollCommitPayload> ret;
+    if (view == nullptr || pindex == nullptr) return ret;
+    // Same-block siblings resolve via block.vtx in the pairing rule, not here.
+    std::set<uint256> inBlock;
+    for (const auto& tx : block.vtx) inBlock.insert(tx->GetHash());
+    for (const auto& tx : block.vtx) {
+        if (!tx->IsProbabilisticTx()) continue;
+        for (const CTxIn& in : tx->vin) {
+            const uint256& ph = in.prevout.hash;
+            if (inBlock.count(ph) || ret.count(ph)) continue;
+            const Coin& coin = view->AccessCoin(in.prevout);
+            if (coin.IsSpent()) continue;   // not resolvable => pairing stays fail-closed
+            const CBlockIndex* pAnc = pindex->GetAncestor((int)coin.nHeight);
+            if (pAnc == nullptr) continue;
+            CBlock parentBlock;
+            if (!ReadBlockFromDisk(parentBlock, pAnc)) continue;
+            for (const auto& ptxParent : parentBlock.vtx) {
+                if (ptxParent->GetHash() != ph) continue;
+                if (ptxParent->IsPTXRollCommitTx()) {
+                    CPTXRollCommitPayload pl;
+                    if (GetTxPayload(*ptxParent, pl)) ret.emplace(ph, pl);
+                }
+                break;   // txid located; commit or not, the search is over
+            }
+        }
+    }
+    return ret;
+}
+
 // BUG-032 2c: the coin-chained matched-pair rule (see header). Every PTXSESS
 // must spend an output of a same-block PTXROLLCOMMIT and reveal the SAME round
 // (round_seed) under the SAME quorum (quorum_hash) the commitment fixed.
-bool CheckPTXRollCommitSettlePairing(const CBlock& block, CValidationState& state)
+bool CheckPTXRollCommitSettlePairing(const CBlock& block,
+                                     const std::map<uint256, CPTXRollCommitPayload>& confirmedParents,
+                                     CValidationState& state)
 {
-    AssertLockHeld(cs_main);
+    // Pure: block + pre-resolved confirmed parents; no chain access (BUG-034).
     // Index the same-block commitments by txid.
     std::map<uint256, CPTXRollCommitPayload> commits;
     for (const CTransactionRef& tx : block.vtx) {
@@ -1295,19 +1344,23 @@ bool CheckPTXRollCommitSettlePairing(const CBlock& block, CValidationState& stat
         if (!GetTxPayload(*tx, s))
             return state.DoS(100, error("%s: PTXSESS payload failed to deserialize", __func__),
                              REJECT_INVALID, "ptxsess-bad-payload");
-        // The coin-chained parent: the settle must SPEND an output of a same-block
-        // PTXROLLCOMMIT. One input whose prevout names a sibling commitment's txid
-        // is the matched-pair binding (and the reorg-atomicity: drop the parent,
-        // the settle's input ceases to exist).
+        // The coin-chained parent: the settle must SPEND an output of a
+        // PTXROLLCOMMIT — a same-block sibling, or (BUG-034 relax) a commitment
+        // already CONFIRMED at any depth (pre-resolved by the caller). The
+        // matched-pair binding and the reorg-atomicity live in the coin-chain
+        // itself: drop the parent, the settle's input ceases to exist.
         const CPTXRollCommitPayload* parent = nullptr;
         for (const CTxIn& in : tx->vin) {
             auto it = commits.find(in.prevout.hash);
             if (it != commits.end()) { parent = &it->second; break; }
+            auto itc = confirmedParents.find(in.prevout.hash);
+            if (itc != confirmedParents.end()) { parent = &itc->second; break; }
         }
         // 2c-i: the coin-chained parent must exist — no commitment, no reveal.
         if (parent == nullptr)
             return state.DoS(100, error("%s: PTXSESS %s has no coin-chained PTXROLLCOMMIT "
-                                        "parent in this block (payment-before-reveal unbound)",
+                                        "parent in this block or the confirmed chain "
+                                        "(payment-before-reveal unbound)",
                                         __func__, tx->GetHash().ToString()),
                              REJECT_INVALID, "ptxsess-no-commitment-parent");
         // 2c-ii Q2 (BUG-033 settle-side): the reveal must name the SAME canonical
@@ -1458,7 +1511,9 @@ bool CheckAndApplyPTXPayout(const CBlock& block,
     return true;
 }
 
-bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, const CCoinsViewCache* view, CValidationState& state, bool fJustCheck)
+bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, const CCoinsViewCache* view,
+                              const std::map<uint256, CPTXRollCommitPayload>& confirmedSettleParents,
+                              CValidationState& state, bool fJustCheck)
 {
     AssertLockHeld(cs_main);
 
@@ -1530,7 +1585,7 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
 
     // BUG-032 2c: every PTXSESS (reveal) must be coin-chained to a same-block
     // PTXROLLCOMMIT (payment) and reveal the same round under the same quorum.
-    if (!CheckPTXRollCommitSettlePairing(block, state)) {
+    if (!CheckPTXRollCommitSettlePairing(block, confirmedSettleParents, state)) {
         return false;
     }
 

@@ -1570,6 +1570,14 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
     precomTxData.reserve(block.vtx.size()); // Required so that pointers to individual precomTxData don't get invalidated
     bool fInitialBlockDownload = IsInitialBlockDownload();
     bool fSaplingMaintenance =  (block.nTime > sporkManager.GetSporkValue(SPORK_20_SAPLING_MAINTENANCE));
+
+    // BUG-034: capture PTXSESS confirmed-parent payloads PRE-SPEND — the loop
+    // below erases the parents' coins via UpdateCoins, and the coin's nHeight
+    // is the only deterministic locator for the parent's block (see
+    // specialtx_validation.h). Consumed by ProcessSpecialTxsInBlock below.
+    const std::map<uint256, CPTXRollCommitPayload> ptxConfirmedSettleParents =
+            PTX_CollectConfirmedSettleParents(block, pindex, &view);
+
     for (unsigned int i = 0; i < block.vtx.size(); i++) {
         const CTransaction& tx = *block.vtx[i];
 
@@ -1703,7 +1711,7 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
     nTimeVerify += nTime2 - nTimeStart;
     LogPrint(BCLog::BENCHMARK, "    - Verify %u txins: %.2fms (%.3fms/txin) [%.2fs]\n", nInputs - 1, 0.001 * (nTime2 - nTimeStart), nInputs <= 1 ? 0 : 0.001 * (nTime2 - nTimeStart) / (nInputs - 1), nTimeVerify * 0.000001);
 
-    if (!ProcessSpecialTxsInBlock(block, pindex, &view, state, fJustCheck)) {
+    if (!ProcessSpecialTxsInBlock(block, pindex, &view, ptxConfirmedSettleParents, state, fJustCheck)) {
         return error("%s: Special tx processing failed with %s", __func__, FormatStateMessage(state));
     }
     int64_t nTime3 = GetTimeMicros();
@@ -3885,6 +3893,13 @@ static bool RollforwardBlock(const CBlockIndex* pindex, CCoinsViewCache& inputs,
 
     const bool fSkipInvalid = SkipInvalidUTXOS(pindex->nHeight);
 
+    // BUG-034: capture PTXSESS confirmed-parent payloads PRE-SPEND — the same
+    // capture ConnectBlock performs, so connect and replay validate the block
+    // from identical inputs (the determinism requirement; see
+    // specialtx_validation.h).
+    const std::map<uint256, CPTXRollCommitPayload> ptxConfirmedSettleParents =
+            PTX_CollectConfirmedSettleParents(block, pindex, &inputs);
+
     for (const CTransactionRef& tx : block.vtx) {
         if (!tx->IsCoinBase()) {
             for (const CTxIn &txin : tx->vin) {
@@ -3897,7 +3912,7 @@ static bool RollforwardBlock(const CBlockIndex* pindex, CCoinsViewCache& inputs,
     }
 
     CValidationState state;
-    if (!ProcessSpecialTxsInBlock(block, pindex, &inputs, state, false /*fJustCheck*/)) {
+    if (!ProcessSpecialTxsInBlock(block, pindex, &inputs, ptxConfirmedSettleParents, state, false /*fJustCheck*/)) {
         return error("%s: Special tx processing failed for block %s with %s",
                      __func__, pindex->GetBlockHash().ToString(), FormatStateMessage(state));
     }

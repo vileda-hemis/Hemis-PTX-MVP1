@@ -5146,13 +5146,13 @@ static CMutableTransaction SettleMakeTx(const uint256& round_seed, const uint256
     return mtx;
 }
 
-static std::string RunPairing(const std::vector<CTransactionRef>& txs)
+static std::string RunPairing(const std::vector<CTransactionRef>& txs,
+                              const std::map<uint256, CPTXRollCommitPayload>& confirmedParents = {})
 {
-    LOCK(cs_main);
     CBlock block;
     block.vtx = txs;
     CValidationState state;
-    if (CheckPTXRollCommitSettlePairing(block, state)) return "";
+    if (CheckPTXRollCommitSettlePairing(block, confirmedParents, state)) return "";
     return state.GetRejectReason();
 }
 
@@ -5198,6 +5198,85 @@ BOOST_AUTO_TEST_CASE(Bug032_2c_SeedMismatchRejected)
     CMutableTransaction s = SettleMakeTx(seedS, qh, ctxid);
     BOOST_CHECK_EQUAL(RunPairing({MakeTransactionRef(c), MakeTransactionRef(s)}),
                       "ptxsess-seed-mismatch");
+}
+
+// ---------------------------------------------------------------------------
+// BUG-034 RELAX — a valid settle must always be minable. The parent may be a
+// commitment ALREADY CONFIRMED at any depth (resolved pre-spend by the caller
+// and supplied via confirmedParents). Semantic RED: before the relax, every
+// case below with a non-sibling parent rejected "ptxsess-no-commitment-parent"
+// (the h5065 halt shape — a SUCCESSFUL roll's settle permanently unminable).
+// Anti-vacuity: the gate is relaxed, not removed — no-parent-anywhere and the
+// quorum/seed cross-checks (the anti-quorum-shop property carried over from
+// the same-block rule) must still reject.
+// ---------------------------------------------------------------------------
+
+static CPTXRollCommitPayload ConfirmedCommitPayload(const uint256& qh, const uint256& seed)
+{
+    CPTXRollCommitPayload p;
+    p.nSeedHeight   = 10;
+    p.nExpiryHeight = 10;
+    p.count = 1; p.low = 1; p.high = 100;
+    p.round_seed  = seed;
+    p.quorum_hash = qh;
+    return p;
+}
+
+// GREEN (the BUG-034 core): a settle whose commitment mined in an EARLIER block
+// (no sibling; parent payload pre-resolved) → accepted. Pre-relax: rejected.
+BOOST_AUTO_TEST_CASE(Bug034_ConfirmedParentAccepted)
+{
+    const uint256 qh = QHk(0xD1), seed = QHk(0x61), parentTxid = QHk(0xC1);
+    CMutableTransaction s = SettleMakeTx(seed, qh, parentTxid);
+    const std::map<uint256, CPTXRollCommitPayload> parents{
+        {parentTxid, ConfirmedCommitPayload(qh, seed)}};
+    BOOST_CHECK_EQUAL(RunPairing({MakeTransactionRef(s)}, parents), "");
+}
+
+// Anti-vacuity 1: no parent anywhere (not sibling, not confirmed) → still rejected.
+BOOST_AUTO_TEST_CASE(Bug034_NoParentAnywhereStillRejected)
+{
+    const uint256 qh = QHk(0xD1), seed = QHk(0x61);
+    CMutableTransaction s = SettleMakeTx(seed, qh, QHk(0xC1)); // parent unknown
+    BOOST_CHECK_EQUAL(RunPairing({MakeTransactionRef(s)}, {}),
+                      "ptxsess-no-commitment-parent");
+}
+
+// Anti-vacuity 2 (anti-quorum-shop across blocks): confirmed parent committed a
+// DIFFERENT quorum than the settle reveals under → still rejected.
+BOOST_AUTO_TEST_CASE(Bug034_ConfirmedParentQuorumMismatchRejected)
+{
+    const uint256 qhC = QHk(0xD1), qhS = QHk(0xD9), seed = QHk(0x61), parentTxid = QHk(0xC1);
+    CMutableTransaction s = SettleMakeTx(seed, qhS, parentTxid);
+    const std::map<uint256, CPTXRollCommitPayload> parents{
+        {parentTxid, ConfirmedCommitPayload(qhC, seed)}};
+    BOOST_CHECK_EQUAL(RunPairing({MakeTransactionRef(s)}, parents),
+                      "ptxsess-quorum-mismatch");
+}
+
+// Anti-vacuity 3: confirmed parent fixed a DIFFERENT round → still rejected.
+BOOST_AUTO_TEST_CASE(Bug034_ConfirmedParentSeedMismatchRejected)
+{
+    const uint256 qh = QHk(0xD1), seedC = QHk(0x61), seedS = QHk(0x69), parentTxid = QHk(0xC1);
+    CMutableTransaction s = SettleMakeTx(seedS, qh, parentTxid);
+    const std::map<uint256, CPTXRollCommitPayload> parents{
+        {parentTxid, ConfirmedCommitPayload(qh, seedC)}};
+    BOOST_CHECK_EQUAL(RunPairing({MakeTransactionRef(s)}, parents),
+                      "ptxsess-seed-mismatch");
+}
+
+// Precedence: a same-block sibling still binds FIRST (the normal fast path is
+// unchanged by the relax) — sibling matches, confirmed map carries a decoy
+// entry for the same txid with a different seed; sibling wins → accepted.
+BOOST_AUTO_TEST_CASE(Bug034_SiblingTakesPrecedenceOverConfirmed)
+{
+    const uint256 qh = QHk(0xD1), seed = QHk(0x61);
+    CMutableTransaction c = CommitMakeTx(qh, seed, 10);
+    const uint256 ctxid = CTransaction(c).GetHash();
+    CMutableTransaction s = SettleMakeTx(seed, qh, ctxid);
+    const std::map<uint256, CPTXRollCommitPayload> parents{
+        {ctxid, ConfirmedCommitPayload(qh, QHk(0x69))}};  // decoy: would seed-mismatch
+    BOOST_CHECK_EQUAL(RunPairing({MakeTransactionRef(c), MakeTransactionRef(s)}, parents), "");
 }
 
 // ---------------------------------------------------------------------------

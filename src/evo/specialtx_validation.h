@@ -32,7 +32,32 @@ bool CheckSpecialTx(const CTransaction& tx, const CBlockIndex* pindexPrev, const
 bool CheckSpecialTxNoContext(const CTransaction& tx, CValidationState& state) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
 // Update internal tiertwo data when blocks containing special txes get connected/disconnected
-bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, const CCoinsViewCache* view, CValidationState& state, bool fJustCheck) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+//
+// BUG-034: confirmedSettleParents is the PRE-SPEND capture of every PTXSESS
+// input's confirmed PTXROLLCOMMIT parent payload (txid -> payload), collected by
+// PTX_CollectConfirmedSettleParents BEFORE the caller's UpdateCoins/SpendCoin
+// loop erases the coins.  Both production callers (ConnectBlock, ReplayBlock)
+// spend inputs before calling here, so the parent's coin — whose nHeight is the
+// only deterministic locator for the parent block — is unreadable by the time
+// this runs.  Capturing pre-spend keeps the resolution a pure function of
+// consensus state (pre-block UTXO view + pindex ancestry); deliberately NOT
+// GetTransaction/pcoinsTip, which diverges between connect and replay (the
+// BUG-029 class).
+bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, const CCoinsViewCache* view,
+                              const std::map<uint256, CPTXRollCommitPayload>& confirmedSettleParents,
+                              CValidationState& state, bool fJustCheck) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
+// BUG-034: pre-spend resolver for settle parents mined in EARLIER blocks. For
+// each PTXSESS input whose prevout is not a same-block sibling, read the coin
+// (must be pre-spend: coin.nHeight locates the parent's block), walk
+// pindex->GetAncestor(nHeight), read that one block from disk, and collect the
+// parent PTXROLLCOMMIT payload.  O(1 block read) per distinct confirmed parent,
+// depth-independent.  Returns {} when view/pindex are unavailable (structural
+// paths) — the pairing rule then only resolves same-block siblings, which is
+// the pre-relax posture (fail-closed).
+std::map<uint256, CPTXRollCommitPayload> PTX_CollectConfirmedSettleParents(
+        const CBlock& block, const CBlockIndex* pindex,
+        const CCoinsViewCache* view) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 bool UndoSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex);
 
 // ODC-022 KDD-033: validate a v3 ProRegPL node_id (Amendment 1 label rules + chain-derived
@@ -86,16 +111,28 @@ bool CheckPTXPayoutBlockRules(const CBlock& block,
                                CValidationState& state) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
 // BUG-032 2c: the coin-chained matched-pair rule. Every PTXSESS (settle, the
-// reveal) must be the child of a same-block PTXROLLCOMMIT (2a, the commitment) —
-// it spends an output of the commitment, so the UTXO layer forbids separating
-// them (a reorg that drops the commitment makes the settle's input nonexistent →
-// the settle is not a valid tx at all, with no PTX rule involved). On that coin
-// binding it binds the payloads: settle.round_seed / quorum_hash must equal the
-// parent commitment's (Q2 / BUG-033 settle-side); Q1 (results == MapBeacon) lands
-// in 2c-iii. Block-level (needs block.vtx) — the coalesce→payout / mandatory-iff
-// precedent; per-tx CheckSpecialTx cannot see sibling txs. Exposed for unit tests.
+// reveal) must be the child of a PTXROLLCOMMIT (2a, the commitment) — it spends
+// an output of the commitment, so the UTXO layer forbids separating them (a
+// reorg that drops the commitment makes the settle's input nonexistent → the
+// settle is not a valid tx at all, with no PTX rule involved; and the fee rides
+// the commitment, so the payment is undone with it — the roll unwinds
+// consistently). On that coin binding it binds the payloads: settle.round_seed /
+// quorum_hash must equal the parent commitment's (Q2 / BUG-033 settle-side).
+//
+// ★ BUG-034 RELAX (no-bound): the parent may be a SAME-BLOCK sibling OR a
+// commitment ALREADY CONFIRMED at any depth (supplied pre-resolved via
+// confirmedParents — see PTX_CollectConfirmedSettleParents). The old same-block
+// mandate made every roll's settle unminable if its commitment mined alone in
+// the signing window (fund-then-sign broadcasts the commitment ~1.4s before the
+// settle exists), silently orphaning a SUCCESSFUL roll's result — and the
+// unbound settle then poisoned every block template (the h5065 halt). No upper
+// bound: every candidate mechanism was checked and none is consensus-real
+// (replay = UTXO-covered; validation = one bounded block read; payout never
+// reads settles; retention = mempool policy; no staleness consumer).
+// Exposed for unit tests (pure: block + resolved parents, no chain access).
 bool CheckPTXRollCommitSettlePairing(const CBlock& block,
-                                     CValidationState& state) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+                                     const std::map<uint256, CPTXRollCommitPayload>& confirmedParents,
+                                     CValidationState& state);
 
 // ODC-022 Step 8: PTXPAYOUT contextual checks (P2, P5, P10) + LotteryState update.
 // gmList and poseTracker are pre-fetched by the caller so unit tests can inject

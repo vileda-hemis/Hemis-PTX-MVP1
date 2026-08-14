@@ -132,7 +132,7 @@ static std::string RunBlockCheck(const std::vector<CTransactionRef>& txs,
     // Dummy index: pprev=nullptr skips the V6_0 gate inside CheckSpecialTx,
     // which is the correct path for tests that don't require upgrade-height context.
     CBlockIndex dummyIndex;
-    if (ProcessSpecialTxsInBlock(block, &dummyIndex, &view, state, true))
+    if (ProcessSpecialTxsInBlock(block, &dummyIndex, &view, {}, state, true))
         return "";
     return state.GetRejectReason();
 }
