@@ -17,6 +17,7 @@
 #include "llmq/quorums_blockprocessor.h"
 #include "evo/deterministicgms.h"
 #include "ptx/ptx_coalesce.h"
+#include "evo/specialtx_validation.h"   // BUG-034 P3: PTX_TemplateUnpairableSettles
 #include "ptx/ptx_dkg_commitments.h"
 #include "ptx/ptx_lottery_state.h"
 #include "ptx/ptx_payout.h"
@@ -218,6 +219,55 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
         // Add transactions from mempool
         LOCK2(cs_main,mempool.cs);
         addPackageTxs();
+    }
+
+    // BUG-034 P3 — anti-halt template filter (E2: the assembler must never ship
+    // a template the validator rejects; one poison tx must never fail every
+    // block template — the h5065 halt repro). Drop any settle the validator
+    // WOULD reject (same collector + same verdict = the one-function contract),
+    // cascading to in-template descendants (a child of a dropped tx would fail
+    // input validation and re-poison the template). LOUD: every drop is logged,
+    // and the settle stays in the mempool under the BUG-034 detector's
+    // pending-settle alert — tolerance never converts the halt into silence.
+    {
+        LOCK(cs_main);
+        const auto bad = PTX_TemplateUnpairableSettles(*pblock, pindexPrev, pcoinsTip.get());
+        if (!bad.empty()) {
+            std::set<uint256> drop;
+            for (const auto& b : bad) {
+                drop.insert(b.first);
+                LogPrintf("BUG-034 P3: excluding unpairable settle %s from template (verdict=%d)\n",
+                          b.first.ToString(), (int)b.second);
+            }
+            // Cascade: any in-template tx spending an output of a dropped tx drops too.
+            bool grew = true;
+            while (grew) {
+                grew = false;
+                for (const CTransactionRef& tx : pblock->vtx) {
+                    if (drop.count(tx->GetHash())) continue;
+                    for (const CTxIn& in : tx->vin) {
+                        if (drop.count(in.prevout.hash)) {
+                            drop.insert(tx->GetHash());
+                            LogPrintf("BUG-034 P3: excluding dependent %s of a dropped settle\n",
+                                      tx->GetHash().ToString());
+                            grew = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            // Erase from the parallel template arrays, keeping bookkeeping consistent.
+            for (size_t i = pblock->vtx.size(); i-- > 1; ) {   // never the coinbase
+                if (!drop.count(pblock->vtx[i]->GetHash())) continue;
+                nFees       -= pblocktemplate->vTxFees[i];
+                nBlockSigOps -= pblocktemplate->vTxSigOps[i];
+                nBlockSize  -= ::GetSerializeSize(*pblock->vtx[i], PROTOCOL_VERSION);
+                --nBlockTx;
+                pblock->vtx.erase(pblock->vtx.begin() + i);
+                pblocktemplate->vTxFees.erase(pblocktemplate->vTxFees.begin() + i);
+                pblocktemplate->vTxSigOps.erase(pblocktemplate->vTxSigOps.begin() + i);
+            }
+        }
     }
 
     if (!fProofOfStake) {

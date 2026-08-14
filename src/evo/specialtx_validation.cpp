@@ -1326,56 +1326,104 @@ std::map<uint256, CPTXRollCommitPayload> PTX_CollectConfirmedSettleParents(
 // BUG-032 2c: the coin-chained matched-pair rule (see header). Every PTXSESS
 // must spend an output of a same-block PTXROLLCOMMIT and reveal the SAME round
 // (round_seed) under the SAME quorum (quorum_hash) the commitment fixed.
+// BUG-034 P3 — the ONE-FUNCTION per-settle verdict (the h385 assembler=validator
+// lesson): the validator's pairing loop and the assembler's template filter both
+// call THIS, so filter-fires ⇔ validator-rejects by construction — no divergence
+// is representable.
+PTXSettleParentVerdict PTX_SettleParentVerdict(const CTransaction& settle,
+        const std::map<uint256, CPTXRollCommitPayload>& siblingCommits,
+        const std::map<uint256, CPTXRollCommitPayload>& confirmedParents)
+{
+    CProbabilisticTxPayload s;
+    if (!GetTxPayload(settle, s)) return PTXSettleParentVerdict::BAD_PAYLOAD;
+    // The coin-chained parent: the settle must SPEND an output of a
+    // PTXROLLCOMMIT — a same-block sibling, or (BUG-034 relax) a commitment
+    // already CONFIRMED at any depth (pre-resolved by the caller). The
+    // matched-pair binding and the reorg-atomicity live in the coin-chain
+    // itself: drop the parent, the settle's input ceases to exist.
+    const CPTXRollCommitPayload* parent = nullptr;
+    for (const CTxIn& in : settle.vin) {
+        auto it = siblingCommits.find(in.prevout.hash);
+        if (it != siblingCommits.end()) { parent = &it->second; break; }
+        auto itc = confirmedParents.find(in.prevout.hash);
+        if (itc != confirmedParents.end()) { parent = &itc->second; break; }
+    }
+    // 2c-i: the coin-chained parent must exist — no commitment, no reveal.
+    if (parent == nullptr) return PTXSettleParentVerdict::NO_PARENT;
+    // 2c-ii Q2 (BUG-033 settle-side): the reveal must name the SAME canonical
+    // quorum the commitment paid for — no quorum-shop at settle.
+    if (s.quorum_hash != parent->quorum_hash) return PTXSettleParentVerdict::QUORUM_MISMATCH;
+    // The reveal must be of the SAME round the commitment fixed.
+    if (s.round_seed != parent->round_seed) return PTXSettleParentVerdict::SEED_MISMATCH;
+    return PTXSettleParentVerdict::OK;
+}
+
+// Shared: index a tx set's PTXROLLCOMMITs by txid (sibling map for the verdict).
+static std::map<uint256, CPTXRollCommitPayload> PTX_IndexSiblingCommits(
+        const std::vector<CTransactionRef>& vtx)
+{
+    std::map<uint256, CPTXRollCommitPayload> commits;
+    for (const CTransactionRef& tx : vtx) {
+        if (!tx->IsPTXRollCommitTx()) continue;
+        CPTXRollCommitPayload p;
+        if (GetTxPayload(*tx, p)) commits[tx->GetHash()] = p;
+    }
+    return commits;
+}
+
 bool CheckPTXRollCommitSettlePairing(const CBlock& block,
                                      const std::map<uint256, CPTXRollCommitPayload>& confirmedParents,
                                      CValidationState& state)
 {
     // Pure: block + pre-resolved confirmed parents; no chain access (BUG-034).
-    // Index the same-block commitments by txid.
-    std::map<uint256, CPTXRollCommitPayload> commits;
-    for (const CTransactionRef& tx : block.vtx) {
-        if (!tx->IsPTXRollCommitTx()) continue;
-        CPTXRollCommitPayload p;
-        if (GetTxPayload(*tx, p)) commits[tx->GetHash()] = p;
-    }
+    const std::map<uint256, CPTXRollCommitPayload> commits = PTX_IndexSiblingCommits(block.vtx);
     for (const CTransactionRef& tx : block.vtx) {
         if (!tx->IsProbabilisticTx()) continue;   // PTXSESS = the settle/reveal
-        CProbabilisticTxPayload s;
-        if (!GetTxPayload(*tx, s))
+        switch (PTX_SettleParentVerdict(*tx, commits, confirmedParents)) {
+        case PTXSettleParentVerdict::OK:
+            break;
+        case PTXSettleParentVerdict::BAD_PAYLOAD:
             return state.DoS(100, error("%s: PTXSESS payload failed to deserialize", __func__),
                              REJECT_INVALID, "ptxsess-bad-payload");
-        // The coin-chained parent: the settle must SPEND an output of a
-        // PTXROLLCOMMIT — a same-block sibling, or (BUG-034 relax) a commitment
-        // already CONFIRMED at any depth (pre-resolved by the caller). The
-        // matched-pair binding and the reorg-atomicity live in the coin-chain
-        // itself: drop the parent, the settle's input ceases to exist.
-        const CPTXRollCommitPayload* parent = nullptr;
-        for (const CTxIn& in : tx->vin) {
-            auto it = commits.find(in.prevout.hash);
-            if (it != commits.end()) { parent = &it->second; break; }
-            auto itc = confirmedParents.find(in.prevout.hash);
-            if (itc != confirmedParents.end()) { parent = &itc->second; break; }
-        }
-        // 2c-i: the coin-chained parent must exist — no commitment, no reveal.
-        if (parent == nullptr)
+        case PTXSettleParentVerdict::NO_PARENT:
             return state.DoS(100, error("%s: PTXSESS %s has no coin-chained PTXROLLCOMMIT "
                                         "parent in this block or the confirmed chain "
                                         "(payment-before-reveal unbound)",
                                         __func__, tx->GetHash().ToString()),
                              REJECT_INVALID, "ptxsess-no-commitment-parent");
-        // 2c-ii Q2 (BUG-033 settle-side): the reveal must name the SAME canonical
-        // quorum the commitment paid for — no quorum-shop at settle.
-        if (s.quorum_hash != parent->quorum_hash)
+        case PTXSettleParentVerdict::QUORUM_MISMATCH:
             return state.DoS(100, error("%s: PTXSESS quorum_hash does not match its commitment "
                                         "(quorum-shop at settle)", __func__),
                              REJECT_INVALID, "ptxsess-quorum-mismatch");
-        // The reveal must be of the SAME round the commitment fixed.
-        if (s.round_seed != parent->round_seed)
+        case PTXSettleParentVerdict::SEED_MISMATCH:
             return state.DoS(100, error("%s: PTXSESS round_seed does not match its commitment",
                                         __func__),
                              REJECT_INVALID, "ptxsess-seed-mismatch");
+        }
     }
     return true;
+}
+
+// BUG-034 P3 — the anti-halt template filter (the E2 assembler-passes-validation
+// invariant, h5065 as its repro): identify template settles the validator WOULD
+// reject, so the assembler can drop them instead of shipping a template that
+// fails TestBlockValidity — one poison tx must never fail every block template.
+// Same collector + same verdict as validation (one-function contract). A dropped
+// settle is NOT silent: the caller logs it and the settle stays in the mempool
+// where the BUG-034 detector's pending-settle alert watches it.
+std::vector<std::pair<uint256, PTXSettleParentVerdict>> PTX_TemplateUnpairableSettles(
+        const CBlock& block, const CBlockIndex* pindexPrev, const CCoinsViewCache* view)
+{
+    AssertLockHeld(cs_main);
+    std::vector<std::pair<uint256, PTXSettleParentVerdict>> bad;
+    const auto confirmed = PTX_CollectConfirmedSettleParents(block, pindexPrev, view);
+    const auto siblings  = PTX_IndexSiblingCommits(block.vtx);
+    for (const CTransactionRef& tx : block.vtx) {
+        if (!tx->IsProbabilisticTx()) continue;
+        const PTXSettleParentVerdict v = PTX_SettleParentVerdict(*tx, siblings, confirmed);
+        if (v != PTXSettleParentVerdict::OK) bad.emplace_back(tx->GetHash(), v);
+    }
+    return bad;
 }
 
 bool CheckPTXDKGBlockRules(const CBlock& block, CValidationState& state)

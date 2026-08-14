@@ -5279,6 +5279,58 @@ BOOST_AUTO_TEST_CASE(Bug034_SiblingTakesPrecedenceOverConfirmed)
     BOOST_CHECK_EQUAL(RunPairing({MakeTransactionRef(c), MakeTransactionRef(s)}, parents), "");
 }
 
+// BUG-034 P3 — the shared verdict is the assembler filter's contract: the
+// pairing suite above routes through PTX_SettleParentVerdict (equivalence by
+// construction); these pin the enum semantics the filter switches on.
+BOOST_AUTO_TEST_CASE(Bug034_P3_VerdictEnumSemantics)
+{
+    const uint256 qh = QHk(0xD1), seed = QHk(0x61), parentTxid = QHk(0xC1);
+    const std::map<uint256, CPTXRollCommitPayload> parents{
+        {parentTxid, ConfirmedCommitPayload(qh, seed)}};
+    // OK via confirmed parent
+    CMutableTransaction s1 = SettleMakeTx(seed, qh, parentTxid);
+    BOOST_CHECK(PTX_SettleParentVerdict(CTransaction(s1), {}, parents) == PTXSettleParentVerdict::OK);
+    // NO_PARENT with empty maps
+    BOOST_CHECK(PTX_SettleParentVerdict(CTransaction(s1), {}, {}) == PTXSettleParentVerdict::NO_PARENT);
+    // QUORUM_MISMATCH / SEED_MISMATCH against the confirmed parent
+    CMutableTransaction s2 = SettleMakeTx(seed, QHk(0xD9), parentTxid);
+    BOOST_CHECK(PTX_SettleParentVerdict(CTransaction(s2), {}, parents) == PTXSettleParentVerdict::QUORUM_MISMATCH);
+    CMutableTransaction s3 = SettleMakeTx(QHk(0x69), qh, parentTxid);
+    BOOST_CHECK(PTX_SettleParentVerdict(CTransaction(s3), {}, parents) == PTXSettleParentVerdict::SEED_MISMATCH);
+    // ★ THE CRITICAL INERT CASE: parent in the SIBLING map (same-template pair,
+    // the p50=0 production path) with NO confirmed entry → OK. A filter that
+    // consulted confirmed state only would drop every healthy same-block pair —
+    // BUG-034 re-created by its own fix.
+    const std::map<uint256, CPTXRollCommitPayload> sib{
+        {parentTxid, ConfirmedCommitPayload(qh, seed)}};
+    BOOST_CHECK(PTX_SettleParentVerdict(CTransaction(s1), sib, {}) == PTXSettleParentVerdict::OK);
+}
+
+// BUG-034 P3 — filter-level inertness: PTX_TemplateUnpairableSettles must flag
+// NOTHING on a healthy same-template pair (sibling map comes from the template's
+// own vtx; view=nullptr proves siblings need no confirmed state), and must flag
+// exactly the orphan-input settle when one is present.
+BOOST_AUTO_TEST_CASE(Bug034_P3_FilterInertOnHealthySiblingPair)
+{
+    LOCK(cs_main);
+    const uint256 qh = QHk(0xD1), seed = QHk(0x61);
+    CMutableTransaction c = CommitMakeTx(qh, seed, 10);
+    const uint256 ctxid = CTransaction(c).GetHash();
+    CMutableTransaction s = SettleMakeTx(seed, qh, ctxid);
+    CBlock healthy;
+    healthy.vtx = {MakeTransactionRef(c), MakeTransactionRef(s)};
+    BOOST_CHECK(PTX_TemplateUnpairableSettles(healthy, nullptr, nullptr).empty());
+
+    // And the identification path: an orphan-input settle IS flagged (NO_PARENT).
+    CMutableTransaction bad = SettleMakeTx(seed, qh, QHk(0xC9));
+    CBlock poisoned;
+    poisoned.vtx = {MakeTransactionRef(c), MakeTransactionRef(s), MakeTransactionRef(bad)};
+    const auto flagged = PTX_TemplateUnpairableSettles(poisoned, nullptr, nullptr);
+    BOOST_REQUIRE_EQUAL(flagged.size(), 1U);
+    BOOST_CHECK(flagged[0].first == CTransaction(bad).GetHash());
+    BOOST_CHECK(flagged[0].second == PTXSettleParentVerdict::NO_PARENT);
+}
+
 // ---------------------------------------------------------------------------
 // MULTI-PAIR IN ONE BLOCK — coin-chain isolation. Rolls anchored to the same tip
 // select the SAME quorum (PTX_LoadDKGSigningCtx keys on the block hash), so N

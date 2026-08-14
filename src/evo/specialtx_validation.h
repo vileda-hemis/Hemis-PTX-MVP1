@@ -134,6 +134,23 @@ bool CheckPTXRollCommitSettlePairing(const CBlock& block,
                                      const std::map<uint256, CPTXRollCommitPayload>& confirmedParents,
                                      CValidationState& state);
 
+// BUG-034 P3 — the ONE-FUNCTION per-settle verdict (h385 assembler=validator
+// lesson): the validator's pairing loop AND the assembler's template filter both
+// call this, so filter-fires ⇔ validator-rejects by construction.
+enum class PTXSettleParentVerdict { OK, BAD_PAYLOAD, NO_PARENT, QUORUM_MISMATCH, SEED_MISMATCH };
+PTXSettleParentVerdict PTX_SettleParentVerdict(const CTransaction& settle,
+        const std::map<uint256, CPTXRollCommitPayload>& siblingCommits,
+        const std::map<uint256, CPTXRollCommitPayload>& confirmedParents);
+
+// BUG-034 P3 — anti-halt template filter (E2 assembler-passes-validation
+// invariant; h5065 repro): the settles in a candidate template the validator
+// WOULD reject, via the same collector + verdict as validation. The assembler
+// drops them (loudly) instead of shipping a template that fails
+// TestBlockValidity — one poison tx must never fail every block template.
+std::vector<std::pair<uint256, PTXSettleParentVerdict>> PTX_TemplateUnpairableSettles(
+        const CBlock& block, const CBlockIndex* pindexPrev,
+        const CCoinsViewCache* view) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
 // ODC-022 Step 8: PTXPAYOUT contextual checks (P2, P5, P10) + LotteryState update.
 // gmList and poseTracker are pre-fetched by the caller so unit tests can inject
 // hand-built fixtures without needing a live deterministicGMManager or chain.
