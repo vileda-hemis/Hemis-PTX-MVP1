@@ -324,7 +324,16 @@ std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
     // retry ONLY those members, with a short backoff, bounded by a budget (~the
     // 2000ms real-network target). Terminal refusals (no share, sign failure) and
     // transport errors drop immediately — retrying cannot help them.
-    static const int FANOUT_MAX_ATTEMPTS = 12;   // ~2s at 150ms/pass
+    // RESIDUAL-DECOMPOSITION EXPERIMENT (2026-08-14): the threshold-miss residual
+    // decomposed into two not-seen populations — a 1-2-member near-miss tail
+    // (propagation margin) and a 10-11-member TOTAL BLACKOUT (the commitment's
+    // own INV trickle leaving the caller later than the whole 1.8s budget, so no
+    // member has it). Both are timing, not inability (zero no-share / transport
+    // in the data). 60 × 150ms ≈ 9s covers source-trickle (~2-5s) + mesh
+    // propagation; stop-at-threshold means success still returns at the 6th
+    // partial, so the raised ceiling costs nothing on the happy path — it only
+    // spends time that previously became a forfeited stake.
+    static const int FANOUT_MAX_ATTEMPTS = 60;   // ~9s at 150ms/pass (was 12/~2s)
     static const int FANOUT_RETRY_MS     = 150;
     std::set<std::string> pending(member_ids.begin(), member_ids.end());
 
