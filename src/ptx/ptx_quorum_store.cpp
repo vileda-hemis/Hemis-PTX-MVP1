@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <numeric>
 #include <set>
 
 std::unique_ptr<CPTXQuorumStore> ptxQuorumStore;
@@ -630,22 +631,122 @@ size_t CPTXQuorumStore::MaybeReformAtBoundary(
     }
     if (candidates.empty()) return 0;
 
-    // The most recent reform fleet-wide (the one-per-window input): walk the
-    // full record snapshot for the max reformed_height stamp.
-    int last_reform_height = -1;
-    for (const uint256& qh : W4f_SnapshotHashes(evoDb, pindex->nHeight)) {
-        CPTXQuorumRecord r;
-        if (!GetQuorumRecord(qh, r)) continue;
-        if (r.reformed_height > last_reform_height) {
-            last_reform_height = r.reformed_height;
+    // ★ BUG-036 — pacing. The old code walked the record snapshot for the max
+    // reformed_height stamp; one clobbered stamp (the VerifyDB recordCache
+    // poison) phase-shifted the node's whole schedule and partitioned the
+    // fleet at h5487. Post-activation the pacing is STATELESS: fire at heights
+    // divisible by stride = ceil(rate/boundary)*boundary — the old rule's
+    // EMERGENT cadence (ptxbea 30/40 → 60, matching the recorded history), as
+    // a pure height predicate. Pre-activation the legacy stored-max pacing is
+    // preserved so old history replays byte-identically on reindex/IBD (the
+    // h385 lesson: a new rule must never re-derive old history differently).
+    const int rateW = params.nReformRateWindow;
+    const int stride = ((rateW + params.nBoundaryInterval - 1)
+                        / params.nBoundaryInterval) * params.nBoundaryInterval;
+    if (pindex->nHeight < params.nReformStatelessHeight) {
+        // LEGACY (pre-activation replay only).
+        int last_reform_height = -1;
+        for (const uint256& qh : W4f_SnapshotHashes(evoDb, pindex->nHeight)) {
+            CPTXQuorumRecord r;
+            if (!GetQuorumRecord(qh, r)) continue;
+            if (r.reformed_height > last_reform_height)
+                last_reform_height = r.reformed_height;
+        }
+        if (last_reform_height >= 0 &&
+            pindex->nHeight - last_reform_height < rateW) return 0;
+        uint256 selLegacy;
+        if (!PTX_Formation_SelectReformCandidate(candidates, pindex->nHeight,
+                                                 rateW, selLegacy)) return 0;
+        return MarkReformed(selLegacy, pindex->nHeight) ? 1 : 0;
+    }
+    if (pindex->nHeight % stride != 0) return 0;    // stateless: not a reform height
+
+    // ★ BUG-036 SELF-HEAL runs FIRST (order matters: a clobbered-back-to-ACTIVE
+    // record must be re-stamped at ITS boundary before this boundary's
+    // selection can wrongly re-select it at the wrong height): re-derive the
+    // PREVIOUS stateless reform height's selection and repair a lost stamp, so
+    // the canonicity verdict re-converges within one boundary instead of
+    // diverging forever. Heal only INSIDE the stateless regime (prevB >=
+    // activation) — pre-activation boundaries may legitimately not have fired.
+    const int prevB = pindex->nHeight - stride;
+    // pprev walk, NOT GetAncestor: this codebase's GetAncestor follows pskip
+    // unconditionally (chain.cpp:102, no null guard), so it is only safe on
+    // BuildSkip-built indices. One stride is a bounded handful of steps, and
+    // walking pindex's own pprev chain keeps the anchor fork-consistent.
+    const CBlockIndex* pindexPrevB = nullptr;
+    if (prevB > 0 && prevB >= params.nReformStatelessHeight) {
+        const CBlockIndex* walk = pindex;
+        while (walk != nullptr && walk->nHeight > prevB) walk = walk->pprev;
+        if (walk != nullptr && walk->nHeight == prevB) pindexPrevB = walk;
+    }
+    if (pindexPrevB != nullptr) {
+        // Candidates as-of prevB, with then-state reconstructed: a record
+        // stamped reformed AT prevB was ACTIVE at selection time (include it,
+        // state-adjusted, so the healthy case re-derives its own answer and
+        // no-ops); a clobbered record reads ACTIVE and is included as-is.
+        std::map<uint256, int> prev_attr;
+        if (params.nRetireWindow > 0) {
+            const CBlockIndex* p = pindexPrevB;
+            for (int i = 0; i < params.nRetireWindow && p != nullptr; ++i, p = p->pprev) {
+                CBlock b2;
+                if (!read_block(p, b2)) break;
+                for (const auto& tx : b2.vtx) {
+                    if (!tx->IsProbabilisticTx()) continue;
+                    CProbabilisticTxPayload pl;
+                    if (!GetTxPayload(*tx, pl)) continue;
+                    auto it = prev_attr.find(pl.quorum_hash);
+                    if (it == prev_attr.end() || it->second < p->nHeight)
+                        prev_attr[pl.quorum_hash] = p->nHeight;
+                }
+            }
+        }
+        std::vector<std::pair<uint256, int>> prev_cands;
+        for (const uint256& qh : W4f_SnapshotHashes(evoDb, prevB)) {
+            CPTXQuorumRecord rec;
+            if (!GetQuorumRecord(qh, rec)) continue;
+            CPTXQuorumRecord asThen = rec;
+            if (rec.state == static_cast<uint8_t>(PTXQuorumState::REFORMED) &&
+                rec.reformed_height == prevB) {
+                asThen.state = static_cast<uint8_t>(PTXQuorumState::ACTIVE);
+                asThen.reformed_height = -1;
+            }
+            if (!PTX_QuorumRecordActiveAt(asThen, prevB)) continue;
+            if (!PTX_Formation_TerminalEligible(asThen, pindexPrevB, params,
+                                                read_block, impossible_at)) continue;
+            const auto it = prev_attr.find(rec.quorum_hash);
+            prev_cands.emplace_back(rec.quorum_hash,
+                                    it != prev_attr.end() ? it->second
+                                                          : rec.mined_height);
+        }
+        uint256 expected;
+        if (PTX_Formation_SelectReformCandidate(prev_cands, prevB,
+                                                params.nReformRateWindow, expected)) {
+            CPTXQuorumRecord cur;
+            if (GetQuorumRecord(expected, cur) &&
+                cur.state == static_cast<uint8_t>(PTXQuorumState::ACTIVE)) {
+                if (MarkReformed(expected, prevB)) {
+                    LogPrintf("BUG-036 SELF-HEAL: reform stamp for %s re-derived and "
+                              "repaired (REFORMED@%d was lost/clobbered)\n",
+                              expected.ToString(), prevB);
+                }
+            }
         }
     }
 
+    // THIS boundary's selection — computed AFTER the heal so a repaired record
+    // is correctly excluded from today's candidate set by the as-of predicate.
+    // (candidates above were collected pre-heal; recollect the cheap filter.)
+    std::vector<std::pair<uint256, int>> cands_now;
+    for (const auto& c : candidates) {
+        CPTXQuorumRecord rec;
+        if (!GetQuorumRecord(c.first, rec)) continue;
+        if (!PTX_QuorumRecordActiveAt(rec, pindex->nHeight)) continue;  // healed → out
+        cands_now.push_back(c);
+    }
     uint256 selected;
-    if (!PTX_Formation_SelectReformCandidate(candidates, pindex->nHeight,
-                                             params.nReformRateWindow,
-                                             last_reform_height, selected)) {
-        return 0;                                   // rate-limited out
+    if (!PTX_Formation_SelectReformCandidate(cands_now, pindex->nHeight,
+                                             params.nReformRateWindow, selected)) {
+        return 0;                                   // not a reform boundary
     }
     return MarkReformed(selected, pindex->nHeight) ? 1 : 0;
 }

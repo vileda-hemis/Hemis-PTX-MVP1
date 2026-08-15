@@ -983,16 +983,17 @@ bool PTX_Formation_SelectReformCandidate(
         const std::vector<std::pair<uint256, int>>& candidates,
         int tip_height,
         int rate_window,
-        int last_reform_height,
         uint256& selected_out)
 {
     // Gate posture: a disabled limiter selects NOTHING (the transition stays
     // dormant even with eligibility enabled).
+    // ★ BUG-036: this is now a PURE PICKER — all PACING lives at the caller
+    // (MaybeReformAtBoundary): stateless stride post-activation, legacy
+    // stored-max pre-activation. The old last_reform_height input here read
+    // the store's max stamp, so one clobbered stamp (the VerifyDB recordCache
+    // poison) phase-shifted the schedule and partitioned the fleet at h5487.
     if (rate_window <= 0 || candidates.empty()) return false;
-    // One per window: a reform inside the window rate-limits everyone out.
-    if (last_reform_height >= 0 && tip_height - last_reform_height < rate_window) {
-        return false;
-    }
+    (void)tip_height;   // pacing is the caller's; kept for signature stability
     // Least-recently-active first (smallest last_activity_height), ties to
     // the lowest hash — deterministic on every node (the P-b6b shape).
     const std::pair<uint256, int>* best = nullptr;

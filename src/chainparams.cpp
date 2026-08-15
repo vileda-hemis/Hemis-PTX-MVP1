@@ -1014,7 +1014,7 @@ public:
         // CheckParams refuses the gate-off variant at startup).  ptxbea is
         // the FLEET's chain (-ptxbea, GMAUTH subnet carve-out); main/test/
         // ptxtest/regtest stay at their L=1 shapes untouched.
-        consensus.ptxFormation = {"ptxbea", 30, 1440, 80, 8, 200, 1, 40};  // W2.5b fleet shape (KDD-079 decoupled; guards validate at startup)
+        consensus.ptxFormation = {"ptxbea", 30, 1440, 80, 8, 200, 1, 40, 900};  // W2.5b fleet shape + BUG-036 stateless-reform activation @900 (fresh-genesis 2026-08-15 chain: legacy pacing replays <900 byte-identically; fleet upgrades hours before h900, first legacy reform can't fire before ~h500)
 
         nFulfilledRequestExpireTime = 60 * 60;
 

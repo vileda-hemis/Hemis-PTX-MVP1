@@ -249,15 +249,17 @@ bool PTX_Formation_TerminalEligible(
 // tie-break shape, deterministic on every node).  candidates carry
 // (quorum_hash, last_activity_height) — the caller (W4-f) derives activity
 // from the same authenticated attributions the idle scan reads.
-// last_reform_height = the most recent reformed_height across all records
-// (-1 if none); a reform within the window rate-limits everyone out.
+// ★ BUG-036: the rate limit is STATELESS — fires only at heights divisible by
+// rate_window (a pure height predicate). The old last_reform_height input read
+// the store's max stamp, so one clobbered stamp phase-shifted the node's whole
+// schedule (the h5487 partition). Derive-don't-store: a schedule that reads no
+// stored state cannot be shifted by losing any.
 // rate_window <= 0 selects NOTHING (the gate posture).  PURE — W4-f wires
 // the real derivation; the selection itself is this one function.
 bool PTX_Formation_SelectReformCandidate(
         const std::vector<std::pair<uint256, int>>& candidates,
         int tip_height,
         int rate_window,
-        int last_reform_height,
         uint256& selected_out);
 
 // ---------------------------------------------------------------------------

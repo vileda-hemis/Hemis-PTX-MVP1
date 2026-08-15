@@ -4199,26 +4199,27 @@ BOOST_AUTO_TEST_CASE(W4e_LimiterSelectsOneLRA)
 
     // LRA wins: B (last active 50) over A (last active 100).
     std::vector<std::pair<uint256, int>> cands = {{hiHash, 100}, {loHash, 50}};
-    BOOST_REQUIRE(PTX_Formation_SelectReformCandidate(cands, 1000, 200, -1, sel));
+    BOOST_REQUIRE(PTX_Formation_SelectReformCandidate(cands, 1000, 200, sel));
     BOOST_CHECK(sel == loHash);
     // ...independent of ordering.
     std::vector<std::pair<uint256, int>> rev = {{loHash, 50}, {hiHash, 100}};
-    BOOST_REQUIRE(PTX_Formation_SelectReformCandidate(rev, 1000, 200, -1, sel));
+    BOOST_REQUIRE(PTX_Formation_SelectReformCandidate(rev, 1000, 200, sel));
     BOOST_CHECK(sel == loHash);
 
     // Tie on activity: lowest hash wins (the P-b6b shape).
     std::vector<std::pair<uint256, int>> tie = {{hiHash, 70}, {loHash, 70}};
-    BOOST_REQUIRE(PTX_Formation_SelectReformCandidate(tie, 1000, 200, -1, sel));
+    BOOST_REQUIRE(PTX_Formation_SelectReformCandidate(tie, 1000, 200, sel));
     BOOST_CHECK(sel == loHash);
 
-    // ONE per window: a reform inside the window rate-limits everyone out...
-    BOOST_CHECK(!PTX_Formation_SelectReformCandidate(cands, 1000, 200, 900, sel));
-    // ...and exactly at the window edge it re-allows.
-    BOOST_CHECK(PTX_Formation_SelectReformCandidate(cands, 1000, 200, 800, sel));
+    // ★ BUG-036: SelectReformCandidate is now a PURE PICKER — pacing lives at
+    // the caller (stateless stride post-activation / legacy pre-activation in
+    // MaybeReformAtBoundary). The picker itself selects whenever enabled:
+    BOOST_CHECK(PTX_Formation_SelectReformCandidate(cands, 1030, 200, sel));   // any height: picker picks
+    BOOST_CHECK(PTX_Formation_SelectReformCandidate(cands, 1000, 200, sel));
 
     // Gate posture: disabled limiter or no candidates selects nothing.
-    BOOST_CHECK(!PTX_Formation_SelectReformCandidate(cands, 1000, 0, -1, sel));
-    BOOST_CHECK(!PTX_Formation_SelectReformCandidate({}, 1000, 200, -1, sel));
+    BOOST_CHECK(!PTX_Formation_SelectReformCandidate(cands, 1000, 0, sel));
+    BOOST_CHECK(!PTX_Formation_SelectReformCandidate({}, 1000, 200, sel));
 }
 
 // ===========================================================================
@@ -4237,6 +4238,10 @@ static Consensus::PTXFormationParams W4fParams()
     p.nRetireWindow      = 50;
     p.nReformGrace       = 0;
     p.nReformRateWindow  = 40;
+    // ★ BUG-036: stateless from 100 — the drills fire at 160 (stateless,
+    // stride=ceil(40/80)*80=80) while the heal stays DISARMED for prevB=80
+    // (< activation), so sparse drill invocation isn't retro-judged.
+    p.nReformStatelessHeight = 100;
     return p;
 }
 
@@ -4282,6 +4287,113 @@ BOOST_AUTO_TEST_CASE(W4f_ProducerFiresAtBoundary)
 // LRA on real records: among idle-eligibles (no in-window activity by
 // definition) the LRA collapses to record antiquity — the OLDER mined record
 // reforms first.  RED: limiter-bypass picks iteration order instead.
+
+// ★ BUG-036 RED — derive-don't-store, both levels. MECHANISM: a reform stamp
+// clobbered by the exact VerifyDB shape (RestoreReformedAtHeight, the walk's
+// entry point) SELF-HEALS at the next stateless boundary — re-stamped at its
+// TRUE height, not re-selected at the wrong one. PROPERTY (what BUG-036
+// violated): the record's canonicity verdicts re-converge to the uncorrupted
+// expectation at every height. Anti-vacuity: the wrong state is asserted
+// live before the heal (the node genuinely held the wrong value).
+BOOST_AUTO_TEST_CASE(Bug036_ClobberedStampSelfHeals)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_BLS_WipeShares(evoDb.get());
+    CPTXQuorumStore store(*evoDb);
+    const Consensus::PTXFormationParams params = W4fParams();  // stride 80, stateless>=100
+    const uint256 qh = QHk(0x02);                  // lowest hash + oldest mined: LRA-dominant
+    Pb6bSeedActive(qh, /*formation*/ 1, /*mined*/ 2);
+    std::vector<CBlockIndex> chain = W4dChain(240);
+    auto emptyReader = [](const CBlockIndex*, CBlock& out) { out = CBlock(); return true; };
+    auto neverImpossible = [](const CPTXQuorumRecord&, const CBlockIndex*) { return false; };
+
+    // Fire at 160 (stateless regime).
+    BOOST_CHECK_EQUAL(store.MaybeReformAtBoundary(&chain[160], params, emptyReader, neverImpossible), 1u);
+    CPTXQuorumRecord rec;
+    BOOST_REQUIRE(store.GetQuorumRecord(qh, rec));
+    BOOST_CHECK_EQUAL(rec.reformed_height, 160);
+
+    // THE CLOBBER — the VerifyDB walk's own entry point.
+    BOOST_CHECK_EQUAL(store.RestoreReformedAtHeight(160), 1u);
+    BOOST_REQUIRE(store.GetQuorumRecord(qh, rec));
+    BOOST_CHECK_EQUAL((int)rec.state, (int)PTXQuorumState::ACTIVE);   // genuinely wrong now
+    BOOST_CHECK(PTX_QuorumRecordActiveAt(rec, 200));                  // wrong verdict, live
+
+    // NEXT boundary: heal runs BEFORE selection → re-stamped at the TRUE 160
+    // (the stateful design would have re-selected it at 240 = a divergent stamp).
+    store.MaybeReformAtBoundary(&chain[240], params, emptyReader, neverImpossible);
+    BOOST_REQUIRE(store.GetQuorumRecord(qh, rec));
+    BOOST_CHECK_EQUAL((int)rec.state, (int)PTXQuorumState::REFORMED);
+    BOOST_CHECK_EQUAL(rec.reformed_height, 160);
+
+    // ★ THE PROPERTY: canonicity verdicts match the uncorrupted expectation.
+    BOOST_CHECK( PTX_QuorumRecordActiveAt(rec, 159));
+    BOOST_CHECK(!PTX_QuorumRecordActiveAt(rec, 160));
+    BOOST_CHECK(!PTX_QuorumRecordActiveAt(rec, 200));
+}
+
+// ★ BUG-036 PROPERTY, peer form — the level that matters: a node whose stamp
+// was clobbered must re-converge with an UNCORRUPTED PEER's canonicity
+// verdicts within one boundary. Two independent stores over independent DBs
+// model the two nodes; equality after the heal is simultaneously the
+// DETERMINISM proof (the heal recomputed from the same chain inputs and
+// arrived at the peer's answer, not merely at *an* answer).
+BOOST_AUTO_TEST_CASE(Bug036_CorruptedNodeConvergesWithCleanPeer)
+{
+    const Consensus::PTXFormationParams params = W4fParams();  // stride 80, stateless>=100
+    const uint256 qh = QHk(0x02);
+    std::vector<CBlockIndex> chain = W4dChain(240);
+    auto emptyReader = [](const CBlockIndex*, CBlock& out) { out = CBlock(); return true; };
+    auto neverImpossible = [](const CPTXQuorumRecord&, const CBlockIndex*) { return false; };
+
+    // Two nodes: same chain data, independent state.
+    CEvoDB dbA(1 << 20, true, true), dbB(1 << 20, true, true);
+    CPTXQuorumStore nodeA(dbA), nodeB(dbB);
+    auto seed = [&qh](CEvoDB& db) {
+        CPTXQuorumRecord r;
+        r.quorum_hash      = qh;
+        r.formation_height = 1;
+        r.mined_height     = 2;
+        r.state            = static_cast<uint8_t>(PTXQuorumState::ACTIVE);
+        db.Write(std::make_pair(PTX_QuorumRecordDBPrefix(), qh), r);
+        db.Write(std::make_pair(std::string("pq_h"),
+                 htobe32(std::numeric_limits<uint32_t>::max() - 2)), qh);
+    };
+    seed(dbA);
+    seed(dbB);
+
+    // Both fire at the stateless boundary 160.
+    BOOST_CHECK_EQUAL(nodeA.MaybeReformAtBoundary(&chain[160], params, emptyReader, neverImpossible), 1u);
+    BOOST_CHECK_EQUAL(nodeB.MaybeReformAtBoundary(&chain[160], params, emptyReader, neverImpossible), 1u);
+
+    // Clobber node A only (the VerifyDB walk's entry point).
+    BOOST_CHECK_EQUAL(nodeA.RestoreReformedAtHeight(160), 1u);
+
+    // ANTI-VACUITY: the peers genuinely disagree before the heal — A holds
+    // the wrong value live, B holds the truth.
+    CPTXQuorumRecord ra, rb;
+    BOOST_REQUIRE(nodeA.GetQuorumRecord(qh, ra));
+    BOOST_REQUIRE(nodeB.GetQuorumRecord(qh, rb));
+    BOOST_CHECK( PTX_QuorumRecordActiveAt(ra, 200));
+    BOOST_CHECK(!PTX_QuorumRecordActiveAt(rb, 200));
+
+    // Both connect through the next boundary.
+    nodeA.MaybeReformAtBoundary(&chain[240], params, emptyReader, neverImpossible);
+    nodeB.MaybeReformAtBoundary(&chain[240], params, emptyReader, neverImpossible);
+
+    // THE PROPERTY: full record equality and identical canonicity verdicts at
+    // EVERY height — the corrupted node reached the clean peer's answer.
+    BOOST_REQUIRE(nodeA.GetQuorumRecord(qh, ra));
+    BOOST_REQUIRE(nodeB.GetQuorumRecord(qh, rb));
+    BOOST_CHECK_EQUAL((int)ra.state, (int)rb.state);
+    BOOST_CHECK_EQUAL(ra.reformed_height, rb.reformed_height);
+    for (int h = 0; h <= 240; ++h) {
+        BOOST_CHECK_MESSAGE(
+            PTX_QuorumRecordActiveAt(ra, h) == PTX_QuorumRecordActiveAt(rb, h),
+            "canonicity verdicts diverge at height " << h);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(W4f_LRAPicksOldestRecord)
 {
     BOOST_REQUIRE(evoDb);

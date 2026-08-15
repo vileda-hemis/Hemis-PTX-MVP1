@@ -242,6 +242,14 @@ struct PTXFormationParams {
     // blocks (least-recently-active first).  0 = limiter selects NOTHING
     // (the transition stays dormant even if eligibility is enabled).
     int nReformRateWindow{0};
+    // ★ BUG-036 activation: from this height the reform pacing is STATELESS
+    // (fires at heights divisible by stride = ceil(rate/boundary)*boundary — a
+    // pure height predicate; derive-don't-store) and the one-boundary stamp
+    // SELF-HEAL is armed. Below it, the legacy stored-max pacing applies so
+    // pre-activation history replays byte-identically on reindex/IBD (the
+    // h385 lesson: never let a new rule re-derive old history differently).
+    // 0 = stateless from genesis (fresh chains).
+    int nReformStatelessHeight{0};
 };
 
 /**

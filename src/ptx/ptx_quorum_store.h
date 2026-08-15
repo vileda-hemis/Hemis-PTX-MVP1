@@ -242,6 +242,19 @@ private:
 public:
     explicit CPTXQuorumStore(CEvoDB& _evoDb) : evoDb(_evoDb) {}
 
+    // ★ BUG-036: drop every cached record so reads fall through to disk.
+    // The cache is read-through, so clearing is ALWAYS safe — and it is the
+    // NON-ENUMERATED cure for the VerifyDB clobber class: the level-3 walk's
+    // undo writes land in the recordCache (outside both sandboxes) while their
+    // evoDb writes roll back; a cleared cache re-reads disk truth for EVERY
+    // record state, present and future, with no per-transition list to
+    // maintain (the PTXStateSentry lesson: enumeration was the bug).
+    void FlushRecordCache()
+    {
+        LOCK(cs);
+        recordCache.clear();
+    }
+
     // Block-connect: persist the accepted PTXDKG (<= 1 per block by
     // CheckPTXDKGBlockRules) as an ACTIVE record.  Checks run under fJustCheck
     // too; the Write is !fJustCheck only (DGM/LLMQ contract).  Enforces the

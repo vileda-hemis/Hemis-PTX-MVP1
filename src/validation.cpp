@@ -53,6 +53,7 @@
 #include "ptx/ptx_bls.h"            // BUG-029: share-store snapshot/restore
 #include "ptx/ptx_lottery_state.h"
 #include "ptx/ptx_pose.h"           // BUG-029: pose snapshot/restore
+#include "ptx/ptx_quorum_store.h"   // BUG-036: recordCache flush in the VerifyDB sentry
 
 #include <future>
 
@@ -3794,6 +3795,14 @@ bool CVerifyDB::VerifyDB(CCoinsView* coinsview, int nCheckLevel, int nCheckDepth
             GetLotteryState() = savedLottery;
             g_ptx_pose_tracker.RestoreRecords(std::move(savedPose));
             PTX_BLS_RestoreShares(std::move(savedShares), evoDb.get());
+            // ★ BUG-036: the quorum-record CACHE is the non-enumerated member
+            // this sentry missed — the walk's undo writes (RestoreReformedOnUndo
+            // et al.) poison recordCache while their evoDb writes roll back with
+            // the transaction above; the poisoned cache then shadows correct
+            // disk (cache-first reads) and phase-shifted the reform schedule
+            // into the h5487 partition. Clearing the read-through cache restores
+            // disk truth for EVERY record state — no per-transition enumeration.
+            if (ptxQuorumStore) ptxQuorumStore->FlushRecordCache();
         }
     } ptxVerifySentry;
 
