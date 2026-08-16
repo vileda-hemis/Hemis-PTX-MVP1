@@ -100,7 +100,15 @@ inline bool PTX_BLS_SetSkShare(const uint256& quorum_hash, int formation_height,
 bool PTX_BLS_GetCurrentShare(const uint256& quorum_hash, uint8_t out[32]);
 
 // ---------------------------------------------------------------------------
-// KDD-070 P2 — persistence (evoDb RAW layer), startup reconciliation, wipe.
+// KDD-070 P2 — persistence, startup reconciliation, wipe.
+// ODC-070 (2026-08-16): the backend is <datadir>/ptx_shares.dat, NOT evoDb —
+// reindex wipes evoDb and the BUG-037 fleet recovery destroyed every node's
+// shares that way.  Shares are operator secrets (not chain-derivable); the
+// file is born 0600 under the daemon's umask(077), and operators must treat
+// it like wallet.dat (it IS a secret — back it up accordingly).  The CEvoDB
+// parameters below are retained as the one-time migration source (LoadShares
+// imports and erases legacy evoDb entries) — dropping them is follow-up
+// cleanup; see the block comment in ptx_bls.cpp for the full rationale.
 // ---------------------------------------------------------------------------
 
 // Flat 41-byte wire form of a HeldShare: bytes[32] + formation_height[i32,LE] +

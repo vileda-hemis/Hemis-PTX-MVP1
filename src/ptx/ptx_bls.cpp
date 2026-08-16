@@ -10,6 +10,9 @@
 #include "evo/evodb.h"
 #include "logging.h"
 #include "random.h"
+#include "clientversion.h"
+#include "streams.h"
+#include "util/system.h"   // ODC-070: GetDataDir/RenameOver for the file share store
 
 #include <algorithm>
 #include <cstring>
@@ -18,6 +21,110 @@
 // KDD-070 P2: RAW-DB key prefix for persisted GM sk-shares (Dash
 // DB_QUORUM_SK_SHARE precedent). Keyed (prefix, quorum_hash) → 41-byte blob.
 static const std::string DB_PTX_SKSHARE = "ptxSk";
+
+// ─── ODC-070: file-backed share store ──────────────────────────────────────
+// Shares moved OUT of evoDb (2026-08-16): reindex wipes evoDb
+// (InitTierTwoPreChainLoad), and the BUG-037 fleet-wide reindex recovery
+// destroyed every node's shares — sk_shares are operator SECRETS from an
+// interactive ceremony, NOT derivable from chain, so derive-don't-store does
+// not apply; they belong where reindex cannot reach: <datadir>/ptx_shares.dat.
+// Permissions: created under the daemon's umask(077) (init.cpp) — born 0600,
+// the same discipline wallet.dat gets (and the same -sysperms caveat).
+// OPERATOR NOTE (docs): this file IS a secret — back it up like wallet.dat,
+// not like state.  A stolen share is worth what a compromised node is worth:
+// partial signatures are useless below threshold, so durability changes here,
+// the security model does not.  Encryption-at-rest deliberately NOT applied:
+// a passphrase-gated share cannot sign after an unattended restart — hostile
+// to an unattended GM (the same trade wallet.dat already makes).
+// The CEvoDB parameters on this API are retained as the ONE-TIME MIGRATION
+// source (LoadShares imports and erases legacy evoDb-resident entries) and
+// the wipe's legacy-erase belt; dropping them is a follow-up cleanup.
+// Role transitions were never chainstate-transactional here — the RAW layer
+// always bypassed the evoDb block transaction — so the file loses nothing on
+// that axis; a crash between a role flip and its save costs at worst one
+// liveness-bounded mis-role until reconcile/rotation.  Shares are signing
+// material, not consensus inputs: the standing rule (no consensus verdict
+// reads non-hash-keyed state) is not implicated by this store.
+
+static fs::path PTX_SharesFilePath() { return GetDataDir() / "ptx_shares.dat"; }
+
+// Whole-file atomic rewrite from the in-memory map (tiny: a handful of
+// 41-byte entries).  Caller must hold cs_ptx_my_bls_sk (RecursiveMutex —
+// re-lock safe).  False on any write failure; callers route that to the
+// memory-only degraded set.
+static bool PTX_BLS_SaveSharesFileLocked()
+{
+    LOCK(cs_ptx_my_bls_sk);
+    const fs::path tmp = GetDataDir() / "ptx_shares.dat.tmp";
+    const fs::path dat = PTX_SharesFilePath();
+    {
+        CAutoFile file(fopen(tmp.string().c_str(), "wb"), SER_DISK, CLIENT_VERSION);
+        if (file.IsNull()) {
+            LogPrintf("PTX P2: ERROR: cannot open %s for writing\n", tmp.string());
+            return false;
+        }
+        try {
+            file << (uint8_t)1;                            // format version
+            file << (uint64_t)g_ptx_my_shares.size();
+            for (const auto& kv : g_ptx_my_shares) {
+                file << kv.first;
+                file << PTX_BLS_SerializeHeldShare(kv.second);
+            }
+        } catch (const std::exception& e) {
+            LogPrintf("PTX P2: ERROR: writing %s: %s\n", tmp.string(), e.what());
+            return false;
+        }
+    }
+    if (!RenameOver(tmp, dat)) {
+        LogPrintf("PTX P2: ERROR: rename %s -> %s failed\n", tmp.string(), dat.string());
+        return false;
+    }
+    return true;
+}
+
+// Load ptx_shares.dat into g_ptx_my_shares.  Absent file = 0 entries, silent
+// (fresh node, or pre-ODC-070 datadir about to migrate).  Returns the corrupt
+// count; corrupt entries are LOGGED and skipped — and, deviation from the old
+// evoDb store stated honestly: a skipped entry is DROPPED from disk at the
+// next whole-file rewrite (the old per-key store kept unreadable blobs until
+// wipe).  The load-time ERROR naming the quorum_hash is the durable evidence.
+static int PTX_BLS_LoadSharesFromFileLocked()
+{
+    LOCK(cs_ptx_my_bls_sk);
+    const fs::path dat = PTX_SharesFilePath();
+    CAutoFile file(fopen(dat.string().c_str(), "rb"), SER_DISK, CLIENT_VERSION);
+    if (file.IsNull()) return 0;
+    int corrupt = 0;
+    try {
+        uint8_t ver = 0;
+        uint64_t count = 0;
+        file >> ver >> count;
+        if (ver != 1) {
+            LogPrintf("PTX P2: ERROR: %s has unknown version %d — not loaded\n",
+                      dat.string(), (int)ver);
+            return 1;
+        }
+        for (uint64_t i = 0; i < count; ++i) {
+            uint256 qh;
+            std::vector<uint8_t> blob;
+            file >> qh >> blob;
+            HeldShare hs;
+            if (PTX_BLS_DeserializeHeldShare(blob, hs)) {
+                g_ptx_my_shares[qh] = hs;
+            } else {
+                LogPrintf("PTX P2: ERROR: LoadShares: CORRUPT share entry for quorum %s "
+                          "in %s — NOT loaded, will be dropped at next write\n",
+                          qh.ToString(), dat.string());
+                ++corrupt;
+            }
+        }
+    } catch (const std::exception& e) {
+        LogPrintf("PTX P2: ERROR: LoadShares: %s unreadable past entry boundary: %s\n",
+                  dat.string(), e.what());
+        ++corrupt;
+    }
+    return corrupt;
+}
 
 const char*    PTX_BLS_DST = "BLS_SIG_HEMIS_PTX_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
 
@@ -218,10 +325,10 @@ bool PTX_BLS_RetireShare(const uint256& quorum_hash, CEvoDB* evoDb)
     LOCK(cs_ptx_my_bls_sk);
     auto it = g_ptx_my_shares.find(quorum_hash);
     if (it == g_ptx_my_shares.end()) return false;
-    if (evoDb != nullptr)                    // erase from DISK too (P2 defect (a))
-        evoDb->GetRawDB().Erase(std::make_pair(DB_PTX_SKSHARE, quorum_hash));
+    (void)evoDb;   // ODC-070: file store; param vestigial (migration-era API)
     g_ptx_memory_only_shares.erase(quorum_hash);
     g_ptx_my_shares.erase(it);
+    PTX_BLS_SaveSharesFileLocked();          // erase reaches DISK too (P2 defect (a))
     return true;
 }
 
@@ -235,8 +342,6 @@ size_t PTX_BLS_ExpirePending(int tip_height, CEvoDB* evoDb)
             LogPrintf("PTX P3: expiring stale PENDING share for quorum %s "
                       "(age %d > TTL %d blocks)\n", it->first.ToString(),
                       tip_height - it->second.formation_height, PTX_PENDING_TTL_BLOCKS);
-            if (evoDb != nullptr)                    // erase from DISK too (P2 defect (a))
-                evoDb->GetRawDB().Erase(std::make_pair(DB_PTX_SKSHARE, it->first));
             g_ptx_memory_only_shares.erase(it->first);
             it = g_ptx_my_shares.erase(it);
             ++expired;
@@ -244,6 +349,8 @@ size_t PTX_BLS_ExpirePending(int tip_height, CEvoDB* evoDb)
             ++it;
         }
     }
+    (void)evoDb;   // ODC-070: file store; param vestigial
+    if (expired > 0) PTX_BLS_SaveSharesFileLocked();   // disk erase (P2 defect (a))
     return expired;
 }
 
@@ -266,8 +373,6 @@ size_t PTX_BLS_DiscardSuperseded(int tip_height, CEvoDB* evoDb)
                       "(buried %d >= %d blocks; beyond reorg reach)\n",
                       it->first.ToString(),
                       tip_height - it->second.promotion_height, discard_depth);
-            if (evoDb != nullptr)                    // erase from DISK too (P2 defect (a))
-                evoDb->GetRawDB().Erase(std::make_pair(DB_PTX_SKSHARE, it->first));
             g_ptx_memory_only_shares.erase(it->first);
             it = g_ptx_my_shares.erase(it);
             ++discarded;
@@ -275,6 +380,8 @@ size_t PTX_BLS_DiscardSuperseded(int tip_height, CEvoDB* evoDb)
             ++it;
         }
     }
+    (void)evoDb;   // ODC-070: file store; param vestigial
+    if (discarded > 0) PTX_BLS_SaveSharesFileLocked();   // disk erase (P2 defect (a))
     return discarded;
 }
 
@@ -287,23 +394,16 @@ std::map<uint256, HeldShare> PTX_BLS_SnapshotShares()
 void PTX_BLS_RestoreShares(std::map<uint256, HeldShare> shares, CEvoDB* evoDb)
 {
     LOCK(cs_ptx_my_bls_sk);
-    if (evoDb != nullptr) {
-        // Keys the walk ADDED are not in the snapshot; their raw writes already
-        // reached disk, so erase them or they reload on the next start.
-        for (const auto& kv : g_ptx_my_shares) {
-            if (shares.count(kv.first) == 0)
-                evoDb->GetRawDB().Erase(std::make_pair(DB_PTX_SKSHARE, kv.first));
-        }
-    }
+    (void)evoDb;   // ODC-070: file store; param vestigial
     g_ptx_my_shares = std::move(shares);
-    // Re-persist every restored share: the walk's raw writes bypassed the evoDb
-    // rollback, so memory-only restoration would leave disk holding the mutated
+    // Rewrite the whole file from the restored map: walk-era saves already
+    // reached disk (the file writes immediately, exactly as the RAW layer
+    // did), so a memory-only restoration would leave disk holding the mutated
     // roles and the regression would survive the restart (BUG-023's shape).
-    if (evoDb != nullptr) {
-        for (const auto& kv : g_ptx_my_shares) {
-            if (!PTX_BLS_PersistShare(*evoDb, kv.first, kv.second))
-                g_ptx_memory_only_shares.insert(kv.first);
-        }
+    // Keys the walk ADDED simply vanish from the rewrite.
+    if (!PTX_BLS_SaveSharesFileLocked()) {
+        for (const auto& kv : g_ptx_my_shares)
+            g_ptx_memory_only_shares.insert(kv.first);
     }
 }
 
@@ -323,8 +423,6 @@ size_t PTX_BLS_DiscardUndone(int tip_height, CEvoDB* evoDb)
                       "(undone %d >= %d blocks ago; beyond redo reach)\n",
                       it->first.ToString(),
                       tip_height - it->second.promotion_height, discard_depth);
-            if (evoDb != nullptr)                    // erase from DISK too (P2 defect (a))
-                evoDb->GetRawDB().Erase(std::make_pair(DB_PTX_SKSHARE, it->first));
             g_ptx_memory_only_shares.erase(it->first);
             it = g_ptx_my_shares.erase(it);
             ++discarded;
@@ -332,6 +430,8 @@ size_t PTX_BLS_DiscardUndone(int tip_height, CEvoDB* evoDb)
             ++it;
         }
     }
+    (void)evoDb;   // ODC-070: file store; param vestigial
+    if (discarded > 0) PTX_BLS_SaveSharesFileLocked();   // disk erase (P2 defect (a))
     return discarded;
 }
 
@@ -383,36 +483,59 @@ size_t PTX_BLS_UndoPromote(const uint256& successor_qh, const uint256& predecess
 
 bool PTX_BLS_PersistShare(CEvoDB& evoDb, const uint256& quorum_hash, const HeldShare& hs)
 {
-    std::vector<uint8_t> blob = PTX_BLS_SerializeHeldShare(hs);
-    // GetRawDB().Write returns false on a DB write error — propagate it; the
-    // caller must not swallow it (memory-only persistence is the ODC-035 mode).
-    return evoDb.GetRawDB().Write(std::make_pair(DB_PTX_SKSHARE, quorum_hash), blob);
+    // ODC-070: backend is the file store; the CEvoDB parameter is vestigial
+    // (kept so the migration-era API surface stays stable).  Upsert into the
+    // map first — every current caller has already stored/mutated the entry
+    // there, making this idempotent, and it protects any future caller that
+    // persists before storing.  False on write failure — the caller must not
+    // swallow it (memory-only persistence is the ODC-035 mode).
+    (void)evoDb;
+    LOCK(cs_ptx_my_bls_sk);
+    g_ptx_my_shares[quorum_hash] = hs;
+    return PTX_BLS_SaveSharesFileLocked();
 }
 
 int PTX_BLS_LoadShares(CEvoDB& evoDb)
 {
     LOCK(cs_ptx_my_bls_sk);
-    std::unique_ptr<CDBIterator> it(evoDb.GetRawDB().NewIterator());
-    int loaded = 0, corrupt = 0;
-    for (it->Seek(std::make_pair(DB_PTX_SKSHARE, uint256())); it->Valid(); it->Next()) {
-        std::pair<std::string, uint256> key;
-        if (!it->GetKey(key) || key.first != DB_PTX_SKSHARE) break;  // past the prefix range
-        std::vector<uint8_t> blob;
-        HeldShare hs;
-        if (it->GetValue(blob) && PTX_BLS_DeserializeHeldShare(blob, hs)) {
-            g_ptx_my_shares[key.second] = hs;
-            ++loaded;
-        } else {
-            // NOT swallowed: a corrupt on-disk share is an ERROR — the member
-            // HAD a share and it is now unreadable (distinct from never having
-            // had one). Naming the quorum_hash lets the "in_qual but no share"
-            // warning tell the two apart.
-            LogPrintf("PTX P2: ERROR: LoadShares: CORRUPT persisted share for quorum %s "
-                      "(unreadable/undeserializable) NOT loaded\n", key.second.ToString());
-            ++corrupt;
+    // ODC-070: authoritative source is ptx_shares.dat (survives reindex).
+    int corrupt = PTX_BLS_LoadSharesFromFileLocked();
+
+    // One-time migration: import legacy evoDb-resident shares (pre-ODC-070
+    // datadirs), then erase them from evoDb so nothing stale survives there
+    // to be wiped-or-trusted later.  Corrupt legacy entries keep the old
+    // contract: logged by quorum_hash, counted, not loaded.
+    int migrated = 0;
+    std::vector<uint256> legacyKeys;
+    {
+        std::unique_ptr<CDBIterator> it(evoDb.GetRawDB().NewIterator());
+        for (it->Seek(std::make_pair(DB_PTX_SKSHARE, uint256())); it->Valid(); it->Next()) {
+            std::pair<std::string, uint256> key;
+            if (!it->GetKey(key) || key.first != DB_PTX_SKSHARE) break;
+            legacyKeys.push_back(key.second);
+            if (g_ptx_my_shares.count(key.second)) continue;   // file copy wins
+            std::vector<uint8_t> blob;
+            HeldShare hs;
+            if (it->GetValue(blob) && PTX_BLS_DeserializeHeldShare(blob, hs)) {
+                g_ptx_my_shares[key.second] = hs;
+                ++migrated;
+            } else {
+                LogPrintf("PTX P2: ERROR: LoadShares: CORRUPT legacy evoDb share for "
+                          "quorum %s (unreadable/undeserializable) NOT migrated\n",
+                          key.second.ToString());
+                ++corrupt;
+            }
         }
     }
-    LogPrintf("PTX P2: LoadShares: %d share(s) loaded, %d CORRUPT\n", loaded, corrupt);
+    for (const uint256& k : legacyKeys)
+        evoDb.GetRawDB().Erase(std::make_pair(DB_PTX_SKSHARE, k));
+    if (migrated > 0 && !PTX_BLS_SaveSharesFileLocked()) {
+        for (const auto& kv : g_ptx_my_shares) g_ptx_memory_only_shares.insert(kv.first);
+        LogPrintf("PTX P2: ERROR: LoadShares: migrated shares could not be written to "
+                  "ptx_shares.dat — held MEMORY-ONLY\n");
+    }
+    LogPrintf("PTX P2: LoadShares: %d share(s) loaded (%d migrated from evoDb, ODC-070), "
+              "%d CORRUPT\n", (int)g_ptx_my_shares.size(), migrated, corrupt);
     return corrupt;
 }
 
@@ -424,9 +547,6 @@ size_t PTX_BLS_ReconcileShares(const std::set<uint256>& known_quorums, CEvoDB* e
         if (known_quorums.count(it->first) == 0) {
             LogPrintf("PTX P2: reconcile: discarding ORPHAN share for quorum %s "
                       "(no record on the active chain)\n", it->first.ToString());
-            // Erase from DISK too, else the orphan reloads on the next start.
-            if (evoDb != nullptr)
-                evoDb->GetRawDB().Erase(std::make_pair(DB_PTX_SKSHARE, it->first));
             g_ptx_memory_only_shares.erase(it->first);   // no longer held
             it = g_ptx_my_shares.erase(it);
             ++discarded;
@@ -434,6 +554,9 @@ size_t PTX_BLS_ReconcileShares(const std::set<uint256>& known_quorums, CEvoDB* e
             ++it;   // live quorum — kept regardless of role
         }
     }
+    (void)evoDb;   // ODC-070: file store; param vestigial
+    // Erase reaches DISK too, else the orphans reload on the next start.
+    if (discarded > 0) PTX_BLS_SaveSharesFileLocked();
     return discarded;
 }
 
@@ -469,8 +592,19 @@ size_t PTX_BLS_WipeShares(CEvoDB* evoDb)
     }
     g_ptx_my_shares.clear();
     g_ptx_memory_only_shares.clear();
+    // ODC-070: the file store is the live disk copy — remove it outright so
+    // corrupt/unparseable entries cannot survive a wipe either (same contract
+    // the RAW-prefix iteration enforces for legacy evoDb entries above).
+    try {
+        const fs::path dat = PTX_SharesFilePath();
+        const fs::path tmp = GetDataDir() / "ptx_shares.dat.tmp";
+        if (fs::exists(dat)) { fs::remove(dat); ++erased; }
+        if (fs::exists(tmp)) fs::remove(tmp);
+    } catch (const std::exception& e) {
+        LogPrintf("PTX P2: WARNING: wipe could not remove ptx_shares.dat: %s\n", e.what());
+    }
     LogPrintf("PTX P2: wipe: cleared %u held share(s)%s (disk entries erased: %d)\n",
-              (unsigned)n, evoDb ? " (memory + disk)" : " (memory only)", erased);
+              (unsigned)n, evoDb ? " (memory + evoDb-legacy + file)" : " (memory + file)", erased);
     return n;
 }
 
