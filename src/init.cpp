@@ -55,6 +55,7 @@
 #include "ptx/ptx_accum_script.h"
 #include "ptx/ptx_lottery_state.h"
 #include "ptx/ptx_pose.h"
+#include "ptx/ptx_quorum_store.h"   // ODC-070 share-health tick
 #include "ptx/ptx_quorum.h"
 
 #ifdef ENABLE_WALLET
@@ -1247,6 +1248,15 @@ bool AppInitMain()
     scheduler.scheduleEvery([]{
         RandAddPeriodic();
     }, 60000);
+
+    // ODC-070 margin-erosion watch: startup detection alone misses shares lost
+    // or gained WHILE RUNNING (promotion, TTL expiry, retirement, DKG
+    // completion), so re-check every 10 minutes.  Silent when healthy; one
+    // loud line per tick when this node is a member of an active quorum it
+    // cannot sign for.  Guarded internally against the pre-chain-load window.
+    scheduler.scheduleEvery([]{
+        PTX_LogShareHealthSummary("periodic");
+    }, 600000);
 
     GetMainSignals().RegisterBackgroundSignalScheduler(scheduler);
 

@@ -1010,6 +1010,74 @@ int PTX_WarnMissingSharesForNode(const std::vector<CPTXQuorumRecord>& active,
     return warned;
 }
 
+std::vector<PTXShareHealth> PTX_ShareHealthFromRecords(
+    const std::vector<CPTXQuorumRecord>& active,
+    const std::string& node_id,
+    const std::set<uint256>& current_shares,
+    const std::set<uint256>& memory_only_shares)
+{
+    std::vector<PTXShareHealth> out;
+    for (const CPTXQuorumRecord& rec : active) {
+        PTXShareHealth h;
+        h.quorum_hash    = rec.quorum_hash;
+        h.mined_height   = rec.mined_height;
+        h.formed_size    = rec.formed_size;
+        h.completed_size = rec.completed_size;
+        for (const PTXQuorumMemberRecord& m : rec.members) {
+            if (!node_id.empty() && m.node_id == node_id && m.in_qual) { h.am_member = true; break; }
+        }
+        h.share_current = current_shares.count(rec.quorum_hash) > 0;
+        h.memory_only   = memory_only_shares.count(rec.quorum_hash) > 0;
+        out.push_back(h);
+    }
+    return out;
+}
+
+std::vector<PTXShareHealth> PTX_ShareHealthReport(int nHeight, const std::string& node_id)
+{
+    if (!ptxQuorumStore || nHeight <= 0) return {};
+
+    std::vector<CPTXQuorumRecord> active;
+    {
+        LOCK(cs_main);
+        active = ptxQuorumStore->GetActiveQuorumsAtHeight(nHeight);
+    }
+    return PTX_ShareHealthFromRecords(active, node_id,
+                                      PTX_BLS_HeldCurrentQuorumHashes(),
+                                      PTX_BLS_MemoryOnlyShares());
+}
+
+int PTX_LogShareHealthSummary(const char* context)
+{
+    if (!ptxQuorumStore || g_ptx_my_node_id.empty()) return 0;
+    int tipHeight = 0;
+    {
+        LOCK(cs_main);
+        tipHeight = chainActive.Height();
+    }
+    if (tipHeight <= 0) return 0;
+
+    int member = 0, capable = 0, memOnly = 0;
+    std::string degradedList;
+    for (const PTXShareHealth& h : PTX_ShareHealthReport(tipHeight, g_ptx_my_node_id)) {
+        if (!h.am_member) continue;
+        ++member;
+        if (h.share_current) ++capable;
+        else degradedList += " " + h.quorum_hash.ToString();
+        if (h.memory_only) ++memOnly;
+    }
+    const int degraded = member - capable;
+    if (degraded > 0 || memOnly > 0) {
+        LogPrintf("PTX share-health [%s]: WARNING — member of %d active quorum(s), CURRENT "
+                  "share for %d, DEGRADED for %d (%s)%s; each degraded quorum is one signer "
+                  "short of its margin (ODC-070)\n",
+                  context, member, capable, degraded,
+                  degraded > 0 ? degradedList.c_str() + 1 : "none",
+                  memOnly > 0 ? strprintf(", %d share(s) MEMORY-ONLY (persist failed)", memOnly) : "");
+    }
+    return degraded;
+}
+
 void PTX_ReconcileHeldSharesOnStart()
 {
     // ★ §3 ORDERING (load-bearing): this runs from LoadTierTwo (init.cpp), AFTER

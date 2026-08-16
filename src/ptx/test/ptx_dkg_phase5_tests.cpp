@@ -884,6 +884,44 @@ BOOST_AUTO_TEST_CASE(P2_WarnMissing_InQualNoShare_LogsNoThrow)
 }
 
 
+// ODC-070 margin-erosion rows: the pure health core classifies each active
+// quorum by (membership, CURRENT share, memory-only) from injected sets.
+// RED (inversion): swapping the membership test to held-any, or dropping the
+// in_qual condition, misclassifies rows B/C below.
+BOOST_AUTO_TEST_CASE(ShareHealth_ClassifiesMembershipAndCapability)
+{
+    const std::string me = "node-me:hh";
+
+    auto mkRec = [&](uint8_t k, bool meMember, bool meQual) {
+        CPTXQuorumRecord rec;
+        rec.quorum_hash = QHk(k);
+        rec.mined_height = 100 + k;
+        rec.formed_size = 11; rec.completed_size = 11;
+        PTXQuorumMemberRecord m;
+        m.node_id = meMember ? me : "node-other:xx";
+        m.in_qual = meQual; m.share_index = 1;
+        rec.members.push_back(m);
+        return rec;
+    };
+    // A: member with share.  B: member, NO share.  C: not a member.
+    // D: member but NOT in_qual (selected, not committed) — must not count.
+    std::vector<CPTXQuorumRecord> active{
+        mkRec(0xA1, true, true), mkRec(0xA2, true, true),
+        mkRec(0xA3, false, true), mkRec(0xA4, true, false)};
+
+    const std::set<uint256> current{QHk(0xA1)};
+    const std::set<uint256> memOnly{QHk(0xA1)};
+
+    const auto rows = PTX_ShareHealthFromRecords(active, me, current, memOnly);
+    BOOST_REQUIRE_EQUAL(rows.size(), 4u);
+
+    BOOST_CHECK(rows[0].am_member  && rows[0].share_current && rows[0].memory_only);
+    BOOST_CHECK(rows[1].am_member  && !rows[1].share_current);   // the erosion row
+    BOOST_CHECK(!rows[2].am_member);
+    BOOST_CHECK(!rows[3].am_member);                             // in_qual=false
+    BOOST_CHECK_EQUAL(rows[1].mined_height, 100 + 0xA2);
+}
+
 // wipe clears ALL held shares (memory-only path, evoDb == nullptr).
 // RED (inversion): a wipe that clears nothing leaves shares held -> Get succeeds.
 BOOST_AUTO_TEST_CASE(P2_Wipe_ClearsAll)

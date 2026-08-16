@@ -1111,6 +1111,57 @@ UniValue ptx_quorum_list(const JSONRPCRequest& request)
     return ret;
 }
 
+UniValue ptx_quorum_health(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() != 0) {
+        throw std::runtime_error(
+            "ptx_quorum_health\n"
+            "\nThis node's margin contribution to each ACTIVE quorum (ODC-070 erosion\n"
+            "watch).  Threshold is t-of-11, so members can silently lose shares while\n"
+            "the quorum keeps signing — until the loss that fails it.  For every active\n"
+            "quorum: is this node an in_qual member, and does it hold a CURRENT-role\n"
+            "share (the only role that signs, BUG-028)?  Own view only — a node cannot\n"
+            "see other members' share state; fleet capacity is aggregated across nodes\n"
+            "by the operator/harness.  Read-only; all networks.\n"
+            "\nResult:\n"
+            "{ \"node_id\": s, \"height\": n, \"member_of\": n, \"capable\": n,\n"
+            "  \"degraded\": n, \"quorums\": [ { \"quorum_hash\": s, \"mined_height\": n,\n"
+            "  \"member\": b, \"share_current\": b, \"memory_only\": b }, ... ] }\n"
+            + HelpExampleRpc("ptx_quorum_health", ""));
+    }
+    if (ptxQuorumStore == nullptr) {
+        throw JSONRPCError(RPC_MISC_ERROR, "quorum store unavailable");
+    }
+    int nHeight;
+    {
+        LOCK(cs_main);
+        nHeight = chainActive.Height();
+    }
+    int member = 0, capable = 0;
+    UniValue arr(UniValue::VARR);
+    for (const PTXShareHealth& h : PTX_ShareHealthReport(nHeight, g_ptx_my_node_id)) {
+        UniValue q(UniValue::VOBJ);
+        q.pushKV("quorum_hash",   h.quorum_hash.ToString());
+        q.pushKV("mined_height",  h.mined_height);
+        q.pushKV("member",        h.am_member);
+        q.pushKV("share_current", h.share_current);
+        q.pushKV("memory_only",   h.memory_only);
+        arr.push_back(q);
+        if (h.am_member) {
+            ++member;
+            if (h.share_current) ++capable;
+        }
+    }
+    UniValue ret(UniValue::VOBJ);
+    ret.pushKV("node_id",   g_ptx_my_node_id);
+    ret.pushKV("height",    nHeight);
+    ret.pushKV("member_of", member);
+    ret.pushKV("capable",   capable);
+    ret.pushKV("degraded",  member - capable);
+    ret.pushKV("quorums",   arr);
+    return ret;
+}
+
 UniValue ptx_quorum_info(const JSONRPCRequest& request)
 {
     if (request.fHelp || request.params.size() != 1) {
@@ -1694,6 +1745,7 @@ static const CRPCCommand commands[] = {
     { "ptx",  "ptx_debug_ptxdkgpopulate",  &ptx_debug_ptxdkgpopulate,   true,   {"payload","force"} },
     { "ptx",  "ptx_debug_selectquorum",    &ptx_debug_selectquorum,     true,   {"anchor_hash"} },
     { "ptx",  "ptx_quorum_info",           &ptx_quorum_info,            true,   {"quorum_hash"} },
+    { "ptx",  "ptx_quorum_health",         &ptx_quorum_health,          true,   {} },
     { "ptx",  "ptx_quorum_list",           &ptx_quorum_list,            true,   {"height"} },
     { "ptx",  "ptx_getroundstatus",        &ptx_getroundstatus,         true,   {"round_id"} },
     { "ptx",  "ptx_pose_status",           &ptx_pose_status,            true,   {} },

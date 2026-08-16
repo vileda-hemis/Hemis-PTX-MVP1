@@ -471,6 +471,45 @@ int PTX_WarnMissingSharesForNode(const std::vector<CPTXQuorumRecord>& active,
                                  const std::string& node_id);
 
 // ---------------------------------------------------------------------------
+// ODC-070 margin-erosion detection.  Threshold is t-of-11, so a quorum keeps
+// signing while members quietly lose their shares — a quorum at exactly t
+// capable looks identical to a healthy one until the next loss fails it with
+// no warning (the 2026-08-16 fleet-wide reindex made every quorum 0/11 capable
+// and the ONLY symptom was threshold misses).  A node can observe its OWN
+// margin contribution: for each active quorum it is an in_qual member of,
+// does it hold a CURRENT-role share (the only role that signs — BUG-028)?
+// Fleet-level capacity is aggregated harness-side from each node's report; a
+// P2P health beacon for mainnet operators is registered follow-up work.
+// ---------------------------------------------------------------------------
+struct PTXShareHealth {
+    uint256 quorum_hash;
+    int32_t mined_height{0};
+    uint8_t formed_size{0};
+    uint8_t completed_size{0};
+    bool am_member{false};       // in_qual membership of this node
+    bool share_current{false};   // holds a CURRENT-role share (can sign)
+    bool memory_only{false};     // share held but persist failed (won't survive restart)
+};
+
+// Pure core — health rows from an injected active set + share-role sets.
+// Injectable for unit tests (the store/global-free half of the report).
+std::vector<PTXShareHealth> PTX_ShareHealthFromRecords(
+    const std::vector<CPTXQuorumRecord>& active,
+    const std::string& node_id,
+    const std::set<uint256>& current_shares,
+    const std::set<uint256>& memory_only_shares);
+
+// Node-local share-health over the ACTIVE quorums at nHeight.  Own view only.
+// Takes cs_main internally; returns empty before the store/chain are up.
+std::vector<PTXShareHealth> PTX_ShareHealthReport(int nHeight, const std::string& node_id);
+
+// Scheduler-tick summary: logs ONE loud line iff this node is an in_qual
+// member of any active quorum WITHOUT a CURRENT share (or holds memory-only
+// shares); silent when healthy.  Safe to call before the store/chain are up
+// (returns 0).  Returns the degraded-quorum count.
+int PTX_LogShareHealthSummary(const char* context);
+
+// ---------------------------------------------------------------------------
 // SG-3 — DKG signing material selection (the index-space reconciliation).
 //
 // PURE: records in -> ctx out (zero globals; fully unit-testable — the
