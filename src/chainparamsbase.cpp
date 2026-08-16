@@ -48,7 +48,12 @@ std::unique_ptr<CBaseChainParams> CreateBaseChainParams(const std::string& chain
     else if (chain == CBaseChainParams::PTXTESTNET)
         return std::make_unique<CBaseChainParams>("ptxtestnet", 29902);
     else if (chain == CBaseChainParams::PTXBEATESTNET)
-        return std::make_unique<CBaseChainParams>("ptxbea", 29903);
+        // ptxbea testnet RPC = P2P+1 (P2P 29994, chainparams.cpp), restoring the
+        // PIVX-lineage adjacency (cf. testnet 51474/51475) while staying BELOW the
+        // kernel ephemeral range (32768-60999) — the whole 5147x Hemis family sits
+        // INSIDE that range, so following the lineage block literally would
+        // reintroduce the caller7 ephemeral-port race on every operator host.
+        return std::make_unique<CBaseChainParams>("ptxbea", 29995);
     else
         throw std::runtime_error(strprintf("%s: Unknown chain %s.", __func__, chain));
 }

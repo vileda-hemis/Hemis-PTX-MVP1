@@ -300,6 +300,48 @@ making weak quorums cheap to finish off) proves material at real quorum counts.
 
 ---
 
+## 13. Operator port requirement — RPC must be reachable, or signing silently fails
+
+**Register ID:** ODC-073 / A (DGM-derived fan-out) / KDD-085 (the mainnet fix).
+**Status:** Interim convention; enforced by the self-check, removed by KDD-085.
+
+**ptxbea standard ports — open BOTH at the address you register:**
+
+| Purpose | Port | Must be reachable by |
+|---|---|---|
+| P2P | **29994** | the network (peers) — definitionally open on a public chain |
+| RPC (signing) | **29995** | the other gamemasters' fan-out, at your registered address |
+
+The ports sit **below** the kernel ephemeral range (32768–60999) deliberately: the Hemis 5147x
+family (mainnet/testnet/regtest) sits *inside* that range, and binding there invites a startup race
+where the kernel hands your listening port to an outbound connection first. RPC = P2P + 1 restores
+the PIVX-lineage adjacency (cf. testnet 51474/51475) without that exposure.
+
+**The load-bearing requirement — read this if you read nothing else:** the signing fan-out reaches
+each quorum member over **RPC at the host it advertises in its DGM registration, on port 29995**
+(override: `-ptxfanoutport`). The DGM record advertises only the P2P endpoint; the RPC port is a
+**convention**, not on-chain. So a gamemaster that registers successfully but has RPC **firewalled,
+bound to localhost, or on a non-standard port** looks **fully healthy on-chain** — registered,
+enabled, synced, Ready — and yet **silently fails every signing request**. This is exactly the
+failure the fleet has hit twice (the IPv6 incident: nodes healthy on-chain, unreachable for
+signing).
+
+**What an operator must do:**
+1. Bind RPC so it is reachable at your registered address, not just localhost: `rpcbind=<addr>`
+   (or `rpcbind=[::]` for dual-stack) plus `rpcallowip` for the fleet/peer range. `listen=1`.
+2. Open **29994 (P2P)** and **29995 (RPC)** in the firewall to the addresses that need them.
+3. Verify from **outside** the host that RPC answers at `your-registered-address:29995` — the
+   self-check does this; do not trust a local `hemis-cli` probe, which reaches localhost and hides
+   exactly this fault.
+
+**Why it's an interim convention:** the RPC-port assumption re-introduces an address-reachability
+requirement on a permissionless network (operators with non-standard ports/firewalls violate it).
+**KDD-085 (sign-over-P2P)** removes it entirely — the fan-out would reach the member at its
+on-chain-advertised address over the P2P protocol it already must expose, so no separate RPC
+exposure is needed. Until KDD-085 lands, the port convention above is the requirement.
+
+---
+
 ## Share loss is permanent until quorum rotation — there is no re-share path (ODC-071)
 
 A gamemaster's DKG key share (`ptx_shares.dat` in the datadir) is secret material produced by an

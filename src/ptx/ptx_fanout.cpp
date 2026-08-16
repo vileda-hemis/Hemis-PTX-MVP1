@@ -98,6 +98,23 @@ const PTXNodeInfo* PTX_FindNode(const std::string& node_id)
 // Precedence: prefer DGM-derived (real fix); fall back to static -ptxnode (legacy
 // trusted-dealer path / tests / a member not yet in the list).  Returns the
 // source in *via for logging.
+// ★ THE FAN-OUT PORT CONVENTION, in ONE named place (was an inline GetArg spread
+// at the call site — the implicit-convention defect this makes explicit).
+// The DGM record advertises only the P2P endpoint; the PTX-RPC port that serves
+// gm_bls_sign is NOT on-chain, so the fan-out assumes a member exposes its RPC at
+// the DGM-advertised HOST on THIS port. Default = the chain RPC port
+// (BaseParams().RPCPort() — 29995 on ptxbea); override with -ptxfanoutport for a
+// non-standard deployment. ★ OPERATOR REQUIREMENT (documented in
+// ptxbea-known-limitations.md §13): a GM MUST expose PTX-RPC on this port at the
+// same address it registers, or it looks healthy on-chain and silently fails
+// every signing request (the IPv6-incident class). KDD-085 (sign-over-P2P) would
+// remove this requirement entirely by reaching the member at its on-chain
+// address; this convention is the interim.
+uint16_t PTX_FanoutRpcPort()
+{
+    return (uint16_t)gArgs.GetArg("-ptxfanoutport", BaseParams().RPCPort());
+}
+
 bool PTX_ResolveMemberAddr(const std::string& node_id, const uint256& proTxHash,
                            std::string& host_out, uint16_t& port_out, const char** via)
 {
@@ -107,7 +124,7 @@ bool PTX_ResolveMemberAddr(const std::string& node_id, const uint256& proTxHash,
             const CService& addr = dgm->pdgmState->addr;
             if (addr.IsValid()) {
                 host_out = addr.ToStringIP();
-                port_out = (uint16_t)gArgs.GetArg("-ptxfanoutport", BaseParams().RPCPort());
+                port_out = PTX_FanoutRpcPort();
                 if (via) *via = "dgm";
                 return true;
             }

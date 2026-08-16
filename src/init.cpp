@@ -548,6 +548,10 @@ std::string HelpMessage(HelpMessageMode mode)
     if (showDebug)
         strUsage += HelpMessageOpt("-blockversion=<n>", "Override block version to test forking scenarios");
 
+    strUsage += HelpMessageGroup("PTX options:");
+    strUsage += HelpMessageOpt("-ptxfanoutport=<port>", "PTX signing fan-out: the RPC port a gamemaster is assumed to expose at its DGM-advertised address (default: the chain RPC port; 29995 on ptxbea). A GM MUST expose PTX-RPC on this port at the address it registers, or it looks healthy on-chain and silently fails every signing request. Override only for a non-standard deployment.");
+    strUsage += HelpMessageOpt("-ptxnode=<id@host:port>", "PTX node registry entry (legacy trusted-dealer roll path). Repeatable. The DGM-derived resolution is preferred; this is the fallback for members not yet in the on-chain list.");
+
     strUsage += HelpMessageGroup("RPC server options:");
     strUsage += HelpMessageOpt("-server", "Accept command line and JSON-RPC commands");
     strUsage += HelpMessageOpt("-rest", strprintf("Accept public REST requests (default: %u)", DEFAULT_REST_ENABLE));
