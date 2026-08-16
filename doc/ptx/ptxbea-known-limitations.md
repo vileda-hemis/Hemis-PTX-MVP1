@@ -267,6 +267,39 @@ future step, post-16.9.
 
 ---
 
+## 12. Quorum selection is advisory, not consensus-enforced (ODC-073)
+
+**Register ID:** ODC-073.
+**Status:** Accepted for testnet by decision; enforcement deferred, revisited for mainnet.
+
+**Do not build around the property that a roll cannot be aimed at a chosen quorum — it can.**
+The honest `ptx_roll` RPC routes each roll to a quorum by a tip-hash rule (`PTX_SelectDKGSigningCtx`),
+so an ordinary caller does not pick the quorum. But that routing runs **only in the RPC**; no
+consensus rule enforces it. What consensus checks (the BUG-033 commit gate) is only that the named
+quorum is a **real quorum that is ACTIVE at the roll's seed height** — *any* active quorum, not the
+routed one. A caller building its own commitment can therefore **name any active quorum directly**.
+
+Why this is accepted rather than a defect:
+
+- **The threat is bounded (§9.1).** Naming a quorum only lets a caller send its rolls to a quorum it
+  wants — which helps only if that quorum is **already compromised** (a compromised quorum can bias
+  its own outputs; targeting concentrates rolls onto it). It **cannot make an honest quorum lie or
+  forge a result** — the threshold signature is still required and still verified.
+- **The reachable set is bounded.** The `nSeedHeight` window (`nPTXSeedHeightWindow`, 60 blocks on
+  ptxbea) limits how far back a roll may anchor, so a caller cannot reach a quorum that was active
+  only in the distant past.
+- **Legitimate uses exist** — keep-alive rolls, diagnostics, and testing all name a quorum
+  deliberately, and a testnet's purpose is exercising the machinery.
+
+**Decision (testnet):** selection stays advisory; the `nSeedHeight` bound plus this documented
+statement, not consensus enforcement. Enforcing the routing at the commit gate would freeze the
+current selection rule into consensus before the selection rule is settled (the demand-transition
+test, ODC-074's capacity-aware argument, and the health beacon may all change what selection should
+consider), so it is deferred. **Mainnet** revisits enforcement if ODC-074 (erosion + free targeting
+making weak quorums cheap to finish off) proves material at real quorum counts.
+
+---
+
 ## Share loss is permanent until quorum rotation — there is no re-share path (ODC-071)
 
 A gamemaster's DKG key share (`ptx_shares.dat` in the datadir) is secret material produced by an

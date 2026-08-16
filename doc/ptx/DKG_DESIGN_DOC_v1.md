@@ -456,10 +456,25 @@ callers to track quorum topology.
 > commit gate — chainparams `nPTXSeedHeightWindow`, 60 on ptxbea/regtest), which limits the
 > reachable-*past* horizon but leaves *current-tip* aiming open. Closing aiming would require
 > **routed-quorum enforcement at the commit gate** (re-derive the router at `nSeedHeight` and reject
-> a mismatch) — recorded as ODC-073 Step 4 option 1, a **deferred** decision because it couples
-> consensus to the selection rule and removes the direct-keep-alive that the demand-transition
-> test's Phase C relies on. The original requirement sentence is retained above per append-only
-> discipline.
+> a mismatch) — ODC-073 Step 4 option 1.
+>
+> **[Decided 2026-08-16 — testnet does NOT enforce; option (2)+(3), a stated position not a
+> default.]** Selection stays advisory: the `nSeedHeight` bound (landed) plus documented current-tip
+> aiming, knowingly open within the §9.1 bound. Reasoning: (i) enforcement **couples consensus to the
+> selection rule** — every future change to how quorums are selected (a different distribution, a
+> capacity-aware term, a grind-resistance fix) would become a coordinated network upgrade, a
+> permanent constraint bought to close a vector inside an already-accepted bound; (ii) **the
+> selection rule isn't settled** — the demand-transition test hasn't run, ODC-074 reframed erosion as
+> a security concern that may argue for capacity-aware selection, and the health beacon may make
+> capability chain-visible and open new selection inputs, so freezing the current rule into consensus
+> now is premature; (iii) **the threat is bounded** (amplifies an already-compromised quorum, cannot
+> make an honest one lie or forge, window narrows the reachable set); (iv) **legitimate naming
+> exists** (Phase C keep-alives, diagnostics, testing) and removing it on a testnet whose purpose is
+> exercising the machinery is a real cost. **Mainnet** revisits option (1) if ODC-074 proves material
+> at real quorum counts — by then the selection rule to enforce would also be known; gated on the
+> margin-visibility / beacon work, not on this pass. Operator-facing statement:
+> `ptxbea-known-limitations.md` §12. The original requirement sentence is retained above per
+> append-only discipline.
 
 > **[Amended 2026-07-10 — handover-at-accept adopted (§7.2 amendment).]** "Mid-ceremony
 > quorums are skipped" no longer arises from ROTATION: a rotating quorum keeps servicing
