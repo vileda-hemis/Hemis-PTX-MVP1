@@ -223,14 +223,18 @@ struct PTXFormationParams {
 
     // ------------------------------------------------------------------
     // W2.4 W4-e (KDD-074/075/076) — THE TERMINAL-ELIGIBILITY GATE.
-    // ★ ALL THREE DEFAULT 0 == DISABLED on every network (the P-b3b flip
-    // posture): with the gate off, nothing is ever terminal-eligible, the
-    // KDD-075 yield never fires, the limiter never selects — the whole W2.4
-    // lifecycle is dormant-by-parameter.  DEPLOY SAFETY: the bf fleet is
-    // ALL-IDLE (rolls are manual), so a live idle-yield with a default-on
-    // gate would suppress EVERY rotation fleet-wide and break the proven
-    // rotation arc.  W4-f's drill enables these explicitly; no chainparams
-    // sets them at HEAD.
+    // ★ ALL THREE DEFAULT 0 == DISABLED (the P-b3b flip posture): with the
+    // gate off, nothing is ever terminal-eligible, the KDD-075 yield never
+    // fires, the limiter never selects — the whole W2.4 lifecycle is
+    // dormant-by-parameter.  The defaults are the MAINNET posture:
+    // main/test/ptxtest leave them 0; regtest and ptxbea set them LIVE in
+    // chainparams via the ptxFormation aggregate initializer (the W4-f
+    // un-stub, drill chains only — ptxbea currently {…, 200, 1, 40}).
+    // Mainnet reform stays off until deliberately enabled.  ★ GREP TRAP
+    // (cost a wrong eviction-model call, 2026-08-16): these fields are set
+    // by POSITION in the chainparams aggregate init, so a search for the
+    // field NAME finds only this header and tests — read the
+    // `consensus.ptxFormation = {...}` lines against the field order here.
     // ------------------------------------------------------------------
     // KDD-074 idle window: a quorum with no attributed roll in the last
     // nRetireWindow blocks is idle-eligible.  0 = idle arm DISABLED.
