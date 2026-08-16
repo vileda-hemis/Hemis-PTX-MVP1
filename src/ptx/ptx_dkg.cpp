@@ -1441,23 +1441,25 @@ bool PTX_DKG_StoreSkShare(const PTXDKGSession& session, int formation_height,
                   session.quorum_hash.ToString(), set_err);
         return false;
     }
-    // KDD-070 P2: persist to evoDb's RAW layer (store-pending at FINALIZE has no
-    // block transaction to ride). On a persist FAILURE we do NOT abort — the
-    // share is already usable in memory (signing reads the map, not disk); a
-    // local disk fault must not fail a global formation below t (KDD-070 (b)).
-    // We degrade to the pre-P2 memory-only baseline and warn LOUDLY: the share
-    // will not survive restart (ODC-035), surfaced on next start by the
-    // "in_qual but no share" warning. The map store above already succeeded.
-    if (evoDb != nullptr) {
+    // KDD-070 P2: persist (ODC-070 file store; evoDb param vestigial and MAY be
+    // null — BUG-039: the old null guard silently skipped persistence entirely,
+    // the same silent-loss class as the boot wipe). On a persist FAILURE we do
+    // NOT abort — the share is already usable in memory (signing reads the map,
+    // not disk); a local disk fault must not fail a global formation below t
+    // (KDD-070 (b)). We degrade to the pre-P2 memory-only baseline and warn
+    // LOUDLY: the share will not survive restart (ODC-035), surfaced on next
+    // start by the "in_qual but no share" warning. The map store above already
+    // succeeded.
+    {
         HeldShare hs;
         std::memcpy(hs.bytes, sk_bytes, 32);
         hs.formation_height = formation_height;
         hs.role             = role;
         hs.promotion_height = -1;
-        if (!PTX_BLS_PersistShare(*evoDb, session.quorum_hash, hs)) {
+        if (!PTX_BLS_PersistShare(evoDb.get(), session.quorum_hash, hs)) {
             PTX_BLS_MarkMemoryOnly(session.quorum_hash);   // trackable degraded state
             LogPrintf("PTX DKG: ERROR: StoreSkShare: FAILED to persist sk_share for quorum %s "
-                      "to evoDb — share held in MEMORY ONLY, will NOT survive restart "
+                      "— share held in MEMORY ONLY, will NOT survive restart "
                       "(ODC-035). Ceremony continues; this member is degraded.\n",
                       session.quorum_hash.ToString());
         }

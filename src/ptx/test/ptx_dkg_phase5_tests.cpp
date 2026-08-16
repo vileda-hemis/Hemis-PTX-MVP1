@@ -957,7 +957,7 @@ BOOST_AUTO_TEST_CASE(P2_Persist_Load_RoundTrip)
     hs.formation_height = 4242;
     hs.role             = PTXShareRole::CURRENT;
     hs.promotion_height = -1;
-    BOOST_REQUIRE(PTX_BLS_PersistShare(*evoDb, qh, hs));   // Write returned true
+    BOOST_REQUIRE(PTX_BLS_PersistShare(evoDb.get(), qh, hs));   // Write returned true
 
     PTX_TEST_ClearSkShareSlot();                            // wipe the MAP only
     BOOST_CHECK_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);       // 0 corrupt
@@ -977,7 +977,7 @@ BOOST_AUTO_TEST_CASE(P2_Persist_Wipe_Load_Nothing)
     PTX_TEST_ClearSkShareSlot();
     uint256 qh = QHk(0xD2);
     HeldShare hs; std::memset(hs.bytes, 0xD3, 32); hs.role = PTXShareRole::CURRENT;
-    BOOST_REQUIRE(PTX_BLS_PersistShare(*evoDb, qh, hs));
+    BOOST_REQUIRE(PTX_BLS_PersistShare(evoDb.get(), qh, hs));
 
     PTX_BLS_WipeShares(evoDb.get());          // erase memory + disk
     PTX_TEST_ClearSkShareSlot();              // ensure map empty
@@ -998,8 +998,8 @@ BOOST_AUTO_TEST_CASE(P2_Persist_Reconcile_OrphanGoneFromDisk)
     uint256 live = QHk(0xE0), orphan = QHk(0xE1);
     HeldShare a; std::memset(a.bytes, 0xEA, 32); a.role = PTXShareRole::CURRENT;
     HeldShare b; std::memset(b.bytes, 0xEB, 32); b.role = PTXShareRole::CURRENT;
-    BOOST_REQUIRE(PTX_BLS_PersistShare(*evoDb, live, a));
-    BOOST_REQUIRE(PTX_BLS_PersistShare(*evoDb, orphan, b));
+    BOOST_REQUIRE(PTX_BLS_PersistShare(evoDb.get(), live, a));
+    BOOST_REQUIRE(PTX_BLS_PersistShare(evoDb.get(), orphan, b));
     // populate the map to match a real start (LoadShares would have done this).
     BOOST_REQUIRE_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);
 
@@ -1197,15 +1197,22 @@ BOOST_AUTO_TEST_CASE(P3_TTL_Boundary)
 }
 
 // expired PENDING is gone from DISK, not just memory (P2 defect (a) not repeated).
+// A live CURRENT share is held alongside so the post-expiry write is non-empty —
+// under the BUG-039 floor an expiry that would EMPTY the file defers its disk
+// erase instead (see Bug039_EmptyOverwriteRefused_LastShareRetainedOnDisk).
 // RED (inversion): an expiry that erases only the map -> the PENDING reloads.
 BOOST_AUTO_TEST_CASE(P3_ExpiredPending_GoneFromDisk)
 {
     BOOST_REQUIRE(evoDb);
     PTX_TEST_ClearSkShareSlot();
-    uint256 qh = QHk(0x3B);
+    PTX_BLS_WipeShares(evoDb.get());
+    uint256 qh = QHk(0x3B), live = QHk(0x3F);
     HeldShare hs; std::memset(hs.bytes, 0x3B, 32); hs.role = PTXShareRole::PENDING;
     hs.formation_height = 1000;
-    BOOST_REQUIRE(PTX_BLS_PersistShare(*evoDb, qh, hs));
+    HeldShare hl; std::memset(hl.bytes, 0x3F, 32); hl.role = PTXShareRole::CURRENT;
+    hl.formation_height = 900; hl.promotion_height = -1;
+    BOOST_REQUIRE(PTX_BLS_PersistShare(evoDb.get(), qh, hs));
+    BOOST_REQUIRE(PTX_BLS_PersistShare(evoDb.get(), live, hl));
     BOOST_REQUIRE_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);       // held as PENDING
 
     BOOST_CHECK_EQUAL(PTX_BLS_ExpirePending(1000 + PTX_PENDING_TTL_BLOCKS + 1, evoDb.get()), 1u);
@@ -1213,6 +1220,7 @@ BOOST_AUTO_TEST_CASE(P3_ExpiredPending_GoneFromDisk)
     BOOST_CHECK_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);
     PTXShareRole r;
     BOOST_CHECK(!P3_held_role(qh, r));                        // gone from disk
+    BOOST_CHECK(P3_held_role(live, r));                       // companion intact
     PTX_BLS_WipeShares(evoDb.get());
     PTX_TEST_ClearSkShareSlot();
 }
@@ -1242,7 +1250,7 @@ BOOST_AUTO_TEST_CASE(P3_Pending_Persists_RoleIntact)
     uint256 qh = QHk(0x3E);
     HeldShare hs; std::memset(hs.bytes, 0x3E, 32); hs.role = PTXShareRole::PENDING;
     hs.formation_height = 1234;
-    BOOST_REQUIRE(PTX_BLS_PersistShare(*evoDb, qh, hs));
+    BOOST_REQUIRE(PTX_BLS_PersistShare(evoDb.get(), qh, hs));
 
     PTX_TEST_ClearSkShareSlot();
     BOOST_REQUIRE_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);
@@ -1263,8 +1271,8 @@ BOOST_AUTO_TEST_CASE(P3_Promotion_SurvivesLoadShares)
     uint256 pred = QHk(0x40), succ = QHk(0x41);
     HeldShare a; std::memset(a.bytes, 0x40, 32); a.role = PTXShareRole::CURRENT; a.formation_height = 100;
     HeldShare b; std::memset(b.bytes, 0x41, 32); b.role = PTXShareRole::PENDING; b.formation_height = 140;
-    BOOST_REQUIRE(PTX_BLS_PersistShare(*evoDb, pred, a));
-    BOOST_REQUIRE(PTX_BLS_PersistShare(*evoDb, succ, b));
+    BOOST_REQUIRE(PTX_BLS_PersistShare(evoDb.get(), pred, a));
+    BOOST_REQUIRE(PTX_BLS_PersistShare(evoDb.get(), succ, b));
     BOOST_REQUIRE_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);
 
     BOOST_CHECK_EQUAL(PTX_BLS_Promote(succ, pred, 150, evoDb.get()), 1u);   // re-persists
@@ -1323,17 +1331,24 @@ BOOST_AUTO_TEST_CASE(P4_RetentionBoundary_119Kept_120Discarded)
     PTX_TEST_ClearSkShareSlot();
 }
 
-// a discarded SUPERSEDED share is gone from DISK, not just memory.
+// a discarded SUPERSEDED share is gone from DISK, not just memory. A live
+// CURRENT share is held alongside so the post-discard write is non-empty —
+// under the BUG-039 floor a discard that would EMPTY the file defers its disk
+// erase instead (see Bug039_EmptyOverwriteRefused_LastShareRetainedOnDisk).
 // RED (inversion): a discard that erases memory but not the RAW-DB entry -> the
 // share reloads on the next LoadShares.
 BOOST_AUTO_TEST_CASE(P4_DiscardedSuperseded_GoneFromDisk)
 {
     BOOST_REQUIRE(evoDb);
     PTX_TEST_ClearSkShareSlot();
-    uint256 qh = QHk(0x53);
+    PTX_BLS_WipeShares(evoDb.get());
+    uint256 qh = QHk(0x53), live = QHk(0x54);
     HeldShare hs; std::memset(hs.bytes, 0x53, 32); hs.role = PTXShareRole::SUPERSEDED_RETAINED;
     hs.formation_height = 100; hs.promotion_height = 150;
-    BOOST_REQUIRE(PTX_BLS_PersistShare(*evoDb, qh, hs));
+    HeldShare hl; std::memset(hl.bytes, 0x54, 32); hl.role = PTXShareRole::CURRENT;
+    hl.formation_height = 100; hl.promotion_height = -1;
+    BOOST_REQUIRE(PTX_BLS_PersistShare(evoDb.get(), qh, hs));
+    BOOST_REQUIRE(PTX_BLS_PersistShare(evoDb.get(), live, hl));
     BOOST_REQUIRE_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);
 
     BOOST_CHECK_EQUAL(PTX_BLS_DiscardSuperseded(150 + 120, evoDb.get()), 1u);
@@ -1341,6 +1356,7 @@ BOOST_AUTO_TEST_CASE(P4_DiscardedSuperseded_GoneFromDisk)
     BOOST_REQUIRE_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);
     PTXShareRole r;
     BOOST_CHECK(!P3_held_role(qh, r));   // gone from DISK, did not reload
+    BOOST_CHECK(P3_held_role(live, r));  // companion intact
     PTX_BLS_WipeShares(evoDb.get());
     PTX_TEST_ClearSkShareSlot();
 }
@@ -5562,6 +5578,139 @@ BOOST_AUTO_TEST_CASE(Bug032_2biii_CommitmentCarriesFee)
     const uint256 qh = QHk(0xD3), seed = QHk(0x71);
     CommitSeedRecord(qh, 1, -1, PTXQuorumState::ACTIVE);
     BOOST_CHECK_EQUAL(W4bRunContextual(CommitMakeTx(qh, seed, 10)), "");
+}
+
+// ---------------------------------------------------------------------------
+// BUG-039 — the boot-ordering wipe: init runs CVerifyDB (whose PTXStateSentry
+// snapshots and restores the share map) BEFORE LoadTierTwo runs LoadShares.
+// The sentry therefore snapshots the NOT-YET-LOADED (empty) map, and its dtor's
+// RestoreShares(empty) rewrote ptx_shares.dat from the empty map — destroying
+// every persisted share on EVERY restart, crash or clean. ODC-070 x BUG-029
+// interaction: each fix correct alone; the composition, mediated by an init
+// ordering neither reasoned about, loses the one state in the system that is
+// NOT derivable from chain (ceremony secret material — no recovery path).
+//
+// These cases cross the seam at function level in init's exact order; the
+// fleet-side persistence-survival standing test crosses the real init.
+// ---------------------------------------------------------------------------
+
+// THE seam: disk holds a share, the process "restarts" (map cleared), the
+// sentry pair runs against the still-unloaded map, THEN LoadShares runs.
+// The share must survive.
+// RED (inversion, pre-fix): RestoreShares(empty) rewrites the file empty and
+// LoadShares reads back nothing — the exact fleet-wide 2026-08-16 loss.
+BOOST_AUTO_TEST_CASE(Bug039_BootOrder_SentryBeforeLoad_ShareSurvives)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_TEST_ClearSkShareSlot();
+    PTX_BLS_WipeShares(evoDb.get());
+
+    const uint256 qh = QHk(0xE1);
+    HeldShare hs; std::memset(hs.bytes, 0xE1, 32);
+    hs.role = PTXShareRole::CURRENT; hs.formation_height = 1140;
+    hs.promotion_height = -1;
+    BOOST_REQUIRE(PTX_BLS_PersistShare(evoDb.get(), qh, hs));
+
+    PTX_TEST_ClearSkShareSlot();                    // process death; disk is truth
+
+    // init's order: VerifyDB's sentry fires around the not-yet-loaded map...
+    auto snap = PTX_BLS_SnapshotShares();
+    BOOST_REQUIRE_EQUAL(snap.size(), 0u);           // the empty pre-load snapshot
+    PTX_BLS_RestoreShares(std::move(snap), evoDb.get());
+
+    // ...and only later does LoadTierTwo load the shares.
+    BOOST_REQUIRE_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);
+    uint8_t out[32];
+    BOOST_CHECK(PTX_BLS_GetCurrentShare(qh, out));  // survived the boot ordering
+    BOOST_CHECK_EQUAL(out[0], 0xE1);
+
+    PTX_BLS_WipeShares(evoDb.get());
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// The floor invariant, independent of the sentry: NO code path may write an
+// empty map over a non-empty file. A legal erase of the LAST held share defers
+// its disk erase (the stale entry reloads and re-erases in memory; explicit
+// clearing is WipeShares' job) — retaining irreplaceable material too long is
+// recoverable, destroying it is not.
+// RED (inversion, pre-fix): RetireShare of the only share empties the file;
+// the reload finds nothing.
+BOOST_AUTO_TEST_CASE(Bug039_EmptyOverwriteRefused_LastShareRetainedOnDisk)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_TEST_ClearSkShareSlot();
+    PTX_BLS_WipeShares(evoDb.get());
+
+    const uint256 qh = QHk(0xE2);
+    HeldShare hs; std::memset(hs.bytes, 0xE2, 32);
+    hs.role = PTXShareRole::CURRENT; hs.formation_height = 100;
+    hs.promotion_height = -1;
+    BOOST_REQUIRE(PTX_BLS_PersistShare(evoDb.get(), qh, hs));
+
+    BOOST_REQUIRE(PTX_BLS_RetireShare(qh, evoDb.get()));   // legal final erase (memory)
+    BOOST_CHECK_EQUAL(g_ptx_my_shares.size(), 0u);
+
+    PTX_TEST_ClearSkShareSlot();                    // restart
+    BOOST_REQUIRE_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);
+    uint8_t out[32];
+    BOOST_CHECK(PTX_BLS_GetCurrentShare(qh, out));  // disk floor held: share retained
+
+    PTX_BLS_WipeShares(evoDb.get());
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// Erase-reaches-disk (P2 defect (a)) is KEPT whenever the write leaves the file
+// non-empty: with a second live share held, an erased share is genuinely gone
+// from disk after reload.
+BOOST_AUTO_TEST_CASE(Bug039_EraseReachesDisk_WhenFileStaysNonEmpty)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_TEST_ClearSkShareSlot();
+    PTX_BLS_WipeShares(evoDb.get());
+
+    const uint256 keep = QHk(0xE3), gone = QHk(0xE4);
+    HeldShare hk; std::memset(hk.bytes, 0xE3, 32);
+    hk.role = PTXShareRole::CURRENT; hk.formation_height = 100; hk.promotion_height = -1;
+    HeldShare hg = hk; std::memset(hg.bytes, 0xE4, 32);
+    BOOST_REQUIRE(PTX_BLS_PersistShare(evoDb.get(), keep, hk));
+    BOOST_REQUIRE(PTX_BLS_PersistShare(evoDb.get(), gone, hg));
+
+    BOOST_REQUIRE(PTX_BLS_RetireShare(gone, evoDb.get()));
+
+    PTX_TEST_ClearSkShareSlot();
+    BOOST_REQUIRE_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);
+    uint8_t out[32];
+    BOOST_CHECK(PTX_BLS_GetCurrentShare(keep, out));   // survivor intact
+    BOOST_CHECK(!PTX_BLS_GetCurrentShare(gone, out));  // erased share gone from disk
+
+    PTX_BLS_WipeShares(evoDb.get());
+    PTX_TEST_ClearSkShareSlot();
+}
+
+// The latent sibling fixed in the same pass: persistence must not depend on the
+// evoDb global being constructed — the parameter is vestigial (ODC-070 file
+// store) and a null must not silently skip the disk write.
+// RED (inversion, pre-fix signature): the evoDb != nullptr guards around
+// PersistShare call sites skipped persistence entirely when null.
+BOOST_AUTO_TEST_CASE(Bug039_PersistShare_NullEvoDb_StillReachesDisk)
+{
+    BOOST_REQUIRE(evoDb);
+    PTX_TEST_ClearSkShareSlot();
+    PTX_BLS_WipeShares(evoDb.get());
+
+    const uint256 qh = QHk(0xE5);
+    HeldShare hs; std::memset(hs.bytes, 0xE5, 32);
+    hs.role = PTXShareRole::CURRENT; hs.formation_height = 100;
+    hs.promotion_height = -1;
+    BOOST_REQUIRE(PTX_BLS_PersistShare(nullptr, qh, hs));  // no evoDb: file is the store
+
+    PTX_TEST_ClearSkShareSlot();
+    BOOST_REQUIRE_EQUAL(PTX_BLS_LoadShares(*evoDb), 0);
+    uint8_t out[32];
+    BOOST_CHECK(PTX_BLS_GetCurrentShare(qh, out));
+
+    PTX_BLS_WipeShares(evoDb.get());
+    PTX_TEST_ClearSkShareSlot();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

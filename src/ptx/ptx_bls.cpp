@@ -48,15 +48,51 @@ static const std::string DB_PTX_SKSHARE = "ptxSk";
 
 static fs::path PTX_SharesFilePath() { return GetDataDir() / "ptx_shares.dat"; }
 
+// On-disk entry count from the file header, without deserializing entries.
+// -1 = no file / unreadable header (treated as "nothing to protect").
+static int64_t PTX_BLS_FileShareCountLocked()
+{
+    CAutoFile file(fopen(PTX_SharesFilePath().string().c_str(), "rb"), SER_DISK, CLIENT_VERSION);
+    if (file.IsNull()) return -1;
+    try {
+        uint8_t ver = 0; uint64_t count = 0;
+        file >> ver >> count;
+        if (ver != 1) return -1;
+        return (int64_t)count;
+    } catch (const std::exception&) {
+        return -1;
+    }
+}
+
 // Whole-file atomic rewrite from the in-memory map (tiny: a handful of
 // 41-byte entries).  Caller must hold cs_ptx_my_bls_sk (RecursiveMutex —
 // re-lock safe).  False on any write failure; callers route that to the
 // memory-only degraded set.
+//
+// ★ BUG-039 floor invariant: NEVER write an empty map over a non-empty file,
+// under any code path. Shares are the one state in the system that is not
+// derivable (ceremony secret material) — a wrongly-retained entry reloads and
+// re-erases in memory (self-correcting); a wrongly-destroyed one is gone
+// forever. Explicit clearing is PTX_BLS_WipeShares' job (it removes the file,
+// it does not route through here). Every write is logged with its count, and
+// the count is verified by read-back — the pre-fix silent unconditional
+// rewrite is what let the boot-ordering wipe destroy every share invisibly.
 static bool PTX_BLS_SaveSharesFileLocked()
 {
     LOCK(cs_ptx_my_bls_sk);
     const fs::path tmp = GetDataDir() / "ptx_shares.dat.tmp";
     const fs::path dat = PTX_SharesFilePath();
+    const uint64_t intended = (uint64_t)g_ptx_my_shares.size();
+    if (intended == 0) {
+        const int64_t on_disk = PTX_BLS_FileShareCountLocked();
+        if (on_disk > 0) {
+            LogPrintf("PTX P2: SaveShares: REFUSED empty overwrite (BUG-039 floor): "
+                      "%s holds %d share(s), in-memory map is empty — file left "
+                      "intact; explicit clearing is WipeShares' job\n",
+                      dat.string(), (int)on_disk);
+            return false;
+        }
+    }
     {
         CAutoFile file(fopen(tmp.string().c_str(), "wb"), SER_DISK, CLIENT_VERSION);
         if (file.IsNull()) {
@@ -65,7 +101,7 @@ static bool PTX_BLS_SaveSharesFileLocked()
         }
         try {
             file << (uint8_t)1;                            // format version
-            file << (uint64_t)g_ptx_my_shares.size();
+            file << intended;
             for (const auto& kv : g_ptx_my_shares) {
                 file << kv.first;
                 file << PTX_BLS_SerializeHeldShare(kv.second);
@@ -79,6 +115,14 @@ static bool PTX_BLS_SaveSharesFileLocked()
         LogPrintf("PTX P2: ERROR: rename %s -> %s failed\n", tmp.string(), dat.string());
         return false;
     }
+    const int64_t readback = PTX_BLS_FileShareCountLocked();
+    if (readback != (int64_t)intended) {
+        LogPrintf("PTX P2: ERROR: SaveShares: read-back count %d != intended %u for %s "
+                  "— write NOT verified\n", (int)readback, (unsigned)intended, dat.string());
+        return false;
+    }
+    LogPrintf("PTX P2: SaveShares: wrote %u share(s) to %s (read-back verified)\n",
+              (unsigned)intended, dat.string());
     return true;
 }
 
@@ -301,13 +345,12 @@ size_t PTX_BLS_Promote(const uint256& successor_qh, const uint256& predecessor_q
     // P4: neither the transactional nor the raw layer auto-reverts on disconnect
     // (the record store's UndoBlock does an explicit Erase, ptx_quorum_store.cpp)
     // — P4 adds the explicit undo revert. A persist failure marks memory-only
-    // (the flag follows the material).
-    if (evoDb != nullptr) {
-        if (!PTX_BLS_PersistShare(*evoDb, successor_qh, sit->second))
-            g_ptx_memory_only_shares.insert(successor_qh);
-        if (superseded && !PTX_BLS_PersistShare(*evoDb, predecessor_qh, pit->second))
-            g_ptx_memory_only_shares.insert(predecessor_qh);
-    }
+    // (the flag follows the material). Unconditional (BUG-039): a null evoDb
+    // must not silently skip the file write.
+    if (!PTX_BLS_PersistShare(evoDb, successor_qh, sit->second))
+        g_ptx_memory_only_shares.insert(successor_qh);
+    if (superseded && !PTX_BLS_PersistShare(evoDb, predecessor_qh, pit->second))
+        g_ptx_memory_only_shares.insert(predecessor_qh);
     return 1;
 }
 
@@ -391,11 +434,33 @@ std::map<uint256, HeldShare> PTX_BLS_SnapshotShares()
     return g_ptx_my_shares;   // by value — the caller owns the snapshot
 }
 
+static bool PTX_BLS_HeldShareEqual(const HeldShare& a, const HeldShare& b)
+{
+    return std::memcmp(a.bytes, b.bytes, 32) == 0 &&
+           a.formation_height == b.formation_height &&
+           a.role == b.role &&
+           a.promotion_height == b.promotion_height;
+}
+
 void PTX_BLS_RestoreShares(std::map<uint256, HeldShare> shares, CEvoDB* evoDb)
 {
     LOCK(cs_ptx_my_bls_sk);
     (void)evoDb;   // ODC-070: file store; param vestigial
+    // ★ BUG-039: skip the disk rewrite when the map is UNCHANGED vs the
+    // snapshot. The sentry brackets EVERY VerifyDB — including init's, which
+    // runs BEFORE LoadShares — so an unconditional rewrite here destroyed the
+    // not-yet-loaded file at every boot. A no-op walk now leaves disk alone;
+    // a walk that DID mutate shares still gets the full rewrite below
+    // (BUG-029 stays fixed).
+    const bool unchanged =
+        g_ptx_my_shares.size() == shares.size() &&
+        std::equal(g_ptx_my_shares.begin(), g_ptx_my_shares.end(), shares.begin(),
+                   [](const std::pair<const uint256, HeldShare>& x,
+                      const std::pair<const uint256, HeldShare>& y) {
+                       return x.first == y.first && PTX_BLS_HeldShareEqual(x.second, y.second);
+                   });
     g_ptx_my_shares = std::move(shares);
+    if (unchanged) return;
     // Rewrite the whole file from the restored map: walk-era saves already
     // reached disk (the file writes immediately, exactly as the RAW layer
     // did), so a memory-only restoration would leave disk holding the mutated
@@ -472,19 +537,21 @@ size_t PTX_BLS_UndoPromote(const uint256& successor_qh, const uint256& predecess
     // Persist the revert via the RAW layer: BOTH shares changed role, so both are
     // re-persisted (else a restart reloads stale roles — the restored predecessor
     // as SUPERSEDED, the retained successor as CURRENT and wrongly signable).
-    if (evoDb != nullptr) {
-        if (!PTX_BLS_PersistShare(*evoDb, predecessor_qh, pit->second))
-            g_ptx_memory_only_shares.insert(predecessor_qh);
-        if (!PTX_BLS_PersistShare(*evoDb, successor_qh, sit->second))
-            g_ptx_memory_only_shares.insert(successor_qh);
-    }
+    // Unconditional (BUG-039): a null evoDb must not silently skip the file write.
+    if (!PTX_BLS_PersistShare(evoDb, predecessor_qh, pit->second))
+        g_ptx_memory_only_shares.insert(predecessor_qh);
+    if (!PTX_BLS_PersistShare(evoDb, successor_qh, sit->second))
+        g_ptx_memory_only_shares.insert(successor_qh);
     return 1;
 }
 
-bool PTX_BLS_PersistShare(CEvoDB& evoDb, const uint256& quorum_hash, const HeldShare& hs)
+bool PTX_BLS_PersistShare(CEvoDB* evoDb, const uint256& quorum_hash, const HeldShare& hs)
 {
     // ODC-070: backend is the file store; the CEvoDB parameter is vestigial
-    // (kept so the migration-era API surface stays stable).  Upsert into the
+    // (kept so the migration-era API surface stays recognizable) and MAY BE
+    // NULL — persistence must never depend on the evoDb global being
+    // constructed (BUG-039's latent sibling: callers' null guards silently
+    // skipped the disk write entirely).  Upsert into the
     // map first — every current caller has already stored/mutated the entry
     // there, making this idempotent, and it protects any future caller that
     // persists before storing.  False on write failure — the caller must not

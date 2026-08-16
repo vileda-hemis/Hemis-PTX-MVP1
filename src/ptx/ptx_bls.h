@@ -121,7 +121,7 @@ bool PTX_BLS_DeserializeHeldShare(const std::vector<uint8_t>& blob, HeldShare& o
 // quorum_hash under the DB_PTX_SKSHARE prefix. Returns the underlying Write
 // result — the CALLER MUST check it (a swallowed failure leaves a share in
 // memory that will not survive restart, the ODC-035 mode this package fixes).
-bool PTX_BLS_PersistShare(CEvoDB& evoDb, const uint256& quorum_hash, const HeldShare& hs);
+bool PTX_BLS_PersistShare(CEvoDB* evoDb, const uint256& quorum_hash, const HeldShare& hs);
 
 // Load all persisted shares from evoDb's RAW DB into g_ptx_my_shares. Called
 // once on daemon start, AFTER chain load (§3 ordering). Returns the number of
