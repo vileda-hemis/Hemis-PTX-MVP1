@@ -5188,6 +5188,68 @@ BOOST_AUTO_TEST_CASE(Bug032_Commit_SigLessValid)
 }
 
 // ---------------------------------------------------------------------------
+// ODC-073 Step 1 — nSeedHeight PAST-ANCHOR WINDOW.
+//
+// The canonical-quorum gate above admits ANY active quorum; nSeedHeight was
+// otherwise bounded only by the structural floor (!=0) + nExpiryHeight>=
+// nSeedHeight, so a caller could anchor to an arbitrarily-old height and reach a
+// quorum active back then (roll routing is advisory / RPC-only, so the commit
+// gate is the only consensus place the reachable-past horizon can be bounded).
+//
+// RED (SeedHeightWindow, OUT-OF-WINDOW leg): a commitment whose nSeedHeight lags
+//   the tip by more than the window must be REJECTED. Pre-fix there is no such
+//   check → it returns "" → CHECK fails → RED.
+// ANTI-VACUITY (IN-WINDOW legs): zero-lag AND edge-lag (== window) commitments
+//   are ACCEPTED — the bound is a staleness window, not a blanket refuse. The
+//   edge-lag leg IS the legitimate later-settle lag BUG-034 enabled (the
+//   commitment sat `window` blocks in mempool before mining).
+//
+// Runs under ptxbea (window live = 60); the default test net is MAIN where the
+// window is 0/disabled, so the switch is required to exercise the rule.
+// ---------------------------------------------------------------------------
+
+// Contextual runner with a caller-chosen tip height (the shared W4bRunContextual
+// dummyPrev is fixed at height 0, which cannot express a positive anchor lag).
+static std::string CommitRunAtTip(const CMutableTransaction& mtx, int tipHeight)
+{
+    CBlockIndex prev;
+    prev.nHeight = tipHeight;
+    LOCK(cs_main);
+    CValidationState state;
+    if (CheckSpecialTx(CTransaction(mtx), &prev, nullptr, state))
+        return "";
+    return state.GetRejectReason();
+}
+
+// Restore MAIN on scope exit even if a BOOST_REQUIRE throws.
+struct SelectParamsGuard {
+    explicit SelectParamsGuard(const std::string& net) { SelectParams(net); }
+    ~SelectParamsGuard() { SelectParams(CBaseChainParams::MAIN); }
+};
+
+BOOST_AUTO_TEST_CASE(Odc073_Commit_SeedHeightWindow)
+{
+    SelectParamsGuard net(CBaseChainParams::PTXBEATESTNET);   // window live (60)
+    W4bStoreGuard g;
+    const int W = Params().PTXSeedHeightWindow();
+    BOOST_REQUIRE_MESSAGE(W > 0, "precondition: ptxbea must set a live seed-height window");
+
+    const uint256 qh = QHk(0xE7), seed = QHk(0x71);
+    const uint32_t seedH = 1000;
+    // Active from long before the seed height through every tip under test, so
+    // the canonical gate passes uniformly and the ONLY differentiator is the lag.
+    CommitSeedRecord(qh, /*mined*/1, /*superseded*/-1, PTXQuorumState::ACTIVE);
+
+    // IN-WINDOW: zero lag (tip == nSeedHeight) and edge lag (tip == nSeedHeight + W).
+    BOOST_CHECK_EQUAL(CommitRunAtTip(CommitMakeTx(qh, seed, seedH), (int)seedH), "");
+    BOOST_CHECK_EQUAL(CommitRunAtTip(CommitMakeTx(qh, seed, seedH), (int)seedH + W), "");
+
+    // OUT-OF-WINDOW: lag W+1 — the RED leg (pre-fix returns "").
+    BOOST_CHECK_EQUAL(CommitRunAtTip(CommitMakeTx(qh, seed, seedH), (int)seedH + W + 1),
+                      "ptxcommit-seedheight-stale");
+}
+
+// ---------------------------------------------------------------------------
 // BUG-032 increment 2b — signing consults the REAL on-chain/mempool commitment
 // (promotes increment 1's invariant off the in-memory registry seam) + the
 // wait-not-reject latency property.

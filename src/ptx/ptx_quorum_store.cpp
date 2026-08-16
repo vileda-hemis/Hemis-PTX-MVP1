@@ -910,16 +910,29 @@ PTXDKGSigningCtx PTX_SelectDKGSigningCtx(const std::vector<CPTXQuorumRecord>& ac
     // a targeting oracle.  The tip hash is unforgeable by the caller.
     //
     // ★ A' IS A DISTRIBUTION FIX WITH A DOCUMENTED RESIDUAL, NOT A SECURITY
-    // FIX.  The caller can still TIMING-grind (wait ~L blocks for the tip to
-    // reshuffle onto a target).  That residual sits inside §9.1's accepted
-    // bound — targeting only helps a caller who has ALREADY compromised a
-    // quorum, which §9.1 accepts can bias its own outputs; targeting
-    // amplifies that, it grants no new capability (cannot make an honest
-    // quorum lie, cannot forge).  The sharper residual is LIFECYCLE
-    // manipulation (avoid a quorum -> force its reform; pin it -> prevent
-    // reform).  The structural fix is commit-reveal (selection resolved by
-    // the inclusion block, which does NOT exist at this point in the flow —
-    // selection precedes the tx), recorded as the escape hatch.
+    // FIX.  ★★ CORRECTED 2026-08-16 (ODC-073): this function is ADVISORY — it
+    // runs ONLY in the ptx_roll RPC (PTX_LoadDKGSigningCtx, rpc/ptx.cpp:114),
+    // NEVER in consensus.  The commit-time gate (CheckPTXRollCommitTx) binds the
+    // committed quorum to "ACTIVE at nSeedHeight", NOT to this routing, so a
+    // caller running a custom client NAMES ANY ACTIVE QUORUM DIRECTLY — no wait,
+    // no grind.  The earlier "TIMING-grind, wait ~L blocks" wording understated
+    // it: the ~L-block wait is only the honest-RPC user's lever; a hand-built
+    // commitment skips it entirely.  The residual still sits inside §9.1's
+    // accepted bound — targeting only helps a caller who has ALREADY compromised
+    // a quorum (amplifies its bias); it grants no new capability (cannot make an
+    // honest quorum lie, cannot forge).  The sharper residual is LIFECYCLE
+    // manipulation (avoid a quorum -> force its reform; pin it -> prevent reform).
+    // ★ COMMIT-REVEAL DOES NOT CLOSE AIMING.  Selection PRECEDES the tx, so no
+    // commit-reveal step can bind it; the earlier "structural fix is commit-
+    // reveal / escape hatch" note was wrong AS APPLIED TO TARGETING.  What
+    // commit-before-reveal (BUG-032/033) closes: quorum-SHOP (peek-then-reroute),
+    // free preview, and settle against a non-existent/inactive quorum.  What it
+    // does NOT close: AIMING (choosing WHICH active quorum before committing).
+    // The only bound landed so far is ODC-073 Step 1 (nSeedHeight past-anchor
+    // window at the commit gate), which limits the reachable-PAST horizon but
+    // leaves current-tip aiming open; closing aiming needs routed-quorum
+    // enforcement at the commit gate (ODC-073 Step 4 option 1, a DEFERRED
+    // decision — it would couple consensus to this selection rule).
     //
     // ★ SORTED BY quorum_hash before indexing: GetActiveQuorumsAtHeight's
     // iteration order is a storage detail and MUST NOT leak into the

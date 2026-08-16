@@ -435,6 +435,32 @@ layer selects among available quorums. This is a design requirement: a caller sh
 ability to target a specific quorum, which would enable quorum-targeting attacks and would require
 callers to track quorum topology.
 
+> **[Corrected 2026-08-16 — ODC-073: routing is ADVISORY, not consensus-enforced; the
+> "no ability to target" sentence above is an unmet REQUIREMENT, not a property of the built
+> system.]** The tip-hash router (`PTX_SelectDKGSigningCtx`) has exactly one call site — the
+> `ptx_roll` RPC (`PTX_LoadDKGSigningCtx`, `rpc/ptx.cpp:114`); no validation, block-connect, or
+> miner path invokes it (grep-proven). Consensus binds only *existent-and-active-at-nSeedHeight*
+> (`CheckPTXRollCommitTx`, the BUG-033 gate), **not** *routed*. So a caller running a custom client
+> **names any active quorum directly** — instantly and for free; the honest RPC's tip-hash
+> selection is a load-distribution convenience it can simply not use. Targeting is therefore
+> **open**, but sits inside §9.1's accepted bound: it only amplifies a quorum an attacker has
+> **already compromised** (biasing its own outputs) — it cannot make an honest quorum lie or forge.
+> Severity is a documented residual (ODC-073), not a BUG.
+>
+> **Boundary — what commit-before-reveal (BUG-032/033) does and does not close.** *Closes:*
+> quorum-shop (see a result, then re-route), free preview (sign before payment), and settle against
+> a non-existent/inactive quorum. *Does NOT close:* **aiming** — choosing *which* active quorum
+> before committing. Selection precedes the transaction, so no commit-reveal step can bind it;
+> earlier notes crediting commit-reveal as the structural fix for targeting were wrong on this
+> point. The only bound landed is **ODC-073 Step 1** (an `nSeedHeight` past-anchor window at the
+> commit gate — chainparams `nPTXSeedHeightWindow`, 60 on ptxbea/regtest), which limits the
+> reachable-*past* horizon but leaves *current-tip* aiming open. Closing aiming would require
+> **routed-quorum enforcement at the commit gate** (re-derive the router at `nSeedHeight` and reject
+> a mismatch) — recorded as ODC-073 Step 4 option 1, a **deferred** decision because it couples
+> consensus to the selection rule and removes the direct-keep-alive that the demand-transition
+> test's Phase C relies on. The original requirement sentence is retained above per append-only
+> discipline.
+
 > **[Amended 2026-07-10 — handover-at-accept adopted (§7.2 amendment).]** "Mid-ceremony
 > quorums are skipped" no longer arises from ROTATION: a rotating quorum keeps servicing
 > on its old keypair until the successor PTXDKG connects, so rotation never removes a

@@ -969,6 +969,23 @@ static bool CheckPTXRollCommitTx(const CTransaction& tx, const CBlockIndex* pind
             !PTX_QuorumRecordActiveAt(qrec, (int)payload.nSeedHeight)) {
             return state.Invalid(false, REJECT_INVALID, "ptxcommit-noncanonical-quorum");
         }
+        // ★ ODC-073 Step 1 — nSeedHeight PAST-ANCHOR BOUND. The canonical gate
+        // above admits any ACTIVE quorum, and nSeedHeight was otherwise bounded
+        // only by the structural floor (!=0) + nExpiryHeight>=nSeedHeight: a
+        // caller could anchor to an arbitrarily-old height and reach a quorum
+        // active back then (the routing that would pick "the" quorum is advisory,
+        // RPC-only — never enforced here). Bound the anchor's LAG behind the tip
+        // this commitment builds on. Only the past direction is bounded: an honest
+        // commitment is created at tip==nSeedHeight and mined a few blocks later,
+        // so its lag is small and positive; a future/zero-lag anchor (nSeedHeight
+        // >= tip, e.g. the mempool path where pindexPrev IS the creation tip) has
+        // a non-positive lag and is never rejected here. Window 0 == disabled
+        // (main/test/ptxtest); ptxbea/regtest set 60 (see chainparams rationale).
+        const int seedWindow = Params().PTXSeedHeightWindow();
+        if (seedWindow > 0 &&
+            pindexPrev->nHeight - (int)payload.nSeedHeight > seedWindow) {
+            return state.Invalid(false, REJECT_INVALID, "ptxcommit-seedheight-stale");
+        }
     }
     return true;
 }

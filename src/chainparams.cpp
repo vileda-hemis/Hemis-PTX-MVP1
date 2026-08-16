@@ -690,6 +690,12 @@ public:
         // (~1.7x the ceremony floor M~47; SG-1b plan-gate decision 1).
         consensus.ptxFormation = {"regtest", 80, 80, 80, 1, 200, 1, 40}; // KDD-079 decouple (B=R=budget, L=1-preserving) + W4-f reform gate LIVE (drill chains only)
 
+        // ODC-073 Step 1 — nSeedHeight past-anchor bound, drill net. Same
+        // rationale as ptxbea: 60 sits above the ~12-block legitimate commit-lag
+        // floor and below the nRetireWindow=200 idle-window ceiling, and under
+        // the 80-block boundary so a legitimate anchor stays in the current epoch.
+        nPTXSeedHeightWindow = 60;
+
         // Tier two
         nFulfilledRequestExpireTime = 60 * 60; // fulfilled requests expire in 1 hour
     }
@@ -1022,6 +1028,19 @@ public:
         strPTXLotteryPoolAddress = "";
         nPTXServiceFee = 1 * COIN;
         nPTXSettlementWindow = 60;  // ~60-min settlement window (testnet middle ground)
+        // ODC-073 Step 1 — nSeedHeight past-anchor bound. Bracketed by two real
+        // quantities: FLOOR = legitimate commit-to-mine lag (fund-then-sign mines
+        // the commitment within 1-2 blocks; a dozen blocks covers congestion +
+        // reorg re-mining + coordinator retry), so 60 >> ~12; CEILING = the
+        // reform idle window nRetireWindow=200 (a quorum active at H keeps its
+        // members' CURRENT shares until the idle arm can reform it, which needs
+        // 200 idle blocks), so 60 < 200 makes this consensus bound strictly
+        // TIGHTER than the practical current-share bound (reachable-past horizon
+        // 200 -> 60, and UNBOUNDED -> 60 for long-lived active quorums). 60 also
+        // equals the settlement horizon above (a roll is never anchored older
+        // than its own settlement window). Aiming among currently-active quorums
+        // stays open — that is ODC-073 Step 4 (routed-quorum enforcement), deferred.
+        nPTXSeedHeightWindow = 60;
         nPTXPayoutMinerFee = 10000; // 0.0001 HMS — miner incentive inside PTXPAYOUT
     }
 

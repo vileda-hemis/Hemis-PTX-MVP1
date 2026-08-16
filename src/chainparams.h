@@ -111,6 +111,13 @@ public:
     /** PTX lottery settlement window in blocks (KDD-030: 5 for testnet, 1440 for mainnet) */
     int PTXSettlementWindow() const { return nPTXSettlementWindow; }
 
+    /** ODC-073 Step 1: max blocks a PTXROLLCOMMIT's nSeedHeight may lag the tip
+     *  it is mined on. 0 = DISABLED (the PTX-param idiom), set per-net on the
+     *  live PTX nets. Bounds the anchor-staleness a caller can use to reach a
+     *  quorum active at an arbitrarily-old height (the routing is advisory, so
+     *  the commit gate is the only place the reachable-past horizon is bounded). */
+    int PTXSeedHeightWindow() const { return nPTXSeedHeightWindow; }
+
     /** PTX payout miner fee: amount sent to block miner inside PTXPAYOUT (ODC-022) */
     CAmount PTXPayoutMinerFee() const { return nPTXPayoutMinerFee; }
 
@@ -137,6 +144,7 @@ protected:
     std::string strPTXLotteryPoolAddress;
     CAmount nPTXServiceFee{0};
     int nPTXSettlementWindow{1440};
+    int nPTXSeedHeightWindow{0};   // ODC-073 Step 1: 0 = disabled (past-anchor bound off)
     CAmount nPTXPayoutMinerFee{0};
 };
 
