@@ -1482,7 +1482,7 @@ bool CheckAndApplyPTXPayout(const CBlock& block,
         }
         // No PTXPAYOUT (legitimate): write unchanged snapshot so DisconnectBlock finds a pprev snapshot.
         if (!fJustCheck && pindex != nullptr) {
-            WriteLotteryStateSnapshotForBlock(pindex->GetBlockHash(), GetLotteryState());
+            WriteLotteryStateSnapshotForBlock(pindex->GetBlockHash(), pindex->nHeight, GetLotteryState());
         }
         return true;
     }
@@ -1553,7 +1553,7 @@ bool CheckAndApplyPTXPayout(const CBlock& block,
         // Reset accumulator — payout UTXO goes to the winner, not back into the pool.
         mls.accumulator_outpoint.SetNull();
         mls.accumulator_value = 0;
-        WriteLotteryStateSnapshotForBlock(pindex->GetBlockHash(), mls);
+        WriteLotteryStateSnapshotForBlock(pindex->GetBlockHash(), pindex->nHeight, mls);
     }
 
     return true;
@@ -1726,7 +1726,7 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
     // still unwinds through the sentry rather than leaving a snapshot for a block
     // that never connected.
     if (!fJustCheck) {
-        WritePoseSnapshotForBlock(pindex->GetBlockHash(),
+        WritePoseSnapshotForBlock(pindex->GetBlockHash(), pindex->nHeight,
                                   g_ptx_pose_tracker.GetAllRecords());
     }
 
@@ -1810,7 +1810,7 @@ bool CheckAndApplyPTXCoalesce(const CBlock& block,
             // (one per PTXROLLCOMMIT fee output — incl. an orphan commit whose settle never
             // came), not inferred from vin shape (robust to future PTXCOALESCE schema changes).
             mls.total_rolls += rollFees.size();
-            WriteLotteryStateSnapshotForBlock(pindex->GetBlockHash(), mls);
+            WriteLotteryStateSnapshotForBlock(pindex->GetBlockHash(), pindex->nHeight, mls);
         }
     } else {
         // No PTXCOALESCE: the effective accumulator is the current one.
@@ -1819,7 +1819,7 @@ bool CheckAndApplyPTXCoalesce(const CBlock& block,
         // LotteryState unchanged.  Still write the post-block snapshot
         // so DisconnectBlock can always find a valid pprev snapshot.
         if (!fJustCheck) {
-            WriteLotteryStateSnapshotForBlock(pindex->GetBlockHash(), GetLotteryState());
+            WriteLotteryStateSnapshotForBlock(pindex->GetBlockHash(), pindex->nHeight, GetLotteryState());
         }
     }
 

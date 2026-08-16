@@ -253,13 +253,13 @@ BOOST_AUTO_TEST_CASE(Coalesce_ReorgReversedCorrectly)
     {
         LOCK(cs_main);
         GetLotteryState().Reset();
-        WriteLotteryStateSnapshotForBlock(prevHash, GetLotteryState());
+        WriteLotteryStateSnapshotForBlock(prevHash, 1, GetLotteryState());
         // BUG-027 / ODC-056(c): UndoSpecialTxsInBlock now restores POSE from the
         // pprev snapshot as well, and REFUSES the disconnect when that snapshot
         // is absent (restoring a default map would silently zero every node's
         // pose).  This fixture predates the pose arm, so it must supply the
         // snapshot the production connect path now always writes.
-        WritePoseSnapshotForBlock(prevHash, g_ptx_pose_tracker.GetAllRecords());
+        WritePoseSnapshotForBlock(prevHash, 1, g_ptx_pose_tracker.GetAllRecords());
     }
     const std::vector<uint8_t> preBlockBytes = [&]() {
         LOCK(cs_main);

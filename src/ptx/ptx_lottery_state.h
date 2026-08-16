@@ -6,6 +6,7 @@
 #define Hemis_PTX_LOTTERY_STATE_H
 
 #include "amount.h"
+#include "consensus/consensus.h"
 #include "primitives/transaction.h"
 #include "script/script.h"
 #include "serialize.h"
@@ -110,11 +111,18 @@ LotteryState& GetLotteryState();
 void LoadLotteryStateFromDB(const uint256& tipHash);
 
 /**
- * Write a post-block snapshot of state to evodb under blockHash.
- * Also appends blockHash to the persistent snapshot hash list used by PurgeStaleSnapshots.
- * Called inside ConnectBlock (within an open evoDb transaction) before the transaction commits.
+ * Write a post-block snapshot of state to evodb under blockHash, maintain the
+ * height-keyed snapshot index, and trim the snapshot exactly PTX_SNAPSHOT_KEEP
+ * below.  Called inside ConnectBlock (within an open evoDb transaction) before
+ * the transaction commits — so trims reach disk only with the chainstate
+ * flush, which is what makes the crash-replay base structurally un-purgeable.
+ * Idempotent per (blockHash, nHeight): a second write in the same block (the
+ * coalesce arm and the payout arm both snapshot) overwrites the snapshot and
+ * leaves the index unchanged — the old ls_H whole-vector bookkeeping was
+ * rewritten IN FULL on every block (O(n^2) cumulative churn) and
+ * double-appended per block, so any purge depth counted entries, not blocks.
  */
-void WriteLotteryStateSnapshotForBlock(const uint256& blockHash, const LotteryState& state);
+void WriteLotteryStateSnapshotForBlock(const uint256& blockHash, int nHeight, const LotteryState& state);
 
 /**
  * Read the post-block snapshot for blockHash from evodb into stateOut.
@@ -122,17 +130,17 @@ void WriteLotteryStateSnapshotForBlock(const uint256& blockHash, const LotterySt
  */
 bool ReadLotteryStateSnapshotForBlock(const uint256& blockHash, LotteryState& stateOut);
 
-// Snapshots to retain for reorg rollback. Covers the 100-block coinbase-maturity
-// finality horizon used by Bitcoin-lineage chains; any reorg deeper than this
-// would already violate other consensus rules before reaching LotteryState.
-static const int PTX_LOTTERY_SNAPSHOT_DEPTH = 100;
-
-/**
- * Erase evodb snapshots older than keepCount blocks.
- * Reads the snapshot hash list, erases the oldest (size - keepCount) entries
- * from evodb, then rewrites the trimmed list.
- * TODO: wire at Step 7 — call from ConnectBlock every PTX_LOTTERY_SNAPSHOT_DEPTH blocks.
- */
-void PurgeStaleSnapshots(int keepCount = PTX_LOTTERY_SNAPSHOT_DEPTH);
+// Snapshot retention for the lottery AND pose per-block snapshots (the two are
+// a deliberate mirror; pose uses this constant too).  Serves the DISCONNECT
+// consumer only — UndoSpecialTxsInBlock restores from the pprev snapshot of
+// every disconnecting block and refuses on a miss — so it must exceed reorg
+// depth, mirrored on KDD-070's DEFAULT_MAX_REORG_DEPTH + margin posture.  The
+// BUG-037 startup restore and the ReplayBlocks base seed need NO depth at
+// all: snapshot erasures commit only with the chainstate flush, so the newest
+// committed snapshot is always the reload tip's, at any replay depth.
+// (Known limit, same as KDD-070/BUG-028 RED-3: -maxreorg is a runtime arg;
+// a node run with -maxreorg greater than this constant narrows its own
+// disconnect coverage.)
+static const int PTX_SNAPSHOT_KEEP = DEFAULT_MAX_REORG_DEPTH + 120;
 
 #endif // Hemis_PTX_LOTTERY_STATE_H

@@ -46,11 +46,11 @@ struct PTXNodeRecord {
 //
 // The accumulator never diverged, because it already had exactly this
 // mechanism.  These functions are a deliberate mirror of
-// ptx_lottery_state.{h,cpp}: same key shape, same hash-list for purging, same
-// refuse-on-missing posture at disconnect.  Kept as free functions (not
-// members) for the same reason LotteryState does: the evoDb dependency stays
-// out of the tracker class.
-void WritePoseSnapshotForBlock(const uint256& blockHash,
+// ptx_lottery_state.{h,cpp}: same key shape, same height-keyed index and
+// PTX_SNAPSHOT_KEEP trim, same refuse-on-missing posture at disconnect.  Kept
+// as free functions (not members) for the same reason LotteryState does: the
+// evoDb dependency stays out of the tracker class.
+void WritePoseSnapshotForBlock(const uint256& blockHash, int nHeight,
                                const std::map<std::string, PTXNodeRecord>& records);
 
 // false when absent — the caller MUST treat that as an integrity failure and
@@ -58,8 +58,6 @@ void WritePoseSnapshotForBlock(const uint256& blockHash,
 // would silently zero every node's pose.
 bool ReadPoseSnapshotForBlock(const uint256& blockHash,
                               std::map<std::string, PTXNodeRecord>& recordsOut);
-
-void PurgeStalePoseSnapshots(int keepCount);
 
 // BUG-037: restore the tracker from the ps_S snapshot at the given block hash,
 // replacing whatever the flat file loaded.  The file is written on every credit

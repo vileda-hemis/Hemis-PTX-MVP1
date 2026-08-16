@@ -128,7 +128,7 @@ BOOST_AUTO_TEST_CASE(LotteryState_SnapshotAndRestore)
     {
         LOCK(cs_main);
         GetLotteryState() = stateA;
-        WriteLotteryStateSnapshotForBlock(blockHashA, stateA);
+        WriteLotteryStateSnapshotForBlock(blockHashA, 1, stateA);
     }
 
     // Simulate mutations from a subsequent block applied on top of A.
@@ -164,38 +164,66 @@ BOOST_AUTO_TEST_CASE(LotteryState_SnapshotAndRestore)
     }
 }
 
-// Write N snapshots, purge to keepCount, verify oldest are erased and newest remain.
-BOOST_AUTO_TEST_CASE(LotteryState_PurgeStaleSnapshots)
+// BUG-037 recon follow-up: the whole-vector purge was dead code (zero callers)
+// and its bookkeeping was rewritten in full every block.  Trimming now happens
+// inside the write itself: connecting height H retires the snapshot(s) at
+// exactly H - PTX_SNAPSHOT_KEEP.  Write a run of heights spanning the window
+// and verify (a) everything the window has passed over is gone, (b) the
+// window itself survives, (c) a same-block double-write (the coalesce arm and
+// the payout arm both snapshot) is idempotent — the old list double-counted,
+// making any depth half what it appeared.
+BOOST_AUTO_TEST_CASE(LotteryState_SnapshotTrimAtDepth)
 {
-    std::vector<uint256> hashes;
-    for (int i = 0; i < 5; i++) {
+    auto mkHash = [](int i) {
         unsigned char buf[32] = {};
-        buf[0] = static_cast<unsigned char>(i);
-        buf[1] = 0xBB;
-        uint256 bh(std::vector<unsigned char>(buf, buf + 32));
+        buf[0] = static_cast<unsigned char>(i & 0xff);
+        buf[1] = static_cast<unsigned char>((i >> 8) & 0xff);
+        buf[2] = 0xBB;
+        return uint256(std::vector<unsigned char>(buf, buf + 32));
+    };
 
+    const int first = 1;
+    const int last  = PTX_SNAPSHOT_KEEP + 5;   // heights 1..KEEP+5 -> trims 1..5
+    LOCK(cs_main);
+    for (int h = first; h <= last; h++) {
         LotteryState s;
-        s.accumulator_value = static_cast<CAmount>(i + 1) * 100000;
-
-        LOCK(cs_main);
-        WriteLotteryStateSnapshotForBlock(bh, s);
-        hashes.push_back(bh);
+        s.accumulator_value = static_cast<CAmount>(h) * 1000;
+        WriteLotteryStateSnapshotForBlock(mkHash(h), h, s);
+        // Same-block second write (payout arm after the coalesce arm).
+        WriteLotteryStateSnapshotForBlock(mkHash(h), h, s);
     }
 
-    PurgeStaleSnapshots(3);
-
-    // Oldest 2 (index 0, 1) must be erased.
-    for (int i = 0; i < 2; i++) {
+    // (a) Heights the trim window has passed over are erased.
+    for (int h = 1; h <= 5; h++) {
         LotteryState tmp;
-        BOOST_CHECK(!ReadLotteryStateSnapshotForBlock(hashes[i], tmp));
+        BOOST_CHECK_MESSAGE(!ReadLotteryStateSnapshotForBlock(mkHash(h), tmp),
+                            "snapshot at trimmed height " << h << " survived");
     }
 
-    // Newest 3 (index 2, 3, 4) must survive with correct values.
-    for (int i = 2; i < 5; i++) {
+    // (b) The retained window is intact, values correct.
+    for (int h = 6; h <= last; h++) {
         LotteryState tmp;
-        BOOST_CHECK(ReadLotteryStateSnapshotForBlock(hashes[i], tmp));
-        BOOST_CHECK_EQUAL(tmp.accumulator_value, static_cast<CAmount>(i + 1) * 100000);
+        BOOST_CHECK_MESSAGE(ReadLotteryStateSnapshotForBlock(mkHash(h), tmp),
+                            "snapshot inside the retention window missing at height " << h);
+        BOOST_CHECK_EQUAL(tmp.accumulator_value, static_cast<CAmount>(h) * 1000);
     }
+
+    // (c) Double-write idempotence proven by (a): had the index double-counted
+    // per write, the trim at H-KEEP would still fire once per height and the
+    // erasures above would be unaffected — so pin it directly: a fork sibling
+    // at one height is trimmed together with it.
+    LotteryState sib;
+    sib.accumulator_value = 42;
+    const int forkH = last + 1 - PTX_SNAPSHOT_KEEP;      // will be trimmed by writing last+1
+    WriteLotteryStateSnapshotForBlock(mkHash(90000), forkH, sib);   // branch sibling at forkH
+    LotteryState s;
+    WriteLotteryStateSnapshotForBlock(mkHash(last + 1), last + 1, s);
+    LotteryState tmp;
+    BOOST_CHECK_MESSAGE(!ReadLotteryStateSnapshotForBlock(mkHash(forkH), tmp),
+                        "canonical snapshot at trim height survived");
+    BOOST_CHECK_MESSAGE(!ReadLotteryStateSnapshotForBlock(mkHash(90000), tmp),
+                        "fork-sibling snapshot at trim height survived — per-height "
+                        "index must trim ALL hashes at that height");
 }
 
 // ---------------------------------------------------------------------------

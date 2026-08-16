@@ -701,7 +701,7 @@ BOOST_AUTO_TEST_CASE(Bug027_PoseReversedOnDisconnect_NotMonotonicAcrossReorgs)
     // Pre-block state + the pprev snapshot the undo path reads.
     const auto preRecords = g_ptx_pose_tracker.GetAllRecords();
     const int64_t preTickets = ticketSum(preRecords);
-    WritePoseSnapshotForBlock(prevHash, preRecords);
+    WritePoseSnapshotForBlock(prevHash, 1, preRecords);
 
     // Round-trip the same block's credits several times. Each iteration is one
     // connect + one disconnect — exactly what a chain switch does.
@@ -1011,7 +1011,7 @@ BOOST_AUTO_TEST_CASE(Bug037_PoseRestoredFromTipSnapshot_CorrectsCreditTimeFile)
     LOCK(cs_main);
 
     // The state the chain tip actually had — snapshot it, as connect does.
-    WritePoseSnapshotForBlock(tipHash, g_ptx_pose_tracker.GetAllRecords());
+    WritePoseSnapshotForBlock(tipHash, 1, g_ptx_pose_tracker.GetAllRecords());
     const Optional<CScript> atTip = PTX_SelectWinner(gmList, g_ptx_pose_tracker, entropy);
     BOOST_REQUIRE(atTip);
 

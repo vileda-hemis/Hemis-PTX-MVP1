@@ -5,11 +5,13 @@
 #include <ptx/ptx_pose.h>
 #include <evo/evodb.h>
 #include <logging.h>
+#include <ptx/ptx_lottery_state.h>   // PTX_SNAPSHOT_KEEP (shared retention)
 #include <sync.h>
 #include <util/system.h>
 #include <univalue.h>
 #include <validation.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 
@@ -264,20 +266,49 @@ void PTXPoSeTracker::Load()
 // convention ("ls_S"/"ls_H" -> "ps_S"/"ps_H") so the two are recognisably one
 // pattern rather than two inventions.
 static const std::string DB_POSE_STATE_SNAP  = "ps_S";
-static const std::string DB_POSE_SNAP_HASHES = "ps_H";
+static const std::string DB_POSE_SNAP_HASHES = "ps_H";   // legacy whole-vector bookkeeping, migrated away
+static const std::string DB_POSE_SNAP_INDEX  = "ps_I";   // ("ps_I", height) -> hashes snapshotted at that height
 
-void WritePoseSnapshotForBlock(const uint256& blockHash,
+void WritePoseSnapshotForBlock(const uint256& blockHash, int nHeight,
                                const std::map<std::string, PTXNodeRecord>& records)
 {
     AssertLockHeld(cs_main);
     evoDb->Write(std::make_pair(DB_POSE_STATE_SNAP, blockHash), records);
 
-    // Hash list drives PurgeStalePoseSnapshots — same bookkeeping LotteryState
-    // uses; without it the snapshots accumulate unbounded.
-    std::vector<uint256> hashes;
-    evoDb->Read(DB_POSE_SNAP_HASHES, hashes);
-    hashes.push_back(blockHash);
-    evoDb->Write(DB_POSE_SNAP_HASHES, hashes);
+    // Height-keyed index + bounded trim — deliberate mirror of
+    // WriteLotteryStateSnapshotForBlock; see the retention rationale at
+    // PTX_SNAPSHOT_KEEP.  The legacy ps_H vector was read and rewritten IN
+    // FULL every block (O(n^2) cumulative churn) and never purged — the
+    // purge function existed but had no caller.
+    std::vector<uint256> at;
+    evoDb->Read(std::make_pair(DB_POSE_SNAP_INDEX, (int32_t)nHeight), at);
+    if (std::find(at.begin(), at.end(), blockHash) == at.end()) {
+        at.push_back(blockHash);
+        evoDb->Write(std::make_pair(DB_POSE_SNAP_INDEX, (int32_t)nHeight), at);
+    }
+
+    const int hTrim = nHeight - PTX_SNAPSHOT_KEEP;
+    if (hTrim > 0) {
+        std::vector<uint256> old;
+        if (evoDb->Read(std::make_pair(DB_POSE_SNAP_INDEX, (int32_t)hTrim), old)) {
+            for (const uint256& h : old) {
+                evoDb->Erase(std::make_pair(DB_POSE_STATE_SNAP, h));
+            }
+            evoDb->Erase(std::make_pair(DB_POSE_SNAP_INDEX, (int32_t)hTrim));
+        }
+    }
+
+    std::vector<uint256> legacy;
+    if (evoDb->Read(DB_POSE_SNAP_HASHES, legacy)) {
+        const size_t keepTail = (size_t)2 * PTX_SNAPSHOT_KEEP;
+        const size_t eraseN = legacy.size() > keepTail ? legacy.size() - keepTail : 0;
+        for (size_t i = 0; i < eraseN; ++i) {
+            evoDb->Erase(std::make_pair(DB_POSE_STATE_SNAP, legacy[i]));
+        }
+        evoDb->Erase(DB_POSE_SNAP_HASHES);
+        LogPrintf("PTX PoSe: legacy snapshot list migrated (%u entries, %u pre-tail snapshots erased)\n",
+                  (unsigned)legacy.size(), (unsigned)eraseN);
+    }
 }
 
 bool ReadPoseSnapshotForBlock(const uint256& blockHash,
@@ -311,20 +342,3 @@ bool LoadPoseFromDB(const uint256& tipHash)
     return true;
 }
 
-void PurgeStalePoseSnapshots(int keepCount)
-{
-    std::vector<uint256> hashes;
-    if (!evoDb->Read(DB_POSE_SNAP_HASHES, hashes)) return;
-
-    int total = static_cast<int>(hashes.size());
-    if (total <= keepCount) return;
-
-    int eraseCount = total - keepCount;
-    for (int i = 0; i < eraseCount; i++) {
-        evoDb->Erase(std::make_pair(DB_POSE_STATE_SNAP, hashes[i]));
-    }
-    hashes.erase(hashes.begin(), hashes.begin() + eraseCount);
-    evoDb->Write(DB_POSE_SNAP_HASHES, hashes);
-
-    LogPrintf("PTX PoSe: purged %d stale snapshots, %d retained\n", eraseCount, keepCount);
-}
