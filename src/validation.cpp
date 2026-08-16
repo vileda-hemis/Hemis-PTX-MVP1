@@ -3960,6 +3960,38 @@ bool ReplayBlocks(const CChainParams& params, CCoinsView* view)
         assert(pindexFork != nullptr);
     }
 
+    // D-2 (BUG-037 family): the roll-forward below runs ProcessSpecialTxsInBlock,
+    // which judges PTX special txs against g_lotteryState and g_ptx_pose_tracker —
+    // and at this point in init the lottery singleton holds NOTHING (its only
+    // load site runs at LoadChainTip, AFTER this function) and the pose tracker
+    // holds the flat file's credit-time state.  Every replayed coalesce over a
+    // non-empty accumulator, and every replayed settlement boundary, would be
+    // judged against wrong state.  Seed both from the snapshots at the replay
+    // base.  The base is always <= the last successful flush tip (pindexOld IS
+    // that tip; the fork sits deeper only by a bounded reorg), and evoDb commits
+    // with the chainstate flush, so on any chain built by a snapshot-writing
+    // binary these snapshots exist.  Absence means a pre-snapshot datadir:
+    // fail loud and require -reindex rather than misjudge replayed history.
+    if (pindexFork != nullptr && pindexFork->nHeight > 0) {
+        const uint256 forkHash = pindexFork->GetBlockHash();
+        LotteryState seedLottery;
+        std::map<std::string, PTXNodeRecord> seedPose;
+        if (!ReadLotteryStateSnapshotForBlock(forkHash, seedLottery) ||
+            !ReadPoseSnapshotForBlock(forkHash, seedPose)) {
+            return error("%s: PTX state snapshot missing at replay base %s (h=%d) — "
+                         "rebuild the database with -reindex",
+                         __func__, forkHash.ToString(), pindexFork->nHeight);
+        }
+        GetLotteryState() = seedLottery;
+        g_ptx_pose_tracker.RestoreRecords(std::move(seedPose));
+        LogPrintf("%s: seeded PTX lottery+pose state at replay base %s (h=%d)\n",
+                  __func__, forkHash.ToString(), pindexFork->nHeight);
+    } else {
+        // First flush from genesis: the correct PTX state at the base is empty.
+        GetLotteryState().Reset();
+        g_ptx_pose_tracker.RestoreRecords({});
+    }
+
     // Rollback along the old branch.
     while (pindexOld != pindexFork) {
         if (pindexOld->nHeight > 0) { // Never disconnect the genesis block.

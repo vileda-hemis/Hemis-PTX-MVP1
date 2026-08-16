@@ -61,6 +61,21 @@ bool ReadPoseSnapshotForBlock(const uint256& blockHash,
 
 void PurgeStalePoseSnapshots(int keepCount);
 
+// BUG-037: restore the tracker from the ps_S snapshot at the given block hash,
+// replacing whatever the flat file loaded.  The file is written on every credit
+// and therefore holds CRASH-TIME state, not at-tip state; after a hard-reset
+// rollback the chainstate reloads at an earlier flush while the file stays at
+// the future, and every replayed settlement boundary is judged against records
+// it should not have yet — h360 of the 2026-08-16 incident, where all 161
+// nodes rejected their own valid history with ptxpayout-wrong-recipient and
+// re-staked a fork.  The snapshot at the LOADED TIP is the only pose source
+// keyed by block hash (the standing rule for consensus inputs), and evoDb
+// commits atomically with the chainstate flush, so that snapshot is present by
+// construction after any crash, at any replay depth.
+// Returns false when no snapshot exists at tipHash (pre-snapshot datadir or
+// genesis-only chain) — the caller owns that policy; the tracker is untouched.
+bool LoadPoseFromDB(const uint256& tipHash);
+
 class PTXPoSeTracker {
 public:
     // Committed but no valid reveal. pose_score += 5.

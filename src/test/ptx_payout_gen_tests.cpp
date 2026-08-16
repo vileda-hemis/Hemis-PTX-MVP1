@@ -983,4 +983,140 @@ BOOST_AUTO_TEST_CASE(Bug029_VerifyDBSentryCoversEveryMutatedPTXGlobal)
                         "sentry does not snapshot the BLS share store (BUG-029)");
 }
 
+// ---------------------------------------------------------------------------
+// BUG-037 — crash-rollback replay judged settlements against the flat file's
+// CREDIT-TIME pose instead of the loaded tip's snapshot, and every node on the
+// fleet rejected its own valid h360 with ptxpayout-wrong-recipient, marked
+// 360..972 invalid, and re-staked a fork that then BECAME consensus.  The fix
+// is LoadPoseFromDB: at startup the tracker is overwritten from the ps_S
+// snapshot at the loaded tip — the only pose source keyed by block hash.
+//
+// THE ASSERTION IS THE MECHANISM, NOT THE SYMPTOM: a tracker holding
+// "future" credits selects a different winner for the same entropy; restoring
+// from the tip snapshot returns selection to the at-tip verdict.  The
+// contamination step is REQUIRED to flip the winner first — otherwise the
+// restore would pass vacuously against already-matching state.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(Bug037_PoseRestoredFromTipSnapshot_CorrectsCreditTimeFile)
+{
+    CDeterministicGMList gmList;
+    std::vector<std::string> members;
+    SetupBug026Pose("b0370001", gmList, members);
+
+    const uint256 tipHash = uint256S("3737373737373737373737373737373737373737"
+                                     "373737373737373737373737");
+    const uint256 entropy = uint256S(
+        "5151515151515151515151515151515151515151515151515151515151515151");
+
+    LOCK(cs_main);
+
+    // The state the chain tip actually had — snapshot it, as connect does.
+    WritePoseSnapshotForBlock(tipHash, g_ptx_pose_tracker.GetAllRecords());
+    const Optional<CScript> atTip = PTX_SelectWinner(gmList, g_ptx_pose_tracker, entropy);
+    BOOST_REQUIRE(atTip);
+
+    // Simulate the crash-time flat file: credits from blocks PAST the tip
+    // survived in ptx_pose.dat (Save() runs on every credit) while the
+    // chainstate rolled back.  Same mechanism pin as BUG-026: the credit
+    // re-maps the entropy through total_tickets.
+    for (int round = 0; round < 3; ++round)
+        for (const std::string& nid : members)
+            g_ptx_pose_tracker.RecordHonestParticipation(nid);
+
+    const Optional<CScript> contaminated =
+        PTX_SelectWinner(gmList, g_ptx_pose_tracker, entropy);
+    BOOST_REQUIRE(contaminated);
+    BOOST_REQUIRE_MESSAGE(*contaminated != *atTip,
+        "future credits did not move the winner — fixture is inert and the "
+        "restore below would pass vacuously");
+
+    // A restore from a hash with no snapshot must refuse and leave the
+    // tracker untouched (the caller owns the missing-snapshot policy).
+    const uint256 missing = uint256S("dead0000000000000000000000000000000000000"
+                                     "00000000000000000000037");
+    BOOST_CHECK(!LoadPoseFromDB(missing));
+    const Optional<CScript> afterMiss =
+        PTX_SelectWinner(gmList, g_ptx_pose_tracker, entropy);
+    BOOST_REQUIRE(afterMiss);
+    BOOST_CHECK_MESSAGE(*afterMiss == *contaminated,
+        "a FAILED restore mutated the tracker");
+
+    // ★ THE BUG-037 ASSERTION: restore-at-tip returns selection to the
+    // at-tip verdict — the replayed block is judged by the state its chain
+    // position implies, not by when the file was last saved.
+    BOOST_REQUIRE(LoadPoseFromDB(tipHash));
+    const Optional<CScript> restored =
+        PTX_SelectWinner(gmList, g_ptx_pose_tracker, entropy);
+    BOOST_REQUIRE(restored);
+    BOOST_CHECK_MESSAGE(*restored == *atTip,
+        "restore-at-tip did not return winner selection to the at-tip verdict");
+}
+
+// ---------------------------------------------------------------------------
+// D-2 (BUG-037 family, structural) — ReplayBlocks must seed lottery AND pose
+// from the replay-base snapshots BEFORE rolling forward.  LoadLotteryStateFromDB's
+// only call site runs at LoadChainTip, AFTER ReplayBlocks: an interrupted-flush
+// replay used to judge every coalesce/payout against an EMPTY LotteryState.
+// Same idiom as the BUG-029 sentry test: the comment carries the invariant for
+// the reader, this carries it for the build.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(Bug037_D2_ReplayBlocksSeedsPTXStateBeforeRollForward)
+{
+    const std::string path = std::string(PTX_SRCDIR) + "/src/validation.cpp";
+    std::ifstream f(path, std::ios::binary);
+    BOOST_REQUIRE_MESSAGE(f.good(), "cannot open " << path);
+    std::stringstream ss;
+    ss << f.rdbuf();
+    const std::string src = ss.str();
+
+    const size_t fn = src.find("bool ReplayBlocks(");
+    BOOST_REQUIRE_MESSAGE(fn != std::string::npos, "ReplayBlocks not found");
+    const size_t fwd = src.find("Roll forward from the forking point", fn);
+    BOOST_REQUIRE_MESSAGE(fwd != std::string::npos,
+                          "ReplayBlocks roll-forward marker not found");
+    const std::string preForward = src.substr(fn, fwd - fn);
+
+    BOOST_CHECK_MESSAGE(
+        preForward.find("ReadLotteryStateSnapshotForBlock") != std::string::npos,
+        "ReplayBlocks does not seed LotteryState before rolling forward (D-2): "
+        "an interrupted-flush replay judges coalesce/payout against an empty "
+        "accumulator");
+    BOOST_CHECK_MESSAGE(
+        preForward.find("ReadPoseSnapshotForBlock") != std::string::npos,
+        "ReplayBlocks does not seed pose before rolling forward (BUG-037 on "
+        "the interrupted-flush path)");
+    BOOST_CHECK_MESSAGE(
+        preForward.find("rebuild the database with -reindex") != std::string::npos,
+        "ReplayBlocks does not fail loud on a missing replay-base snapshot — "
+        "silent misjudgement is the BUG-037 failure shape");
+}
+
+// ---------------------------------------------------------------------------
+// BUG-037 (structural) — init must restore pose at the loaded tip right where
+// LotteryState is restored, and refuse a history-bearing chain whose tip has
+// no snapshot (pre-snapshot datadir → -reindex), instead of silently judging
+// the ActivateBestChain roll-forward against the unanchored flat file.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(Bug037_InitRestoresPoseAtLoadedTip)
+{
+    const std::string path = std::string(PTX_SRCDIR) + "/src/init.cpp";
+    std::ifstream f(path, std::ios::binary);
+    BOOST_REQUIRE_MESSAGE(f.good(), "cannot open " << path);
+    std::stringstream ss;
+    ss << f.rdbuf();
+    const std::string src = ss.str();
+
+    const size_t lot = src.find("LoadLotteryStateFromDB(chainActive.Tip()");
+    BOOST_REQUIRE_MESSAGE(lot != std::string::npos,
+                          "LotteryState tip restore not found in init");
+    const size_t pose = src.find("LoadPoseFromDB(chainActive.Tip()", lot);
+    BOOST_CHECK_MESSAGE(pose != std::string::npos,
+        "init does not restore pose from the tip snapshot next to the "
+        "LotteryState restore (BUG-037)");
+    BOOST_CHECK_MESSAGE(
+        src.find("PoSe state has no snapshot at the loaded chain") != std::string::npos,
+        "init does not refuse a pre-snapshot datadir loudly (BUG-037 "
+        "fail-loud arm)");
+}
+
 BOOST_AUTO_TEST_SUITE_END()

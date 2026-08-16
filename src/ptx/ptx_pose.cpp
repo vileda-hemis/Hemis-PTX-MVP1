@@ -286,6 +286,31 @@ bool ReadPoseSnapshotForBlock(const uint256& blockHash,
     return evoDb->Read(std::make_pair(DB_POSE_STATE_SNAP, blockHash), recordsOut);
 }
 
+bool LoadPoseFromDB(const uint256& tipHash)
+{
+    std::map<std::string, PTXNodeRecord> snap;
+    if (tipHash.IsNull() || !ReadPoseSnapshotForBlock(tipHash, snap)) {
+        return false;
+    }
+
+    // Log the file-vs-snapshot delta before overwriting: this line is the
+    // observable proof that the restore DID something (or was a no-op) — the
+    // anti-vacuity signal for the BUG-037 green run.
+    const auto fileRecs = g_ptx_pose_tracker.GetAllRecords();
+    int64_t fileTickets = 0, snapTickets = 0;
+    for (const auto& kv : fileRecs) fileTickets += kv.second.lottery_tickets;
+    for (const auto& kv : snap)     snapTickets += kv.second.lottery_tickets;
+    LogPrintf("PTX PoSe: restored %u records (%lld tickets) from tip snapshot %s; "
+              "flat file held %u records (%lld tickets)%s\n",
+              (unsigned)snap.size(), (long long)snapTickets, tipHash.ToString(),
+              (unsigned)fileRecs.size(), (long long)fileTickets,
+              (fileRecs.size() != snap.size() || fileTickets != snapTickets)
+                  ? " — file was NOT at-tip, corrected" : "");
+
+    g_ptx_pose_tracker.RestoreRecords(std::move(snap));
+    return true;
+}
+
 void PurgeStalePoseSnapshots(int keepCount)
 {
     std::vector<uint256> hashes;

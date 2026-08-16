@@ -1592,6 +1592,30 @@ bool AppInitMain()
                     assert(chainActive.Tip() != nullptr);
                     // ODC-022: restore LotteryState from evodb snapshot at chain tip
                     LoadLotteryStateFromDB(chainActive.Tip()->GetBlockHash());
+                    // BUG-037: pose must come from the SAME anchor.  The flat
+                    // file loaded at Step 6 is credit-time state; after a hard
+                    // reset the chainstate reloads at an earlier flush and the
+                    // ActivateBestChain roll-forward from here judges every
+                    // replayed settlement against future records — the whole
+                    // fleet forked itself at h360 this way.  The BUG-025 reset
+                    // above fires only under fReindex and covers none of this.
+                    if (!LoadPoseFromDB(chainActive.Tip()->GetBlockHash())) {
+                        if (chainActive.Height() > 0 &&
+                            !g_ptx_pose_tracker.GetAllRecords().empty()) {
+                            // A chain with history but no pose snapshot at its
+                            // tip is a pre-snapshot datadir: judging replayed
+                            // blocks against the unanchored file is exactly the
+                            // BUG-037 failure shape.  Refuse loudly.
+                            strLoadError = strprintf(
+                                _("PoSe state has no snapshot at the loaded chain "
+                                  "tip (h=%d). You need to rebuild the database "
+                                  "using %s."),
+                                chainActive.Height(), "-reindex");
+                            break;
+                        }
+                        // Fresh or genesis-only chain: an empty tracker is the
+                        // correct state at this tip; nothing to restore.
+                    }
                 }
 
                 if (Params().NetworkIDString() == CBaseChainParams::MAIN) {
