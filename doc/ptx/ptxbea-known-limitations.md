@@ -264,3 +264,35 @@ appropriate for mainnet.
 Additionally, `nPTXSettlementWindow = 60` on ptxbea (60-block / ~60-minute cadence). The intended
 mainnet value is 1440 (daily settlement). Recalibration and re-test at 1440 blocks is a separate
 future step, post-16.9.
+
+---
+
+## Share loss is permanent until quorum rotation — there is no re-share path (ODC-071)
+
+A gamemaster's DKG key share (`ptx_shares.dat` in the datadir) is secret material produced by an
+interactive ceremony. It is **not derivable from the chain, not recomputable, and not recoverable
+from peers**. If it is lost, that member cannot sign for its quorum again — ever. The quorum
+continues at reduced margin (each loss is one signer closer to the 6-of-11 threshold failing) until
+scheduled rotation (W2.4) replaces the quorum wholesale with a fresh ceremony.
+
+**What loses the share:** deleting or restoring the datadir from a backup taken before the
+ceremony; disk failure; migrating hosts without carrying `ptx_shares.dat`; any procedure that
+regenerates the datadir. (A plain restart or `-reindex` does NOT lose it as of the BUG-039 fix —
+the file store survives both.)
+
+**What an affected operator should do:**
+1. Confirm the state: `ptx_quorum_health` shows `member: true, share_current: false` for the
+   affected quorum, and the log prints the "in_qual … but NO share is held" warning at startup.
+2. There is no operator action that recovers the share. Do not re-register; do not reindex —
+   neither helps, and the member's chain registration remains valid.
+3. Keep the node running and Ready. The member remains eligible for future formations; the next
+   ceremony it is selected into produces a fresh share, held and persisted normally.
+4. Expect the degraded state to last until the affected quorum rotates out on the schedule
+   (quorum age-based; see the rotation cadence for the network).
+
+**What to back up:** `ptx_shares.dat` is per-host secret material. If you snapshot datadirs, the
+snapshot must post-date the newest ceremony the node completed, or restoring it forfeits the newer
+shares (see above — permanently).
+
+The proper mainnet answer (a proactive re-share protocol or Dash-QDATA-shaped P2P share recovery)
+is design work tracked as ODC-071.
