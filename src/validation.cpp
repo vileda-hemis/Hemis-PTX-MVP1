@@ -1000,10 +1000,74 @@ void CheckForkWarningConditionsOnNewFork(CBlockIndex* pindexNewForkTip)
     CheckForkWarningConditions();
 }
 
+// Bounded pprev ancestry test — deliberately NOT GetAncestor: this fork's
+// GetAncestor follows pskip unguarded, which crashes on bare CBlockIndex
+// chains in unit tests (see the ptx_formation.cpp:713 note).
+static bool BlockIndexHasAncestor(const CBlockIndex* p, const CBlockIndex* anc)
+{
+    if (anc == nullptr) return false;
+    while (p != nullptr && p->nHeight >= anc->nHeight) {
+        if (p == anc) return true;
+        p = p->pprev;
+    }
+    return false;
+}
+
+// BUG-038: pindexBestHeader must not keep pointing into an invalid-marked
+// branch.  IsInitialBlockDownload compares the tip against it (chainHeight <
+// pindexBestHeader->nHeight - 24*6) and the header-sync logic steers by it, so
+// a node that rejected a longer branch used to wedge itself in PERMANENT IBD —
+// tx invs ignored, block announcements suppressed — until its own chain
+// out-grew the branch it had already refused.  The 2026-08-16 post-fork fleet
+// splintered exactly this way (1-hop propagation, rolls 0/6, callers and GMs
+// hundreds of blocks apart).  Upstream PIVX master (checked 2026-08-16)
+// carries the same defect — upstream-contribution candidate; modern Bitcoin
+// recomputes its best header on invalidation, which is what this ports.
+// Descendants are marked BLOCK_FAILED_CHILD explicitly (connect-failure
+// marking is otherwise lazy, leaving them formally clean for the recompute).
+// O(index * branch-depth) pprev walks on a rare event, not a hot path.
+void MarkDescendantsFailedAndFixBestHeader(CBlockIndex* pindexInvalid)
+{
+    AssertLockHeld(cs_main);
+    if (pindexInvalid == nullptr) return;
+
+    for (auto& entry : mapBlockIndex) {
+        CBlockIndex* p = entry.second;
+        if (p == pindexInvalid || (p->nStatus & BLOCK_FAILED_MASK)) continue;
+        if (p->nHeight > pindexInvalid->nHeight && BlockIndexHasAncestor(p, pindexInvalid)) {
+            p->nStatus |= BLOCK_FAILED_CHILD;
+            setDirtyBlockIndex.insert(p);
+            setBlockIndexCandidates.erase(p);
+        }
+    }
+
+    if (pindexBestHeader != nullptr &&
+        ((pindexBestHeader->nStatus & BLOCK_FAILED_MASK) ||
+         BlockIndexHasAncestor(pindexBestHeader, pindexInvalid))) {
+        CBlockIndex* best = chainActive.Tip();
+        for (auto& entry : mapBlockIndex) {
+            CBlockIndex* p = entry.second;
+            if (p->nStatus & BLOCK_FAILED_MASK) continue;
+            if (best == nullptr || CBlockIndexWorkComparator()(best, p)) best = p;
+        }
+        // phashBlock guard: unit tests exercise this on bare synthetic indices.
+        LogPrintf("%s: pindexBestHeader was on the invalidated branch — recomputed to %s (h=%d)\n",
+                  __func__,
+                  (best && best->phashBlock) ? best->GetBlockHash().ToString() : "null",
+                  best ? best->nHeight : -1);
+        pindexBestHeader = best;
+    }
+}
+
 void static InvalidChainFound(CBlockIndex* pindexNew)
 {
     if (!pindexBestInvalid || pindexNew->nChainWork > pindexBestInvalid->nChainWork)
         pindexBestInvalid = pindexNew;
+
+    // BUG-038: keep the header-best pointer honest the moment a branch is
+    // marked invalid, or every pindexBestHeader consumer (IBD latch included)
+    // keeps steering by a chain this node has permanently refused.
+    MarkDescendantsFailedAndFixBestHeader(pindexNew);
 
     LogPrintf("InvalidChainFound: invalid block=%s  height=%d  log2_work=%.16f  date=%s\n",
         pindexNew->GetBlockHash().ToString(), pindexNew->nHeight,

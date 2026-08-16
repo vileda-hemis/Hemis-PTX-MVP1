@@ -35,6 +35,7 @@
 #include "chain.h"
 #include "consensus/params.h"
 #include "uint256.h"
+#include "validation.h"   // BUG-038: MarkDescendantsFailedAndFixBestHeader + globals
 
 #include <boost/test/unit_test.hpp>
 
@@ -895,6 +896,82 @@ BOOST_AUTO_TEST_CASE(G4b_FleetShapeValidates)
     gateOff.nReformGrace = 0;
     BOOST_CHECK(!PTX_Formation_CheckParams(gateOff, err));
     BOOST_CHECK(err.find("nReformGrace") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// BUG-038 — pindexBestHeader must leave an invalidated branch.
+//
+// IsInitialBlockDownload's height arm compares the tip against
+// pindexBestHeader (chainHeight < bestHeader - 144).  After the 2026-08-16
+// fork every node's best header stayed on the branch it had just marked
+// invalid, so the whole fleet reported IBD permanently: tx invs ignored,
+// block announcements suppressed, 1-hop propagation, rolls 0/6.  Upstream
+// PIVX master carries the same defect (checked 2026-08-16).
+//
+// THE ASSERTION IS THE MECHANISM: invalidating the base of the longer branch
+// must (1) mark its descendants failed — connect-failure marking is lazy —
+// and (2) move pindexBestHeader to the best NON-FAILED header, which clears
+// the IBD height-arm deficit.  RED (inversion): a recompute that skips the
+// descendant marking still picks the failed branch tip; one that never
+// recomputes leaves the deficit at 30 blocks.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(bug038_bestheader_leaves_invalidated_branch)
+{
+    LOCK(cs_main);
+    std::deque<CBlockIndex> store;
+    std::deque<uint256> hashStore;
+
+    // Main branch h0..h50; longer branch forks at h30, extends to h80.
+    CBlockIndex* tipMain = ExtendBranch(store, nullptr, 51);
+    CBlockIndex* base30 = tipMain;
+    while (base30->nHeight > 30) base30 = base30->pprev;
+    CBlockIndex* tipLong = ExtendBranch(store, base30, 50);
+
+    int seq = 0;
+    for (CBlockIndex& ix : store) {
+        hashStore.emplace_back();
+        hashStore.back().SetHex(strprintf("%064x", 0xB038000 + (++seq)));
+        ix.phashBlock  = &hashStore.back();
+        ix.nChainWork  = ix.nHeight + 1;   // monotone work: longer branch is best
+        mapBlockIndex[hashStore.back()] = &ix;
+    }
+
+    // Preserve and stage the globals the helper reads.
+    CBlockIndex* savedBestHeader = pindexBestHeader;
+    const CBlockIndex* savedTip  = chainActive.Tip();
+    chainActive.SetTip(tipMain);
+    pindexBestHeader = tipLong;
+
+    // The wedge as-staged: tip 30 blocks under best header via a branch this
+    // node is about to refuse.
+    BOOST_REQUIRE_EQUAL(pindexBestHeader->nHeight, 80);
+    BOOST_REQUIRE(chainActive.Height() < pindexBestHeader->nHeight - 24);
+
+    // Invalidate the first block of the longer branch (mirrors the connect
+    // failure at the fork's first divergent block).
+    CBlockIndex* firstLong = tipLong;
+    while (firstLong->pprev != base30) firstLong = firstLong->pprev;
+    firstLong->nStatus |= BLOCK_FAILED_VALID;
+
+    MarkDescendantsFailedAndFixBestHeader(firstLong);
+
+    // (1) lazy descendants are now marked...
+    BOOST_CHECK_MESSAGE(tipLong->nStatus & BLOCK_FAILED_MASK,
+        "descendants of the invalidated block were not marked failed");
+    // ...but the shared history below the fork was NOT.
+    BOOST_CHECK(!(base30->nStatus & BLOCK_FAILED_MASK));
+    BOOST_CHECK(!(tipMain->nStatus & BLOCK_FAILED_MASK));
+
+    // (2) ★ THE BUG-038 ASSERTION: best header left the refused branch and
+    // the IBD height-arm deficit is gone.
+    BOOST_CHECK_MESSAGE(pindexBestHeader == tipMain,
+        "pindexBestHeader still points into the invalidated branch");
+    BOOST_CHECK(chainActive.Height() >= pindexBestHeader->nHeight - 24 * 6);
+
+    // Restore globals; drop synthetic index entries.
+    chainActive.SetTip(const_cast<CBlockIndex*>(savedTip));
+    pindexBestHeader = savedBestHeader;
+    for (const uint256& h : hashStore) mapBlockIndex.erase(h);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

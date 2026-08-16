@@ -356,6 +356,12 @@ CBlockIndex* FindForkInGlobalIndex(const CChain& chain, const CBlockLocator& loc
 /** Mark a block as invalid. */
 bool InvalidateBlock(CValidationState& state, const CChainParams& chainparams, CBlockIndex* pindex) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
+/** BUG-038: mark every descendant of pindexInvalid BLOCK_FAILED_CHILD and, if
+ * pindexBestHeader sits on the invalidated branch, recompute it over
+ * non-failed index entries.  Called from InvalidChainFound; exposed for unit
+ * tests (synthetic index chains). */
+void MarkDescendantsFailedAndFixBestHeader(CBlockIndex* pindexInvalid) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
 /** Remove invalidity status from a block and its descendants. */
 bool ReconsiderBlock(CValidationState& state, CBlockIndex* pindex);
 
