@@ -74,7 +74,19 @@ name: {project}
 
 x-node-defaults: &node-defaults
   image: {image}
-  restart: unless-stopped
+  restart: "{restart}"
+  # ★ 2026-08-15 host-protection (both are root causes, not tidying):
+  # mem_limit — one daemon can never eat the host (the 45-day fleet died at the
+  # 94 GiB wall; compiled defaults allow ~600 MB/daemon). GMs 400m; callers
+  # override to 768m (treasury wallet + producer duties).
+  # logging — bounded json-file logs; unbounded UpdateTip spam FILLED the root
+  # disk on Jul 3 and killed journald persistence for 43 days.
+  mem_limit: 400m
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
   networks:
     - {project}-net
   environment: &node-env
@@ -114,12 +126,14 @@ def caller_v6(k):
     return f"{V6_PREFIX}{10 - (k - 1)}"
 
 
-# ── MIXED-FAMILY (2026-08-10): the permanent fleet is ~85% v6 / 15% v4 to model
-# mainnet (~332-336 of ~392 GMs are v6).  gm_is_v6 assigns family per-node so a
+# ── MIXED-FAMILY (2026-08-10): the permanent fleet is ~80% v6 / 20% v4 to model
+# mainnet (majority-v6 population).  gm_is_v6 assigns family per-node so a
 # quorum's random membership is realistically cross-family.  ★ THIS RULE MUST BE
 # BYTE-IDENTICAL in harness/bootstrap.py (registration) — drift = the split blocker.
-# Every 7th GM is v4 → for N=120: 17 v4 / 103 v6 (~85.8%).  Deterministic (no RNG).
-MIXED_V4_EVERY = 7
+# Every 5th GM is v4 (2026-08-15, was 7): at N=153 that is 30 v4 / 123 v6 → ~2.2
+# v4 per 11-quorum, so a ~13-quorum fleet almost never draws an all-v6 quorum and
+# the cross-family DKG path stays exercised in every soak window.  Deterministic.
+MIXED_V4_EVERY = 5
 
 
 def gm_is_v6(i):
@@ -179,8 +193,9 @@ def caller_name(k, callers):
 def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser,
                  caller_staking=0, gm_wallet_less=1,
                  wire_operators=False, project=DEF_PROJECT, callers=1, v6_gm=0,
-                 mixed_v6=False):
-    lines = [HEADER.format(n=n, image=image, rpcuser=rpcuser, project=project)]
+                 mixed_v6=False, restart="unless-stopped"):
+    lines = [HEADER.format(n=n, image=image, rpcuser=rpcuser, project=project,
+                           restart=restart)]
 
     # ── caller ──────────────────────────────────────────────────────────
     # KDD-064 session hardening (2026-07-18): 3 addnodes was single-points-of-
@@ -209,6 +224,7 @@ def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser,
         lines.append(f"""\
   {cname}:
     <<: *node-defaults
+    mem_limit: 768m
     container_name: {project}-{cname}
     hostname: {cname}
     networks:
@@ -386,6 +402,11 @@ def main():
     ap.add_argument("--registration", default=None,
                     help="registration-NXX.json — wires -gamemaster=1 + "
                          "-gmoperatorprivatekey per GM (secrets to .env only)")
+    ap.add_argument("--restart", default="unless-stopped", choices=["no", "unless-stopped"],
+                    help="container restart policy (2026-08-15: pass 'no' for a "
+                         "fresh bring-up so no host event resurrects the whole "
+                         "fleet unattended — the crash-loop lesson; flip to "
+                         "unless-stopped only once the fleet is verified stable)")
     args = ap.parse_args()
 
     if not (2 <= args.n <= 500):
@@ -432,7 +453,8 @@ def main():
                              callers=args.callers,
                              caller_staking=args.caller_staking,
                              gm_wallet_less=args.gm_wallet_less,
-                             v6_gm=args.v6_gm, mixed_v6=args.mixed_v6))
+                             v6_gm=args.v6_gm, mixed_v6=args.mixed_v6,
+                             restart=args.restart))
 
     env_path = os.path.join(args.out, ".env")
     if os.path.exists(env_path):
@@ -460,6 +482,7 @@ def main():
         "project": args.project, "port_base": args.port_base,
         "subnet_base": args.subnet_base, "data_root": args.data_root,
         "out": args.out, "image": args.image, "rpcuser": args.rpcuser,
+        "restart": args.restart,
     }
     with open(os.path.join(args.out, ".fleet-manifest.json"), "w") as f:
         json.dump(manifest, f, indent=1)

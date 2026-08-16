@@ -278,6 +278,22 @@ class W2Cluster:
     def up(self):
         self._assert_w2_compose()
         self.assert_poc_untouched("pre-up")
+        # ★ STAGED BRING-UP (2026-08-15, hardware mitigation — NOT optional for
+        # large fleets): both node1 hardware crashes fired minutes into a
+        # 300+-daemon mass startup (peak all-core load + power inrush), and the
+        # memory wall is only visible if someone is watching while it fills.
+        # W2_UP_BATCH=<k> brings the fleet up k services at a time — GMs first,
+        # CALLERS LAST — settling each batch (every daemon answering RPC) and
+        # checking host MemAvailable + PSI between batches. The guard ABORTS the
+        # bring-up rather than pushing the host toward the cliff.
+        batch = int(os.environ.get("W2_UP_BATCH", "0") or 0)
+        if batch > 0:
+            self._up_staged(batch)
+        else:
+            self._up_all()
+        self.assert_poc_untouched("post-up")
+
+    def _up_all(self):
         # ★ docker's host-port binding RACES when many containers start in parallel
         # under host load ("failed to set up container networking … address already
         # in use") — a transient that clears on retry, because `compose up -d` is
@@ -295,7 +311,85 @@ class W2Cluster:
             time.sleep(4)
         else:
             raise RuntimeError(f"compose up failed after 5 attempts:\n{last}")
-        self.assert_poc_untouched("post-up")
+
+    # ── staged bring-up helpers (2026-08-15) ────────────────────────────
+    def _host_pressure(self):
+        """(MemAvailable GiB, PSI memory 'some' avg10) — the two cliff signals."""
+        avail_gib = 0.0
+        with open("/proc/meminfo") as f:
+            for ln in f:
+                if ln.startswith("MemAvailable:"):
+                    avail_gib = int(ln.split()[1]) / (1024 * 1024)
+                    break
+        psi = 0.0
+        try:
+            with open("/proc/pressure/memory") as f:
+                for ln in f:
+                    if ln.startswith("some"):
+                        psi = float(ln.split()[1].split("=")[1])
+                        break
+        except OSError:
+            pass
+        return avail_gib, psi
+
+    def _settle_batch(self, names, timeout=420):
+        """Wait until every container in the batch answers RPC via docker exec
+        (in-container Hemis-cli reads the entrypoint-rendered conf — no host
+        port assumptions). Returns the set that did NOT settle."""
+        deadline = time.time() + timeout
+        pending = set(names)
+        while pending and time.time() < deadline:
+            for nm in sorted(pending):
+                r = subprocess.run(
+                    ["docker", "exec", f"{self.project}-{nm}", "Hemis-cli",
+                     "-ptxbea", "-datadir=/root/.hemis-ptxbea", "getblockcount"],
+                    capture_output=True, text=True)
+                if r.returncode == 0:
+                    pending.discard(nm)
+            if pending:
+                time.sleep(3)
+        return pending
+
+    def _up_staged(self, batch):
+        floor_gib = float(os.environ.get("W2_MEM_FLOOR_GIB", "20"))
+        psi_ceiling = float(os.environ.get("W2_PSI_CEILING", "15"))
+        # GMs first, callers LAST (the callers join a settled mesh).
+        services = [nd.name for nd in self.gms] + [nd.name for nd in self.callers]
+        avail0, _ = self._host_pressure()
+        started = 0
+        for lo in range(0, len(services), batch):
+            chunk = services[lo:lo + batch]
+            last = None
+            for attempt in range(1, 6):
+                r = self._compose("up", "-d", *chunk, check=False)
+                if r.returncode == 0:
+                    break
+                last = r.stderr
+                print(f"[cluster] staged up attempt {attempt}/5 failed for "
+                      f"{chunk[0]}..{chunk[-1]} — retrying")
+                time.sleep(4)
+            else:
+                raise RuntimeError(
+                    f"staged compose up failed after 5 attempts:\n{last}")
+            unsettled = self._settle_batch(chunk)
+            if unsettled:
+                raise RuntimeError(
+                    f"staged up: batch {chunk[0]}..{chunk[-1]} has "
+                    f"{len(unsettled)} daemon(s) not answering RPC after settle "
+                    f"timeout: {sorted(unsettled)[:6]} — stopping the bring-up "
+                    f"for inspection (do not push through)")
+            started += len(chunk)
+            avail, psi = self._host_pressure()
+            per_daemon_mib = ((avail0 - avail) * 1024 / started) if started else 0
+            print(f"[cluster] staged up {started}/{len(services)} "
+                  f"({chunk[0]}..{chunk[-1]}): MemAvailable {avail:.1f} GiB, "
+                  f"PSI-mem some avg10={psi}, ~{per_daemon_mib:.0f} MiB/daemon")
+            if avail < floor_gib or psi > psi_ceiling:
+                raise RuntimeError(
+                    f"HOST MEMORY GUARD: MemAvailable {avail:.1f} GiB "
+                    f"(floor {floor_gib}) / PSI {psi} (ceiling {psi_ceiling}) "
+                    f"after {started} daemons — STOP AND REPORT, do not "
+                    f"continue the bring-up")
 
     def stop(self):
         """Graceful stop, volumes and containers KEPT — the banking-safe halt."""

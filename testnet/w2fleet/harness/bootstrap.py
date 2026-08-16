@@ -201,8 +201,9 @@ def _find_vout(treasury: Node, txid: str, addr: str, amount: float) -> int:
 # ★ LOCKSTEP with gen_fleet.gm_is_v6 — MUST be byte-identical (family assignment
 # must match between the advertised externalip and the registered ip_port, or a
 # GM registers one family and advertises another → never reaches READY). Every
-# 7th GM is v4 → for N=120: 17 v4 / 103 v6 (~85.8%). 1-indexed. Deterministic.
-MIXED_V4_EVERY = 7
+# 5th GM is v4 (2026-08-15, was 7): N=153 → 30 v4 / 123 v6, ~2.2 v4 per
+# 11-quorum, so the cross-family DKG path is exercised in every soak window.
+MIXED_V4_EVERY = 5
 
 
 def gm_is_v6(i):
@@ -212,7 +213,8 @@ def gm_is_v6(i):
 def register_gms(treasury: Node, cluster: W2Cluster,
                  gm_labels: List[str], v6_gm: int = 0,
                  mixed_v6: bool = False, v6_prefix: str = "fd00:31::",
-                 start_idx: int = 1) -> Dict[str, dict]:
+                 start_idx: int = 1,
+                 journal_path: Optional[str] = None) -> Dict[str, dict]:
     """External-collateral protx_register for each GM, batched.
 
     KDD-033: suffix = hash(collateralOutpoint) fingerprints the specific
@@ -391,6 +393,17 @@ def register_gms(treasury: Node, cluster: W2Cluster,
             "operator_pubkey": bls["public"],
             "operator_secret": bls["secret"],
         }
+        # ★ INCREMENTAL PERSIST (2026-08-15, the gm241-251 orphan lesson): the
+        # operator secret hits the HOST DISK the moment the registration exists
+        # on-chain, not after the whole batch — a mid-batch exception can no
+        # longer orphan already-registered GMs with unrecoverable keys
+        # (ProUpReg is SPORK_21-gated; a lost key means a lost slot).
+        if journal_path:
+            tmp = journal_path + ".tmp"
+            with open(tmp, "w") as jf:
+                json.dump(results, jf, indent=1)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, journal_path)
         print(f"[bootstrap] {label} -> {compound} protx={protx_hash[:16]}...")
 
         # Amendment-1 pacing: flush the mempool every REG_BATCH registrations
@@ -512,6 +525,8 @@ def arm_rewire(registration: Dict[str, dict], env_path: str) -> bool:
         cmd.append("--mixed-v6")
     if man.get("v6_gm"):
         cmd += ["--v6-gm", str(man["v6_gm"])]
+    if man.get("restart"):
+        cmd += ["--restart", man["restart"]]
     print("[bootstrap] ARM: re-wiring compose+.env with operator keys "
           "(gen_fleet --registration) — GMs will recreate ARMED")
     subprocess.run(cmd, check=True)
@@ -558,7 +573,10 @@ def bootstrap(cluster: W2Cluster,
     fund_producer_set(treasury, cluster.callers)
 
     registration = register_gms(treasury, cluster, gm_labels, v6_gm=v6_gm,
-                                mixed_v6=mixed_v6, v6_prefix=v6_prefix)
+                                mixed_v6=mixed_v6, v6_prefix=v6_prefix,
+                                journal_path=os.path.join(
+                                    os.path.dirname(os.path.abspath(env_path)),
+                                    "registration-journal.json"))
 
     current = treasury.getblockcount()
     wait_for_height(treasury, current + 1, timeout=900)
