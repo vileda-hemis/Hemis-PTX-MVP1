@@ -167,7 +167,15 @@ static bool ProcessUpnp()
     struct IGDdatas data{};
     int r;
 
+#if MINIUPNPC_API_VERSION >= 18
+    // miniupnpc 2.2.8+ added the wanaddr out-params (API_VERSION 18).
     r = UPNP_GetValidIGD(devlist, &urls, &data, lanaddr, sizeof(lanaddr), NULL, 0);
+#else
+    // depends ships 2.2.2 (API_VERSION < 18): the 5-argument signature. Same
+    // guard idiom as the upnpDiscover call above — the cross-build compiles
+    // against depends while the Linux builder has a newer system miniupnpc.
+    r = UPNP_GetValidIGD(devlist, &urls, &data, lanaddr, sizeof(lanaddr));
+#endif
     if (r == 1) {
         if (fDiscover) {
             char externalIPAddress[40];
