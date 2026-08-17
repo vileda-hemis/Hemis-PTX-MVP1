@@ -1916,12 +1916,14 @@ BOOST_AUTO_TEST_CASE(ODC064_FailureBranchesLogTheirCause)
     // pointed the check at that helper and made it unfixable-by-construction.
     const size_t nz = fanout.find("response.status != 200) {");
     BOOST_REQUIRE_MESSAGE(nz != std::string::npos, "FanOutSign non-200 branch not found");
-    // ★ ANTI-VACUITY: bound the window to the ARM ITSELF (up to its `continue;`).
+    // ★ ANTI-VACUITY: bound the window to the ARM ITSELF. The arm lives in the
+    // parallel dialer's completion callback (since the fanpar change) and ends
+    // with `return;` — previously it was a loop arm ending with `continue;`.
     // A loose window passes on the success path's own `res.read(response.body)`
     // further down — i.e. it would go green without the fix. Caught by observing
     // which sub-checks passed in the RED run.
-    const size_t armEnd = fanout.find("continue;", nz);
-    BOOST_REQUIRE_MESSAGE(armEnd != std::string::npos, "non-200 arm has no continue");
+    const size_t armEnd = fanout.find("return;", nz);
+    BOOST_REQUIRE_MESSAGE(armEnd != std::string::npos, "non-200 arm has no return");
     const std::string arm = fanout.substr(nz, armEnd - nz);
     BOOST_CHECK_MESSAGE(arm.find("LogPrintf") != std::string::npos,
                         "ODC-064: non-200 arm does not log at all");
