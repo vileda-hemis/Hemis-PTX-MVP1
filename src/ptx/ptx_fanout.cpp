@@ -25,9 +25,12 @@
 #include <event2/event.h>
 #include <event2/http.h>
 #include <event2/keyvalq_struct.h>
+#include <event2/util.h>
 
 #include <univalue.h>
 
+#include <cassert>
+#include <deque>
 #include <map>
 #include <set>
 #include <string>
@@ -133,6 +136,20 @@ bool PTX_ResolveMemberAddr(const std::string& node_id, const uint256& proTxHash,
     const PTXNodeInfo* ni = PTX_FindNode(node_id);
     if (ni) { host_out = ni->host; port_out = ni->port; if (via) *via = "static"; return true; }
     return false;
+}
+
+// Null-dnsbase discipline: obtain_evhttp_connection_base passes a NULL dnsbase,
+// so a NON-numeric host makes libevent do a BLOCKING getaddrinfo inside the
+// event loop — which serializes the parallel sign pass on that one member.
+// DGM-derived hosts are always numeric (CService::ToStringIP); a static
+// -ptxnode entry may not be. Asserted in debug builds, logged in release
+// (the dial still proceeds — it blocks only its own slot's setup).
+bool PTX_IsNumericHost(const std::string& host)
+{
+    struct in_addr a4;
+    struct in6_addr a6;
+    return evutil_inet_pton(AF_INET, host.c_str(), &a4) == 1 ||
+           evutil_inet_pton(AF_INET6, host.c_str(), &a6) == 1;
 }
 
 } // namespace
@@ -324,6 +341,82 @@ void PTX_FanOutReveal(const std::string& round_id,
 // PTX_FanOutSign  (Phase 2 BLS)
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// One member's dial within a parallel sign pass. STABLE STORAGE REQUIRED: the
+// libevent callbacks hold a raw pointer to this object for the whole pass, so
+// the pass keeps these in a std::deque — never a vector, whose reallocation
+// would move live callback targets.
+struct PTXSignDialCtx {
+    std::string node_id;
+    PTXHTTPReply reply;                 // filled by the completion callback
+    struct PTXSignPassState* pass{nullptr};
+    raii_evhttp_connection evcon;       // per-member connection. The ctx deque is
+                                        // declared AFTER the pass's event_base, so
+                                        // every connection is destroyed BEFORE the
+                                        // base — the order libevent requires.
+    bool dispatched{false};
+};
+
+// Pass-level shared state the callbacks update. Single-threaded by design:
+// everything here runs inside one event_base_dispatch on the calling thread —
+// no locks, and none may be added (callbacks must not block the loop).
+struct PTXSignPassState {
+    event_base* base{nullptr};
+    size_t threshold{0};
+    std::map<std::string, std::vector<uint8_t>>* collected{nullptr};
+};
+
+// The error cb receives the request's cb_arg, which in the parallel pass is a
+// PTXSignDialCtx — ptx_http_error_cb's PTXHTTPReply cast would scribble on it.
+#if LIBEVENT_VERSION_NUMBER >= 0x02010300
+void ptx_sign_dial_error_cb(enum evhttp_request_error err, void* arg)
+{
+    PTXSignDialCtx* ctx = static_cast<PTXSignDialCtx*>(arg);
+    ctx->reply.error = (int)err;
+}
+#endif
+
+// Completion callback: the partial is parsed HERE, not after dispatch —
+// reaching threshold must break the loop at the threshold-th FASTEST
+// responder, leaving the slow members' dials unfinished. That early exit at
+// the t-th fastest (never the slowest) is the point of the parallel pass.
+void ptx_sign_dial_done(struct evhttp_request* req, void* arg)
+{
+    PTXSignDialCtx* ctx = static_cast<PTXSignDialCtx*>(arg);
+    ptx_http_done(req, &ctx->reply);    // handles req == NULL (aborted/failed)
+    PTXSignPassState* pass = ctx->pass;
+    if (ctx->reply.status != 200) return;   // classified after dispatch
+    try {
+        UniValue res;
+        if (!res.read(ctx->reply.body)) return;
+        UniValue rval = find_value(res, "result");
+        if (!rval.isObject()) return;
+        UniValue sig_val = find_value(rval, "sig_hex");
+        if (!sig_val.isStr()) return;
+        const std::string& sig_hex = sig_val.get_str();
+        if (!IsHex(sig_hex)) return;
+        std::vector<uint8_t> sig_bytes = ParseHex(sig_hex);
+        if ((int)sig_bytes.size() != PTX_SIG_BYTES) {
+            LogPrintf("PTX: FanOutSign: %s bad sig size %d\n",
+                      ctx->node_id, (int)sig_bytes.size());
+            return;
+        }
+        (*pass->collected)[ctx->node_id] = std::move(sig_bytes);
+        LogPrintf("PTX: FanOutSign: %s got partial sig (%d/%zu)\n",
+                  ctx->node_id, (int)pass->collected->size(), pass->threshold);
+        // STOP-AT-THRESHOLD: a t-of-n threshold signature is fully recoverable
+        // at t. This is the correctness of the t-of-n contract, not just an
+        // optimization: n=11/t=6 must gate at 6, never at 11.
+        if (pass->threshold > 0 && pass->collected->size() >= pass->threshold)
+            event_base_loopbreak(pass->base);
+    } catch (...) {
+        LogPrintf("PTX: FanOutSign: %s parse error\n", ctx->node_id);
+    }
+}
+
+} // namespace
+
 std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
     const std::string& round_id,
     const uint256& round_seed,
@@ -350,14 +443,49 @@ std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
     // propagation; stop-at-threshold means success still returns at the 6th
     // partial, so the raised ceiling costs nothing on the happy path — it only
     // spends time that previously became a forfeited stake.
-    static const int FANOUT_MAX_ATTEMPTS = 60;   // ~9s at 150ms/pass (was 12/~2s)
+    static const int FANOUT_MAX_ATTEMPTS = 60;   // pass count, not a time bound
     static const int FANOUT_RETRY_MS     = 150;
+    // Wall-clock ceiling (doc/ptx/FANOUT_BUDGET_ANALYSIS.md §5): the pass count
+    // bounds passes, not time — realized pass cost scales with RTT (131.7s
+    // observed at 400ms pair RTT on the sequential dialer). 30s is >2x the
+    // worst legitimate ladder observation (14.33s, at an RTT beyond mainnet
+    // p99): it rejects nothing real and converts the minutes-scale stall class
+    // into a bounded clean failure the forfeit/abandon machinery already
+    // handles. Checked per pass — granularity is one pass, itself bounded by
+    // the 5s per-member timeout now that members are dialed concurrently.
+    static const int FANOUT_WALL_MS      = 30000;
+    const auto wall_start = std::chrono::steady_clock::now();
     std::set<std::string> pending(member_ids.begin(), member_ids.end());
 
     for (int attempt = 0; attempt < FANOUT_MAX_ATTEMPTS && !pending.empty(); ++attempt) {
+    {
+        const auto wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - wall_start).count();
+        if (wall_ms >= FANOUT_WALL_MS) {
+            LogPrintf("PTX: FanOutSign: wall-clock ceiling %dms hit after %d pass(es) "
+                      "(%zu collected, %d still pending) — returning\n",
+                      FANOUT_WALL_MS, attempt, collected.size(), (int)pending.size());
+            return collected;
+        }
+    }
     if (attempt > 0)
         std::this_thread::sleep_for(std::chrono::milliseconds(FANOUT_RETRY_MS));
     std::set<std::string> retry_next;
+
+    // PARALLEL PASS: every pending member is dialed concurrently on ONE event
+    // base; the completion callback parses in place and breaks the loop at the
+    // threshold-th FASTEST partial. Declaration order is load-bearing and must
+    // not be "tidied": base first, pass state second, ctx deque last —
+    // destruction then runs connections → pass state → base, the order
+    // libevent requires (and callbacks fired during connection teardown still
+    // see a live pass state and base).
+    raii_event_base base = obtain_event_base();
+    PTXSignPassState pass;
+    pass.base = base.get();
+    pass.threshold = threshold;
+    pass.collected = &collected;
+    std::deque<PTXSignDialCtx> dials;
+    size_t dispatched = 0;
 
     for (const auto& node_id : pending) {
         // Test hook (mirrors FanOutReveal's fail-mode handling): a 'withhold' or
@@ -391,22 +519,33 @@ std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
             }
         }
 
+        // Null-dnsbase discipline (see PTX_IsNumericHost): a non-numeric host
+        // does a BLOCKING resolve during its dial's setup. Assert in debug;
+        // in release, log and proceed — only this member's setup stalls.
+        if (!PTX_IsNumericHost(mhost)) {
+            LogPrintf("PTX: FanOutSign: %s host '%s' not numeric — NULL-dnsbase "
+                      "blocking resolve stalls this dial's setup\n", node_id, mhost);
+            assert(false && "non-numeric fan-out host with NULL dnsbase");
+        }
+
         // KDD-070 P1: gm_bls_sign takes (round_seed_hex, quorum_hash) — the
         // quorum_hash selects which CURRENT share the member signs with.
         UniValue params(UniValue::VARR);
         params.push_back(round_seed.GetHex());
         params.push_back(quorum_hash.GetHex());
 
-        // Use raw HTTP call; parse sig_hex from body directly (not "accepted" pattern).
-        raii_event_base base = obtain_event_base();
-        raii_evhttp_connection evcon = obtain_evhttp_connection_base(base.get(), mhost, mport);
-        evhttp_connection_set_timeout(evcon.get(), 5);
+        // Raw HTTP; sig_hex parsed by the completion callback (not "accepted").
+        dials.emplace_back();
+        PTXSignDialCtx& ctx = dials.back();
+        ctx.node_id = node_id;
+        ctx.pass = &pass;
+        ctx.evcon = obtain_evhttp_connection_base(base.get(), mhost, mport);
+        evhttp_connection_set_timeout(ctx.evcon.get(), 5);
 
-        PTXHTTPReply response;
-        raii_evhttp_request req = obtain_evhttp_request(ptx_http_done, &response);
+        raii_evhttp_request req = obtain_evhttp_request(ptx_sign_dial_done, &ctx);
         if (!req) continue;
 #if LIBEVENT_VERSION_NUMBER >= 0x02010300
-        evhttp_request_set_error_cb(req.get(), ptx_http_error_cb);
+        evhttp_request_set_error_cb(req.get(), ptx_sign_dial_error_cb);
 #endif
 
         struct evkeyvalq* hdrs = evhttp_request_get_output_headers(req.get());
@@ -426,14 +565,33 @@ std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
         if (!out) continue;
         evbuffer_add(out, body.data(), body.size());
 
-        int r = evhttp_make_request(evcon.get(), req.get(), EVHTTP_REQ_POST, "/");
-        req.release();
+        int r = evhttp_make_request(ctx.evcon.get(), req.get(), EVHTTP_REQ_POST, "/");
+        req.release(); // ownership transferred to evcon — looks like a leak to a
+                       // tidy-up; it is the libevent contract. DO NOT "fix".
         if (r != 0) continue;
+        ctx.dispatched = true;
+        ++dispatched;
+    }
+
+    if (dispatched > 0)
         event_base_dispatch(base.get());
 
+    if (threshold > 0 && collected.size() >= threshold) {
+        LogPrintf("PTX: FanOutSign: threshold %zu reached — returning "
+                  "(%zu partials, %d attempt(s))\n",
+                  threshold, collected.size(), attempt + 1);
+        return collected;
+    }
+
+    // Post-dispatch classification — semantics unchanged from the sequential
+    // dialer: only the RETRYABLE "commitment not seen yet" (-32051, relay lag)
+    // is retried next pass; terminal refusals and transport errors drop
+    // (retrying cannot help them). Successes were consumed in-callback.
+    for (const auto& c : dials) {
+        if (collected.count(c.node_id)) continue;
+        const std::string& node_id = c.node_id;
+        const PTXHTTPReply& response = c.reply;
         if (response.status != 200) {
-            // Distinguish the RETRYABLE "commitment not seen yet" (-32051, relay
-            // lag) from terminal refusals — only the former is retried next pass.
             bool retryable = false;
             try {
                 UniValue res;
@@ -451,46 +609,15 @@ std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
             // newline-flattened so a broken or hostile peer cannot flood the log.
             static const size_t ODC064_BODY_MAX = 200;
             std::string body = response.body.substr(0, ODC064_BODY_MAX);
-            for (char& c : body) { if (c == '\n' || c == '\r' || c == '\t') c = ' '; }
+            for (char& ch : body) { if (ch == '\n' || ch == '\r' || ch == '\t') ch = ' '; }
             LogPrintf("PTX: FanOutSign: %s HTTP %d %s body=%s%s\n", node_id, response.status,
                       retryable ? "RETRY(not-seen)" : "FAILED", body,
                       response.body.size() > ODC064_BODY_MAX ? " …[truncated]" : "");
             if (retryable) retry_next.insert(node_id);
             continue;
         }
-
-        try {
-            UniValue res;
-            if (!res.read(response.body)) continue;
-            UniValue rval = find_value(res, "result");
-            if (!rval.isObject()) continue;
-            UniValue sig_val = find_value(rval, "sig_hex");
-            if (!sig_val.isStr()) continue;
-            std::string sig_hex = sig_val.get_str();
-            if (!IsHex(sig_hex)) continue;
-            std::vector<uint8_t> sig_bytes = ParseHex(sig_hex);
-            if ((int)sig_bytes.size() != PTX_SIG_BYTES) {
-                LogPrintf("PTX: FanOutSign: %s bad sig size %d\n", node_id, (int)sig_bytes.size());
-                continue;
-            }
-            collected[node_id] = std::move(sig_bytes);
-            LogPrintf("PTX: FanOutSign: %s got partial sig (%d/%zu)\n",
-                      node_id, (int)collected.size(), threshold);
-            // STOP-AT-THRESHOLD: a t-of-n threshold signature is fully recoverable
-            // at t. Once t partials are in hand, return immediately — do not wait
-            // for the remaining n-t (pure latency, and under staggered commitment
-            // propagation it would gate the roll on the slowest members, not the
-            // t-th). This is the correctness of the t-of-n contract, not just an
-            // optimization: n=11/t=6 must gate at 6, never at 11.
-            if (threshold > 0 && collected.size() >= threshold) {
-                LogPrintf("PTX: FanOutSign: threshold %zu reached — returning "
-                          "(%zu partials, %d attempt(s))\n",
-                          threshold, collected.size(), attempt + 1);
-                return collected;
-            }
-        } catch (...) {
-            LogPrintf("PTX: FanOutSign: %s parse error\n", node_id);
-        }
+        // status 200 but the callback rejected the payload (bad hex/size/parse)
+        // — already logged there; terminal, not retried.
     }
 
     pending = std::move(retry_next);
