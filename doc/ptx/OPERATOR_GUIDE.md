@@ -164,6 +164,7 @@ A timeout here = the silent-failure state: healthy on-chain, never signing.
 | Ready but never signs / rolls against your quorum fail | **Unreachable RPC** — localhost-bound, firewalled, wrong address family | `rpcbind=[::]`, open 29995 at edge + ufw, verify from another host |
 | Height stuck / behind peers | **Unsynced or partitioned** | check peers; `stop && Hemisd` (if in doubt, repeat). After a fork + mass bans: `clearbanned` — and note a stale `banlist.dat` **survives a resync wipe**; delete it too |
 | `ptx_quorum_health`: `member: true, share_current: false` | **Share lost** (node-side) | §Recovery — no recovery exists; keep the node Ready |
+| Chain halted, producers crash-looping on the same tip | **Poison transaction** — a tx that kills block producers during template validation (BUG-040 was one) | Deploy the fixed binary. **Do NOT bother wiping mempools**: wallets re-relay the tx within seconds of a wipe, so the halt is self-sustaining — a tx that kills producers cannot be cleared by clearing mempools. Fix the binary; the backlog then mines out on its own |
 
 ## Recovery — share loss (ODC-071)
 

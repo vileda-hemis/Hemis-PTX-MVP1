@@ -1000,9 +1000,9 @@ void CheckForkWarningConditionsOnNewFork(CBlockIndex* pindexNewForkTip)
     CheckForkWarningConditions();
 }
 
-// Bounded pprev ancestry test — deliberately NOT GetAncestor: this fork's
-// GetAncestor follows pskip unguarded, which crashes on bare CBlockIndex
-// chains in unit tests (see the ptx_formation.cpp:713 note).
+// Bounded pprev ancestry test — deliberately NOT GetAncestor: written when this
+// fork's GetAncestor still followed pskip unguarded (fixed with BUG-040, the
+// PR #5927 port); kept as a plain bounded walk with no skiplist assumptions.
 static bool BlockIndexHasAncestor(const CBlockIndex* p, const CBlockIndex* anc)
 {
     if (anc == nullptr) return false;
@@ -3582,6 +3582,9 @@ bool TestBlockValidity(CValidationState& state, const CBlock& block, CBlockIndex
     CBlockIndex indexDummy(block);
     indexDummy.pprev = pindexPrev;
     indexDummy.nHeight = pindexPrev->nHeight + 1;
+    // BUG-040: ConnectBlock-path code may GetAncestor() from this dummy; without a
+    // built pskip the skip walk dereferences null past the first skip boundary.
+    indexDummy.BuildSkip();
 
     // begin tx and let it rollback
     auto dbTx = evoDb->BeginTransaction();

@@ -473,4 +473,83 @@ BOOST_AUTO_TEST_CASE(PTXPayout_MinerReceivesFee)
     BOOST_CHECK_EQUAL(accumValue - outputValue, minerFee);
 }
 
+// BUG-040: the settle-parent resolver must survive TestBlockValidity's stack
+// indexDummy (pprev/nHeight set, pskip UNBUILT). Before the fix it called
+// pindex->GetAncestor() directly: the skip walk chose the null pskip whenever
+// the parent coin sat deeper than the first skip boundary, segfaulting every
+// block producer (live proof: 3 caller cores, ThreadStakeMinter →
+// CreateNewBlock → TestBlockValidity → ConnectBlock → resolver →
+// GetAncestor, chain.cpp:102). RED = revert the pprev-walk in
+// PTX_CollectConfirmedSettleParents and this test dies by SIGSEGV.
+BOOST_AUTO_TEST_CASE(bug040_settle_parent_resolver_survives_dummy_index)
+{
+    // Real-chain shape: 70 indexes with skip pointers built.
+    std::vector<CBlockIndex> chain(70);
+    for (int i = 0; i < 70; i++) {
+        chain[i].nHeight = i;
+        chain[i].pprev = (i == 0) ? nullptr : &chain[i - 1];
+        chain[i].BuildSkip();
+    }
+    // TestBlockValidity's dummy: pprev + nHeight only, pskip left null.
+    CBlockIndex dummy;
+    dummy.pprev = &chain[69];
+    dummy.nHeight = 70;
+
+    // Probabilistic tx spending a coin confirmed at h13 — deeper than the
+    // first skip boundary from h70, i.e. the depth class that crashed.
+    const COutPoint deepParent(uint256S("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"), 0);
+    CMutableTransaction mtx;
+    mtx.nVersion = CTransaction::TxVersion::SAPLING;
+    mtx.nType    = CTransaction::TxType::PTX;
+    mtx.extraPayload.emplace(std::vector<uint8_t>{0x01, 0x02});
+    mtx.vin.push_back(CTxIn(deepParent));
+    mtx.vout.push_back(CTxOut(1, CScript() << OP_1));
+
+    CBlock block;
+    block.vtx.push_back(MakeTransactionRef(mtx));
+
+    CCoinsView base;
+    CCoinsViewCache view(&base);
+    view.AddCoin(deepParent, Coin(CTxOut(1, CScript() << OP_1), /*nHeight=*/13, false, false), false);
+
+    LOCK(cs_main);
+    const auto ret = PTX_CollectConfirmedSettleParents(block, &dummy, &view);
+    // The walk must not crash; the fake index has no on-disk block, so the
+    // resolver stays fail-closed and returns nothing.
+    BOOST_CHECK(ret.empty());
+}
+
+// BUG-040 root fix: GetAncestor itself must tolerate an unbuilt pskip (port of
+// Bitcoin PR #5927 — the guard PIVX never took). This covers every present and
+// future caller, including hand-built indexes the TestBlockValidity BuildSkip
+// belt does not reach. RED = revert the chain.cpp guard and the deep walk below
+// dies by SIGSEGV on the pskip-less chain.
+BOOST_AUTO_TEST_CASE(bug040_getancestor_tolerates_unbuilt_pskip)
+{
+    // A pprev-linked chain with NO skip pointers built anywhere.
+    std::vector<CBlockIndex> chain(70);
+    for (int i = 0; i < 70; i++) {
+        chain[i].nHeight = i;
+        chain[i].pprev = (i == 0) ? nullptr : &chain[i - 1];
+    }
+    // Deep walk from the tip, past several skip boundaries: must degrade to a
+    // linear pprev walk and land on the exact ancestor.
+    for (int target : {0, 1, 13, 31, 32, 63, 64, 69}) {
+        const CBlockIndex* anc = chain[69].GetAncestor(target);
+        BOOST_REQUIRE(anc != nullptr);
+        BOOST_CHECK_EQUAL(anc->nHeight, target);
+        BOOST_CHECK(anc == &chain[target]);
+    }
+    // Mixed chain: skips built below, an unbuilt dummy on top (the
+    // TestBlockValidity shape) — the first step falls to pprev, the rest may
+    // use the built skips.
+    for (int i = 0; i < 70; i++) chain[i].BuildSkip();
+    CBlockIndex dummy;
+    dummy.pprev = &chain[69];
+    dummy.nHeight = 70;
+    const CBlockIndex* anc = dummy.GetAncestor(13);
+    BOOST_REQUIRE(anc != nullptr);
+    BOOST_CHECK(anc == &chain[13]);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

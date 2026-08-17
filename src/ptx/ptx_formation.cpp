@@ -915,10 +915,10 @@ bool PTX_Formation_ForcedReformGraceElapsed(
     for (int i = 0; i < grace_m; ++i) {
         const int bh = pindexAnchor->nHeight - i * boundary_interval;  // BOUNDARY step
         if (bh < 0) return false;
-        // Plain pprev walk, NOT GetAncestor: this tree's GetAncestor follows
-        // pskip unguarded (chain.cpp — upstream guards it, this fork doesn't),
-        // so it faults on any index without a built skiplist.  The walk is
-        // bounded by grace_m * interval and assumption-free.
+        // Plain pprev walk, NOT GetAncestor: written when this tree's
+        // GetAncestor followed pskip unguarded (guarded since BUG-040's
+        // PR #5927 port).  The walk is bounded by grace_m * interval and
+        // assumption-free either way.
         const CBlockIndex* pb = pindexAnchor;
         while (pb != nullptr && pb->nHeight > bh) pb = pb->pprev;
         if (pb == nullptr || pb->nHeight != bh) return false;

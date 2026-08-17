@@ -3910,7 +3910,9 @@ BOOST_AUTO_TEST_CASE(W4c_Dormancy_Structural)
 // ===========================================================================
 
 // A pprev-linked fake chain 0..top (GetAncestor degenerates to a pprev walk
-// with pskip null — the Pb6b anchor idiom, extended to a chain).
+// with pskip null — TRUE only since BUG-040 ported PR #5927's null-pskip
+// guard; before that the skip branch dereferenced null on deep walks.
+// The Pb6b anchor idiom, extended to a chain.
 static std::vector<CBlockIndex> W4dChain(int top)
 {
     std::vector<CBlockIndex> chain(top + 1);

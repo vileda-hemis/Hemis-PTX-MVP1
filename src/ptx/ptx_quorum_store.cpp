@@ -669,10 +669,10 @@ size_t CPTXQuorumStore::MaybeReformAtBoundary(
     // diverging forever. Heal only INSIDE the stateless regime (prevB >=
     // activation) — pre-activation boundaries may legitimately not have fired.
     const int prevB = pindex->nHeight - stride;
-    // pprev walk, NOT GetAncestor: this codebase's GetAncestor follows pskip
-    // unconditionally (chain.cpp:102, no null guard), so it is only safe on
-    // BuildSkip-built indices. One stride is a bounded handful of steps, and
-    // walking pindex's own pprev chain keeps the anchor fork-consistent.
+    // pprev walk, NOT GetAncestor: written when this codebase's GetAncestor
+    // followed pskip unconditionally (guarded since BUG-040's PR #5927 port).
+    // One stride is a bounded handful of steps, and walking pindex's own
+    // pprev chain keeps the anchor fork-consistent.
     const CBlockIndex* pindexPrevB = nullptr;
     if (prevB > 0 && prevB >= params.nReformStatelessHeight) {
         const CBlockIndex* walk = pindex;

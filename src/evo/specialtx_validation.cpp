@@ -1323,7 +1323,13 @@ std::map<uint256, CPTXRollCommitPayload> PTX_CollectConfirmedSettleParents(
             if (inBlock.count(ph) || ret.count(ph)) continue;
             const Coin& coin = view->AccessCoin(in.prevout);
             if (coin.IsSpent()) continue;   // not resolvable => pairing stays fail-closed
-            const CBlockIndex* pAnc = pindex->GetAncestor((int)coin.nHeight);
+            // BUG-040: walk from pprev, never from pindex — TestBlockValidity hands
+            // ConnectBlock a stack indexDummy whose pskip is unbuilt, and GetAncestor's
+            // skip walk dereferences it once the parent sits deeper than the first skip
+            // boundary (deterministic staker SEGV). The pre-block view guarantees
+            // coin.nHeight <= pprev->nHeight, so the pprev walk always suffices.
+            if (pindex->pprev == nullptr) continue;
+            const CBlockIndex* pAnc = pindex->pprev->GetAncestor((int)coin.nHeight);
             if (pAnc == nullptr) continue;
             CBlock parentBlock;
             if (!ReadBlockFromDisk(parentBlock, pAnc)) continue;

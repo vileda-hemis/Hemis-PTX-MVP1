@@ -96,8 +96,11 @@ const CBlockIndex* CBlockIndex::GetAncestor(int height) const
     while (heightWalk > height) {
         int heightSkip = GetSkipHeight(heightWalk);
         int heightSkipPrev = GetSkipHeight(heightWalk - 1);
-        if (heightSkip == height ||
-            (heightSkip > height && !(heightSkipPrev < heightSkip - 2 && heightSkipPrev >= height))) {
+        // BUG-040: tolerate an unbuilt pskip — degrade to the pprev walk (port of
+        // Bitcoin PR #5927; PIVX never took it, which left the skip branch unguarded).
+        if (pindexWalk->pskip != nullptr &&
+            (heightSkip == height ||
+             (heightSkip > height && !(heightSkipPrev < heightSkip - 2 && heightSkipPrev >= height)))) {
             // Only follow pskip if pprev->pskip isn't better than pskip->pprev.
             pindexWalk = pindexWalk->pskip;
             heightWalk = heightSkip;
