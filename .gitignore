@@ -172,6 +172,16 @@ moc_*
 *.tmp
 ui_*
 build*
+# ★ the blanket build* above swallowed src/blst/build/ — the vendored blst
+# ASSEMBLY (assembly.S + per-platform elf/ coff/ *.s), which Makefile.am
+# compiles into libblst. Without these a FRESH CLONE cannot build at all
+# (found 2026-08-17 restoring the coff/ Windows flavour). Re-include the
+# sources; objects stay ignored via *.o below.
+!src/blst/build/
+!src/blst/build/**
+src/blst/build/*.o
+src/blst/build/.deps/
+src/blst/build/.dirstamp
 Hemisd.*
 Hemisd-new-gui.*
 /cov-int/
