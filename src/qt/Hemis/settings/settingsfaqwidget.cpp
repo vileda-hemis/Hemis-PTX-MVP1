@@ -83,7 +83,7 @@ SettingsFaqWidget::SettingsFaqWidget(HemisGUI* parent, GMModel* gmModel) :
             tr("Hemis utilizes a Proof of Stake (PoS) consensus system algorithm, "
                "allowing all owners of Hemis to participate in earning block rewards "
                "while securing the network with full node wallets, as well as to "
-               "run Gamemasters to create and vote on proposals.")));
+               "run Gamemasters that provide network services.")));
     ui->labelContent_Intro->setText(introContent);
 
     QString unspendableHMSContent = formatFAQContent(

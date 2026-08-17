@@ -435,6 +435,8 @@ QString TransactionTableModel::formatTxType(const TransactionRecord* wtx) const
         return tr("Received with");
     case TransactionRecord::GMReward:
         return tr("Gamemaster Reward");
+    case TransactionRecord::GMRegistration:
+        return tr("Gamemaster Registration");
     case TransactionRecord::BudgetPayment:
         return tr("Budget Payment");
     case TransactionRecord::RecvFromOther:

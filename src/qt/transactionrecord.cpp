@@ -423,6 +423,18 @@ QList<TransactionRecord> TransactionRecord::decomposeTransaction(const CWallet* 
         return parts;
     }
 
+    // A ProRegTx this wallet took part in (fee-funding and/or collateral-owning):
+    // label it as the gamemaster registration rather than letting the generic
+    // flow render it as a send-to-self — which it otherwise does, at exactly the
+    // moment the operator is least sure the registration worked.
+    if (wtx.tx->IsProRegTx() && (nDebit > 0 || nCredit > 0)) {
+        TransactionRecord sub(wtx.GetHash(), wtx.GetTxTime(), wtx.tx->GetTotalSize());
+        sub.type = TransactionRecord::GMRegistration;
+        sub.debit = -(nDebit - nCredit);   // the visible cost is the fee
+        parts.append(sub);
+        return parts;
+    }
+
     // Credit/Debit decomposing flow
     CAmount nNet = nCredit - nDebit;
 
