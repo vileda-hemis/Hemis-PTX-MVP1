@@ -121,8 +121,14 @@ libblst_a_CFLAGS   = -I$(srcdir)/blst/src \
 libblst_a_CCASFLAGS = -I$(srcdir)/blst/src \
                       -I$(srcdir)/blst/bindings \
                       -I$(srcdir)/blst/build \
-                      -D__BLST_PORTABLE__ \
-                      -fPIC -Wa,--noexecstack
+                      -D__BLST_PORTABLE__
+if !TARGET_WINDOWS
+# ELF-only: PE/COFF has no execstack concept and the mingw assembler rejects
+# --noexecstack outright; -fPIC is likewise meaningless on PE (warns only, so
+# the CFLAGS copy stays). assembly.S picks the coff/ flavour on _WIN64
+# (blst v0.3.16 set, restored 2026-08-17).
+libblst_a_CCASFLAGS += -fPIC -Wa,--noexecstack
+endif
 
 lib_LTLIBRARIES = $(LIBBITCOINCONSENSUS)
 
