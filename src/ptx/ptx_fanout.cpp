@@ -343,15 +343,21 @@ void PTX_FanOutReveal(const std::string& round_id,
 
 namespace {
 
-// Budget constants — see doc/ptx/FANOUT_BUDGET_ANALYSIS.md. The attempt count
-// is a re-dial-opportunity count (one per 150ms tick), NOT a time bound; the
-// wall-clock ceiling is the time bound: 30s is >2x the worst legitimate ladder
+// Budget constants — see doc/ptx/FANOUT_BUDGET_ANALYSIS.md §9.4/§9.5. Both
+// ceilings are enforced from the same 150ms tick, so ticks are the only clock
+// either one sees: a hardcoded attempt count and the wall-clock ceiling are the
+// SAME bound expressed in different units, and the smaller always wins. A
+// literal 60 made the wall (tick ~200) unreachable and silently cut at 9.0s —
+// rejecting the 14.33s observation §5 had explicitly justified as legitimate.
+// Deriving the attempt count makes the wall the single authority and stops the
+// two from drifting apart again: 30s is >2x the worst legitimate ladder
 // observation (14.33s, at an RTT beyond mainnet p99) — it rejects nothing real
 // and converts the minutes-scale stall class into a bounded clean failure the
-// forfeit/abandon machinery already handles.
-static const int FANOUT_MAX_ATTEMPTS = 60;
+// forfeit/abandon machinery already handles. The attempt count remains a
+// re-dial-opportunity count; it is now pinned to the time bound by construction.
 static const int FANOUT_RETRY_MS     = 150;
 static const int FANOUT_WALL_MS      = 30000;
+static const int FANOUT_MAX_ATTEMPTS = FANOUT_WALL_MS / FANOUT_RETRY_MS;
 
 struct PTXSignRoundCtx;
 

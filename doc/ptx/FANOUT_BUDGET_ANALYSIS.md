@@ -371,3 +371,96 @@ each member's mempool acceptance, and attribute the 11–18 RTT before optimisin
 * "800/800 across all ten rungs" — load lane only, and it is 1000/1000; the thin lane is 92/96.
 * Gen C has **no thin-clean rung**; slopes above use Gen B's thin clean (1.24 s, same dialer family).
   A thin-clean rung is owed on the next ladder run.
+
+---
+
+## 10. §9.5 executed — the wall fires for the first time, and the failure class splits (2026-08-18)
+
+Gen D. Binary `f0e5458f` = trunk `5193525` + the one-line §9.5 change, **callers only** by
+construction (`PTX_FanOutSign` has a single call site, `rpc/ptx.cpp:320`, reached only by
+`ptx_roll`; GMs are responders and never run the dial loop). The *only* delta against Gen C is
+the constant. Thin d100 + d200, 24 rolls each, same battery, same netem, same convergence gate.
+
+```
+- static const int FANOUT_MAX_ATTEMPTS = 60;
++ static const int FANOUT_RETRY_MS     = 150;      // reordered: the derived value
++ static const int FANOUT_WALL_MS      = 30000;    // must follow its operands
++ static const int FANOUT_MAX_ATTEMPTS = FANOUT_WALL_MS / FANOUT_RETRY_MS;   // 200
+```
+
+### 10.1 Results
+
+| rung | Gen C (60 att, 9.0 s) | Gen D (200 att, 30 s) |
+|---|---|---|
+| thin d100 | 23/24 — p50 4.72, p95 5.16, max 5.62 | 23/24 — p50 4.73, p95 5.18, max 5.19 |
+| thin d200 | 22/24 — p50 7.55, p95 8.41, max 8.56 | **24/24** — p50 7.56, p95 8.47, max 8.59 |
+| combined | 45/48 | 47/48 |
+
+**Failure latencies are the whole story.** Gen C: 9.09 s, 9.10 s, 9.10 s — all three at
+60 × 150 ms, i.e. clipped by our own constant. Gen D: a single failure at **30.11 s**.
+
+### 10.2 ★ The wall fired — first observation in the project's history
+
+```
+PTX: FanOutSign: wall-clock ceiling 30000ms hit after 199 tick(s)
+     (5 collected, 3 pending, 3 inflight) — returning
+```
+
+One occurrence, caller4, fleet-wide (all 8 caller logs swept); **zero** "propagation budget
+exhausted" lines anywhere. §9.4's diagnosis is now confirmed by direct observation rather than
+by reading the tick arithmetic: the wall was unreachable before, it is reachable now, and it is
+the single authority in practice — it fires at tick 199, one tick ahead of the derived budget,
+because the wall check precedes the budget check and `wall_ms` accumulates real time ≥
+`ticks × 150 ms`. The two can no longer drift apart.
+
+### 10.3 The happy path is unchanged — the raise is costless
+
+p50 4.72→4.73 and 7.55→7.56; p95 5.16→5.18 and 8.41→8.47. Identical within noise, as predicted:
+stop-at-threshold still returns at the 6th partial (successes closed in 29–51 attempts, never
+near either ceiling). Raising the ceiling costs nothing on rolls that were already succeeding.
+The price is paid **only** by a doomed roll, which now blocks ~30 s instead of ~9 s — observed
+once in 48. Since a failed roll forfeits stake either way, completing late strictly beats
+failing early.
+
+### 10.4 ★ §9.5's pre-registered dichotomy was too coarse — the class SPLIT
+
+§9.5 offered two outcomes: failures vanish (direct-attach closes) or failures persist at ~28 s
+(direct-attach proven). **Both happened, to different sub-populations**, because the failures
+were never homogeneous:
+
+* **The delay-shaped near-miss tail WAS our own cutoff.** Both d200 failures sat at 9.10 s and
+  both are gone at a 30 s budget — d200 went 22/24 → 24/24, the *worse* RTT rung going clean.
+* **A residual hard class survives 30 s of re-dialling.** The Gen D failure is not a timing
+  margin: **3 of 11 members never delivered a partial across 199 re-dial opportunities**, and 3
+  were still inflight at the wall. 30 seconds of asking did not produce them.
+
+So the confound §9.4 identified is now removed, and what it was hiding is visible: a genuine
+non-delivery population, cleanly separated from the budget-clipped one. **This is direct-attach's
+actual target, isolated for the first time.**
+
+Note it landed at **d100, not d200** — the rung with *less* injected delay went clean at 24/24
+while the lighter rung carried the failure. Whatever this residual is, **it is not RTT-shaped**,
+which argues a different mechanism from propagation margin (cf. the historic total-blackout
+class, though this one is partial: 3 of 11, not 10–11 of 11).
+
+### 10.5 What is and is not established — read before citing
+
+* **ESTABLISHED (mechanism, by direct observation):** the wall is reachable and authoritative;
+  the derived constant behaves exactly as designed; a failure class exists that 30 s of re-dial
+  does not fix.
+* **NOT ESTABLISHED (statistics):** that the pass rate improved. 45/48 → 47/48 is **not**
+  significant (nor is 22/24 → 24/24 on its own); n is far too small. Do **not** cite Gen D as
+  "the fix raised the success rate" — it is one event either way.
+* **Consequently direct-attach is NOT yet "proven" in the §9.6 sense.** Its close condition
+  ("§9.5 returns clean at a 28 s budget") is **not met** — one roll failed at the wall. But
+  promoting a single observation to a build decision would repeat the error §9.5 exists to
+  prevent. **Replicate first:** thin d100 + d200 at n≥3 samples (≥144 rolls) on the Gen D
+  binary, counting wall-hits, and decompose each by pending/inflight at the wall.
+* §9.5's own framing is superseded by §10.4: a two-way dichotomy on a population that turned
+  out to be a mixture.
+
+### 10.6 Corrections owed to earlier sections
+
+`§Decision, up front` ("Keep `FANOUT_MAX_ATTEMPTS = 60`") and `§1` (describing 60 as a pass
+count independent of the time bound) are **superseded by §9.4 and this section**. They are left
+in place as the record of what was believed at ship time; the operative values are here.
