@@ -140,3 +140,67 @@ ptxbea; `-ptxfanoutport` to override). Therefore:
 - **Direct-attach:** once the roll is gossip-bound rather than dial-bound, direct-attach's case
   rests on the **failure tail** (the BLS 5/6 near-misses), not latency. Read it that way when the
   re-measure lands.
+
+## 8. The re-measure (2026-08-18) — the parallel dialer's verdict against §7's pre-registrations
+
+Measured on the single-loop dialer (`0a38cfa`: one event_base per round, 150 ms tick,
+stop-at-sixth-fastest, `FANOUT_WALL_MS=30000`), binary `29cbe4d` (adds the BUG-041 template
+fix — latency-neutral), full 161-node fleet healthy end-to-end (zero caller deaths; the first
+re-run attempt on 2026-08-17 evening was invalidated by BUG-041 crash holes and host crashes
+#15–17 — this dataset is the clean full-fleet re-run, every rung 8 callers × complete).
+
+| Rung | ok | p50 s | p95 s | max s | old p50 (§2) |
+|---|---|---|---|---|---|
+| clean | 24/24 | 1.24 | 1.76 | — | 1.18 |
+| d25 | 24/24 | 2.17 | 2.46 | 2.62 | 2.54 |
+| d50 | 23/24¹ | 3.16 | 3.47 | 3.55 | 4.22 |
+| d100 | 23/24¹ | 4.72 | 5.16 | 5.31 | 7.24 |
+| d200 | 22/24¹ | 7.55 | 8.41 | 8.56 | 12.63 |
+| load-clean | 200/200 | 1.66 | 2.24 | 2.35 | 1.47 |
+| load-d25 | 200/200 | 2.16 | 2.94 | 3.42 | 2.73 |
+| load-d50 | 200/200 | 3.01 | 3.72 | 4.30 | 4.30 |
+| load-d100 | 200/200 | 4.07 | 4.81 | 5.88 | 6.79 |
+| load-d200 | 200/200 | 5.98 | 7.41 | 7.87 | 11.76 |
+
+¹ All four thin misses are BLS-threshold outcomes (5/6, 5/6, then 3/6 and 0/6 at d200), not
+harness artifacts; the tail deepens with delay — see the direct-attach reading below.
+
+**Verdict against §7's pre-registered outcomes: the diagnostic case, not the target.** d200
+p50 landed at 7.55 s thin / 5.98 s under load — not the ~2–2.5 s propagation-bound target;
+§7's "a partial result (~6 s) is itself diagnostic of residual serialization" is the case
+that realized, almost to the second. In §2's coefficient convention:
+
+```
+old:        p50 ≈ 1.47 + 0.052·(one-way ms)   → ~26 sequential traversals
+new thin:   p50 ≈ 1.24 + 0.032·(one-way ms)   → ~16 sequential traversals
+new load:   p50 ≈ 1.66 + 0.022·(one-way ms)   → ~11 sequential traversals
+```
+
+The dialer's own serialization is gone (proven separately by the slow-member probes: a
+2000 ms member no longer taxes the roll). What remains is roughly **half the old traversal
+count, still linear in RTT** — the residual serialization now lives *upstream of the dials*
+(commitment propagation / INV trickle before members can sign, plus per-pass connection
+establishment). That is the next hunt; **connection reuse (deferred in the ship decision)
+is the first suspect to test**, since each tick's re-dial pays connection setup at RTT cost.
+
+**§3's load findings both reversed, favourably.** Load now beats thin at the median at every
+delay ≥50 (batched gossip amortizes the upstream wait — consistent with the residual living
+in propagation, not dials), and the tail penalty is gone: load p95 ≤ thin p95 at d100/d200
+(4.81 vs 5.16, 7.41 vs 8.41), and the d50 queueing onset vanished (old load-d50 p95 6.82 →
+3.72). **The §4 stall class is gone:** max across all 800 load rolls is 7.87 s (old: 131.7 s
+twice) — the single loop plus the wall turned the stall class into nothing observable; the
+ceiling is now a pure backstop (0 rolls anywhere near 30 s). **800/800 load rolls succeeded**
+(old: 1 steady-state miss + the stalls).
+
+**Direct-attach, read as §7 prescribed:** with the roll now propagation-bound, direct-attach's
+case rests on the failure tail, and the tail is real and delay-shaped: 4/96 thin rolls failed
+BLS threshold, worsening with RTT (0/24 at d25 → 2/24 at d200, one a total 0/6). Under load
+the tail vanished (800/800) — sustained traffic keeps signing paths warm, which is itself
+weak evidence for the connection-reuse suspect above.
+
+**Comparison caveats (per §7):** vs §2 the binary changed twice (fanpar2 dialer + BUG-041
+template fix) and the RAM configuration changed twice (matched 32 GB pair → reseated
+2×16+1×32 GB, 64 GiB total). The ~1.7× median improvement and the tail/stall eliminations
+are far beyond plausible memory effects, but this remains a system-level comparison, not
+single-variable. The 150 ms tick also quantizes measured latencies upward by up to one tick
+per pass (visible as load-clean 1.66 vs old 1.47 — the price of the loop, accepted).
