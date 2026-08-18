@@ -464,3 +464,90 @@ class, though this one is partial: 3 of 11, not 10–11 of 11).
 `§Decision, up front` ("Keep `FANOUT_MAX_ATTEMPTS = 60`") and `§1` (describing 60 as a pass
 count independent of the time bound) are **superseded by §9.4 and this section**. They are left
 in place as the record of what was believed at ship time; the operative values are here.
+
+---
+
+## 11. Mesh-hop instrumentation — the propagation term MEASURED, not inferred (2026-08-19)
+
+Every number in §1–§10 infers the propagation component from total roll latency. This measures it:
+**commitment broadcast → per-member mempool acceptance**, for the eleven members of the quorum
+that actually signs. **Headline = time to the SIXTH member**, because six partials is the signing
+threshold, so the sixth acceptance is the instant the roll *could* complete;
+`roll_total − to_sixth` is then the dial-and-sign component.
+
+### 11.1 Method, and why it is a poll
+
+The no-deploy read was checked first and **exists but not at usable resolution**: this fork has no
+`getmempoolentry`; `getrawmempool(verbose)`'s `time` is documented *"in seconds since 1 Jan 1970"*;
+`debug.log` is also 1 s (no `-logtimemicros`). Against a ~1.2 s signal that is up to ~80 % error.
+The no-deploy read that *is* usable is a **high-frequency poll of `getrawmempool`** (non-verbose)
+from **one host process = one clock** — no daemon change, no GM deploy.
+
+It is cheap enough not to perturb what it measures because **consecutive rolls from a caller reuse
+the same quorum** (verified), so a discovery roll pins the eleven and we poll **12 nodes, not 153**:
+~120 req/s at ~8 ms/call. Polling all 153 (~1000 req/s) would have risked changing the propagation
+timing it exists to measure. The commitment is identified by `type == 12` (`PTXROLLCOMMIT`; the
+settle is 6), not by ordering assumptions. Tool: `w2-fleet/meshhop_probe.py`, 8 rolls per rung,
+caller1.
+
+### 11.2 Results (p50 of 8 rolls per rung)
+
+| rung | to_first | **to_sixth** | to_last | roll_total | dial+sign | **propagation share** |
+|---|---|---|---|---|---|---|
+| clean | 0.60 s | **1.00 s** | 1.35 s | 1.10 s | 0.10 s | **91 %** |
+| d100  | 1.52 s | **4.26 s** | 5.20 s | 4.71 s | 0.45 s | **91 %** |
+| d200  | 2.30 s | **6.33 s** | 7.68 s | 8.01 s | 1.68 s | **79 %** |
+
+★ **Propagation is the dominant term at every rung measured.** The clean rung's ~1.2 s floor,
+inferred since the earliest baseline, is confirmed and sharpened: at zero injected RTT the entire
+dial-and-sign cost is **0.10 s** and everything else is waiting for gossip.
+
+### 11.3 The shape: a multi-hop chain, now attributed rather than suspected
+
+`to_sixth` = **21.3 × RTT** at d100 and **15.8 × RTT** at d200 (slope 0.0326 then 0.0207 s per ms
+of one-way delay — concave, so parallel gossip paths partly overlap as delay grows). §9.7 read a
+"strikingly linear" 15.8–19.2 RTT in the thin lane and called it *the signature of a fixed chain of
+sequential round trips*; that inference was **right, and the chain is in propagation, not in the
+dialer.** §8 located the residual "upstream of the dials" and then nominated connection reuse — a
+dial-side fix. §11 settles that internal inconsistency in favour of §8's *first* clause: the
+dial-and-sign term it would optimise is 0.10–1.68 s of a 1.10–8.01 s roll.
+
+Note also **to_first − to_sixth widens with RTT** (0.40 → 2.74 → 4.03 s): the first member is
+reached quickly (near neighbour), and the cost is in the hops needed to reach the sixth. That is
+the mesh-hop structure stated directly.
+
+### 11.4 ★ What this settles for direct-attach
+
+Direct-attach removes the propagation term entirely (the commitment rides the sign request, so no
+member can be "not-seen"). Against measured numbers, projected roll latency becomes the dial-and-sign
+term alone: **~1.10→0.10 s clean, 4.71→0.45 s at d100, 8.01→1.68 s at d200 — roughly 5–11×.**
+
+**This is not a marginal optimisation, and the §9 framing understated it.** §9.5 asked only whether
+direct-attach was needed to fix a *failure tail*; on that question it remains undecided (§10.5). But
+on **roll latency — the metric that actually matters — direct-attach targets 79–91 % of it.** That
+is a far stronger case than the failure-tail argument it has been parked on four times.
+
+**Not resolved here, and it gates any build:** the commitment is broadcast before signing on purpose
+— that is BUG-032's anti-free-preview gate. Direct-attach must deliver the commitment to members
+without re-opening free preview. That is a design question (the parked KDD), not a measurement one,
+and §11 does not answer it.
+
+### 11.5 Caveats — state these with any number above
+
+* **n = 8 per rung, one caller, one quorum.** Medians are stable but this is not a distribution study.
+* **Quantisation degrades under netem.** The poller's effective interval is `max(100 ms, poll RTT)`,
+  and measured poll RTT was 0.3 / 104 / 209 ms — so resolution is ~100 ms clean but ~200 ms at d200.
+* **The netem offset cancels but is not zero.** The poll path carries the injected delay too, so
+  both `t0` and each `t_i` are inflated by ~the same amount and the *delta* survives; residual is
+  jitter, not offset. This was measured (the poll-RTT column), not assumed.
+* **"Accepted" means "observed in `getrawmempool` within roll_total + 2 s"**, not the daemon's
+  internal accept instant, and members accepting after the window are recorded as not-accepted.
+
+### 11.6 One observation worth carrying into the replication
+
+Acceptance was **11/11 on all 8 rolls at clean and at d100**, and **11/11 on 7 of 8 at d200**, with
+a single roll where **three members (gm15, gm50, gm69) had not accepted by the 10.4 s window edge**.
+That is the same *three-of-eleven* shape as the Gen D wall-hit (§10.4) — but both are **n = 1**, they
+occurred on different callers with different quorums, and this one is window-bounded rather than
+proven-never. **Do not join them into a pattern yet.** It is a lead for §12's replication: whether
+the laggards are the *same* nodes each time (implicating specific GMs) or a rotating set (systemic).
