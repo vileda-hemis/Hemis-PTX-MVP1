@@ -431,8 +431,15 @@ were never homogeneous:
 * **The delay-shaped near-miss tail WAS our own cutoff.** Both d200 failures sat at 9.10 s and
   both are gone at a 30 s budget — d200 went 22/24 → 24/24, the *worse* RTT rung going clean.
 * **A residual hard class survives 30 s of re-dialling.** The Gen D failure is not a timing
-  margin: **3 of 11 members never delivered a partial across 199 re-dial opportunities**, and 3
-  were still inflight at the wall. 30 seconds of asking did not produce them.
+  margin: **6 of 11 members never delivered a partial across 199 re-dial opportunities** (5
+  collected, split 3 pending + 3 inflight at the wall). 30 seconds of asking did not produce them.
+
+> **[Corrected 2026-08-19 — this section first read "3 of 11 ... and 3 were still inflight".]**
+> That mis-read the wall line's `(5 collected, 3 pending, 3 inflight)`: `pending` is not the
+> whole outstanding set, it is the part of it with no request outstanding. Six members failed to
+> deliver, not three. The log harvest (§12) names them: gm11, gm14, gm29, gm71, gm150, gm152.
+> The roll was still one partial short of threshold (5 of 6) — that part was right — but "one
+> member short" was never the shape: **six** members had to fail for it to fall one partial short.
 
 So the confound §9.4 identified is now removed, and what it was hiding is visible: a genuine
 non-delivery population, cleanly separated from the budget-clipped one. **This is direct-attach's
@@ -547,7 +554,8 @@ and §11 does not answer it.
 
 Acceptance was **11/11 on all 8 rolls at clean and at d100**, and **11/11 on 7 of 8 at d200**, with
 a single roll where **three members (gm15, gm50, gm69) had not accepted by the 10.4 s window edge**.
-That is the same *three-of-eleven* shape as the Gen D wall-hit (§10.4) — but both are **n = 1**, they
-occurred on different callers with different quorums, and this one is window-bounded rather than
-proven-never. **Do not join them into a pattern yet.** It is a lead for §12's replication: whether
+It is tempting to call that the same shape as the Gen D wall-hit (§10.4) — **it is not.** Gen D had
+**six** non-deliverers, not three (see the correction in §10.4); these two events differ in size, in
+caller, in quorum, and in kind (window-bounded here, 199-attempt-proven there). Both are **n = 1**.
+**Do not join them into a pattern.** It is a lead for §12's replication: whether
 the laggards are the *same* nodes each time (implicating specific GMs) or a rotating set (systemic).
