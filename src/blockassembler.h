@@ -12,6 +12,7 @@
 
 #include <stdint.h>
 #include <memory>
+#include <set>
 #include "boost/multi_index_container.hpp"
 #include "boost/multi_index/ordered_index.hpp"
 
@@ -212,6 +213,16 @@ int32_t ComputeBlockVersion(const Consensus::Params& consensusParams, int nHeigh
 // Visible for testing purposes only
 bool CreateCoinbaseTx(CBlock* pblock, const CScript& scriptPubKeyIn, CBlockIndex* pindexPrev);
 CMutableTransaction CreateCoinbaseTx(const CScript& scriptPubKeyIn, CBlockIndex* pindexPrev);
+
+/** BUG-041 (L2 belt): erase every tx in `drop` (never the coinbase) from the
+ *  template, keeping vtx and the parallel vTxFees/vTxSigOps arrays in lockstep
+ *  and the running size/fee/sigop counters consistent.  A template whose
+ *  parallel arrays are shorter than vtx — the BUG-041 creation-seam class —
+ *  is degraded LOUDLY: the tx is still erased from vtx (the BUG-034 P3
+ *  anti-halt contract) but no out-of-bounds read or erase(end()) can occur. */
+void PTX_TemplateEraseDropped(CBlockTemplate& tmpl, const std::set<uint256>& drop,
+                              CAmount& nFees, unsigned int& nBlockSigOps,
+                              uint64_t& nBlockSize, uint64_t& nBlockTx);
 
 // Visible for testing purposes only
 uint256 CalculateSaplingTreeRoot(CBlock* pblock, int nHeight, const CChainParams& chainparams);

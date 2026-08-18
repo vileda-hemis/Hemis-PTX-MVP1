@@ -4,6 +4,7 @@
 
 #include "test/test_Hemis.h"
 
+#include "blockassembler.h"
 #include "chain.h"
 #include "chainparams.h"
 #include "chainparamsbase.h"
@@ -550,6 +551,115 @@ BOOST_AUTO_TEST_CASE(bug040_getancestor_tolerates_unbuilt_pskip)
     const CBlockIndex* anc = dummy.GetAncestor(13);
     BOOST_REQUIRE(anc != nullptr);
     BOOST_CHECK(anc == &chain[13]);
+}
+
+// ---------------------------------------------------------------------------
+// BUG-041: PoS template parallel-array off-by-one × BUG-034 P3 exclusion
+// ---------------------------------------------------------------------------
+
+// Distinct dummy tx per nValue (index 0 stands in for the coinbase — the drop
+// loop never touches it, so it needs no coinbase structure).
+static CTransactionRef Bug041Tx(CAmount v)
+{
+    CMutableTransaction mtx;
+    mtx.vout.emplace_back(v, CScript() << OP_1);
+    return MakeTransactionRef(mtx);
+}
+
+// BUG-041 repro class: the P3 drop loop must survive a template whose parallel
+// arrays run SHORTER than vtx — the exact shape every PoS template had before
+// the L1 alignment fix (ONE sentinel reserved, TWO txs pushed by
+// SolveProofOfStake). Dropping the TAIL tx then read vTxFees/vTxSigOps one
+// past the end and called erase(end()): gcc-12 -O2 libstdc++ turns that into
+// heap corruption ({-1,8150} → [8150,8150] + munmap abort — core.caller8-2nd,
+// frame 27; three caller cores, three random downstream death sites, one
+// cause). RED = revert the bounds check in PTX_TemplateEraseDropped and this
+// test corrupts the heap in the builder container (g++ 12, -O2).
+BOOST_AUTO_TEST_CASE(bug041_p3_drop_survives_misaligned_template)
+{
+    CBlockTemplate tmpl;
+    tmpl.block.vtx.push_back(Bug041Tx(0));      // coinbase stand-in
+    tmpl.block.vtx.push_back(Bug041Tx(1));      // the tail settle P3 drops
+    tmpl.vTxFees.push_back(-1);                 // arrays one short of vtx —
+    tmpl.vTxSigOps.push_back(-1);               // the pre-L1 PoS creation seam
+
+    const uint256 keepHash = tmpl.block.vtx[0]->GetHash();
+    std::set<uint256> drop{tmpl.block.vtx[1]->GetHash()};
+
+    CAmount nFees = 0;
+    unsigned int nBlockSigOps = 100;
+    uint64_t nBlockSize = 2000, nBlockTx = 1;
+    PTX_TemplateEraseDropped(tmpl, drop, nFees, nBlockSigOps, nBlockSize, nBlockTx);
+
+    // The tx is dropped (P3 anti-halt contract) with NO out-of-bounds access:
+    // the arrays keep their coinbase sentinel and the counters that would have
+    // absorbed OOB garbage are untouched (fee bookkeeping skipped, loudly).
+    BOOST_REQUIRE_EQUAL(tmpl.block.vtx.size(), 1U);
+    BOOST_CHECK(tmpl.block.vtx[0]->GetHash() == keepHash);
+    BOOST_REQUIRE_EQUAL(tmpl.vTxFees.size(), 1U);
+    BOOST_REQUIRE_EQUAL(tmpl.vTxSigOps.size(), 1U);
+    BOOST_CHECK_EQUAL(tmpl.vTxFees[0], -1);
+    BOOST_CHECK_EQUAL(nFees, 0);
+    BOOST_CHECK_EQUAL(nBlockSigOps, 100U);
+    BOOST_CHECK_EQUAL(nBlockTx, 0U);
+    BOOST_CHECK(nBlockSize < 2000);             // serialize size still deducted
+}
+
+// Aligned template, TAIL drop — the index class that crashed, now in-bounds
+// (the L1 invariant: vTxFees.size() == vtx.size() from creation). Bookkeeping
+// must be exact and the arrays must stay in lockstep with vtx.
+BOOST_AUTO_TEST_CASE(bug041_p3_drop_aligned_tail_exact_bookkeeping)
+{
+    CBlockTemplate tmpl;
+    tmpl.block.vtx.push_back(Bug041Tx(0));
+    tmpl.block.vtx.push_back(Bug041Tx(1));
+    tmpl.block.vtx.push_back(Bug041Tx(2));
+    tmpl.vTxFees   = {-1, 100, 7};
+    tmpl.vTxSigOps = {-1, 2, 1};
+
+    std::set<uint256> drop{tmpl.block.vtx[2]->GetHash()};
+
+    CAmount nFees = 107;
+    unsigned int nBlockSigOps = 103;
+    uint64_t nBlockSize = 3000, nBlockTx = 2;
+    PTX_TemplateEraseDropped(tmpl, drop, nFees, nBlockSigOps, nBlockSize, nBlockTx);
+
+    BOOST_REQUIRE_EQUAL(tmpl.block.vtx.size(), 2U);
+    BOOST_REQUIRE_EQUAL(tmpl.vTxFees.size(), 2U);
+    BOOST_REQUIRE_EQUAL(tmpl.vTxSigOps.size(), 2U);
+    BOOST_CHECK_EQUAL(tmpl.vTxFees[1], 100);
+    BOOST_CHECK_EQUAL(nFees, 100);
+    BOOST_CHECK_EQUAL(nBlockSigOps, 102U);
+    BOOST_CHECK_EQUAL(nBlockTx, 1U);
+}
+
+// Aligned template, MIDDLE drop — later entries must shift down with vtx so
+// every surviving tx still pairs with its own fee/sigop slot.
+BOOST_AUTO_TEST_CASE(bug041_p3_drop_aligned_middle_stays_lockstep)
+{
+    CBlockTemplate tmpl;
+    tmpl.block.vtx.push_back(Bug041Tx(0));
+    tmpl.block.vtx.push_back(Bug041Tx(1));
+    tmpl.block.vtx.push_back(Bug041Tx(2));
+    tmpl.vTxFees   = {-1, 100, 7};
+    tmpl.vTxSigOps = {-1, 2, 1};
+
+    const uint256 tailHash = tmpl.block.vtx[2]->GetHash();
+    std::set<uint256> drop{tmpl.block.vtx[1]->GetHash()};
+
+    CAmount nFees = 107;
+    unsigned int nBlockSigOps = 103;
+    uint64_t nBlockSize = 3000, nBlockTx = 2;
+    PTX_TemplateEraseDropped(tmpl, drop, nFees, nBlockSigOps, nBlockSize, nBlockTx);
+
+    BOOST_REQUIRE_EQUAL(tmpl.block.vtx.size(), 2U);
+    BOOST_REQUIRE_EQUAL(tmpl.vTxFees.size(), 2U);
+    BOOST_CHECK(tmpl.block.vtx[1]->GetHash() == tailHash);
+    BOOST_CHECK_EQUAL(tmpl.vTxFees[1], 7);      // tail's slot followed it down
+    BOOST_CHECK_EQUAL(tmpl.vTxSigOps[1], 1);
+    BOOST_CHECK_EQUAL(nFees, 7);
+    BOOST_CHECK_EQUAL(nBlockSigOps, 101U);
+    BOOST_CHECK_EQUAL(nBlockTx, 1U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

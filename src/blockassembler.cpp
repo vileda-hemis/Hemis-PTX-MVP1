@@ -140,6 +140,36 @@ bool CreateCoinbaseTx(CBlock* pblock, const CScript& scriptPubKeyIn, CBlockIndex
     return true;
 }
 
+void PTX_TemplateEraseDropped(CBlockTemplate& tmpl, const std::set<uint256>& drop,
+                              CAmount& nFees, unsigned int& nBlockSigOps,
+                              uint64_t& nBlockSize, uint64_t& nBlockTx)
+{
+    CBlock& block = tmpl.block;
+    for (size_t i = block.vtx.size(); i-- > 1; ) {   // never the coinbase
+        if (!drop.count(block.vtx[i]->GetHash())) continue;
+        // BUG-041 (L2, belt): on a template whose parallel arrays run shorter
+        // than vtx (the L1 creation-seam class) these position-indexed reads
+        // were out-of-bounds and the erases were erase(end()) — which gcc-12
+        // -O2 libstdc++ turns into heap corruption (three caller cores, three
+        // random downstream death sites, one cause).  Never index past the
+        // arrays: the tx is still dropped — the P3 anti-halt contract — and
+        // the skipped bookkeeping is LOUD.
+        if (i < tmpl.vTxFees.size() && i < tmpl.vTxSigOps.size()) {
+            nFees        -= tmpl.vTxFees[i];
+            nBlockSigOps -= tmpl.vTxSigOps[i];
+            tmpl.vTxFees.erase(tmpl.vTxFees.begin() + i);
+            tmpl.vTxSigOps.erase(tmpl.vTxSigOps.begin() + i);
+        } else {
+            LogPrintf("BUG-041: template parallel arrays shorter than vtx (vtx=%u fees=%u sigops=%u) "
+                      "at drop index %u — erasing tx without fee/sigop bookkeeping\n",
+                      block.vtx.size(), tmpl.vTxFees.size(), tmpl.vTxSigOps.size(), i);
+        }
+        nBlockSize -= ::GetSerializeSize(*block.vtx[i], PROTOCOL_VERSION);
+        --nBlockTx;
+        block.vtx.erase(block.vtx.begin() + i);
+    }
+}
+
 BlockAssembler::BlockAssembler(const CChainParams& _chainparams, const bool _defaultPrintPriority)
         : chainparams(_chainparams), defaultPrintPriority(_defaultPrintPriority)
 {
@@ -197,6 +227,19 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
     if (!(fProofOfStake ? SolveProofOfStake(pblock, pindexPrev, pwallet, availableCoins, stopPoSOnNewBlock)
                         : CreateCoinbaseTx(pblock, scriptPubKeyIn, pindexPrev))) {
         return nullptr;
+    }
+
+    // BUG-041 (L1, root): SolveProofOfStake appends TWO txs (coinbase +
+    // coinstake) against the ONE sentinel reserved above, so every PoS
+    // template's fee/sigop arrays ran one SHORTER than vtx — latent
+    // (inherited; PIVX master has the same seam) until the BUG-034 P3 filter
+    // became the first position-indexed reader.  Align at creation so
+    // vTxFees.size() == vtx.size() holds from here on; every later append
+    // site is lockstep.  PoW is already aligned (no-op); the coinstake slot
+    // takes the same -1 sentinel semantics as the coinbase slot.
+    while (pblocktemplate->vTxFees.size() < pblock->vtx.size()) {
+        pblocktemplate->vTxFees.push_back(-1);
+        pblocktemplate->vTxSigOps.push_back(-1);
     }
 
     // After v6 enforcement, add LLMQ commitments if needed
@@ -257,16 +300,7 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
                 }
             }
             // Erase from the parallel template arrays, keeping bookkeeping consistent.
-            for (size_t i = pblock->vtx.size(); i-- > 1; ) {   // never the coinbase
-                if (!drop.count(pblock->vtx[i]->GetHash())) continue;
-                nFees       -= pblocktemplate->vTxFees[i];
-                nBlockSigOps -= pblocktemplate->vTxSigOps[i];
-                nBlockSize  -= ::GetSerializeSize(*pblock->vtx[i], PROTOCOL_VERSION);
-                --nBlockTx;
-                pblock->vtx.erase(pblock->vtx.begin() + i);
-                pblocktemplate->vTxFees.erase(pblocktemplate->vTxFees.begin() + i);
-                pblocktemplate->vTxSigOps.erase(pblocktemplate->vTxSigOps.begin() + i);
-            }
+            PTX_TemplateEraseDropped(*pblocktemplate, drop, nFees, nBlockSigOps, nBlockSize, nBlockTx);
         }
     }
 
