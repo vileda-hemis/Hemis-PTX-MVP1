@@ -204,3 +204,170 @@ template fix) and the RAM configuration changed twice (matched 32 GB pair → re
 are far beyond plausible memory effects, but this remains a system-level comparison, not
 single-variable. The 150 ms tick also quantizes measured latencies upward by up to one tick
 per pass (visible as load-clean 1.66 vs old 1.47 — the price of the loop, accepted).
+
+## 9. Direct-attach verdict, and the bound that actually binds (2026-08-18)
+
+**Verdict up front:** direct-attach is **NOT closed** — but it is **not yet earned either**, and it
+must not be built next. §8 read the tail correctly; what §8 missed is *why* the tail stops where it
+does. Every residual failure is clipped by the **attempt budget at 9.0 s**, not by propagation
+giving up. Until that bound is lifted we cannot tell "gossip never arrived" from "we stopped
+asking at 9 s", and direct-attach's entire justification rests on which of those is true.
+
+### 9.1 The ten rungs, sequential vs parallel-clean
+
+Gen A = sequential dialer (08-17 13:42–17:39). Gen C = parallel dialer + BUG-041 fix
+(08-18 00:59–02:27). Seconds; `ok/total`.
+
+| rung | GEN A sequential | GEN C parallel-clean | p50 |
+|---|---|---|---|
+| **thin** clean | 24/24 · p50 1.18 · p95 1.35 · max 1.81 | *not re-run* | — |
+| **thin** d25 | 23/24 · p50 2.54 · p95 2.79 · max 3.26 | 24/24 · p50 2.17 · p95 2.46 · max 2.61 | −15% |
+| **thin** d50 | 23/24 · p50 4.22 · p95 4.53 · max 4.58 | 23/24 · p50 3.16 · p95 3.47 · max 3.62 | −25% |
+| **thin** d100 | 24/24 · p50 7.24 · p95 7.63 · max 7.71 | 23/24 · p50 4.72 · p95 5.16 · max 5.62 | −35% |
+| **thin** d200 | 8/8 · p50 12.63 · p95 13.42 · max 14.33 | 22/24 · p50 7.55 · p95 8.41 · max 8.56 | −40% |
+| **load** clean | 200/200 · p50 1.47 · p95 2.15 · max 2.46 | 200/200 · p50 1.66 · p95 2.24 · max 2.35 | +13% |
+| **load** d25 | 200/200 · p50 2.73 · p95 3.19 · max 3.80 | 200/200 · p50 2.16 · p95 2.94 · max 3.34 | −21% |
+| **load** d50 | 199/200 · p50 4.30 · p95 6.82 · max 6.85 | 200/200 · p50 3.01 · p95 3.72 · max 4.30 | −30% |
+| **load** d100 | 200/200 · p50 6.79 · p95 8.37 · max 8.95 | 200/200 · p50 4.07 · p95 4.81 · max 5.88 | −40% |
+| **load** d200 | 200/200 · p50 11.76 · p95 13.35 · **max 131.74** | 200/200 · p50 5.98 · p95 7.41 · **max 7.87** | −49% |
+
+Totals — Gen A: **1101/1104**, 3 misses (thin d25 BLS 5/6 @46.6 s; thin d50 BLS 5/6 @83.7 s;
+load-d50 BLS 3/6 @114.2 s). Gen C: **load 1000/1000, zero failures**; **thin 92/96, 4 failures**
+(d50 BLS 5/6; d100 BLS 5/6; d200 BLS 0/6; d200 BLS 3/6 — all at 9.09–9.10 s).
+
+> **Scope correction.** "800/800 zero fails across all ten rungs" is the *load lane only* (it is in
+> fact 1000/1000 across five load rungs). The thin lane, same binary, same night, is **92/96**. The
+> near-miss class did **not** disappear.
+
+### 9.2 Did the near-miss class disappear, or hide below the sample size?
+
+**Neither.** It is plainly visible where it was measured. It is absent under load and present in thin:
+
+* **Load: 0/1000.** By the rule of three the true load failure rate is **< 0.3 %** (95 % conf).
+  That is a real result — but load is the *favourable* case, not the neutral one.
+* **Thin: 4/96 ≈ 4.2 %** (95 % CI ≈ 1–10 %), and **delay-shaped**: 0/24 d25 → 1/24 d50 → 1/24 d100
+  → 2/24 d200. **Two of the four are BLS 5/6** — one partial short, exactly direct-attach's target
+  population.
+
+Load masks the class because sustained traffic keeps gossip batched and signing paths warm. **A
+quiet five-operator testnet looks like the thin lane, not the load lane.** The failure rate that
+matters for launch is therefore ~4 % at injected RTT, not 0 %. With a failed roll forfeiting ~1.0
+stake to the pot (recorded on-chain, §BUG-034 family), that is operator money.
+
+### 9.3 Why parallelisation removed most of the tail — hypothesis confirmed, with a correction
+
+The working hypothesis — *dialling all eleven at once means the sixth-fastest partial lands while
+later members are still being waited on rather than not yet asked* — is **confirmed**, and it is
+the dialer's explicit design (`ptx_fanout.cpp:378-388`): the round returns at the threshold-th
+fastest partial via loopbreak from the completion callback, and stragglers are abandoned at teardown.
+
+**Correction: concurrency alone was not sufficient — removing the per-pass barrier was.** The first
+parallel cut kept pass barriers; because every roll's commitment is freshly broadcast, pass one
+always ends below threshold on not-seens, and the barrier then taxed *every* roll by the slowest
+member's full dial (4.25 s measured with one 2000 ms member). "Stop at the sixth fastest" requires
+the single-loop shape, not merely parallel dials.
+
+**Second correction, and this is the important one: parallelisation also tightened the effective
+timeout by 5–12×.** The attempt budget is a *re-dial-opportunity* count, not a time bound. Under
+the sequential dialer one "attempt" was a full serial pass over 11 members, so 60 attempts spanned
+46–114 s of wall clock — which is exactly where Gen A's three failures sat. Under the parallel
+dialer a tick is 150 ms flat, so the same 60 attempts now expire at **9.0 s**. All four Gen C
+failures land at 9.09–9.10 s. `60 × 150 ms = 9.000 s`. The fan-out now gives up an order of
+magnitude sooner in real time than the constant was calibrated for.
+
+### 9.4 The bound that actually binds — `FANOUT_WALL_MS` is unreachable
+
+Both ceilings are enforced in the same 150 ms tick (`ptx_fanout.cpp:505-526`): the wall at
+`wall_ms >= 30000`, the budget at `++ticks >= 60`. Ticks are the only clock either sees, so the
+budget fires at tick 60 (~9.0 s) and the wall would need tick ~200 (~30 s). **The wall can never
+fire in normal operation.** It survives only as protection against tick starvation (mean tick
+interval > 500 ms).
+
+This makes §5's ship reasoning self-refuting. §5 justifies 30 s as *">2× the worst legitimate
+ladder observation (14.33 s) — it rejects nothing real."* The criterion is right; the code does
+not implement it. **9.0 s rejects that 14.33 s observation outright** — and Gen A's *entire* thin
+d200 success distribution (p50 12.63, p95 13.42, max 14.33) sat above 9.0 s, all 8 of which
+completed successfully under the old constants. The parallel dialer moved the distribution down to
+p50 7.55 / p95 8.41, so most rolls now fit — but the cutoff now sits **inside the upper tail
+instead of outside it**. At thin d200, p95 is within 0.6 s of the cutoff: the system is running at
+~93 % of its budget at p95, which is a cliff, and intercontinental testnet operators would sit on it.
+
+**We therefore cannot currently distinguish** a roll whose gossip never arrived from one whose
+gossip would have arrived at 11 s. Every failure we have is budget-clipped.
+
+### 9.5 The cheap experiment that must precede any direct-attach decision
+
+One constant, ~30 minutes of ladder:
+
+```
+- static const int FANOUT_MAX_ATTEMPTS = 60;
++ static const int FANOUT_MAX_ATTEMPTS = FANOUT_WALL_MS / FANOUT_RETRY_MS;  // 200 -> wall is the single authority
+```
+
+Deriving it makes the wall the one real bound and prevents the two from drifting apart again.
+Re-run thin d100 and d200 (48 rolls, ~15 min each):
+
+* **Failures vanish** → the residual was budget-clipping, propagation does deliver, and
+  **direct-attach closes on evidence** — its target population was an artefact of our own cutoff.
+* **Failures persist at ~28 s** → gossip genuinely is not delivering within any sane window, and
+  **direct-attach is proven necessary**, with the strongest evidence it has ever had.
+
+Cost of raising it: a doomed roll blocks the caller ~28 s instead of ~9 s. Since a failed roll
+forfeits stake either way, completing late strictly beats failing early. Risk is low and bounded
+by the wall, which becomes reachable for the first time.
+
+### 9.6 Registry outcome
+
+* **Direct-attach — PARKED, gate named (not closed, not deferred-without-reason).** Reopening or
+  closing it is now a *decidable* question with a 30-minute experiment attached, where before it
+  was a judgement call. It was parked three times for want of evidence; it stays parked a fourth
+  time because the evidence we have is confounded by our own timeout. **Standing reopen condition
+  unchanged:** a failure tail at higher RTT or larger mesh. **New close condition:** §9.5 returns
+  clean at a 28 s budget.
+* **The bound mismatch (§9.4) is the actionable defect** and outranks direct-attach: it is one
+  line, it makes a documented safety margin real, and it protects operator stake at launch RTT.
+
+### 9.7 The d200 residual-serialisation question — closed, and it does *not* implicate connection reuse
+
+Excess latency over the clean baseline, per ms of one-way injected delay. Slope × 1000 = one-way
+traversals; ÷2 = round trips. A fully-parallel fan-out needs **2–3 RTT**.
+
+| lane | d25 | d50 | d100 | d200 | mean |
+|---|---|---|---|---|---|
+| Gen A thin | 27.2 RTT | 30.4 | 30.3 | 28.6 | **29.1 RTT** |
+| Gen A load | 25.2 RTT | 28.3 | 26.6 | 25.7 | **26.5 RTT** |
+| Gen C thin | 18.6 RTT | 19.2 | 17.4 | 15.8 | **17.7 RTT** |
+| Gen C load | 10.0 RTT | 13.5 | 12.1 | 10.8 | **11.6 RTT** |
+
+**The clean d200 did not land near target.** It gave **5.98 s load / 7.55 s thin** against the
+2–2.5 s target — and the thin figure is *worse* than the holed run's 6.77 s (the holed run's d200
+had only 20 successful samples and its four holes were `docker exec` failures against crashed
+callers, not protocol misses; it is not a like-for-like comparison and should not be cited as a
+regression). So **residual serialisation is real and large: ~11.6 RTT under load, ~17.7 thin,
+against a 2–3 RTT target — still 4–6× off.** Serialisation did halve (26.5 → 11.6 load), confirming
+§8, but half of far-too-much is still far too much.
+
+The slope is **strikingly linear across all four rungs within each lane** (load 10.0–13.5, thin
+15.8–19.2). Linearity in delay with a constant coefficient is the signature of a **fixed chain of
+sequential round trips**, not queueing, not contention, not host load — the count of serialised
+hops is a structural constant of the protocol path.
+
+**Connection reuse is the wrong suspect, by §8's own finding.** §8 concluded the residual "lives
+upstream of the dials" and then nominated connection reuse — a *dial-side* fix — as first suspect.
+Those cannot both be right. Re-dials do pay a fresh connection (`ptx_fanout.cpp:362-372`, deliberate),
+but that is ~1 RTT per attempt against an 11–18 RTT total, and the 150 ms tick is a fixed timer that
+does not scale with RTT. The far larger term is multi-hop INV/GETDATA/TX gossip relay across the
+161-node mesh before members will sign at all (the BUG-032 local-mempool gate) — which is *upstream
+of the dials*, exactly where §8 located it, and which is what direct-attach would remove.
+
+**Recommendation: park connection reuse.** It is a dial-side micro-optimisation aimed at ~1 of
+11–18 RTT, on a lane with zero measured failures. If serialisation is attacked later, the first
+move is **measurement, not a guess**: instrument the commitment's mesh-hop count from broadcast to
+each member's mempool acceptance, and attribute the 11–18 RTT before optimising any of it.
+
+### 9.8 Numbers superseded
+
+* "3 misses in 848 rolls" — miss **count** is right; the denominator is **1104** (thin 104 + load 1000).
+* "800/800 across all ten rungs" — load lane only, and it is 1000/1000; the thin lane is 92/96.
+* Gen C has **no thin-clean rung**; slopes above use Gen B's thin clean (1.24 s, same dialer family).
+  A thin-clean rung is owed on the next ladder run.

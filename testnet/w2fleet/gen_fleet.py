@@ -46,6 +46,13 @@ DEF_PROJECT = "ptx-w2"            # compose project + container/network prefix (
 DEF_OUT = "/mnt/pve/Node14TB/hemis-ptx/docker-w2"
 DEF_DATA_ROOT = "/mnt/pve/Node14TB/hemis-ptx/w2-fleet/datadirs"
 DEF_SUBNET_BASE = "172.31.0"      # caller .10, gm_i .10+i  (N<=60 -> .70)
+# Container-side ptxbea RPC port. MUST track CBaseChainParams("ptxbea", ...) in
+# src/chainparamsbase.cpp — it is the port the daemon actually listens on, and every
+# published host port and intra-fleet -ptxnode= entry targets it. Named because the
+# 29903->29995 change (9abba98) touched the daemon and missed all three hardcoded
+# literals here, leaving the generator emitting host ports mapped to a dead container
+# port; the live compose was hand-patched instead, so a regen would have re-broken it.
+PTXBEA_RPC_PORT = 29995
 DEF_PORT_BASE = 31000             # caller 31000, gm_i 31000+i (N<=60 -> 31060)
 CALLER_PORT_OFFSET = 900          # caller_k>1 at port_base+900+(k-1) — STABLE, above the GM range (supports up to 900 GMs); a grow never moves callers/collides
 DEF_IMAGE = "hemis-ptx-w2:40b109c"
@@ -234,7 +241,7 @@ def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser,
     volumes:
       - {data_root}/{cname}:/root/.hemis-ptxbea
     ports:
-      - "{cport}:29903"
+      - "{cport}:{PTXBEA_RPC_PORT}"
     environment:
       <<: *node-env
       PTX_NODE_ID: ${{{cnid}:-{cname}}}
@@ -274,7 +281,7 @@ def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser,
         for i in range(1, n + 1):
             g = gm_name(i)
             lines.append(
-                f"      - -ptxnode=${{{g.upper()}_NODE_ID:-{g}}}@{gm_ip(subnet_base, i)}:29903\n")
+                f"      - -ptxnode=${{{g.upper()}_NODE_ID:-{g}}}@{gm_ip(subnet_base, i)}:{PTXBEA_RPC_PORT}\n")
         lines.append("\n")
 
     # ── GMs ─────────────────────────────────────────────────────────────
@@ -302,7 +309,7 @@ def emit_compose(n, image, subnet_base, port_base, data_root, rpcuser,
     volumes:
       - {data_root}/{g}:/root/.hemis-ptxbea
     ports:
-      - "{port_base + i}:29903"
+      - "{port_base + i}:{PTXBEA_RPC_PORT}"
     environment:
       <<: *node-env
       PTX_NODE_ID: ${{{g.upper()}_NODE_ID:-{g}}}
