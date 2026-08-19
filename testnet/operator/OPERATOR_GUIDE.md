@@ -89,6 +89,14 @@ You do the node first because Part B needs two values that only exist after this
 
 ### A1. Install
 
+★ **First, the three tools the installer needs and does not install.** On a minimal image you have
+none of them, and `install.sh` stops at its first check with `missing required tool: git` — which is
+correct but is a poor first thing to meet. On Debian/Ubuntu:
+
+```bash
+apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates
+```
+
 ```bash
 git clone -b feature/ptx-dkg https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 cd Hemis-PTX-MVP1/testnet/operator
@@ -115,10 +123,24 @@ so any reasonably modern Linux works, and you get told the real reason if it doe
 **installs the `Hemisd` / `Hemis-cli` binaries**, reserves ports 32000–33000 in the kernel (merging
 with, never overwriting, any existing reservation) and writes a config with dual-stack `rpcbind`.
 
-★ **If it stops with "no PTX binaries, and no release artefact to fetch"**, you are on a plain
-branch checkout, which is source only. Ask the coordinator for the **release tag** and re-run from
-that; building from source works but costs you tens of minutes and a Boost/BDB-4.8 toolchain fight
-at the very first step. The script prints both routes.
+★★ **If it stops with "no PTX binaries, and no release artefact to fetch"** — you are on a plain
+branch checkout, which is source only, and **until a release tag is cut this is where everyone
+lands.** Build from source; the script does the whole thing:
+
+```bash
+PTX_BUILD_FROM_SOURCE=1 PTX_DATADIR=~/.hemis-ptxtestnet-1 PTX_P2P_PORT=29994 PTX_RPC_PORT=29995 ./install.sh
+```
+
+It installs the build dependencies, sizes `make -j` **from free RAM rather than core count** (a
+`-j$(nproc)` on a small box gets OOM-killed two-thirds of the way through a ten-minute build),
+compiles, verifies the binaries actually run, and strips them. **Measured: 5m16s** on a 6-core
+allowance from a bare Debian 12 — not the "tens of minutes" this guide used to warn about, and there
+is no Boost/BDB-4.8 fight to have: the build uses the system BDB via `--with-incompatible-bdb`, which
+the script tells you about because it means wallets from this build are not readable by a stock
+release binary.
+
+Once a tag exists, prefer the artefact route the script also prints —
+`PTX_BIN_URL=<url> PTX_BIN_SHA256=<sha256> ./install.sh`.
 
 ### A2. Start the daemon
 
