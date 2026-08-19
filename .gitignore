@@ -63,6 +63,10 @@ conftest.err
 libtool
 src/config/Hemis-config.h
 src/config/Hemis-config.h.in
+# autoheader output inside the VENDORED chiabls/relic tree. Generated, not authored:
+# regenerating it on any autoconf other than the one that produced the committed copy
+# dirties the tree, and a dirty tree makes genbuild.sh drop the tag name (share/genbuild.sh:32-34).
+src/chiabls/contrib/relic/include/relic_conf.h.in
 src/config/stamp-h1
 src/obj
 share/setup.nsi
