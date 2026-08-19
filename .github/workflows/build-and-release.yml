@@ -362,23 +362,36 @@ jobs:
           fi
       - name: Zip Windows Builds
         if: ${{ matrix.config.host == 'x86_64-w64-mingw32' }}
-        run: zip -rj Hemis-Windows.zip /home/runner/work/Hemis/Hemis/build/Hemis-x86_64-w64-mingw32/release
+        run: zip -rj Hemis-Windows.zip ${{ github.workspace }}/build/Hemis-x86_64-w64-mingw32/release
 
       - name: Zip Linux Builds
         if: ${{ matrix.config.host == 'x86_64-unknown-linux-gnu' }}
-        run: zip -rj Hemis-Linux.zip /home/runner/work/Hemis/Hemis/${{github.run_number}}-x86_64-unknown-linux-gnu/bin
+        run: zip -rj Hemis-Linux.zip ${{ github.workspace }}/${{github.run_number}}-x86_64-unknown-linux-gnu/bin
       
       - name: Tar Linux Builds
         if: ${{ matrix.config.host == 'x86_64-unknown-linux-gnu' }}
-        run: cd /home/runner/work/Hemis/Hemis/${{github.run_number}}-x86_64-unknown-linux-gnu/bin && tar -czvf Hemis-Linux.tar.gz *
+        # Written to the workspace root, NOT into the directory being tarred: tar
+        # would otherwise race against its own growing output, and the pre-release
+        # upload below looked for it here anyway.
+        run: tar -czf "${{ github.workspace }}/Hemis-Linux.tar.gz" -C "${{ github.workspace }}/${{github.run_number}}-x86_64-unknown-linux-gnu/bin" .
+
+      - name: Checksums
+        if: ${{ matrix.config.host == 'x86_64-unknown-linux-gnu' }}
+        # ★ Operators cannot tell whether they got what we meant them to publish
+        # unless we publish the hashes. install.sh reads this file from the release
+        # and refuses to install an artefact it cannot verify.
+        run: |
+          cd "${{ github.workspace }}"
+          sha256sum Hemis-Linux.tar.gz Hemis-Linux.zip > SHA256SUMS
+          cat SHA256SUMS
 
       - name: Zip AArch64 Builds
         if: ${{ matrix.config.host == 'aarch64-linux-gnu' }}
-        run: zip -rj Hemis-AArch.zip /home/runner/work/Hemis/Hemis/${{github.run_number}}-aarch64-linux-gnu/bin
+        run: zip -rj Hemis-AArch.zip ${{ github.workspace }}/${{github.run_number}}-aarch64-linux-gnu/bin
 
       - name: Zip Arm32 Builds
         if: ${{ matrix.config.host == 'arm-linux-gnueabihf' }}
-        run: zip -rj Hemis-Arm32.zip /home/runner/work/Hemis/Hemis/${{github.run_number}}-arm-linux-gnueabihf/bin
+        run: zip -rj Hemis-Arm32.zip ${{ github.workspace }}/${{github.run_number}}-arm-linux-gnueabihf/bin
 
       - name: Upload Release Windows Builds
         uses: softprops/action-gh-release@v0.1.15
@@ -389,7 +402,7 @@ jobs:
           prerelease: false
           files: |
             Hemis-Windows.zip
-            /home/runner/work/Hemis/Hemis/build/Hemis-x86_64-w64-mingw32/Hemis-*-setup-unsigned.exe
+            ${{ github.workspace }}/build/Hemis-x86_64-w64-mingw32/Hemis-*-setup-unsigned.exe
 
       - name: Upload PreRelease Windows Builds
         uses: softprops/action-gh-release@v2.0.5
@@ -400,7 +413,7 @@ jobs:
           prerelease: true
           files: |
             Hemis-Windows.zip
-            /home/runner/work/Hemis/Hemis/build/Hemis-x86_64-w64-mingw32/Hemis-*-setup-unsigned.exe
+            ${{ github.workspace }}/build/Hemis-x86_64-w64-mingw32/Hemis-*-setup-unsigned.exe
 
       - name: Upload Release Linux Builds
         uses: softprops/action-gh-release@v2.0.5
@@ -411,7 +424,8 @@ jobs:
           prerelease: false
           files: |
               Hemis-Linux.zip
-              /home/runner/work/Hemis/Hemis/${{github.run_number}}-x86_64-unknown-linux-gnu/bin/Hemis-Linux.tar.gz
+              Hemis-Linux.tar.gz
+              SHA256SUMS
 
       - name: Upload PreRelease Linux Builds
         uses: softprops/action-gh-release@v2.0.5
@@ -423,6 +437,7 @@ jobs:
           files: |
               Hemis-Linux.zip
               Hemis-Linux.tar.gz
+              SHA256SUMS
 
       - name: Upload Release Mac Builds
         uses: softprops/action-gh-release@v2.0.5
@@ -431,7 +446,7 @@ jobs:
           name: ${{ github.event.inputs.release-name }}
           tag_name: ${{ github.event.inputs.tags }}
           prerelease: false
-          files: /home/runner/work/Hemis/Hemis/build/Hemis-x86_64-apple-darwin16/Hemis-Core.dmg
+          files: ${{ github.workspace }}/build/Hemis-x86_64-apple-darwin16/Hemis-Core.dmg
 
       - name: Upload PreRelease Mac Builds
         uses: softprops/action-gh-release@v2.0.5
@@ -440,7 +455,7 @@ jobs:
           name: ${{ github.event.inputs.release-name }}
           tag_name: ${{ github.event.inputs.tags }}
           prerelease: true
-          files: /home/runner/work/Hemis/Hemis/build/Hemis-x86_64-apple-darwin16/Hemis-Core.dmg
+          files: ${{ github.workspace }}/build/Hemis-x86_64-apple-darwin16/Hemis-Core.dmg
 
       - name: Upload Release AArch Builds
         uses: softprops/action-gh-release@v2.0.5
