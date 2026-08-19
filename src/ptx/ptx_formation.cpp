@@ -704,6 +704,14 @@ bool PTX_Formation_IsBoundary(int nHeight,
     return nHeight > 0 && (nHeight % params.nBoundaryInterval) == 0;
 }
 
+bool PTX_Formation_BoundaryRequiredAt(int nConnectHeight,
+                                      const Consensus::PTXFormationParams& params)
+{
+    // 0 == enforce from genesis (every fresh chain, and every network today).
+    // A positive value grandfathers everything mined below it.
+    return nConnectHeight >= params.nBoundaryEnforceHeight;
+}
+
 const CBlockIndex* PTX_Formation_GetAnchor(
         const CBlockIndex* pindexNew,
         const Consensus::PTXFormationParams& params)

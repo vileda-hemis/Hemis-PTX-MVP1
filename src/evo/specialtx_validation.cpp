@@ -718,13 +718,23 @@ bool CheckPTXDKGTx(const CTransaction& tx, const CBlockIndex* pindexPrev,
         // excluded). SG-1b defines WHEN formation may fire; validation must
         // REQUIRE it or produce and validate diverge (the SG-1a asymmetry
         // class). Shape mirrors the LLMQ commitment's dkgInterval check
-        // (CheckLLMQCommitmentTx above). Deliberately NO activation-height
-        // gate — a RESETTABLE-FLEET simplification only; mainnet/public
-        // testnet REQUIRE a height-gate before this ships there or historical
-        // off-boundary PTXDKGs become retroactively invalid (forward-bind
-        // recorded 2026-07-13, pre-testnet/mainnet-migration owed-list).
-        if (!PTX_Formation_IsBoundary(pindexQuorum->nHeight,
-                                      Params().GetConsensus().ptxFormation))
+        // (CheckLLMQCommitmentTx above).
+        //
+        // ★ ACTIVATION-GATED (2026-08-19, pre-testnet). The predicate reads
+        // nBoundaryInterval, so changing the cadence on a chain WITH HISTORY
+        // would retroactively invalidate every PTXDKG anchored on the old
+        // schedule and a node syncing from genesis would reject blocks the
+        // network accepted — SPLIT-ON-RESYNC, the h385 shape. The gate is on
+        // the height of the BLOCK BEING CONNECTED (not the anchor: gating on
+        // the anchor would admit a NEW off-boundary PTXDKG that merely names an
+        // OLD anchor). nBoundaryEnforceHeight == 0 means enforce from genesis,
+        // which is the value on every network today — ptxbea has enforced V11
+        // since its fresh genesis, so this change is behaviour-preserving
+        // everywhere and replay stays byte-identical. See consensus/params.h.
+        const Consensus::PTXFormationParams& ptxFormation =
+                Params().GetConsensus().ptxFormation;
+        if (PTX_Formation_BoundaryRequiredAt(pindexPrev->nHeight + 1, ptxFormation) &&
+            !PTX_Formation_IsBoundary(pindexQuorum->nHeight, ptxFormation))
             return state.DoS(100, error("%s: PTXDKG anchor %s (height %d) is not a formation boundary",
                                         __func__, payload.quorum_hash.ToString(), pindexQuorum->nHeight),
                              REJECT_INVALID, "ptxdkg-anchor-not-boundary");

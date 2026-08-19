@@ -431,6 +431,72 @@ BOOST_AUTO_TEST_CASE(sg1b_genesis_excluded)
 }
 
 // ---------------------------------------------------------------------------
+// Row 3b — V11 ACTIVATION GATE, DEFAULT: nBoundaryEnforceHeight defaults to 0,
+// which must mean ENFORCE FROM GENESIS on every fresh chain. This row is the
+// behaviour-preservation proof for the 2026-08-19 gating change: with the
+// default untouched, V11 is required at every height exactly as before.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(v11_gate_default_enforces_from_genesis)
+{
+    const auto p = ScheduleParams(80);
+    BOOST_CHECK_EQUAL(p.nBoundaryEnforceHeight, 0);
+    for (int h : {1, 2, 79, 80, 81, 900, 1000000})
+        BOOST_CHECK_MESSAGE(PTX_Formation_BoundaryRequiredAt(h, p),
+            "gate=0 must require V11 at height " << h);
+}
+
+// ---------------------------------------------------------------------------
+// Row 3c — V11 ACTIVATION GATE, ARMED: with a positive gate, everything mined
+// BELOW it is grandfathered and everything at-or-above must comply. The
+// boundary case (h == gate) is inclusive: the activation height itself is the
+// first height that enforces. This is the split-on-resync guard — a node
+// syncing from genesis must accept the off-boundary PTXDKGs that were legal
+// when they were mined.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(v11_gate_armed_grandfathers_history)
+{
+    auto p = ScheduleParams(80);
+    p.nBoundaryEnforceHeight = 900;
+
+    for (int h : {0, 1, 79, 80, 898, 899})
+        BOOST_CHECK_MESSAGE(!PTX_Formation_BoundaryRequiredAt(h, p),
+            "height " << h << " is below the gate and must be grandfathered");
+    for (int h : {900, 901, 960, 1000000})
+        BOOST_CHECK_MESSAGE(PTX_Formation_BoundaryRequiredAt(h, p),
+            "height " << h << " is at/above the gate and must enforce");
+}
+
+// ---------------------------------------------------------------------------
+// Row 3d — THE TWO PREDICATES COMPOSE AS V11 USES THEM. An OFF-boundary anchor
+// (the thing V11 rejects) must be admissible while the gate is closed and
+// rejected once it opens; an ON-boundary anchor is fine either side. This is
+// the row that would fail if the gate were ever wired to the ANCHOR height
+// instead of the CONNECT height.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(v11_gate_composes_with_boundary_test)
+{
+    auto p = ScheduleParams(80);
+    p.nBoundaryEnforceHeight = 900;
+
+    const int off_anchor = 123;   // 123 % 80 != 0
+    const int on_anchor  = 160;   // 160 % 80 == 0
+    BOOST_CHECK(!PTX_Formation_IsBoundary(off_anchor, p));
+    BOOST_CHECK(PTX_Formation_IsBoundary(on_anchor, p));
+
+    // V11's effective reject == required(connect) && !isBoundary(anchor)
+    auto rejects = [&](int connect, int anchor) {
+        return PTX_Formation_BoundaryRequiredAt(connect, p) &&
+               !PTX_Formation_IsBoundary(anchor, p);
+    };
+    BOOST_CHECK_MESSAGE(!rejects(500, off_anchor),
+        "off-boundary anchor must be ACCEPTED below the gate (grandfathered history)");
+    BOOST_CHECK_MESSAGE(rejects(900, off_anchor),
+        "off-boundary anchor must be REJECTED at the activation height");
+    BOOST_CHECK_MESSAGE(!rejects(500, on_anchor), "on-boundary anchor below gate");
+    BOOST_CHECK_MESSAGE(!rejects(900, on_anchor), "on-boundary anchor above gate");
+}
+
+// ---------------------------------------------------------------------------
 // Row 4 — ANCHOR EXACTNESS: for every h in [kN, (k+1)N) the anchor is the
 // block at kN on the tip's own branch; at h = kN the anchor is pindexNew
 // itself. (Pre-first-boundary heights anchor to genesis; IsBoundary is what

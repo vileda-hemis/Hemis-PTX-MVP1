@@ -254,6 +254,26 @@ struct PTXFormationParams {
     // h385 lesson: never let a new rule re-derive old history differently).
     // 0 = stateless from genesis (fresh chains).
     int nReformStatelessHeight{0};
+
+    // ★ V11 ACTIVATION GATE (pre-testnet, 2026-08-19). V11 requires a PTXDKG's
+    // formation anchor to sit ON the boundary schedule (height % N == 0). That
+    // predicate reads nBoundaryInterval, so CHANGING THE CADENCE ON A CHAIN WITH
+    // HISTORY retroactively invalidates every PTXDKG whose anchor was on the old
+    // schedule: a node syncing from genesis rejects blocks the network accepted.
+    // SPLIT-ON-RESYNC — the h385 shape (never let a new rule re-derive old
+    // history differently), and the reason nReformStatelessHeight above exists.
+    //
+    // Semantics deliberately mirror nReformStatelessHeight: the predicate is on
+    // the height of the BLOCK BEING CONNECTED, not on the anchor's height, so
+    // activation cleanly partitions "mined before" (grandfathered) from "mined
+    // after" (must be on-boundary). Gating on the anchor instead would let a NEW
+    // off-boundary PTXDKG in simply by naming an old anchor.
+    //
+    // 0 = ENFORCE FROM GENESIS — correct for every fresh chain, and the current
+    // value on ALL networks: ptxbea has enforced V11 since its 2026-08-15 fresh
+    // genesis, so 0 preserves byte-identical replay there. The knob exists for a
+    // chain that accumulates history under one cadence and later changes it.
+    int nBoundaryEnforceHeight{0};
 };
 
 /**

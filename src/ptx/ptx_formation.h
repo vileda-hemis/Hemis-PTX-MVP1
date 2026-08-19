@@ -342,6 +342,19 @@ bool PTX_Formation_ForcedReformGraceElapsed(
 bool PTX_Formation_IsBoundary(int nHeight,
                               const Consensus::PTXFormationParams& params);
 
+// ★ V11 ACTIVATION PREDICATE (pre-testnet, 2026-08-19). True when the block at
+// nConnectHeight must satisfy V11 (anchor on the boundary schedule).
+// IsBoundary above reads nBoundaryInterval, so changing the cadence on a chain
+// WITH HISTORY retroactively invalidates PTXDKGs anchored under the old cadence
+// — split-on-resync, the h385 shape. This names the activation decision instead
+// of leaving a bare `>=` inline in CheckPTXDKGTx, so the rule is greppable (the
+// positional-init grep trap in consensus/params.h is why that matters).
+// ★ Takes the CONNECT height, never the anchor height: gating on the anchor
+// would let a NEW off-boundary PTXDKG in by naming an OLD anchor.
+// nBoundaryEnforceHeight == 0 => always true (enforce from genesis).
+bool PTX_Formation_BoundaryRequiredAt(int nConnectHeight,
+                                      const Consensus::PTXFormationParams& params);
+
 // The cycle-start anchor for pindexNew's height, walked down pindexNew's OWN
 // branch: pindexNew->GetAncestor(nHeight - nHeight % N) — the reorg-robust
 // V3 idiom (specialtx_validation.cpp CheckPTXDKGTx), NEVER chainActive[]
