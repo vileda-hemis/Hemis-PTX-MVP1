@@ -62,6 +62,11 @@ std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
     size_t threshold = 0,
     // A (2026-08-12): node_id -> proTxHash for LIVE-DGM fan-out address resolution.
     // Empty map => legacy static -ptxnode resolution only (back-compat default).
-    const std::map<std::string, uint256>& member_protx = {});
+    const std::map<std::string, uint256>& member_protx = {},
+    // KDD-088 DIRECT-ATTACH: raw hex of this round's PTXROLLCOMMIT, ridden on
+    // every dial so a member that has not yet seen it via gossip can accept it
+    // locally rather than answering -32051 and being re-dialled until it does.
+    // Empty => legacy gossip-only delivery (the parameter is purely additive).
+    const std::string& commit_hex = "");
 
 #endif // HEMIS_PTX_FANOUT_H

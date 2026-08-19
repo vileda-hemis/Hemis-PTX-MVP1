@@ -17,8 +17,12 @@
 // commitment txid; out_chain receives that chain output's outpoint (the settle
 // must spend EXACTLY this outpoint — deterministic, never left to coin selection,
 // or the coin-chain breaks and 2c rejects the settle).
+// KDD-088: out_raw_hex additionally returns the serialized commitment so the
+// fan-out can ATTACH it to each sign request (direct-attach). Optional — pass
+// nullptr for the legacy gossip-only flow.
 std::string PTX_BuildRollCommitment(const CPTXRollCommitPayload& payload,
-                                    COutPoint& out_chain);
+                                    COutPoint& out_chain,
+                                    std::string* out_raw_hex = nullptr);
 
 // Build and submit the PTXSESS (settle/reveal) to the memory pool.
 // Returns the txid hex on acceptance, or "pending" if mempool rejected.
@@ -40,6 +44,29 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
 // canonical selection active at nSeedHeight, closing BUG-033), so the gate also
 // refuses a sign request for a non-committed quorum. (Increment 2b replaced the
 // earlier in-memory registry seam with this real mempool lookup.)
+// KDD-088 DIRECT-ATTACH — accept a caller-supplied PTXROLLCOMMIT for THIS round
+// into the local mempool via the NORMAL acceptance path, so the unchanged BUG-032
+// gate can then pass without waiting for gossip.
+//
+// ★ ACCEPT-INTO-MEMPOOL IS THE SECURITY MECHANISM. The gate's predicate has always
+// been "is this commitment in MY mempool", never "was it broadcast" — so attaching
+// swaps the courier and leaves the predicate identical. Verify-without-accepting
+// would break it: no UTXO check (inputs could be spent), no relay (a caller could
+// collect partials and withhold), no fee policy. AcceptToMemoryPool is what makes
+// the fee real, so "well-formed" is insufficient — the attack needs MEMPOOL-VALID,
+// and mempool-valid means paid.
+//
+// Deliberately TRANSPORT-AGNOSTIC (takes bytes, not a request) so KDD-085
+// sign-over-P2P can call it without unpicking the RPC call site.
+//
+// Returns true iff the commitment is present after the attempt. Never throws:
+// a bad attachment must not fail louder than no attachment at all — the caller
+// falls through to the gate's ordinary retryable refusal. `err` is diagnostic.
+bool PTX_AcceptAttachedCommitment(const std::string& commit_hex,
+                                  const uint256& round_seed,
+                                  const uint256& quorum_hash,
+                                  std::string& err);
+
 bool PTX_RollCommitmentPresent(const uint256& round_seed, const uint256& quorum_hash);
 
 // The gated signing entry the RPC/fan-out path uses.  Signs round_seed with this

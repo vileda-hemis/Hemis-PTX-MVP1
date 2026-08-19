@@ -406,6 +406,11 @@ struct PTXSignRoundCtx {
     const uint256* round_seed{nullptr};
     const uint256* quorum_hash{nullptr};
     const std::map<std::string, uint256>* member_protx{nullptr};
+    // KDD-088 direct-attach: raw hex of the PTXROLLCOMMIT for this round. Ride
+    // it on every dial so a member that has not yet seen the commitment via
+    // gossip can accept it locally instead of answering -32051 and waiting.
+    // Empty => legacy behaviour (gossip-only delivery).
+    const std::string* commit_hex{nullptr};
 };
 
 bool ptx_sign_dial(PTXSignRoundCtx& round, const std::string& node_id);
@@ -570,9 +575,15 @@ bool ptx_sign_dial(PTXSignRoundCtx& round, const std::string& node_id)
 
     // KDD-070 P1: gm_bls_sign takes (round_seed_hex, quorum_hash) — the
     // quorum_hash selects which CURRENT share the member signs with.
+    // KDD-088: an optional third arg carries the commitment itself. Safe against
+    // OLD members by construction — gm_bls_sign guards on params.size() < 2, not
+    // != 2, so a member that does not know about the third arg ignores it and
+    // behaves exactly as before. No negotiation, no feature flag, no fallback.
     UniValue params(UniValue::VARR);
     params.push_back(round.round_seed->GetHex());
     params.push_back(round.quorum_hash->GetHex());
+    if (round.commit_hex && !round.commit_hex->empty())
+        params.push_back(*round.commit_hex);
 
     // Raw HTTP; sig_hex parsed by the completion callback (not "accepted").
     round.dials->emplace_back();
@@ -626,7 +637,8 @@ std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
     const uint256& quorum_hash,
     const std::vector<std::string>& member_ids,
     size_t threshold,
-    const std::map<std::string, uint256>& member_protx)
+    const std::map<std::string, uint256>& member_protx,
+    const std::string& commit_hex)
 {
     std::map<std::string, std::vector<uint8_t>> collected;
 
@@ -663,6 +675,7 @@ std::map<std::string, std::vector<uint8_t>> PTX_FanOutSign(
     round.round_seed = &round_seed;
     round.quorum_hash = &quorum_hash;
     round.member_protx = &member_protx;
+    round.commit_hex = &commit_hex;   // KDD-088; caller's frame outlives every callback
 
     size_t dialed = 0;
     for (const auto& node_id : member_ids) {

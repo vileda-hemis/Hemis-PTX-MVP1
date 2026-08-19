@@ -6,6 +6,7 @@
 
 #include "chainparams.h"
 #include "consensus/validation.h"
+#include "core_io.h"          // KDD-088: EncodeHexTx for direct-attach
 #include "key_io.h"
 #include "logging.h"
 #include "primitives/transaction.h"
@@ -37,7 +38,8 @@ static const CAmount PTX_CHAIN_OUTPUT_VALUE = 100000;   // 0.001 HMS
 #endif
 
 std::string PTX_BuildRollCommitment(const CPTXRollCommitPayload& payload,
-                                    COutPoint& out_chain)
+                                    COutPoint& out_chain,
+                                    std::string* out_raw_hex)
 {
 #ifndef ENABLE_WALLET
     throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED, "wallet not compiled in");
@@ -116,6 +118,9 @@ std::string PTX_BuildRollCommitment(const CPTXRollCommitPayload& payload,
     try {
         TryATMP(mtx, false);
         RelayTx(txid);
+        // KDD-088: hand back the serialized commitment AFTER acceptance, so the
+        // fan-out can only ever attach bytes this node itself accepted.
+        if (out_raw_hex) *out_raw_hex = EncodeHexTx(CTransaction(mtx));
         reservekey.KeepKey();   // the chain key is now in use (the settle spends it)
         out_chain = COutPoint(txid, (uint32_t)chainIdx);
         LogPrintf("PTX: commitment %s broadcast; chain output %s:%d\n",
@@ -261,6 +266,70 @@ bool PTX_RollCommitmentPresent(const uint256& round_seed, const uint256& quorum_
             return true;
     }
     return false;
+}
+
+// ── KDD-088 direct-attach: accept caller-supplied commitment bytes ───────────
+// Contract and rationale in ptx_mempool.h. Every cheap rejection happens BEFORE
+// any validation work, because these are CALLER-SUPPLIED bytes and that is the
+// one genuinely new exposure this feature introduces.
+bool PTX_AcceptAttachedCommitment(const std::string& commit_hex,
+                                  const uint256& round_seed,
+                                  const uint256& quorum_hash,
+                                  std::string& err)
+{
+    // Already present (gossip won the race) — the attachment is a no-op. This is
+    // the common case once propagation catches up, so it is checked first.
+    if (PTX_RollCommitmentPresent(round_seed, quorum_hash)) return true;
+
+    // A commitment is a few hundred bytes; anything near this cap is abuse, not
+    // a legitimate round. Size is checked before hex-validation before decode.
+    static const size_t PTX_ATTACH_MAX_HEX = 200000;   // 100 kB of transaction
+    if (commit_hex.size() > PTX_ATTACH_MAX_HEX) {
+        err = "attached commitment too large";
+        LogPrintf("PTX attach: REFUSED (size %u > %u)\n",
+                  (unsigned)commit_hex.size(), (unsigned)PTX_ATTACH_MAX_HEX);
+        return false;
+    }
+    if (!IsHex(commit_hex)) { err = "attached commitment not hex"; return false; }
+
+    CMutableTransaction mtx;
+    if (!DecodeHexTx(mtx, commit_hex)) { err = "attached commitment decode failed"; return false; }
+    const CTransaction attached(mtx);
+    if (!attached.IsPTXRollCommitTx()) {
+        err = "attached tx is not a PTXROLLCOMMIT";
+        LogPrintf("PTX attach: REFUSED (%s is not a PTXROLLCOMMIT)\n",
+                  attached.GetHash().GetHex());
+        return false;
+    }
+    // Bind the attachment to THIS round BEFORE spending validation on it: an
+    // attachment for another round is not our business, and accepting it would
+    // let a caller push unrelated traffic through us.
+    CPTXRollCommitPayload ap;
+    if (!GetTxPayload(attached, ap) ||
+        ap.round_seed != round_seed || ap.quorum_hash != quorum_hash) {
+        err = "attached commitment does not match this round";
+        LogPrintf("PTX attach: REFUSED (payload does not match round_seed/quorum_hash)\n");
+        return false;
+    }
+
+    // The NORMAL acceptance path — byte-for-byte what gossip-delivered bytes get.
+    // If it is unfunded, unsigned, or spends spent inputs, this rejects and the
+    // gate refuses exactly as it would have without any attachment.
+    try {
+        TryATMP(mtx, false);
+        RelayTx(attached.GetHash());   // our own relay carries it onward
+        LogPrintf("PTX attach: accepted commitment %s (round_seed=%s)\n",
+                  attached.GetHash().GetHex(), round_seed.ToString());
+    } catch (const UniValue& objError) {
+        err = "attached commitment mempool-rejected: " + objError["message"].getValStr();
+        LogPrintf("PTX attach: %s\n", err);
+        return false;
+    } catch (const std::exception& e) {
+        err = std::string("attached commitment error: ") + e.what();
+        LogPrintf("PTX attach: %s\n", err);
+        return false;
+    }
+    return PTX_RollCommitmentPresent(round_seed, quorum_hash);
 }
 
 // The gated signing entry. Signs round_seed with this node's CURRENT share for

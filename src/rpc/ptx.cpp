@@ -309,7 +309,12 @@ UniValue ptx_roll(const JSONRPCRequest& request)
     commit_payload.round_seed       = round_seed;
     commit_payload.quorum_hash      = dkg_ctx.quorum_hash;
     COutPoint chain_outpoint;
-    const std::string commit_txid = PTX_BuildRollCommitment(commit_payload, chain_outpoint);
+    // KDD-088 direct-attach: keep the serialized commitment so every sign request
+    // can carry it. `commit_raw_hex` outlives PTX_FanOutSign (same frame), which
+    // holds a pointer to it for the life of the round.
+    std::string commit_raw_hex;
+    const std::string commit_txid = PTX_BuildRollCommitment(commit_payload, chain_outpoint,
+                                                            &commit_raw_hex);
     LogPrintf("PTX roll: commitment %s broadcast BEFORE signing (round_seed=%s)\n",
               commit_txid, round_seed.ToString());
 
@@ -319,7 +324,8 @@ UniValue ptx_roll(const JSONRPCRequest& request)
     // (gating on the slowest members under staggered commitment propagation).
     auto partial_sigs_raw = PTX_FanOutSign(round_id, round_seed, dkg_ctx.quorum_hash,
                                            member_ids, (size_t)signing_threshold,
-                                           dkg_ctx.member_protx); // A: live-DGM addr resolution
+                                           dkg_ctx.member_protx, // A: live-DGM addr resolution
+                                           commit_raw_hex);      // KDD-088: direct-attach
 
     // Collect blst partial signatures and 1-indexed polynomial positions.
     std::vector<std::vector<uint8_t>> bls_sigs;
@@ -551,6 +557,10 @@ UniValue gm_bls_sign(const JSONRPCRequest& request)
             "\nArguments:\n"
             "1. round_seed_hex (str) 64-char hex round seed\n"
             "2. quorum_hash    (str) 64-char hex quorum_hash — selects which share signs\n"
+            "3. commit_hex     (str, optional) raw PTXROLLCOMMIT for this round (KDD-088\n"
+            "                  direct-attach). Accepted into the local mempool via the\n"
+            "                  normal path if not already present, then the unchanged\n"
+            "                  BUG-032 gate decides. Omitted => gossip-only delivery.\n"
             "\nResult:\n"
             "{\n"
             "  \"sig_hex\" : \"hex\"  96-byte BLS partial signature\n"
@@ -568,6 +578,23 @@ UniValue gm_bls_sign(const JSONRPCRequest& request)
 
     uint256 round_seed  = uint256S(seed_hex);
     uint256 quorum_hash = uint256S(qh_hex);
+
+    // ── KDD-088 DIRECT-ATTACH ────────────────────────────────────────────────
+    // Optional third argument: the round's PTXROLLCOMMIT itself. Hand it to the
+    // mempool module, which accepts it via the NORMAL path if we have not already
+    // seen it via gossip; the gate below is UNCHANGED and still decides. The
+    // helper is transport-agnostic and never throws — a bad attachment must not
+    // fail louder than no attachment at all, so we fall through to the gate's
+    // ordinary retryable refusal. Full rationale (why accept-into-mempool rather
+    // than verify-only IS the security property) lives on the declaration.
+    if (request.params.size() > 2 && !request.params[2].isNull()) {
+        std::string attach_err;
+        if (!PTX_AcceptAttachedCommitment(request.params[2].get_str(),
+                                          round_seed, quorum_hash, attach_err)) {
+            LogPrintf("PTX gm_bls_sign: attachment not usable (%s) — deferring to gate\n",
+                      attach_err);
+        }
+    }
 
     // BUG-032 2b: route signing through the fund-then-sign gate. It refuses to
     // reveal (sign) unless a REAL PTXROLLCOMMIT for this exact (round_seed,
@@ -1740,7 +1767,7 @@ static const CRPCCommand commands[] = {
     { "ptx",  "ptx_roll",                  &ptx_roll,                   true,   {"count","low","high","unique","exclude","game_id","caller_salt"} },
     { "ptx",  "gm_commit",                 &gm_commit,                  true,   {"round_id","round_seed_hex","members_json","commitment_hex"} },
     { "ptx",  "gm_reveal",                 &gm_reveal,                  true,   {"round_id","secret_hex"} },
-    { "ptx",  "gm_bls_sign",               &gm_bls_sign,                true,   {"round_seed_hex","quorum_hash"} },
+    { "ptx",  "gm_bls_sign",               &gm_bls_sign,                true,   {"round_seed_hex","quorum_hash","commit_hex"} },
     { "ptx",  "ptx_debug_setnodefailmode", &ptx_debug_setnodefailmode,  true,   {"target_node_id","mode"} },
     { "ptx",  "ptx_debug_ptxdkgpopulate",  &ptx_debug_ptxdkgpopulate,   true,   {"payload","force"} },
     { "ptx",  "ptx_debug_selectquorum",    &ptx_debug_selectquorum,     true,   {"anchor_hash"} },

@@ -27,6 +27,7 @@
 #include "evo/evodb.h"              // KDD-070 P2: the in-memory evoDb from BasicTestingSetup
 #include "evo/specialtx_validation.h"
 #include "ptx/ptx_accum_script.h"  // W2.4 W4-b: accum output for the roll-tx shape
+#include "core_io.h"              // KDD-088: EncodeHexTx in the attach cases
 #include "ptx/ptx_mempool.h"       // BUG-032: the fund-then-sign gate under test
 #include "validation.h"            // BUG-032 2b: the global mempool the signing scan reads
 #include "txmempool.h"             // BUG-032 2b: TestMemPoolEntryHelper / addUnchecked
@@ -5777,6 +5778,104 @@ BOOST_AUTO_TEST_CASE(Bug039_PersistShare_NullEvoDb_StillReachesDisk)
 
     PTX_BLS_WipeShares(evoDb.get());
     PTX_TEST_ClearSkShareSlot();
+}
+
+// ── KDD-088 DIRECT-ATTACH — the abuse cases, in the matrix from the start ────
+// These pin the guard rails on the ONE genuinely new exposure the feature adds:
+// members run mempool acceptance on CALLER-SUPPLIED bytes. Every case here must
+// be refused BEFORE any validation work, and none may throw — a bad attachment
+// must not fail louder than no attachment at all, or an attacker gains a way to
+// make honest rolls noisier than silence.
+//
+// The happy path (a genuinely funded commitment accepted and signed) needs a
+// funded wallet and chain state, which test_ptx cannot provide; it is proven
+// live on the fleet instead. Stated so the absence is not mistaken for coverage.
+BOOST_AUTO_TEST_CASE(kdd088_attach_rejects_oversize)
+{
+    const uint256 qh = QHk(0x11), seed = QHk(0x22);
+    std::string err;
+    // 100kB cap; hand it more, all valid hex, so ONLY the size check can reject.
+    const std::string huge(200002, 'a');
+    BOOST_CHECK(!PTX_AcceptAttachedCommitment(huge, seed, qh, err));
+    BOOST_CHECK_MESSAGE(err.find("too large") != std::string::npos,
+                        "size must be rejected by the size guard, got: " + err);
+}
+
+BOOST_AUTO_TEST_CASE(kdd088_attach_rejects_non_hex)
+{
+    const uint256 qh = QHk(0x11), seed = QHk(0x22);
+    std::string err;
+    BOOST_CHECK(!PTX_AcceptAttachedCommitment("zzzz-not-hex", seed, qh, err));
+    BOOST_CHECK_MESSAGE(err.find("not hex") != std::string::npos, "got: " + err);
+}
+
+BOOST_AUTO_TEST_CASE(kdd088_attach_rejects_undecodable)
+{
+    const uint256 qh = QHk(0x11), seed = QHk(0x22);
+    std::string err;
+    BOOST_CHECK(!PTX_AcceptAttachedCommitment("deadbeef", seed, qh, err));
+    BOOST_CHECK_MESSAGE(err.find("decode failed") != std::string::npos, "got: " + err);
+}
+
+BOOST_AUTO_TEST_CASE(kdd088_attach_rejects_wrong_tx_type)
+{
+    const uint256 qh = QHk(0x11), seed = QHk(0x22);
+    // A well-formed transaction that is simply not a PTXROLLCOMMIT.
+    CMutableTransaction mtx;
+    mtx.nVersion = CTransaction::TxVersion::SAPLING;
+    mtx.nType    = CTransaction::TxType::NORMAL;
+    mtx.vin.push_back(CTxIn(COutPoint(QHk(0xAB), 0)));
+    mtx.vout.push_back(CTxOut(1, CScript()));
+    std::string err;
+    BOOST_CHECK(!PTX_AcceptAttachedCommitment(EncodeHexTx(CTransaction(mtx)), seed, qh, err));
+    BOOST_CHECK_MESSAGE(err.find("not a PTXROLLCOMMIT") != std::string::npos, "got: " + err);
+}
+
+BOOST_AUTO_TEST_CASE(kdd088_attach_rejects_round_mismatch)
+{
+    // ★ The anti-relay-abuse leg: a REAL commitment, but for a DIFFERENT round.
+    // Without the (round_seed, quorum_hash) binding a caller could push unrelated
+    // traffic through every quorum member by attaching it to any sign request.
+    const uint256 qh = QHk(0x11), seed = QHk(0x22);
+    CMutableTransaction other = CommitMakeTx(QHk(0x33), QHk(0x44), 100);
+    std::string err;
+    BOOST_CHECK(!PTX_AcceptAttachedCommitment(EncodeHexTx(CTransaction(other)), seed, qh, err));
+    BOOST_CHECK_MESSAGE(err.find("does not match this round") != std::string::npos, "got: " + err);
+}
+
+BOOST_AUTO_TEST_CASE(kdd088_attach_binds_seed_and_quorum_independently)
+{
+    // Matching quorum_hash but wrong round_seed must still refuse, and vice
+    // versa — otherwise the binding is only half a binding.
+    const uint256 qh = QHk(0x11), seed = QHk(0x22);
+    std::string err1, err2;
+    CMutableTransaction rightQhWrongSeed = CommitMakeTx(qh, QHk(0x99), 100);
+    BOOST_CHECK(!PTX_AcceptAttachedCommitment(EncodeHexTx(CTransaction(rightQhWrongSeed)),
+                                              seed, qh, err1));
+    CMutableTransaction rightSeedWrongQh = CommitMakeTx(QHk(0x99), seed, 100);
+    BOOST_CHECK(!PTX_AcceptAttachedCommitment(EncodeHexTx(CTransaction(rightSeedWrongQh)),
+                                              seed, qh, err2));
+}
+
+BOOST_AUTO_TEST_CASE(kdd088_compat_guard_is_lt2_not_ne2)
+{
+    // ★ REGRESSION PIN on the property that makes a mixed fleet free: gm_bls_sign
+    // must accept MORE than two params. If this guard ever becomes `!= 2`, every
+    // old member starts REJECTING attached sign requests instead of ignoring the
+    // extra argument, and direct-attach silently needs version negotiation.
+    // Source-scanned because the behaviour lives in an arity check, not a symbol.
+    const std::string rpc = P5_slurp(std::string(PTX_SRCDIR) + "/src/rpc/ptx.cpp");
+    BOOST_REQUIRE_MESSAGE(!rpc.empty(), "could not read src/rpc/ptx.cpp");
+    const size_t fn = rpc.find("UniValue gm_bls_sign(const JSONRPCRequest& request)");
+    BOOST_REQUIRE_MESSAGE(fn != std::string::npos, "gm_bls_sign not found");
+    const size_t guard = rpc.find("request.params.size()", fn);
+    BOOST_REQUIRE(guard != std::string::npos);
+    const std::string window = rpc.substr(guard, 40);
+    BOOST_CHECK_MESSAGE(window.find("< 2") != std::string::npos,
+                        "gm_bls_sign arity guard must stay '< 2' (old members ignore a "
+                        "third arg); found: " + window);
+    BOOST_CHECK_MESSAGE(window.find("!= 2") == std::string::npos,
+                        "gm_bls_sign guard became '!= 2' — mixed-fleet compatibility lost");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
