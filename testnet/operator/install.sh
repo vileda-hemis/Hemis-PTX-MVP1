@@ -9,7 +9,11 @@
 set -euo pipefail
 
 REPO="${PTX_REPO:-https://github.com/vileda-hemis/Hemis-PTX-MVP1.git}"
-REF="${PTX_REF:-}"                       # set to a tag/commit to pin; empty = default branch
+# ★ The operator tooling lives on feature/ptx-dkg, NOT on the default branch
+# (main). Defaulting to empty would clone main, where testnet/operator/ does not
+# exist -- i.e. the guide's very first step would fail. At launch this becomes
+# the release TAG and this default should change with it.
+REF="${PTX_REF:-feature/ptx-dkg}"
 PREFIX="${PTX_PREFIX:-/opt/hemis-ptx}"
 DATADIR="${PTX_DATADIR:-$HOME/.hemis-ptxtestnet}"
 # ★ Overridable so a host can run several GMs. Each GM needs its OWN datadir AND
@@ -75,11 +79,18 @@ else
     ok "cloned $REPO"
 fi
 if [ -n "$REF" ]; then
-    git -C "$PREFIX" checkout --quiet "$REF"
-    ok "pinned to $REF"
-else
-    warn "PTX_REF not set -- using the default branch. For a launch you should pin a tag."
+    if git -C "$PREFIX" checkout --quiet "$REF" 2>/dev/null; then
+        ok "checked out $REF"
+    else
+        die "could not check out '$REF'. If the coordinator gave you a different tag, pass it as PTX_REF=<tag>."
+    fi
+    case "$REF" in
+        v*|*[0-9].[0-9]*) : ;;
+        *) warn "'$REF' is a BRANCH, not a pinned tag -- it moves. For launch, pass PTX_REF=<release tag>." ;;
+    esac
 fi
+# Sanity: the thing we came here for must actually be present.
+[ -d "$PREFIX/testnet/operator" ] || die "$REF does not contain testnet/operator/ -- wrong ref. Ask the coordinator which tag to use."
 echo "  commit: $(git -C "$PREFIX" rev-parse --short HEAD)"
 
 # ---------------------------------------------------------------------------

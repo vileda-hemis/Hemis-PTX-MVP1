@@ -90,10 +90,15 @@ You do the node first because Part B needs two values that only exist after this
 ### A1. Install
 
 ```bash
-git clone https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
+git clone -b feature/ptx-dkg https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 cd Hemis-PTX-MVP1/testnet/operator
-PTX_REF=<the tag the coordinator gave you> ./install.sh
+./install.sh
 ```
+
+★ **The `-b feature/ptx-dkg` is required, not decorative.** The operator tooling is not on the
+default branch (`main`); cloning without it gives you a checkout with no `testnet/operator/`
+directory and nothing here will be found. If the coordinator has given you a **release tag**, use
+that instead — `git clone -b <tag> …` — and pass the same value as `PTX_REF=<tag>` to `install.sh`.
 
 `install.sh` checks your environment by **glibc version and CPU architecture**, not by distro name —
 so any reasonably modern Linux works, and you get told the real reason if it does not. It also
