@@ -14,8 +14,13 @@ set -uo pipefail
 
 DATADIR="${PTX_DATADIR:-$HOME/.hemis-ptxtestnet}"
 CLI="${PTX_CLI:-Hemis-cli}"
-P2P_PORT=29994
-RPC_PORT=29995
+# ★ Read the ports from THIS GM's own config, not from a constant. A host running
+# three GMs has three port pairs, and probing the wrong pair reports a healthy
+# node as broken (or worse, a broken one as healthy because a SIBLING answered).
+# Precedence: explicit env override > the datadir's hemis.conf > the defaults.
+conf_val() { sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\([^[:space:]#]*\).*/\1/p" "$DATADIR/hemis.conf" 2>/dev/null | tail -1; }
+P2P_PORT="${PTX_P2P_PORT:-$(conf_val port)}";    P2P_PORT="${P2P_PORT:-29994}"
+RPC_PORT="${PTX_RPC_PORT:-$(conf_val rpcport)}"; RPC_PORT="${RPC_PORT:-29995}"
 
 PASS=0; FAIL=0; WARNS=0
 ok()   { printf '  [ok]   %s\n' "$*"; PASS=$((PASS+1)); }
@@ -24,6 +29,8 @@ warn() { printf '  [warn] %s\n' "$*"; WARNS=$((WARNS+1)); }
 say()  { printf '\n=== %s ===\n' "$*"; }
 
 cli() { $CLI -datadir="$DATADIR" "$@" 2>/dev/null; }
+
+printf 'Checking GM at %s  (P2P %s, RPC %s)\n' "$DATADIR" "$P2P_PORT" "$RPC_PORT"
 
 # Probe a TCP port. Handles IPv6 (needs brackets) and IPv4 alike.
 probe() {

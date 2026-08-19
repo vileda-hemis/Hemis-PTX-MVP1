@@ -12,8 +12,11 @@ REPO="${PTX_REPO:-https://github.com/vileda-hemis/Hemis-PTX-MVP1.git}"
 REF="${PTX_REF:-}"                       # set to a tag/commit to pin; empty = default branch
 PREFIX="${PTX_PREFIX:-/opt/hemis-ptx}"
 DATADIR="${PTX_DATADIR:-$HOME/.hemis-ptxtestnet}"
-P2P_PORT=29994
-RPC_PORT=29995
+# ★ Overridable so a host can run several GMs. Each GM needs its OWN datadir AND
+# its own port pair -- two daemons cannot share either. See OPERATOR_GUIDE.md
+# "Running three GMs on one host" for the allocation table.
+P2P_PORT="${PTX_P2P_PORT:-29994}"
+RPC_PORT="${PTX_RPC_PORT:-29995}"
 
 say()  { printf '\n=== %s ===\n' "$*"; }
 ok()   { printf '  [ok]   %s\n' "$*"; }
@@ -166,6 +169,10 @@ cat <<EOF
   Config:  $CONF
   Datadir: $DATADIR
   P2P:     $P2P_PORT      RPC: $RPC_PORT
+
+  Running more than one GM on this host? Repeat with BOTH overridden, e.g.:
+    PTX_DATADIR=~/.hemis-ptxtestnet-2 PTX_P2P_PORT=29996 PTX_RPC_PORT=29997 ./install.sh
+  The 32000-33000 kernel reservation is host-wide and is set once; re-running is safe.
 
   NEXT, in order:
     1. Open $P2P_PORT and $RPC_PORT in your firewall AND any NAT/cloud security group.

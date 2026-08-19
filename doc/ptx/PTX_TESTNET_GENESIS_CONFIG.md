@@ -10,7 +10,7 @@ already. Read every value here against the field order in `Consensus::PTXFormati
 
 ## §0 — TWO BLOCKERS THAT PRECEDE CUTTING GENESIS
 
-### ★★ 0.1 Five operators cannot form a quorum. This is arithmetic, not tuning.
+### ★★ 0.1 Five operators cannot form a quorum — RESOLVED 2026-08-19: **Option A**
 
 `ptx_formation.cpp:92` — `if (pool.GetValidGMsCount() < 11) return false;` — a **deterministic
 skip**. Quorum size **11** and threshold **t = 6** are **hardcoded literals**, not parameters
@@ -29,9 +29,19 @@ Three ways out, and the choice changes the operator documents:
 | **B — parameterise quorum size** | consensus change to 11 and t | ★ see 0.2 — this is the exact un-gated class |
 | **C — recruit operators** | ≥11 GMs total by any split | schedule, not code |
 
-**A needs no consensus change and is the only option that does not touch history-invalidating
-constants.** It does mean the operator guide must be written for an operator running several nodes,
-so this decision gates Priority 3.
+★ **DECIDED: Option A — ≥3 GMs per operator (5 × 3 = 15, four spare).**
+Reasoning recorded, not just the value:
+* **What it does not touch.** Option B changes a consensus constant in the un-gated retroactive class,
+  which means it must ship with an activation height **in the same commit, under launch pressure, with
+  no time to soak** — the same category V11 was just gated for. Doing a second one in the same week is
+  the wrong risk. Option C makes launch depend on people who are not confirmed.
+* **It keeps ODC-075 theoretical**, which matters: week one of a 15-node network is not when to be
+  exercising quorum-size edge cases.
+* **It models mainnet better.** Operators exercise the arm-and-self-check flow **three times rather
+  than once**, so we find out immediately whether the guide scales past one instance — and one wallet
+  registering several nodes is the realistic pattern (nobody runs a separate wallet per GM).
+* **Collateral: 3× per operator.** See the guide for the two funding routes, including whether
+  centrally-seeded collateral works (it does, two ways, with different handoff costs).
 
 ### ★★ 0.2 The second un-gated retroactive rule is 11 / t=6 — and 0.1 creates pressure to change it
 
@@ -135,13 +145,13 @@ State 1 and mean it.
 
 ```cpp
 // {name, B, R, budget, L, retire, grace, rate, statelessH, boundaryEnforceH}
-consensus.ptxFormation = {"ptxtestnet", 30, 1440, 80, 1, 200, 1, 40, 0, 0};
+consensus.ptxFormation = {"ptxtestnet", 60, 1440, 80, 1, 200, 1, 40, 0, 0};
 ```
 
 | # | field | value | reason |
 |---|---|---|---|
 | 1 | `name` | `"ptxtestnet"` | logging only, not consensus |
-| 2 | `nBoundaryInterval` (B) | **30** | formation cadence. Must exceed the ceremony floor M ≈ 47… ★ **see the open item below** |
+| 2 | `nBoundaryInterval` (B) | ★ **60** | formation cadence — **decided 2026-08-19, widened from ptxbea's 30**. One boundary per hour at 60s spacing. Full margin derivation below |
 | 3 | `nRotationInterval` (R) | **1440** | KDD-045 key-compromise window ≈ 1 day at 60s spacing. Bounded by **this**, not by B |
 | 4 | `nCeremonyBudget` | **80** | ODC-050 stall-out. ★ Must **not** track B — a ~27-block ceremony under a 30-block cadence lives on exactly this separation |
 | 5 | `nSupportedQuorums` (L) | **1** | Guard 1 declares what the network is provisioned for. Five operators support **one** quorum (§0.1); declaring 8 like ptxbea would be a lie the guard cannot catch |
@@ -151,21 +161,41 @@ consensus.ptxFormation = {"ptxtestnet", 30, 1440, 80, 1, 200, 1, 40, 0, 0};
 | 9 | `nReformStatelessHeight` | ★ **0** | **NOT 900.** ptxbea's 900 exists solely so its pre-BUG-036 history replays byte-identically. A fresh genesis has no such history: 900 blocks of legacy stored-stamp pacing on a new chain is a trap with no purpose. **0 = stateless from genesis** |
 | 10 | `nBoundaryEnforceHeight` | ★ **0** | new 2026-08-19 gate. 0 = **V11 enforced from genesis** — correct for a fresh chain, and it means every PTXDKG this network ever accepts is on-boundary, so the gate never needs to move |
 
-★ **OPEN — B = 30 sits below the stated ceremony floor, and the margin is three blocks.** Two
-numbers disagree and both are real:
-* **Stated floor**: `consensus/params.h` requires B to exceed **M ≈ 47 blocks** so a new boundary
-  cannot fire before the prior ceremony completes. By that rule **30 is already a violation**, and
-  ptxbea's own comment describes N = 80 as "~1.7× the ceremony floor M ≈ 47" — the 30 arrived later,
-  with W2.5b's fleet shape.
-* **Observed**: the drill ceremony ran **formation h1120 → connect h1147 = 27 blocks**. That fits
-  under 30 — **with 3 blocks of margin.**
+★ **DECIDED — B = 60, and the margin is stated in the unit that actually moves.**
 
-So 30 is not *known* broken; it is *known tight*, on a drill chain, under conditions the testnet will
-not reproduce (M ≈ 47 was a provisional LLMQ baseline, and a public network has worse propagation than
-a single-host fleet, not better). **Recommend B = 60**: one boundary per hour at 60s spacing, above
-both the stated floor and any plausible ceremony, and it costs nothing — B is a **security ceiling
-only**, since handover-at-accept (KDD-063) keeps rotation available across boundaries. **This is the
-one formation value I would not inherit.**
+**M is BLOCK-COUNT-BASED, and `nTimeSlotLength` does not enter it.** M is defined as
+
+> **M = S + 6·pb + W_mine** — S = setup (0..pb) in blocks, pb = per-phase blocks, W_mine = mining
+> window in blocks (11, the LLMQ `dkgMiningWindowStart/End` analog, itself a block count).
+
+Every term is a block count; the familiar "M ≈ 47 min" is a *derived* wall-clock figure obtained by
+multiplying by `nTargetSpacing = 60s`, which is 60 on all five network definitions. `nTimeSlotLength`
+appears nowhere in M, and `chainparams.cpp:915` records that it does not move block cadence either
+(`nTargetSpacing` stays 60). **So B and `nTimeSlotLength` were never coupled — they only looked it.**
+`nTimeSlotLength = 15` is inherited from mainnet/ptxbea unchanged.
+
+**Why 60, expressed as the propagation it tolerates.** pb is **propagation-bound**, and it enters M
+with **coefficient 6** — so M is highly sensitive to per-phase propagation, and B's real meaning is
+"how slow may a phase get before a boundary can fire mid-ceremony":
+
+| B | tolerated ceremony | implied max `pb` (S=0, W_mine=11) | against the mainnet-grade baseline `pb = 6` |
+|---|---|---|---|
+| **30** (ptxbea) | 30 blocks | `6·pb + 11 ≤ 30` → **pb ≤ 3** | ★ **half the baseline** — only works at drill RTT |
+| **60** (chosen) | 60 blocks | `6·pb + 11 ≤ 60` → **pb ≤ 8** | **33% headroom above baseline** |
+
+This is precisely why 30 fit the drill and will not fit a public network: the drill measured a
+27-block ceremony **on a single host at near-zero RTT**, i.e. pb ≈ 2–3 — inside 30 by three blocks,
+but that margin was a property of the measurement environment, not of the protocol. A public network of five
+operators across real links has **worse** propagation, not better, and a ceremony that overruns its
+boundary is the anchor-split problem's neighbour.
+
+**B = 60 tolerates M = 60 blocks**: 1.28× the provisional mainnet-grade floor of 47, 2.2× the observed
+drill ceremony, and pb degrading from 6 to 8 before the floor is reached.
+
+★ **And the cost is nil.** B is a **security ceiling only** — handover-at-accept (KDD-063) keeps
+rotation available across boundaries, so a wider B never makes the quorum unavailable. Key-rotation
+cadence is governed by **R = 1440**, not by B. The only thing a wider B delays is how soon the *first*
+quorum forms (h60 rather than h30 — one hour on a network with no throughput pressure).
 
 ---
 
@@ -184,20 +214,23 @@ one formation value I would not inherit.**
 
 ---
 
-## §6 Not in the code — must be defined before cut
+## §6 A1 / A2 / excludes — NOT PRESENT
 
-* **A1 / A2 / excludes.** Referenced in the launch plan but **present in neither the source nor
-  `doc/ptx/`**. I will not invent values. If they land before genesis is cut they must be
-  **genesis-active (height 0/1)** on the same principle as §3; if they land after, they need an
-  activation height from the start.
+**Recorded as a state, not as an open item.** A1/A2/excludes appear in **neither the source nor
+`doc/ptx/`**. They therefore **cannot be genesis-active, because they do not exist** — there is no
+value to state and nothing to inherit. Genesis is **not blocked** on them.
+
+If they are built later, they arrive on a chain that already has history and so **require an
+activation height from the start**, exactly like `nBoundaryEnforceHeight` (KDD-092) — that is the
+standing rule for anything added after this cut, not a special case for these.
 
 ---
 
 ## §7 Pre-cut checklist
 
-1. ☐ **§0.1 resolved** — option A/B/C chosen. *Gates the operator documents.*
-2. ☐ **§4 B and `nTimeSlotLength` decided together** against the M ≈ 47 floor.
-3. ☐ A1/A2/excludes defined, or explicitly deferred past genesis.
+1. ☑ **§0.1 resolved — Option A**, ≥3 GMs per operator (15 total, 4 spare).
+2. ☑ **§4 decided — B = 60**; `nTimeSlotLength = 15` inherited. M is block-count-based, so the two were independent.
+3. ☑ A1/A2/excludes — **not present**; genesis not blocked (§6).
 4. ☐ `findGenesisPTXBea()` re-run with the launch `nTime`; hash and nonce recorded; both asserts updated.
 5. ☐ Five operator addresses collected and written into `vFixedSeeds` on port 29994.
 6. ☐ Magic `PTXT` confirmed absent from every other Hemis network.

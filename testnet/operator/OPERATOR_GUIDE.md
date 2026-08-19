@@ -20,9 +20,13 @@ whole point:
 **Your collateral never goes on the node machine.** If the node is compromised, the attacker gets the
 node — not your coins.
 
-★ **You will repeat the NODE side once per gamemaster you run.** A quorum needs 11 members. Ask the
-coordinator how many nodes you are expected to run before you start, because it changes how much
-collateral you need.
+★ **You will run THREE gamemasters.** A quorum needs **11 members** and there are five operators, so
+five nodes would never form a quorum at all — 5 × 3 = 15 covers 11 with four spare. You repeat the
+**node side three times**; the **wallet side is done once**, from one wallet, registering all three.
+That is also the realistic pattern: nobody runs a separate wallet per GM.
+
+**Collateral: 3× per operator.** See "Funding the collateral" below — there are two routes and they
+differ in how much back-and-forth they cost you.
 
 ---
 
@@ -43,7 +47,43 @@ router or cloud security group. Opening only one is the most common setup failur
 
 ---
 
-## Part A — Node machine (do this FIRST)
+## Running three GMs on one host
+
+You will almost certainly put more than one GM on the same machine. That is fine and expected, but
+**each one needs its own datadir and its own port pair** — two daemons cannot share either.
+
+| GM | datadir | P2P | RPC |
+|---|---|---|---|
+| 1 | `~/.hemis-ptxtestnet-1` | 29994 | 29995 |
+| 2 | `~/.hemis-ptxtestnet-2` | 29996 | 29997 |
+| 3 | `~/.hemis-ptxtestnet-3` | 29998 | 29999 |
+
+```bash
+PTX_DATADIR=~/.hemis-ptxtestnet-1 PTX_P2P_PORT=29994 PTX_RPC_PORT=29995 ./install.sh
+PTX_DATADIR=~/.hemis-ptxtestnet-2 PTX_P2P_PORT=29996 PTX_RPC_PORT=29997 ./install.sh
+PTX_DATADIR=~/.hemis-ptxtestnet-3 PTX_P2P_PORT=29998 PTX_RPC_PORT=29999 ./install.sh
+```
+
+Run `self-check.sh` the same way, one GM at a time:
+
+```bash
+PTX_DATADIR=~/.hemis-ptxtestnet-2 ./self-check.sh
+```
+
+★ **Every port in the table must be open at your registered address** — all six, in both the host
+firewall and the NAT/security group. It is easy to open the first pair, verify GM 1, and forget the
+other four; GMs 2 and 3 then look healthy and never sign.
+
+★ **Do NOT reuse one BLS key across the three.** Each GM generates its own in step A3. A shared key
+means the chain cannot tell your nodes apart.
+
+★ **The port reservation 32000–33000 is host-wide** — `install.sh` sets it once and all three GMs use
+it. Running the installer three times does not reserve it three times, and the merge logic means it
+will not clobber itself.
+
+---
+
+## Part A — Node machine (do this FIRST, once per GM)
 
 You do the node first because Part B needs two values that only exist after this part.
 
@@ -110,38 +150,75 @@ Send the wallet operator exactly two things:
 
 ## Part B — Wallet machine
 
-### B1. Fund the collateral
+### B1. Funding the collateral — two routes
 
-Send the collateral amount, **as one single unspent output**, to an address in this wallet. Ask the
-coordinator for the exact amount — do not guess, and do not split it across two transactions, because
-the registration needs one output of exactly the right size.
+You need **one collateral output per GM**, so **three**. Each must be a **single unspent output of
+exactly the right size** — do not split it across two transactions, and do not guess the amount; ask
+the coordinator.
 
-Wait for confirmations, then find the output:
+**Route 1 — the coordinator sends you the coins (simplest, recommended).**
+The coordinator pays the collateral to **an address in your own wallet**. From then on it is ordinary
+collateral that you own, and everything below works with no extra steps. This is a faucet payment,
+nothing more.
+
+**Route 2 — the coordinator keeps the collateral key.**
+Also supported, and genuinely: `protx_register_prepare` requires only that the collateral be *an
+unspent output* — **not** that your wallet can spend it. (`protx_register` and `protx_register_fund`
+*do* require the output be "spendable by this wallet"; `_prepare` deliberately does not.) The flow is:
+
+1. you run `protx_register_prepare` with the coordinator's collateral `txid`/`vout`
+2. it returns an **unsigned** ProTx
+3. **the coordinator signs it with the collateral key** and returns the signature
+4. you run `protx_register_submit` to broadcast
+
+★ **Route 2 costs one extra round trip per GM — three per operator, fifteen across the network.**
+Choose it only if the coordinator needs to retain the ability to reclaim collateral. For a testnet,
+**Route 1 is almost always the right answer.**
+
+Once funded, find the outputs:
 
 ```bash
 Hemis-cli listunspent
 ```
 
-Note the `txid` and `vout` of the collateral output.
+Note the `txid` and `vout` of each collateral output.
 
 ### B2. Register
 
-```bash
-Hemis-cli protx_register_fund <collateralAddress> <ipAndPort> <ownerAddress> <operatorPubKey> <votingAddress> <operatorReward> <payoutAddress>
+```
+protx_register "collateralHash" collateralIndex "ipAndPort" "ownerAddress" "operatorPubKey" \
+               "votingAddress" "payoutAddress" ( operatorReward "operatorPayoutAddress" \
+               "ptxPaymentAddress" "ptxNodeId" )
 ```
 
-* `<ipAndPort>` — the address from **Handoff 1**, e.g. `203.0.113.10:29994`
-* `<operatorPubKey>` — the **BLS PUBLIC key** from Handoff 1
+* `collateralHash` / `collateralIndex` — the `txid`/`vout` from B1
+* `ipAndPort` — the address from **Handoff 1**, e.g. `203.0.113.10:29994`
+* `operatorPubKey` — the **BLS PUBLIC key** from Handoff 1
 
-If you prefer to register against collateral you already hold, use `protx_register` (with the
-`txid`/`vout` from B1) instead of `protx_register_fund`.
+Use `protx_register_fund "collateralAddress" …` instead if you want the wallet to create the
+collateral output for you in the same transaction (same trailing arguments).
 
-Record the returned **protx transaction id**.
+### ★★ The last two arguments are optional to the RPC and NOT optional to you
+
+They are easy to leave off because they are in the optional group. Do not.
+
+* ★ **`ptxPaymentAddress`** — where PTX lottery rewards are paid. **"GMs without this set are
+  ineligible for PTXPAYOUT lottery wins. Must be set at registration time to participate in the
+  lottery."** Omit it and your GM runs perfectly, signs correctly, and **can never win anything** —
+  and it cannot be fixed by editing a config file, because it is registration-time state.
+* **`ptxNodeId`** — a human-readable label for the PTX pose-tracker, e.g. `gm01`. Supply the **label
+  only**; the chain appends the collateral-derived `:suffix` itself. Rules: 3–24 chars, `[a-zA-Z0-9_-]`,
+  no leading/trailing `-`/`_`, not all-numeric, not a reserved word. The full `label:suffix` is echoed
+  back in the RPC response — **record it**, it is how your node is identified in quorum output.
+
+Use a distinct `ptxNodeId` per GM (`yourname-1`, `yourname-2`, `yourname-3`).
+
+Record the returned **protx transaction id** for each GM.
 
 ### ★ HANDOFF 2 — Wallet ➜ Node
 
-Send the node operator the **protx txid**. Nothing secret travels in this direction. The node
-operator needs it to confirm the registration landed.
+Send the node operator the **protx txid** and the echoed **`ptxNodeId` (label:suffix)**, per GM.
+Nothing secret travels in this direction.
 
 ---
 
