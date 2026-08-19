@@ -167,6 +167,31 @@ def one_roll(caller, members, salt, game_id):
         ts = fs[m].get(txid)
         deltas[m] = None if ts is None else round(ts - t0, 3)
     seen = sorted(d for d in deltas.values() if d is not None)
+    # ★ ENFORCE THE ANTI-VACUITY GUARD (2026-08-19). Until now it only SET a flag
+    # and left ok=True, so a stale-member-list sample was indistinguishable from a
+    # real one unless the reader remembered to filter -- and no reader did. Every
+    # anomalous d200 roll (to_first 2.5-3.2s, accepted 1-4/11) was quorum_matched
+    # False; every matched roll was to_first ~0.4-0.6s at full acceptance. The
+    # propagation fields are MEANINGLESS when the polled set is not the signing set:
+    # those nodes were never dialled, so they measure gossip to NON-MEMBERS.
+    # roll_total IS still valid (the roll really happened and really took that long)
+    # so it is kept; only the per-member fields are nulled. Detect-and-flag was not
+    # enough -- the invalid number has to be ABSENT, not merely labelled.
+    if not quorum_matched:
+        return {
+            "ok": err is None and res is not None,
+            "quorum_matched": False,
+            "invalid_reason": "stale member list - polled set != signing set "
+                              "(quorum rotated mid-run); propagation fields dropped",
+            "commit_txid": txid,
+            "roll_total_s": round(t_end - t_start, 3),
+            "members_total": len(members),
+            "quorum_actual": actual,
+            "members_accepted": None, "to_first_s": None, "to_sixth_s": None,
+            "to_last_s": None, "per_member_s": None, "never_accepted": None,
+            "poll_rtt_median_ms": rtt_med, "err": err,
+        }
+
     return {
         "ok": err is None and res is not None,
         "quorum_matched": quorum_matched,
