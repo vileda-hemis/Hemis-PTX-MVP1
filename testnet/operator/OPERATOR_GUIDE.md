@@ -74,7 +74,7 @@ PTX_DATADIR=~/.hemis-ptxtestnet-2 ./self-check.sh
 firewall and the NAT/security group. It is easy to open the first pair, verify GM 1, and forget the
 other four; GMs 2 and 3 then look healthy and never sign.
 
-★ **Do NOT reuse one BLS key across the three.** Each GM generates its own in step A3. A shared key
+★ **Do NOT reuse one BLS key across the three.** Each GM generates its own in step A4. A shared key
 means the chain cannot tell your nodes apart.
 
 ★ **The port reservation 32000–33000 is host-wide** — `install.sh` sets it once and all three GMs use
@@ -92,7 +92,7 @@ You do the node first because Part B needs two values that only exist after this
 ```bash
 git clone -b feature/ptx-dkg https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 cd Hemis-PTX-MVP1/testnet/operator
-./install.sh
+PTX_DATADIR=~/.hemis-ptxtestnet-1 PTX_P2P_PORT=29994 PTX_RPC_PORT=29995 ./install.sh
 ```
 
 ★ **The `-b feature/ptx-dkg` is required, not decorative.** The operator tooling is not on the
@@ -100,12 +100,44 @@ default branch (`main`); cloning without it gives you a checkout with no `testne
 directory and nothing here will be found. If the coordinator has given you a **release tag**, use
 that instead — `git clone -b <tag> …` — and pass the same value as `PTX_REF=<tag>` to `install.sh`.
 
+★ **Pass the datadir and ports even for your first GM.** You are running three, and a bare
+`./install.sh` would write `~/.hemis-ptxtestnet` — a name that is not in the table above and that
+you would then have to translate in every command for the rest of this guide. Name it `-1` now.
+
+★ **You will end up with the repository in two places, and that is intended.** The copy you just
+cloned is the one you run `install.sh` and `self-check.sh` from. `install.sh` keeps a second copy at
+`/opt/hemis-ptx`, which is the one it updates and builds against. **Run the scripts from your own
+clone; leave `/opt/hemis-ptx` to the installer.** When a new tag is cut, re-clone (or `git pull`)
+*your* copy as well — the installer does not update it for you.
+
 `install.sh` checks your environment by **glibc version and CPU architecture**, not by distro name —
 so any reasonably modern Linux works, and you get told the real reason if it does not. It also
-reserves ports 32000–33000 in the kernel (merging with, never overwriting, any existing reservation)
-and writes a config with dual-stack `rpcbind`.
+**installs the `Hemisd` / `Hemis-cli` binaries**, reserves ports 32000–33000 in the kernel (merging
+with, never overwriting, any existing reservation) and writes a config with dual-stack `rpcbind`.
 
-### A2. Find your external address — get this right
+★ **If it stops with "no PTX binaries, and no release artefact to fetch"**, you are on a plain
+branch checkout, which is source only. Ask the coordinator for the **release tag** and re-run from
+that; building from source works but costs you tens of minutes and a Boost/BDB-4.8 toolchain fight
+at the very first step. The script prints both routes.
+
+### A2. Start the daemon
+
+Nothing below this line works until the daemon is running — including generating your BLS key,
+which is an **RPC call**, not an offline command.
+
+```bash
+Hemisd -datadir=$HOME/.hemis-ptxtestnet-1 -daemon
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet-1 getblockcount     # should answer within a few seconds
+```
+
+If `Hemisd` is not found, `install.sh` did not install binaries — go back to A1.
+To stop it: `Hemis-cli -datadir=$HOME/.hemis-ptxtestnet-1 stop`.
+
+★ **This is a 24/7 node.** `-daemon` survives your shell but not a reboot. Arrange for it to start
+at boot (a systemd unit, or `@reboot` in cron) before you report the node as ready — a GM that is
+down after a reboot accrues PoSe penalties exactly as if it were firewalled.
+
+### A3. Find your external address — get this right
 
 ```bash
 curl -4 https://ifconfig.co     # your IPv4
@@ -118,13 +150,16 @@ them produces a node that looks completely healthy and is unreachable. This is t
 common way a node fails on this network. `install.sh` binds both families to make it hard to get
 wrong, but the address you *register* must match one your machine actually answers on.
 
+**If `curl -6` prints nothing, you have no IPv6 and there is no decision to make** — register the
+IPv4 address. The warning above matters only when you have both and could pick the wrong one.
+
 If you are behind NAT, the address here is your **router's public address**, and the router must
 forward 29994 and 29995 to this machine.
 
-### A3. Generate your BLS key
+### A4. Generate your BLS key
 
 ```bash
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet generateblskeypair
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet-1 generateblskeypair
 ```
 
 Output has two halves:
@@ -139,7 +174,9 @@ Output has two halves:
 
 ```bash
 # Add the secret to your config, then restart the daemon:
-echo "gamemasterblsprivkey=<BLS SECRET>" >> $HOME/.hemis-ptxtestnet/hemis.conf
+echo "gamemasterblsprivkey=<BLS SECRET>" >> $HOME/.hemis-ptxtestnet-1/hemis.conf
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet-1 stop
+Hemisd -datadir=$HOME/.hemis-ptxtestnet-1 -daemon
 ```
 
 ### ★ HANDOFF 1 — Node ➜ Wallet
@@ -231,18 +268,29 @@ Nothing secret travels in this direction.
 
 ```bash
 cd Hemis-PTX-MVP1/testnet/operator
-./self-check.sh
+PTX_DATADIR=~/.hemis-ptxtestnet-1 ./self-check.sh     # then -2, then -3
 ```
 
-Work top to bottom and fix every `[FAIL]`. The sections that matter most:
+Work top to bottom and fix every `[FAIL]`. ★ **There are three outcomes, not two.** Besides `[ok]`
+and `[FAIL]` there is `[????]` — *this check could not run*. It is **not** a pass, and the script
+exits **2** when any appear, precisely so that "nothing failed" cannot be mistaken for "the node is
+ready". Exit codes: **0** every check ran and passed · **1** something failed · **2** nothing failed
+but something could not be checked.
 
-* **Section 4 — bind coverage.** Catches the IPv4/IPv6 mismatch described in A2.
+The sections that matter most:
+
+* **Section 4 — bind coverage.** Catches the IPv4/IPv6 mismatch described in A3.
 * **Section 5 — external reachability at your registered address.** ★ Note carefully what this
   proves: it connects *from your own machine* to *your own address*. On many NAT setups that
   succeeds via hairpin routing **even when nobody outside can reach you**. A `[FAIL]` is real; a
   `[ok]` is encouraging but **not proof**. Ask another operator to connect to you.
-* **Section 6 — PoSe score.** This is the network's own verdict, not your machine's opinion of
-  itself. A **non-zero PoSe score means peers are failing to reach you**, whatever section 5 said.
+* **Section 6 — PoSe penalty.** This is the network's own verdict, not your machine's opinion of
+  itself. A **non-zero PoSe penalty means peers are failing to reach you**, whatever section 5 said.
+  It is read from *your* on-chain record (`dgmstate.PoSePenalty`), not from the network-wide list —
+  the network-wide list is every operator's score, and reading the first entry of it tells you about
+  a stranger.
+* **Section 3 also checks `ptxPaymentAddress`.** If it FAILs there, your GM is registered but can
+  never win a PTXPAYOUT — and no config change fixes it. See B2.
 
 ---
 
@@ -291,6 +339,21 @@ and 6. Check the NAT/security group as well as the host firewall.
 
 **PoSe score climbing**
 → Peers cannot reach you. This is the authoritative signal; trust it over a local test that passed.
+
+**`Hemis-cli: command not found`**
+→ The binaries are not installed or not on your PATH. Re-run `install.sh`: it either fetches the
+release artefact or tells you exactly what it needs. `install.sh` symlinks `Hemisd` and `Hemis-cli`
+into `/usr/local/bin`; if that failed it says so, and the binaries are under `/opt/hemis-ptx/bin`.
+
+**`self-check.sh` says "could not run" / exits 2**
+→ A load-bearing check had no evidence to work with — most often because the node is not registered
+yet (sections 5 and 6 need the on-chain record). Finish Part B, then re-run. Do not report the node
+as ready while any `[????]` remains.
+
+**Re-running `install.sh` does not seem to pick up a new version**
+→ It does now (it fast-forwards `/opt/hemis-ptx` and refuses to continue on the wrong commit), but
+it does **not** touch the clone you are standing in. Update that one yourself, or re-clone at the
+new tag.
 
 **`could not determine glibc version`**
 → You are probably on Alpine or another musl distro. These binaries need glibc; build from source or
