@@ -446,9 +446,14 @@ non-delivery population, cleanly separated from the budget-clipped one. **This i
 actual target, isolated for the first time.**
 
 Note it landed at **d100, not d200** — the rung with *less* injected delay went clean at 24/24
-while the lighter rung carried the failure. Whatever this residual is, **it is not RTT-shaped**,
-which argues a different mechanism from propagation margin (cf. the historic total-blackout
-class, though this one is partial: 3 of 11, not 10–11 of 11).
+while the lighter rung carried the failure.
+
+> **[FALSIFIED 2026-08-19 by §12 — do not carry this forward.]** This paragraph concluded the
+> residual was "not RTT-shaped". The 144-roll replication says otherwise: d100 is **72/72 clean**
+> (this failure never reproduced) and **all five** replication failures are at d200. The residual
+> **is** RTT-shaped; the conclusion was an artefact of reasoning from a single event. §12.3 also
+> shows the population is three classes (blackout / partial / near-miss), not the one this
+> paragraph assumed.
 
 ### 10.5 What is and is not established — read before citing
 
@@ -559,3 +564,97 @@ It is tempting to call that the same shape as the Gen D wall-hit (§10.4) — **
 caller, in quorum, and in kind (window-bounded here, 199-attempt-proven there). Both are **n = 1**.
 **Do not join them into a pattern.** It is a lead for §12's replication: whether
 the laggards are the *same* nodes each time (implicating specific GMs) or a rotating set (systemic).
+
+---
+
+## 12. Replication (144 rolls) — the residual IS RTT-shaped, and it is three classes, not one (2026-08-19)
+
+§10.5 called for thin d100 + d200 at n ≥ 3 before treating Gen D's single wall-hit as a class.
+Three rounds of each, 24 rolls per rung, **144 rolls** on the Gen D binary, every rung's wall-hits
+harvested from the caller logs while the rounds were still resident (`meshrep_harvest.py`).
+
+### 12.1 Pass rates
+
+| rung | r1 | r2 | r3 | pooled |
+|---|---|---|---|---|
+| thin d100 | 24/24 | 24/24 | 24/24 | **72/72 — zero failures** |
+| thin d200 | 20/24 | 24/24 | 23/24 | **67/72 — 5 failures (6.9 %)** |
+
+All five failures landed at **30.08–30.10 s**: wall-clipped, none escaped, the wall is authoritative
+in practice exactly as §10.2 predicted.
+
+### 12.2 ★ CORRECTION — "not RTT-shaped" is FALSIFIED
+
+§10.4 and §11.6 recorded that the Gen D failure "landed at d100, not d200 — **not RTT-shaped**,
+arguing a different mechanism from propagation margin." **The larger sample destroys that.** d100 is
+now **72/72 clean** — Gen D's d100 failure did not reproduce even once in 72 further rolls — while
+every one of the five replication failures is at **d200**. The residual is **RTT-shaped after all**,
+and the inference drawn from a single event was an artefact of that single event.
+
+This is the second thing n = 1 got wrong in this arc (the first being "3 of 11", §10.4's correction
+block). Both were flagged as n = 1 at the time and both were still wrong in substance — the flag
+limited the damage but did not prevent the claim. **Do not characterise a class from one member of
+it, even with a caveat attached.**
+
+### 12.3 ★ The failure population is THREE classes, not one
+
+Six wall-hits exist on this binary (five here plus the Gen D backfill). Decomposed by what the
+caller actually collected:
+
+| class | events | shape |
+|---|---|---|
+| **TOTAL BLACKOUT** | 2 | `collected=0` — **all 11** members never delivered; the commitment reached **nobody** in 30 s |
+| **partial** | 3 | `collected=4–5` — 6–7 members never delivered |
+| **near-miss** | 1 | `collected=5`, **one** member short (gm151 alone) |
+
+```
+rep1-d200 caller2  collected=4 pending=4 inflight=3   nondeliv=7    partial
+rep1-d200 caller3  collected=4 pending=5 inflight=2   nondeliv=7    partial
+rep1-d200 caller3  collected=0 pending=6 inflight=5   nondeliv=11   TOTAL BLACKOUT
+rep1-d200 caller7  collected=5 pending=1 inflight=0   nondeliv=1    near-miss
+rep3-d200 caller1  collected=0 pending=7 inflight=4   nondeliv=11   TOTAL BLACKOUT
+gen-D     caller4  collected=5 pending=3 inflight=3   nondeliv=6    partial
+```
+
+**The blackouts are the important find.** `collected=0` with all eleven outstanding for 30 s is not a
+member-side condition and not a propagation *margin* — the commitment reached no one at all. That is
+a caller-side broadcast/gossip-entry failure, mechanically distinct from the near-miss class, and it
+revives the historic total-blackout shape (previously root-caused once to caller1's stale
+`banlist.dat`) as a still-live population at d200. Failures were spread across **four different
+callers** (1, 2, 3, 7), so this is not one sick node.
+
+`pending` vs `inflight` splits roughly evenly across every event (e.g. 6/5, 7/4, 4/3), so neither
+"no request outstanding" nor "request outstanding but late" dominates — the two are not separating
+the classes, and the `collected` count is the discriminator that does.
+
+### 12.4 ★ Same members each time? NO — and the obvious confound is why it looked otherwise
+
+* **caller3's two wall-hits used the identical 11-member quorum** (intersection = union = 11).
+  Member IDs recurring within one caller is fully explained by **quorum stability** — consecutive
+  rolls from a caller reuse the same quorum (the same property §11 exploited). It is **not**
+  evidence of bad nodes, and reading it as such would have been the error this check exists to catch.
+* **Zero members non-delivered under more than one caller.** Across five callers and their distinct
+  quorums there is **no cross-quorum recurrence at all** — so no evidence of specific bad GMs.
+  The pattern is per-round and transient, i.e. **systemic, not node-specific.**
+* One overlap worth naming and then discounting: gm15/gm50/gm69 were the §11.6 d200 window-laggards
+  and also appear among caller2's seven non-deliverers. With **7 of 11** members failing in that
+  event, the chance all three land in the failing set is C(7,3)/C(11,3) ≈ **21 %** — unsurprising,
+  not a signal. Recorded so it is not "rediscovered" later as a pattern.
+
+### 12.5 What this settles, and what it leaves open
+
+* **§9.6's direct-attach close condition is NOT met** — 6.9 % of d200 rolls still fail at a 30 s
+  budget. Direct-attach's target population is real, replicated, and RTT-shaped.
+* **Every observed failure class is one direct-attach eliminates by construction**: the commitment
+  rides the request, so "not seen" cannot occur — that covers the near-miss, the partials, and
+  (decisively) the two total blackouts, which no amount of re-dialling can fix because there is
+  nothing to re-dial *for*.
+* Combined with §11 (propagation = 79–91 % of roll latency), **the case for direct-attach is now
+  made on two independent grounds — latency and failure elimination — rather than the failure tail
+  alone.** It has been parked four times for want of evidence; that want is now discharged.
+* **Still unanswered, and still gating:** BUG-032's anti-free-preview property (§11.4). The
+  commitment is broadcast before signing deliberately. A direct-attach design must deliver it to
+  members without re-opening free preview, and nothing measured here bears on that.
+* **Owed next:** root-cause the blackout class specifically (does the commitment ever enter the
+  caller's own mempool and simply fail to gossip? `meshhop_probe.py` instruments exactly this and
+  should be run at d200 until it catches one).
