@@ -252,9 +252,48 @@ jobs:
             apt_get: python3-zmq
             unit_tests: false
             functional_tests: false
-            goal: install
+            # ★ "install-strip", NOT "install". This is the release path, and it was the
+            # ONE place in the tooling that shipped unstripped binaries. install.sh:282
+            # strips on the source-build path and says why at :278-281 -- "the builder
+            # image that produced the fleet strips, and it matters" -- so the route every
+            # operator will actually take was the untested one. Measured on the rehearsal
+            # release: 446MB in the tarball against 107MB stripped.
+            #
+            # This is automake's own target (Makefile.in:1101, src/Makefile.in:12903), not
+            # a bolted-on strip step. It re-runs "install" with INSTALL_PROGRAM set to
+            # INSTALL_STRIP_PROGRAM, so the binaries arrive at --bindir=$OUTDIR_PATH/bin
+            # (:392) ALREADY STRIPPED. That ordering is the point: the "Zip Linux Builds"
+            # (:462) and "Tar Linux Builds" (:469) steps package that same directory, so
+            # there is no window in which an unstripped binary can be copied. A separate
+            # "strip" invocation after the build would have been a second mechanism to
+            # keep in sync with install.sh's.
+            # Safe here because the host is native x86_64: install-strip runs the build's
+            # own $(STRIP), which for a cross build would be the wrong tool.
+            goal: install-strip
             test_runner_extra: "--coverage --all  --exclude feature_dbcrash"
-            BITCOIN_CONFIG: "--enable-zmq --with-gui=qt5 --enable-glibc-back-compat --enable-reduce-exports --disable-online-rust --disable-tests --disable-bench"
+            # ★ "--without-gui", NOT the absence of --with-gui. Hemis-qt was 379MB of the
+            # rehearsal tarball's 446MB -- 85% of the payload, 68MB even stripped, still
+            # more than half -- for a binary that has never been executed. It does not go
+            # to five operators in the artefact they need for GM work.
+            #
+            # Deleting the flag would NOT have worked: --with-gui defaults to "auto"
+            # (build-aux/m4/bitcoin_qt.m4:56,65) and depends builds Qt for this host
+            # (depends/Makefile:131, with NO_QT empty at :35), so autodetect would find it
+            # and build Hemis-qt anyway. The negative has to be stated. depends still
+            # builds Qt itself -- what this saves is compiling and linking Hemis's own Qt
+            # sources, not the dependency build.
+            #
+            # COST, SAID OUT LOUD: 60ff2a1 fixed five link targets that pull in the ptx
+            # objects without linking libblst.a, and qt_Hemis_qt_LDADD
+            # (Makefile.qt.include:688) was the only one of the five CI could reach -- the
+            # other four sit behind --disable-tests/--disable-bench. So CI now covers none
+            # of them. The fix stays in the tree with its comment and was proven RED/GREEN
+            # locally; re-enabling Qt is a one-token change here. Not a rejection of Qt: a
+            # GUI wallet ships later as a separate artefact for a different audience, from
+            # its own dispatch, where a link failure costs nothing. Today, keeping it in
+            # this job lets a binary nobody ships fail the release of the ones everybody
+            # needs -- which is exactly what run #3 did.
+            BITCOIN_CONFIG: "--enable-zmq --without-gui --enable-glibc-back-compat --enable-reduce-exports --disable-online-rust --disable-tests --disable-bench"
 
           # - name: macOS 10.12
             # id: macOS10.12
