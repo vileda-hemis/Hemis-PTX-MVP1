@@ -142,7 +142,7 @@ cat <<EOF
 
   ★ NOTHING HAS BEEN STARTED. The upstream mainnet script starts the daemon to
     generate a config and stops it again. This one does not, because a PTX node
-    needs its BLS key in hemis.conf before there is any point in it running, and
+    needs its BLS key in Hemis.conf before there is any point in it running, and
     starting it first would only teach you to ignore a daemon that is not doing
     its job.
 
@@ -156,7 +156,7 @@ cat <<EOF
         directly. Nothing in the ordinary status output tells you.
 
    2. BLS KEY, per GM. Generate it on THIS machine, put the SECRET half in that
-      GM's hemis.conf as gamemasterblsprivkey=, and send only the PUBLIC half to
+      GM's Hemis.conf as gamemasterblsprivkey=, and send only the PUBLIC half to
       the wallet operator. See OPERATOR_GUIDE.md, "Node side".
 
    3. COLLATERAL, on your OTHER machine. Your collateral and wallet keys never

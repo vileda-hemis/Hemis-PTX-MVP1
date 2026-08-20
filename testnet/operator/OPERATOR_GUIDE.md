@@ -190,13 +190,13 @@ Output has two halves:
 { "secret": "<BLS SECRET>", "public": "<BLS PUBLIC>" }
 ```
 
-* **`secret`** — goes into `hemis.conf` on **this** machine, as `gamemasterblsprivkey=<secret>`.
+* **`secret`** — goes into `Hemis.conf` on **this** machine, as `gamemasterblsprivkey=<secret>`.
   **It never leaves this machine.** Not in chat, not in email, not in a ticket.
 * **`public`** — this is what you hand to the wallet operator.
 
 ```bash
 # Add the secret to your config, then restart the daemon:
-echo "gamemasterblsprivkey=<BLS SECRET>" >> $HOME/.hemis-ptxtestnet-1/hemis.conf
+echo "gamemasterblsprivkey=<BLS SECRET>" >> $HOME/.hemis-ptxtestnet-1/Hemis.conf
 Hemis-cli -datadir=$HOME/.hemis-ptxtestnet-1 stop
 Hemisd -datadir=$HOME/.hemis-ptxtestnet-1 -daemon
 ```

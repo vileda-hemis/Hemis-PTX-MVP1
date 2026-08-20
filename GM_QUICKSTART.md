@@ -59,7 +59,7 @@ It is a wrapper, not a second installer. In order:
 3. **Runs `testnet/operator/install.sh` once per GM**, with that GM's datadir and port pair. That
    script is the real installer: it checks glibc and architecture, downloads the release tarball and
    **verifies its sha256 against the published `SHA256SUMS`**, installs the binaries, installs the
-   Sapling parameters, reserves the fan-out ports, and writes each `hemis.conf` with a generated RPC
+   Sapling parameters, reserves the fan-out ports, and writes each `Hemis.conf` with a generated RPC
    password at mode 600.
 
 **Binaries** land in `/opt/hemis-ptx/bin`; `Hemisd` and `Hemis-cli` are symlinked into
@@ -71,7 +71,7 @@ there.
 
 ★ **It does not start the daemon.** The upstream mainnet `vps-install.sh` starts Hemisd and stops it
 again to generate a config. This one does not, because a PTX node needs its **BLS key** in
-`hemis.conf` before there is any point in it running — and starting a node that cannot do its job
+`Hemis.conf` before there is any point in it running — and starting a node that cannot do its job
 teaches you to ignore it.
 
 ★ **It does not touch your wallet or collateral.** That is Part B, on your other machine.
@@ -99,7 +99,7 @@ Hemis-cli -datadir=$HOME/.hemis-ptxtestnet-1 generateblskeypair
 ```
 
 * the **`secret`** goes into *this* machine's config:
-  `echo "gamemasterblsprivkey=<BLS SECRET>" >> $HOME/.hemis-ptxtestnet-1/hemis.conf`, then restart
+  `echo "gamemasterblsprivkey=<BLS SECRET>" >> $HOME/.hemis-ptxtestnet-1/Hemis.conf`, then restart
   that daemon;
 * the **`public`** half goes to the wallet operator. **Send the public half only.**
 
@@ -145,7 +145,7 @@ where the kernel may hand out a PTX fan-out port as an ephemeral source port. Fi
 Exiting.` with exit 1. Re-running `install.sh` installs and verifies them (section 3c).
 
 **Re-running is safe.** The bootstrap and the installer are both idempotent: an existing clone is
-updated to the tag, an existing `hemis.conf` is left alone (a reference template is written beside
+updated to the tag, an existing `Hemis.conf` is left alone (a reference template is written beside
 it instead), and parameters already present are verified rather than re-copied.
 
 ---

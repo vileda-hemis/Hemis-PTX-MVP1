@@ -575,8 +575,53 @@ done
 # ---------------------------------------------------------------------------
 say "5. Configuration"
 mkdir -p "$DATADIR"
-CONF="$DATADIR/hemis.conf"
-TEMPLATE="$DATADIR/hemis.conf.ptx-template"
+# ★★ "Hemis.conf", CAPITAL H, AND THE CASE IS THE WHOLE THING. The daemon's config
+# filename is Hemis_CONF_FILENAME = "Hemis.conf" (util/system.cpp:81). This script
+# used to write "hemis.conf", which on a case-sensitive filesystem -- i.e. Linux --
+# the daemon never opens. It does not complain: it logs "Using config file
+# <datadir>/Hemis.conf" for a file that is not there and starts with ALL DEFAULTS.
+#
+# What that cost, measured in a fresh container running this installer as an
+# operator would (2026-08-21): the node came up on MAINNET, not ptxtestnet -- blocks/
+# and chainstate/ at the top of the datadir instead of under ptxtestnet/, "Bound to
+# [::]:49165" instead of the P2P port asked for, no gamemaster=1, no rpcuser, and any
+# gamemasterblsprivkey the operator had added silently unread. The second and third
+# GMs on the host then failed outright, binding mainnet RPC 51473 which the first had
+# already taken -- "Unable to bind any endpoint for RPC server".
+#
+# ★ It survived because this installer's end-to-end test stops at "installed and
+# configured" and never starts a daemon. The first thing past the last assertion was
+# the first thing broken -- the same reason 3c's missing parameters survived.
+CONF="$DATADIR/Hemis.conf"
+TEMPLATE="$DATADIR/Hemis.conf.ptx-template"
+
+# ★ Anyone who ran the broken version has a lowercase hemis.conf that is now inert,
+# and a datadir carrying a partial MAINNET download. Say both out loud: a stale file
+# that looks like configuration is worse than no file, and a mainnet chainstate under
+# a ptxtestnet datadir will not become a testnet one by fixing the config.
+if [ -f "$DATADIR/hemis.conf" ] && [ ! -e "$CONF" ]; then
+    # ★ RENAME rather than tell the operator to. They may have added
+    # gamemasterblsprivkey= by hand -- the one line in there that is expensive to
+    # recreate and dangerous to mistype -- and it is the whole content of the file
+    # that was being ignored. Only when the correct name is free, so this can never
+    # overwrite a good config with a stale one.
+    mv "$DATADIR/hemis.conf" "$CONF"
+    warn "found $DATADIR/hemis.conf -- LOWERCASE, AND THE DAEMON NEVER READ IT."
+    echo "         An older version of this script wrote that name. Everything in it,"
+    echo "         including any gamemasterblsprivkey you added, was being ignored."
+    echo "         It has been renamed to $CONF, which the daemon does read."
+    echo "         Check it before starting: the ports and rpcbind lines in it are"
+    echo "         whatever that older run wrote, not necessarily this run's."
+fi
+if [ -d "$DATADIR/blocks" ] && [ ! -d "$DATADIR/ptxtestnet" ]; then
+    warn "$DATADIR holds a MAINNET chain (blocks/ at the top level, no ptxtestnet/)."
+    echo "         That is what the lowercase-config bug produced: the daemon ignored"
+    echo "         your config and synced mainnet. It is not convertible. Stop that"
+    echo "         daemon and clear the mainnet data before starting on ptxtestnet:"
+    echo "           rm -rf $DATADIR/blocks $DATADIR/chainstate $DATADIR/database"
+    echo "         Your wallet.dat is NOT touched by that command, and on this testnet"
+    echo "         it holds nothing you need -- your collateral lives on the wallet machine."
+fi
 
 # ★ The template is written EVERY run, next to the config, and is the thing the
 # already-exists branch tells you to compare against. Previously that branch said
@@ -612,7 +657,7 @@ EOF
 
 # The template carries a PLACEHOLDER password, never the generated one -- it is a
 # reference document, and it must stay safe to read, diff and paste.
-emit_conf '<your rpcpassword -- keep the one already in hemis.conf>' > "$TEMPLATE"
+emit_conf '<your rpcpassword -- keep the one already in Hemis.conf>' > "$TEMPLATE"
 chmod 600 "$TEMPLATE"
 
 if [ -f "$CONF" ]; then

@@ -17,8 +17,8 @@ CLI="${PTX_CLI:-Hemis-cli}"
 # ★ Read the ports from THIS GM's own config, not from a constant. A host running
 # three GMs has three port pairs, and probing the wrong pair reports a healthy
 # node as broken (or worse, a broken one as healthy because a SIBLING answered).
-# Precedence: explicit env override > the datadir's hemis.conf > the defaults.
-conf_val() { sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\([^[:space:]#]*\).*/\1/p" "$DATADIR/hemis.conf" 2>/dev/null | tail -1; }
+# Precedence: explicit env override > the datadir's Hemis.conf > the defaults.
+conf_val() { sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\([^[:space:]#]*\).*/\1/p" "$DATADIR/Hemis.conf" 2>/dev/null | tail -1; }
 P2P_PORT="${PTX_P2P_PORT:-$(conf_val port)}";    P2P_PORT="${P2P_PORT:-29994}"
 RPC_PORT="${PTX_RPC_PORT:-$(conf_val rpcport)}"; RPC_PORT="${RPC_PORT:-29995}"
 
@@ -87,7 +87,7 @@ jnum() { printf '%s' "$GMSTATUS" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\(
 GMSTATUS=$(cli getgamemasterstatus)
 REGADDR=""
 if [ -z "$GMSTATUS" ]; then
-    warn "getgamemasterstatus returned nothing -- this node is not registered yet, or gamemaster=1 is missing from hemis.conf"
+    warn "getgamemasterstatus returned nothing -- this node is not registered yet, or gamemaster=1 is missing from Hemis.conf"
 else
     # "service" is the registered address (what PEERS dial); "netaddr" is what this
     # daemon believes its own service address is. They should agree, and a mismatch
@@ -161,9 +161,9 @@ if [ -n "${REGADDR:-}" ]; then
     esac
     echo "  registered address family: IPv$FAMILY (host $REGHOST)"
     if [ "$FAMILY" = 6 ] && [ "$V6_RPC" -eq 0 ]; then
-        bad "★ IPv6 SEAM: you registered an IPv6 address but RPC is not bound on IPv6. Peers CANNOT reach you. Add 'rpcbind=::' to hemis.conf and restart."
+        bad "★ IPv6 SEAM: you registered an IPv6 address but RPC is not bound on IPv6. Peers CANNOT reach you. Add 'rpcbind=::' to Hemis.conf and restart."
     elif [ "$FAMILY" = 4 ] && [ "$V4_RPC" -eq 0 ]; then
-        bad "★ IPv4 SEAM: you registered an IPv4 address but RPC is not bound on IPv4. Add 'rpcbind=0.0.0.0' to hemis.conf and restart."
+        bad "★ IPv4 SEAM: you registered an IPv4 address but RPC is not bound on IPv4. Add 'rpcbind=0.0.0.0' to Hemis.conf and restart."
     else
         ok "registered family matches a bound family"
     fi
