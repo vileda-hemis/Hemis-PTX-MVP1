@@ -676,9 +676,16 @@ endif
 if ENABLE_ZMQ
 qt_Hemis_qt_LDADD += $(LIBBITCOIN_ZMQ) $(ZMQ_LIBS)
 endif
+# ★ $(LIBBLST) must be here, and it is easy to leave out. libbitcoin_server.a
+# carries the ptx objects, which reference ~30 blst_* symbols; GNU ld resolves
+# archives left to right, so libblst.a has to come AFTER it. Hemisd_LDADD
+# (Makefile.am:762) and test_test_ptx_LDADD (Makefile.test.include:254) both put
+# it last, right after $(BLS_LIBS) -- keep that position rather than choosing a
+# new one. Omitting it does not fail the compile; it fails the LINK, which is a
+# property no header-dependency check can see.
 qt_Hemis_qt_LDADD += $(LIBBITCOIN_CLI) $(LIBBITCOIN_COMMON) $(LIBBITCOIN_UTIL) $(LIBBITCOIN_CRYPTO) $(LIBUNIVALUE) $(LIBBITCOIN_ZEROCOIN) $(LIBSAPLING) $(LIBRUSTZCASH) $(LIBZCASH_LIBS) $(LIBLEVELDB) $(LIBLEVELDB_SSE42) $(LIBMEMENV) \
   $(BOOST_LIBS) $(QT_LIBS) $(QT_DBUS_LIBS) $(QR_LIBS) $(SVG_LIBS) $(CHARTS_LIBS) $(BDB_LIBS) $(MINIUPNPC_LIBS) $(NATPMP_LIBS) $(LIBSECP256K1) \
-  $(EVENT_PTHREADS_LIBS) $(EVENT_LIBS) $(BLS_LIBS)
+  $(EVENT_PTHREADS_LIBS) $(EVENT_LIBS) $(BLS_LIBS) $(LIBBLST)
 qt_Hemis_qt_LDFLAGS = $(RELDFLAGS) $(AM_LDFLAGS) $(QT_LDFLAGS) $(LIBTOOL_APP_LDFLAGS)
 qt_Hemis_qt_LIBTOOLFLAGS = $(AM_LIBTOOLFLAGS) --tag CXX
 
