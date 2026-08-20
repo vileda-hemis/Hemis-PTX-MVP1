@@ -289,6 +289,27 @@ BITCOIN_CORE_H = \
   pow.h \
   prevector.h \
   protocol.h \
+  ptx/ptx_accum_script.h \
+  ptx/ptx_bls.h \
+  ptx/ptx_ceremony_driver.h \
+  ptx/ptx_coalesce.h \
+  ptx/ptx_commit_reveal.h \
+  ptx/ptx_dkg.h \
+  ptx/ptx_dkg_commitments.h \
+  ptx/ptx_dkg_net.h \
+  ptx/ptx_exclude.h \
+  ptx/ptx_fanout.h \
+  ptx/ptx_formation.h \
+  ptx/ptx_lottery_state.h \
+  ptx/ptx_mempool.h \
+  ptx/ptx_output_mapping.h \
+  ptx/ptx_payout.h \
+  ptx/ptx_pose.h \
+  ptx/ptx_quorum.h \
+  ptx/ptx_quorum_store.h \
+  ptx/ptx_seed.h \
+  ptx/ptx_wallet.h \
+  ptx/ptx_winner_selection.h \
   pubkey.h \
   random.h \
   randomenv.h \
@@ -855,8 +876,19 @@ CTAES_DIST += crypto/ctaes/test.c
 
 IMMER_DIST = immer
 
+# ★ blst is an AMALGAMATION build: libblst_a_SOURCES (:116) names only
+# blst/src/server.c and blst/build/assembly.S, because server.c #includes the
+# other .c files and assembly.S #includes the per-ABI .s files. Automake ships
+# _SOURCES and nothing else, so a dist tarball carried 2 of blst's 67 tracked
+# files and could not build. Shipped as a DIRECTORY, like IMMER_DIST above:
+# a vendored tree must not be tracked by a hand-maintained file list, which is
+# the exact failure this fixes. The coff/ flavour is needed by TARGET_WINDOWS
+# (see :127-131), so it ships too even though the linux build never opens it.
+BLST_DIST = blst
+
 EXTRA_DIST = $(CTAES_DIST) rust
 EXTRA_DIST += $(IMMER_DIST)
+EXTRA_DIST += $(BLST_DIST)
 
 
 config/Hemis-config.h: config/stamp-h1
