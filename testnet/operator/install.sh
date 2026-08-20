@@ -398,6 +398,57 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 3c. Sapling zkSNARK parameters.
+#
+# ★ WITHOUT THESE THE DAEMON DOES NOT START. It is not a warning and not a
+# degraded mode: init.cpp:1268 calls LoadSaplingParams(), which on failure calls
+# StartShutdown() and the process exits 1. Proven both legs against the
+# v0.1.0-testnet release binary on 2026-08-21:
+#   RED   no ~/.Hemis-params      -> "Shutdown requested. Exiting.", exit 1,
+#                                    immediately after the cache-configuration lines
+#   GREEN params in place         -> "Loaded Sapling parameters in 0.199504s seconds."
+#                                    then "init message: Done loading", stays up
+# The RED failure names nothing useful in the log tail, which is why an operator
+# hitting it reads it as "the daemon just dies".
+#
+# ★ NOTHING NEEDS DOWNLOADING. The two files are tracked in this repository and
+# the clone in section 2 already put them at $PREFIX/params. The release tarball
+# does NOT carry them -- it is three binaries -- so fetching them from the release
+# is not an option and never was.
+#
+# The daemon looks in $HOME/.Hemis-params (util/system.cpp:567-594, the Unix
+# branch). That is the HOME of whoever RUNS Hemisd. If you later run the daemon as
+# a different user or under a systemd unit with its own HOME, either repeat this
+# for that user or pass -paramsdir=<dir> explicitly.
+# ---------------------------------------------------------------------------
+say "3c. Sapling parameters"
+PARAMS_SRC="$PREFIX/params"
+PARAMS_DST="${PTX_PARAMS_DIR:-$HOME/.Hemis-params}"
+mkdir -p "$PARAMS_DST"
+for pf in sapling-spend.params sapling-output.params; do
+    if [ -s "$PARAMS_DST/$pf" ]; then
+        ok "$pf already present"
+        continue
+    fi
+    [ -s "$PARAMS_SRC/$pf" ] \
+        || die "$PARAMS_SRC/$pf is missing from the checkout. The clone in section 2 is incomplete -- delete $PREFIX and re-run."
+    # Copy to a temp name and move into place, so an interrupted copy cannot leave
+    # a short file that the next run then reports as "already present".
+    cp "$PARAMS_SRC/$pf" "$PARAMS_DST/.$pf.part" \
+        || die "could not write to $PARAMS_DST (need ~52MB free)"
+    mv -f "$PARAMS_DST/.$pf.part" "$PARAMS_DST/$pf"
+    ok "installed $pf ($(du -h "$PARAMS_DST/$pf" | cut -f1))"
+done
+# ★ Assert the outcome rather than trusting the copies. A truncated params file
+# fails at daemon start, far from here, with the same unhelpful message as no file.
+for pf in sapling-spend.params sapling-output.params; do
+    a="$(sha256sum "$PARAMS_SRC/$pf" | awk '{print $1}')"
+    b="$(sha256sum "$PARAMS_DST/$pf" | awk '{print $1}')"
+    [ "$a" = "$b" ] || die "$PARAMS_DST/$pf does not match $PARAMS_SRC/$pf (sha256 $b vs $a). Delete it and re-run."
+done
+ok "sapling parameters verified in $PARAMS_DST"
+
+# ---------------------------------------------------------------------------
 # 4. Kernel port reservation.
 #
 # PTX uses ports in 32000-33000 for its fan-out. Without reserving them the
@@ -590,6 +641,7 @@ say "Done"
 cat <<EOF
   Config:  $CONF
   Datadir: $DATADIR
+  Params:  $PARAMS_DST
   P2P:     $P2P_PORT      RPC: $RPC_PORT
 
   Running more than one GM on this host? Repeat with BOTH overridden, e.g.:
