@@ -98,10 +98,21 @@ Hemis-cli -datadir=$HOME/.hemis-ptxtestnet-1 getblockcount      # answers within
 Hemis-cli -datadir=$HOME/.hemis-ptxtestnet-1 generateblskeypair
 ```
 
-* the **`secret`** goes into *this* machine's config:
-  `echo "gamemasterblsprivkey=<BLS SECRET>" >> $HOME/.hemis-ptxtestnet-1/Hemis.conf`, then restart
-  that daemon;
+* the **`secret`** goes into *this* machine's config, **together with `gamemaster=1`**:
+
+  ```bash
+  echo "gamemasterblsprivkey=<BLS SECRET>" >> $HOME/.hemis-ptxtestnet-1/Hemis.conf
+  echo "gamemaster=1"                      >> $HOME/.hemis-ptxtestnet-1/Hemis.conf
+  Hemis-cli -datadir=$HOME/.hemis-ptxtestnet-1 stop
+  Hemisd    -datadir=$HOME/.hemis-ptxtestnet-1 -daemon
+  ```
+
 * the **`public`** half goes to the wallet operator. **Send the public half only.**
+
+★★ **`gamemaster=1` goes in with the key and not before.** `install.sh` ships it commented out
+deliberately: with the role enabled and no key the daemon **refuses to start** — `Error: ERROR:
+Gamemaster priv key cannot be empty.` — and `generateblskeypair` is an RPC call, so you would be
+locked out of the daemon you need to produce the key.
 
 ★ **`-daemon` survives your shell but not a reboot.** Arrange start-at-boot — a systemd unit or
 `@reboot` in cron — *before* you report the node as ready. A GM that is down after a reboot accrues

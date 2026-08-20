@@ -194,11 +194,25 @@ Output has two halves:
   **It never leaves this machine.** Not in chat, not in email, not in a ticket.
 * **`public`** — this is what you hand to the wallet operator.
 
+★★ **`gamemaster=1` goes in NOW, with the key, and not before.** `install.sh` leaves it commented
+out on purpose. A config with `gamemaster=1` and no key does not start a limited node — the daemon
+**refuses to start at all**, with `Error: ERROR: Gamemaster priv key cannot be empty.` And since
+`generateblskeypair` is an RPC call, that would lock you out of the daemon you need in order to
+produce the key. Both lines, together, after you have the key.
+
+★ **Both lines must land under the `[ptxtestnet]` section**, not above it — `Hemis.conf` has a
+section header and settings above it are ignored on this network. `>>` appends to the end of the
+file, which is inside the section, so the commands below are correct as written.
+
 ```bash
-# Add the secret to your config, then restart the daemon:
+# Add the secret AND enable the gamemaster role, then restart the daemon:
 echo "gamemasterblsprivkey=<BLS SECRET>" >> $HOME/.hemis-ptxtestnet-1/Hemis.conf
+echo "gamemaster=1"                      >> $HOME/.hemis-ptxtestnet-1/Hemis.conf
 Hemis-cli -datadir=$HOME/.hemis-ptxtestnet-1 stop
 Hemisd -datadir=$HOME/.hemis-ptxtestnet-1 -daemon
+
+# Prove it took -- this answers only if the daemon came back up:
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet-1 getblockcount
 ```
 
 ### ★ HANDOFF 1 — Node ➜ Wallet

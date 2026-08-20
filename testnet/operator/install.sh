@@ -647,7 +647,20 @@ fi
 emit_conf() {   # $1 = value to put in rpcpassword
     cat <<EOF
 # PTX testnet node configuration.
+
+# ★ SELECTS THE NETWORK, and must stay HERE -- above the section header, not in it.
 ptxtestnet=1
+
+# ★★ EVERYTHING BELOW SITS UNDER [ptxtestnet], AND THAT IS NOT COSMETIC. port,
+# rpcport and rpcbind are network-specific settings: outside a network section the
+# daemon IGNORES them and says so only in a startup warning --
+#   "Config setting for -port only applied on ptxtestnet network when in
+#    [ptxtestnet] section."
+# -- and then binds the ptxtestnet DEFAULTS instead. Measured 2026-08-21 with these
+# same lines above the header: "Bound to [::]:29993" rather than the P2P port asked
+# for, and RPC attempted on 29902 rather than the one asked for. A node that is
+# listening on the wrong ports looks entirely healthy from the inside.
+[ptxtestnet]
 
 # --- RPC -------------------------------------------------------------------
 rpcuser=${RPCUSER:-ptxop}
@@ -667,7 +680,16 @@ port=$P2P_PORT
 listen=1
 
 # --- Node role -------------------------------------------------------------
-gamemaster=1
+# ★★ THESE TWO LINES GO IN TOGETHER, AND NOT BEFORE YOU HAVE THE KEY.
+# gamemaster=1 with an empty gamemasterblsprivkey does not start a limited node --
+# it REFUSES TO START AT ALL: "Error: ERROR: Gamemaster priv key cannot be empty."
+# Since generateblskeypair is an RPC call, a config carrying gamemaster=1 up front
+# locks you out of the very daemon you need in order to produce the key. Verified
+# 2026-08-21 as a single-variable change against an otherwise working node.
+#
+# So: start the daemon as it is, generate the key (OPERATOR_GUIDE.md A4), then
+# uncomment BOTH of these and restart.
+# gamemaster=1
 # gamemasterblsprivkey=<the BLS key you generate in the OPERATOR_GUIDE>
 EOF
 }
