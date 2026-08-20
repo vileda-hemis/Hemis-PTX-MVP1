@@ -488,7 +488,24 @@ apply_reservation() {
     local value="$1"
     echo "net.ipv4.ip_local_reserved_ports=$value" | $SUDO tee "$SYSCTL_FILE" >/dev/null \
         || die "could not write $SYSCTL_FILE"
+    # ★★ DECIDE read-only-vs-malformed BEFORE asking sysctl, because sysctl cannot
+    # tell you which one it hit. Without this, an unprivileged container that HAS
+    # procps installed died right here with "the file is malformed" -- a wrong
+    # diagnosis, and fatal, three lines above the handler written for exactly this
+    # case. The no-sysctl branch below has always returned 1 and let the caller
+    # explain properly; the sysctl branch called die() instead, so which message an
+    # operator got depended on whether procps happened to be installed. Caught
+    # 2026-08-21 by running the bootstrap in a container that had procps, having
+    # passed the day before in one that did not.
+    #
+    # test -w is the right probe and was checked, not assumed: in an unprivileged
+    # container running AS ROOT, /proc/sys is mounted ro and `test -w` correctly
+    # reports not-writable (access(2) accounts for a read-only mount; the file's
+    # permission bits alone would say root may write it).
+    $SUDO test -w /proc/sys/net/ipv4/ip_local_reserved_ports 2>/dev/null || return 1
     if command -v sysctl >/dev/null 2>&1; then
+        # Now a sysctl failure really does mean what the message says: we know the
+        # kernel interface is writable, so the file we just wrote must be at fault.
         $SUDO sysctl -q -p "$SYSCTL_FILE" \
             || die "$SYSCTL_FILE was written but sysctl refused to load it -- the file is malformed"
     else
