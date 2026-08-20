@@ -9,11 +9,17 @@
 set -euo pipefail
 
 REPO="${PTX_REPO:-https://github.com/vileda-hemis/Hemis-PTX-MVP1.git}"
-# ★ The operator tooling lives on feature/ptx-dkg, NOT on the default branch
-# (main). Defaulting to empty would clone main, where testnet/operator/ does not
-# exist -- i.e. the guide's very first step would fail. At launch this becomes
-# the release TAG and this default should change with it.
-REF="${PTX_REF:-feature/ptx-dkg}"
+# ★ PINNED TO THE RELEASE TAG. A tag is immutable: two operators running this on
+# different days get the same source and the same binaries, which a branch cannot
+# promise. It is also what makes the artefact route in section 3 work at all --
+# a branch ref derives no release URL, by design.
+#
+# Defaulting to empty would clone the default branch (main), where
+# testnet/operator/ does not exist -- i.e. the guide's very first step would fail.
+#
+# To build a later fix before it is tagged, pass the branch explicitly:
+#   PTX_REF=feature/ptx-dkg PTX_BUILD_FROM_SOURCE=1 ./install.sh
+REF="${PTX_REF:-v0.1.0-testnet}"
 PREFIX="${PTX_PREFIX:-/opt/hemis-ptx}"
 DATADIR="${PTX_DATADIR:-$HOME/.hemis-ptxtestnet}"
 # ★ Overridable so a host can run several GMs. Each GM needs its OWN datadir AND
@@ -278,12 +284,21 @@ build_from_source() {
     /usr/local/bin/Hemis-cli -version >/dev/null 2>&1 \
         || die "Hemis-cli stopped working after strip. Log: $blog"
     ok "built and installed: $(/usr/local/bin/Hemis-cli -version 2>/dev/null | awk 'NR==1')"
-    # ★ The version says "-dirty" and that is NOT a warning about your checkout.
-    # autogen.sh regenerates Makefile.in, aclocal.m4, build-aux/ and autom4te.cache/,
-    # and this repository TRACKS those generated files -- so building from a
-    # pristine clone necessarily dirties the tree. Said out loud because a binary
-    # that calls itself dirty otherwise looks like it was built from modified source.
-    echo "         (\"-dirty\" is expected: autogen.sh regenerates tracked autotools files)"
+    # ★ "-dirty" USED to be expected here and no longer is. This repository tracked
+    # its own autotools output, so every autogen.sh run rewrote 29 tracked files and
+    # a build from a pristine clone was dirty before it compiled anything. Fixed in
+    # 93b44d4 by untracking them. It mattered because share/genbuild.sh:32-34 uses
+    # the TAG name only when `git diff-index --quiet HEAD` passes -- a dirty tree
+    # falls through to <shorthash>-dirty, so a tagged release could not have named
+    # its own tag. Verified clean 2026-08-19: fresh clone + full build, 0 files.
+    #
+    # So if you see "-dirty" now it means what it says, and it is worth saying.
+    case "$(/usr/local/bin/Hemis-cli -version 2>/dev/null | awk 'NR==1')" in
+        *-dirty)
+            warn "the version string says \"-dirty\": $PREFIX has local modifications."
+            echo "         A build from a clean checkout should not say this. Check: git -C $PREFIX status"
+            ;;
+    esac
     warn "this build uses the SYSTEM Berkeley DB (--with-incompatible-bdb), not 4.8:"
     echo "         wallets it creates are NOT readable by a stock release binary."
     echo "         Fine for this testnet; do not mix this build with release binaries."
