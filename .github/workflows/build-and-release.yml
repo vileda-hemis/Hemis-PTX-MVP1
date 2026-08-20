@@ -196,10 +196,21 @@ jobs:
           # (:364, :368, :372, :379, :389, :393, and the uploads :398-495), so a
           # disabled leg SKIPS its steps rather than failing them.
           #
-          # TO RESTORE: delete the leading "# " from the commented entries below,
-          # here and in build_depends at :68. Nothing else changes. Do that once
-          # testnet is cut and the locale/distdir fix has been proven on all five
-          # hosts -- these platforms are deferred, not dropped.
+          # TO RESTORE -- AND THIS IS NOT UNIFORM ACROSS THE FOUR, see BUG-043:
+          #   Win64      -- delete the leading "# " here and in build_depends at
+          #                 :68. Nothing else. blst's coff/ assembly is present and
+          #                 is now shipped by BLST_DIST (src/Makefile.am:887).
+          #   ARM 32-bit -- same, one character. 32-bit takes blst's empty asm
+          #                 branch and the pure-C path; note Makefile.am:113's
+          #                 stack warning applies to it and is unexamined.
+          #   macOS      -- BLOCKED. blst/build/mach-o/ DOES NOT EXIST in this
+          #                 repository; assembly.S:63 includes 13 files that are
+          #                 not there.
+          #   AARCH64    -- BLOCKED. No *-armv8.* files under any ABI;
+          #                 assembly.S:99 includes 10 files that are not there.
+          # Uncommenting the macOS or AARCH64 entry produces a compile failure, not
+          # a build. Answer BUG-043 first. These platforms are deferred, not
+          # dropped -- but two of them are deferred behind a real question.
           # ==================================================================
           # - name: ARM 32-bit
             # id: ARM32
