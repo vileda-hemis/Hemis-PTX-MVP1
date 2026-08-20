@@ -453,6 +453,15 @@ jobs:
         with:
           name: ${{ github.event.inputs.release-name }}
           tag_name: ${{ github.event.inputs.tags }}
+          # ★ WITHOUT THIS THE TAG LANDS ON THE DEFAULT BRANCH, NOT ON WHAT WE BUILT.
+          # action-gh-release creates a tag that does not yet exist at target_commitish,
+          # which DEFAULTS TO THE REPOSITORY'S DEFAULT BRANCH. Proven by rehearsal run
+          # #4: dispatched on feature/ptx-dkg at 60ff2a1, and the tag it produced points
+          # at 1b0d7fe -- main's tip. The artefacts and the tag would then disagree about
+          # which source produced them, which is the entire thing pinning to a tag is for,
+          # and install.sh's REF=v0.1.0-testnet would clone a tree with no testnet/operator/
+          # in it at all. github.sha is the dispatched commit.
+          target_commitish: ${{ github.sha }}
           prerelease: false
           files: |
             Hemis-Windows.zip
@@ -464,6 +473,15 @@ jobs:
         with:
           name: ${{ github.event.inputs.release-name }}
           tag_name: ${{ github.event.inputs.tags }}
+          # ★ WITHOUT THIS THE TAG LANDS ON THE DEFAULT BRANCH, NOT ON WHAT WE BUILT.
+          # action-gh-release creates a tag that does not yet exist at target_commitish,
+          # which DEFAULTS TO THE REPOSITORY'S DEFAULT BRANCH. Proven by rehearsal run
+          # #4: dispatched on feature/ptx-dkg at 60ff2a1, and the tag it produced points
+          # at 1b0d7fe -- main's tip. The artefacts and the tag would then disagree about
+          # which source produced them, which is the entire thing pinning to a tag is for,
+          # and install.sh's REF=v0.1.0-testnet would clone a tree with no testnet/operator/
+          # in it at all. github.sha is the dispatched commit.
+          target_commitish: ${{ github.sha }}
           prerelease: true
           files: |
             Hemis-Windows.zip
@@ -475,6 +493,15 @@ jobs:
         with:
           name: ${{ github.event.inputs.release-name }}
           tag_name: ${{ github.event.inputs.tags }}
+          # ★ WITHOUT THIS THE TAG LANDS ON THE DEFAULT BRANCH, NOT ON WHAT WE BUILT.
+          # action-gh-release creates a tag that does not yet exist at target_commitish,
+          # which DEFAULTS TO THE REPOSITORY'S DEFAULT BRANCH. Proven by rehearsal run
+          # #4: dispatched on feature/ptx-dkg at 60ff2a1, and the tag it produced points
+          # at 1b0d7fe -- main's tip. The artefacts and the tag would then disagree about
+          # which source produced them, which is the entire thing pinning to a tag is for,
+          # and install.sh's REF=v0.1.0-testnet would clone a tree with no testnet/operator/
+          # in it at all. github.sha is the dispatched commit.
+          target_commitish: ${{ github.sha }}
           prerelease: false
           files: |
               Hemis-Linux.zip
@@ -487,6 +514,15 @@ jobs:
         with:
           name: ${{ github.event.inputs.release-name }}
           tag_name: ${{ github.event.inputs.tags }}
+          # ★ WITHOUT THIS THE TAG LANDS ON THE DEFAULT BRANCH, NOT ON WHAT WE BUILT.
+          # action-gh-release creates a tag that does not yet exist at target_commitish,
+          # which DEFAULTS TO THE REPOSITORY'S DEFAULT BRANCH. Proven by rehearsal run
+          # #4: dispatched on feature/ptx-dkg at 60ff2a1, and the tag it produced points
+          # at 1b0d7fe -- main's tip. The artefacts and the tag would then disagree about
+          # which source produced them, which is the entire thing pinning to a tag is for,
+          # and install.sh's REF=v0.1.0-testnet would clone a tree with no testnet/operator/
+          # in it at all. github.sha is the dispatched commit.
+          target_commitish: ${{ github.sha }}
           prerelease: true
           files: |
               Hemis-Linux.zip
@@ -499,6 +535,15 @@ jobs:
         with:
           name: ${{ github.event.inputs.release-name }}
           tag_name: ${{ github.event.inputs.tags }}
+          # ★ WITHOUT THIS THE TAG LANDS ON THE DEFAULT BRANCH, NOT ON WHAT WE BUILT.
+          # action-gh-release creates a tag that does not yet exist at target_commitish,
+          # which DEFAULTS TO THE REPOSITORY'S DEFAULT BRANCH. Proven by rehearsal run
+          # #4: dispatched on feature/ptx-dkg at 60ff2a1, and the tag it produced points
+          # at 1b0d7fe -- main's tip. The artefacts and the tag would then disagree about
+          # which source produced them, which is the entire thing pinning to a tag is for,
+          # and install.sh's REF=v0.1.0-testnet would clone a tree with no testnet/operator/
+          # in it at all. github.sha is the dispatched commit.
+          target_commitish: ${{ github.sha }}
           prerelease: false
           files: ${{ github.workspace }}/build/Hemis-x86_64-apple-darwin16/Hemis-Core.dmg
 
@@ -508,6 +553,15 @@ jobs:
         with:
           name: ${{ github.event.inputs.release-name }}
           tag_name: ${{ github.event.inputs.tags }}
+          # ★ WITHOUT THIS THE TAG LANDS ON THE DEFAULT BRANCH, NOT ON WHAT WE BUILT.
+          # action-gh-release creates a tag that does not yet exist at target_commitish,
+          # which DEFAULTS TO THE REPOSITORY'S DEFAULT BRANCH. Proven by rehearsal run
+          # #4: dispatched on feature/ptx-dkg at 60ff2a1, and the tag it produced points
+          # at 1b0d7fe -- main's tip. The artefacts and the tag would then disagree about
+          # which source produced them, which is the entire thing pinning to a tag is for,
+          # and install.sh's REF=v0.1.0-testnet would clone a tree with no testnet/operator/
+          # in it at all. github.sha is the dispatched commit.
+          target_commitish: ${{ github.sha }}
           prerelease: true
           files: ${{ github.workspace }}/build/Hemis-x86_64-apple-darwin16/Hemis-Core.dmg
 
@@ -517,6 +571,15 @@ jobs:
         with:
           name: ${{ github.event.inputs.release-name }}
           tag_name: ${{ github.event.inputs.tags }}
+          # ★ WITHOUT THIS THE TAG LANDS ON THE DEFAULT BRANCH, NOT ON WHAT WE BUILT.
+          # action-gh-release creates a tag that does not yet exist at target_commitish,
+          # which DEFAULTS TO THE REPOSITORY'S DEFAULT BRANCH. Proven by rehearsal run
+          # #4: dispatched on feature/ptx-dkg at 60ff2a1, and the tag it produced points
+          # at 1b0d7fe -- main's tip. The artefacts and the tag would then disagree about
+          # which source produced them, which is the entire thing pinning to a tag is for,
+          # and install.sh's REF=v0.1.0-testnet would clone a tree with no testnet/operator/
+          # in it at all. github.sha is the dispatched commit.
+          target_commitish: ${{ github.sha }}
           prerelease: false
           files: Hemis-AArch.zip
 
@@ -526,6 +589,15 @@ jobs:
         with:
           name: ${{ github.event.inputs.release-name }}
           tag_name: ${{ github.event.inputs.tags }}
+          # ★ WITHOUT THIS THE TAG LANDS ON THE DEFAULT BRANCH, NOT ON WHAT WE BUILT.
+          # action-gh-release creates a tag that does not yet exist at target_commitish,
+          # which DEFAULTS TO THE REPOSITORY'S DEFAULT BRANCH. Proven by rehearsal run
+          # #4: dispatched on feature/ptx-dkg at 60ff2a1, and the tag it produced points
+          # at 1b0d7fe -- main's tip. The artefacts and the tag would then disagree about
+          # which source produced them, which is the entire thing pinning to a tag is for,
+          # and install.sh's REF=v0.1.0-testnet would clone a tree with no testnet/operator/
+          # in it at all. github.sha is the dispatched commit.
+          target_commitish: ${{ github.sha }}
           prerelease: true
           files: Hemis-AArch.zip
 
@@ -535,6 +607,15 @@ jobs:
         with:
           name: ${{ github.event.inputs.release-name }}
           tag_name: ${{ github.event.inputs.tags }}
+          # ★ WITHOUT THIS THE TAG LANDS ON THE DEFAULT BRANCH, NOT ON WHAT WE BUILT.
+          # action-gh-release creates a tag that does not yet exist at target_commitish,
+          # which DEFAULTS TO THE REPOSITORY'S DEFAULT BRANCH. Proven by rehearsal run
+          # #4: dispatched on feature/ptx-dkg at 60ff2a1, and the tag it produced points
+          # at 1b0d7fe -- main's tip. The artefacts and the tag would then disagree about
+          # which source produced them, which is the entire thing pinning to a tag is for,
+          # and install.sh's REF=v0.1.0-testnet would clone a tree with no testnet/operator/
+          # in it at all. github.sha is the dispatched commit.
+          target_commitish: ${{ github.sha }}
           prerelease: false
           files: Hemis-Arm32.zip
 
@@ -544,5 +625,14 @@ jobs:
         with:
           name: ${{ github.event.inputs.release-name }}
           tag_name: ${{ github.event.inputs.tags }}
+          # ★ WITHOUT THIS THE TAG LANDS ON THE DEFAULT BRANCH, NOT ON WHAT WE BUILT.
+          # action-gh-release creates a tag that does not yet exist at target_commitish,
+          # which DEFAULTS TO THE REPOSITORY'S DEFAULT BRANCH. Proven by rehearsal run
+          # #4: dispatched on feature/ptx-dkg at 60ff2a1, and the tag it produced points
+          # at 1b0d7fe -- main's tip. The artefacts and the tag would then disagree about
+          # which source produced them, which is the entire thing pinning to a tag is for,
+          # and install.sh's REF=v0.1.0-testnet would clone a tree with no testnet/operator/
+          # in it at all. github.sha is the dispatched commit.
+          target_commitish: ${{ github.sha }}
           prerelease: true
           files: Hemis-Arm32.zip
