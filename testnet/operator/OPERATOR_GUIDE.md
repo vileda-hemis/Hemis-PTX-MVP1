@@ -98,15 +98,26 @@ apt-get update && apt-get install -y --no-install-recommends git curl ca-certifi
 ```
 
 ```bash
-git clone -b feature/ptx-dkg https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
+git clone -b v0.1.0-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 cd Hemis-PTX-MVP1/testnet/operator
 PTX_DATADIR=~/.hemis-ptxtestnet-1 PTX_P2P_PORT=29994 PTX_RPC_PORT=29995 ./install.sh
 ```
 
-★ **The `-b feature/ptx-dkg` is required, not decorative.** The operator tooling is not on the
-default branch (`main`); cloning without it gives you a checkout with no `testnet/operator/`
-directory and nothing here will be found. If the coordinator has given you a **release tag**, use
-that instead — `git clone -b <tag> …` — and pass the same value as `PTX_REF=<tag>` to `install.sh`.
+★★ **`-b <the release tag>` is required, and a BRANCH NAME HERE DEFEATS THE ENTIRE POINT.**
+This line used to read `-b feature/ptx-dkg`. A branch moves: two operators running that command a
+day apart get different source, different binaries and a different `install.sh`, which is exactly
+what `install.sh`'s own `PTX_REF` default is pinned to a tag to prevent. Pinning the installer
+while the instruction that fetches the installer floats is not pinning anything.
+
+★ **It also has to be a `-b` of something.** The operator tooling is not on the default branch
+(`main`); cloning without `-b` gives you a checkout with no `testnet/operator/` directory in it and
+nothing in this guide will be found.
+
+★ **If the coordinator names a different tag, use it in BOTH places** — `git clone -b <tag> …`
+*and* `PTX_REF=<tag> ./install.sh`. The clone decides which guide and which installer you read;
+`PTX_REF` decides which source that installer builds or fetches. They are two separate pins and
+disagreeing about them is how you end up running one release's installer against another
+release's source.
 
 ★ **Pass the datadir and ports even for your first GM.** You are running three, and a bare
 `./install.sh` would write `~/.hemis-ptxtestnet` — a name that is not in the table above and that
@@ -228,11 +239,51 @@ Send the wallet operator exactly two things:
 
 ## Part B — Wallet machine
 
+### B0. Install, then create the wallet, then ask for coins — in that order
+
+★★ **Do not get coins sent to a wallet you have not yet proved you can open.** The order is:
+
+1. install the wallet-machine binaries the same way as the node (Part A, A1);
+2. **start it once and let it create `wallet.dat`, then stop it and start it again** — the second
+   start is the one that proves the file opens;
+3. **only then** give the coordinator an address.
+
+★ **The reason is Berkeley DB, and it is specific to this build.** `install.sh` compiles with
+`--with-incompatible-bdb` (`install.sh` section 3b, and it says so out loud on every source build:
+*"this build uses the SYSTEM Berkeley DB, not 4.8: wallets it creates are NOT readable by a stock
+release binary"*). A `wallet.dat` created here is written by the system BDB — 5.3 on Debian 12 —
+and a stock Hemis release binary, which is built against BDB 4.8, **will not open it**. Every
+machine on this testnet runs this same build, so nothing bites while that stays true. It bites the
+day someone swaps in a release binary, and by then the wallet has coins in it.
+
+A funded wallet that later will not open is a bad way to learn this. An empty one is free to throw
+away.
+
 ### B1. Funding the collateral — two routes
 
-You need **one collateral output per GM**, so **three**. Each must be a **single unspent output of
-exactly the right size** — do not split it across two transactions, and do not guess the amount; ask
-the coordinator.
+You need **one collateral output per GM**, so **three**.
+
+★★ **The amount is 100 HMS per GM, and it is EXACT.** Source, not folklore:
+`CPTXTestNetParams` sets `consensus.nGMCollateralAmt = 100 * COIN`
+(`src/chainparams.cpp:757`; the class starts at `:733` and its `strNetworkID` is `"ptxtestnet"` at
+`:738`). So three GMs need **300 HMS**, and five operators need **1500 HMS** across the network.
+
+★★ **1000 HMS IS THE WRONG NUMBER AND IT WILL BE OFFERED TO YOU.** 1000 is what mainnet
+(`src/chainparams.cpp:254`) and the *old* Hemis testnet (`:426`) use, so it is what anyone with
+prior Hemis experience will assume, and it is what earlier drafts of this guide's ancestors said.
+ptxtestnet is not either of those chains.
+
+★ **"Exact" means exact — the check is `!=`, not "at least".** A collateral output of any other
+size is refused twice over: the RPC rejects it up front with
+`collateral <txid>-<n> with invalid value <amount>` (`src/rpc/rpcevo.cpp:569`), and the consensus
+rule behind it rejects the transaction as `bad-protx-collateral-amount`
+(`src/evo/specialtx_validation.cpp:119`). Neither of those messages contains the number you were
+supposed to use, which is why it is written above.
+
+★ **One output, not a total.** Each collateral must be a **single unspent output** of exactly
+100 HMS. Two payments of 50 do not combine into one, and a 100-HMS payment that your wallet later
+consolidates is no longer a collateral. Confirm with `listunspent` that you can see three separate
+outputs of exactly `100.00000000` before you register anything.
 
 **Route 1 — the coordinator sends you the coins (simplest, recommended).**
 The coordinator pays the collateral to **an address in your own wallet**. From then on it is ordinary
@@ -405,5 +456,21 @@ use a glibc-based distro.
   as a guarantee that other nodes agree.
 * **A registered, ENABLED node is not necessarily a working node.** Registration proves you paid
   collateral and published an address. It proves nothing about whether that address answers.
+* ★★ **Registered and armed, and nothing appears to be happening, is very often CORRECT.** A
+  gamemaster that is waiting for the next key-generation round to include it looks — in every
+  command you have — **identical to a broken one**: `getgamemasterstatus` says the same thing,
+  `self-check.sh` passes, the logs are quiet, and no share file appears. Nothing in the node's
+  output distinguishes "not selected yet" from "selected and silently failing", because the node
+  does not know which it is either.
+
+  **What to do:** run `./self-check.sh` and believe it. If it exits **0**, you are done, and the
+  correct next action is to wait. Report it as a problem only if a check FAILs, a check returns
+  `[????]`, or your **PoSe penalty goes non-zero** — that last one is the network's verdict rather
+  than your machine's, and it is the only one of the three that can tell you peers are failing to
+  reach you.
+
+  ★ This is written here because the alternative is five operators reporting the same non-bug in
+  the same week, and a coordinator who then has to distinguish those five reports from the one
+  that is real.
 * **Registering via the RPC console is the supported path for launch.** A GM tab in the wallet UI is
   a deliberate fast-follow, built once we know what people actually struggled with here.

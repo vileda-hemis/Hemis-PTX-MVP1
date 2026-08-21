@@ -5,12 +5,24 @@ and every failure mode named, is `testnet/operator/OPERATOR_GUIDE.md` — the bo
 it onto your machine.
 
 ```bash
-wget https://raw.githubusercontent.com/vileda-hemis/Hemis-PTX-MVP1/main/vps-install.sh
+wget https://raw.githubusercontent.com/vileda-hemis/Hemis-PTX-MVP1/v0.1.0-testnet/vps-install.sh
 bash vps-install.sh
 ```
 
+★★ **THE TAG IN THAT URL IS LOAD-BEARING AND IT USED TO SAY `main`.** `raw.githubusercontent.com`
+serves whatever a ref points at right now, so a branch in that path is not a pin. Worse than
+unpinned, in this repository specifically: **`main` carries a file called `vps-install.sh` that is
+the UPSTREAM HEMIS MAINNET bootstrap** — 18 lines that fetch
+`Hemis-Blockchain/Hemis/releases/latest`, unzip it into `/usr/local/bin`, and write
+`~/.Hemis/Hemis.conf` containing `daemon=1`. It is not a stale PTX bootstrap and it does not fail;
+it succeeds, at installing a different blockchain's mainnet node, and reports
+`Hemis successfully configured.` while doing it. Every operator who ran the previous version of
+this line got that. Fetch by tag.
+
 ★ **`wget` then `bash`, deliberately not `curl … | bash`.** Two commands instead of one buys you the
 chance to read what you are about to run as root. It is ~170 lines and most of them are comments.
+The first thing to check when you read it is the `TAG=` line: it must name a release tag, and it
+must be the same one that appears in the URL above.
 
 ---
 
@@ -21,7 +33,7 @@ chance to read what you are about to run as root. It is ~170 lines and most of t
 | **Two machines** | a **node** (public IP, 24/7) and a **wallet** machine (offline/local). Your collateral never goes on the node. |
 | **Node OS** | any Linux with **glibc ≥ 2.31** and x86_64 or aarch64. Ubuntu 20.04+, Debian 11+, and most others. The installer checks glibc and CPU, **not** the distro name. |
 | **Node resources** | 2 GB RAM, 10 GB disk. |
-| **Collateral** | **3× per operator** — see `OPERATOR_GUIDE.md` "Funding the collateral". |
+| **Collateral** | **3 × 100 HMS**, one exact unspent output per GM, on the **wallet** machine. ★ **100, not 1000** — 1000 is mainnet and the old Hemis testnet; ptxtestnet is `nGMCollateralAmt = 100 * COIN` (`src/chainparams.cpp:757`). The check is exact equality, and neither the RPC nor the consensus rejection tells you the number you should have used. See `OPERATOR_GUIDE.md` B1. |
 
 ★ **You will run THREE gamemasters, not one.** A quorum needs **11 members** and there are five
 operators; five nodes would never form a quorum at all. 5 × 3 = 15 covers 11 with four spare. The

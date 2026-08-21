@@ -1,3 +1,29 @@
+> ## ★★ SUPERSEDED — DO NOT GIVE THIS TO AN OPERATOR
+>
+> **This document is for `ptxbea`, not for the PTX testnet operators are being onboarded onto,
+> and its install section installs a version of the tooling that carries four fixed defects.**
+> The live guides are:
+>
+> | | |
+> |---|---|
+> | short path | `GM_QUICKSTART.md` (repository root) |
+> | full path | `testnet/operator/OPERATOR_GUIDE.md` |
+>
+> Kept because the ptxbea material below — the two-machine split, the RPC-reachability argument,
+> the `ptx_shares.dat` warning — is still correct and still the clearest statement of each. What is
+> **not** correct here:
+>
+> * **`:65` fetches `contrib/ptx-operator/install.sh` from `<branch>`.** That is the
+>   first-generation installer. It writes **`hemis.conf`, lowercase**, which the daemon never opens
+>   (`util/system.cpp:81`); it writes **no `[ptxtestnet]` section**, so every port line in it is
+>   silently ignored; it installs **no Sapling parameters**, without which the daemon exits 1 at
+>   startup. Those are the defects fixed in `f37bf34` and `e414e77` — in
+>   `testnet/operator/install.sh` only. The `contrib/` copy was never fixed and is not on the path
+>   any operator should be taking.
+> * **`<branch>` in a raw URL is not a pin at all** — see `GM_QUICKSTART.md` for what fetching PTX
+>   tooling from a moving ref costs in this repository.
+> * The collateral, ports and network names below are **ptxbea's**, not ptxtestnet's.
+
 # ptxbea Gamemaster Operator Guide
 
 **The workflow is two machines.** Your wallet machine (Windows desktop, or Linux if you

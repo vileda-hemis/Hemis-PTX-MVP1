@@ -72,10 +72,41 @@ The workflow is `workflow_dispatch` and **creates the tag itself** via `softprop
 (`tag_name` input), at the commit of whatever ref you dispatch it from. That resolves the ordering
 problem cleanly: there is no window where a tag exists without artefacts.
 
+0. ★★ **Run the installer end-to-end test and require exit 0. This is a gate, not a nicety.**
+
+   ```bash
+   PTX_TEST_BINDIR=<dir with Hemisd/Hemis-cli> testnet/operator/install-test.sh
+   ```
+
+   It runs `install.sh` three times exactly as `vps-install.sh` drives it, **starts all three
+   daemons**, and judges them on what they did rather than what they say: the datadir layout
+   (which chain), the kernel's socket table per PID (which ports), credential authentication
+   (whether the config was read at all), and per-GM liveness on pairwise-disjoint ports. It then
+   reconstructs each of the four `f37bf34`/`e414e77` defects and requires the matching check to
+   FAIL against it.
+
+   ★ **A non-zero exit blocks the tag.** The reason it exists is that the previous end-to-end test
+   stopped at "installed and configured" and never started a daemon, and all four defects fixed
+   between `16d283a` and `e414e77` lived in the first inch past its last assertion — see KDD-100.
+   A green run of *that* test is exactly what shipped `v0.1.0-testnet`.
+
+   ★ Also treat a `[RED BROKEN]` line as blocking even when the green half passes. It means a check
+   did not fail against the defect it is named for, i.e. the green result it produced is vacuous.
+
 1. Land genesis and the walk-through fixes on `feature/ptx-dkg`; confirm the suite is green.
 2. Actions → *Client Build Actions for Hemis* → **Run workflow**, with:
    * **branch**: `feature/ptx-dkg`
-   * **release**: tick for a real release, leave unticked for a pre-release
+   * **release**: ★ **leave UNTICKED — pre-release.** Decided 2026-08-21, and it is a decision, not
+     an oversight. Ticking it would make this the repository's `/releases/latest`, and this
+     repository is a fork of a mainnet coin: anything reaching for `latest` — including the
+     upstream-derived script that still sits on `main` — would then be handed a **PTX testnet**
+     binary as though it were the product. The present 404 is a loud failure; a wrong binary is a
+     silent one, and silent-wrong is the whole family of defect this release exists to stop
+     shipping. The cost is real and accepted: `/releases/latest` and
+     `/releases/latest/download/…` return Not Found on this repository (measured 2026-08-21), so a
+     future script cannot use them. **That is the intended answer** — an unpinned "latest" is how
+     two operators end up on different code, which is the thing `vps-install.sh:27-36` refuses in
+     writing. Revisit only when there is a production release to be latest.
    * **tags**: `v0.1.0-testnet`
    * **release-name**: `PTX testnet v0.1.0`
 3. When it finishes, confirm the release page carries `Hemis-Linux.tar.gz`, `Hemis-Linux.zip` and
@@ -85,10 +116,19 @@ problem cleanly: there is no window where a tag exists without artefacts.
    A checksum served from the same host as the artefact proves the download was not corrupted; it
    does not prove authenticity. The out-of-band copy is what makes it a real pin, and it costs one
    message.
-5. Flip the two defaults to the tag:
-   * `testnet/operator/install.sh`: `REF="${PTX_REF:-feature/ptx-dkg}"` → `REF="${PTX_REF:-v0.1.0-testnet}"`
-   * `testnet/operator/OPERATOR_GUIDE.md`: the `git clone -b feature/ptx-dkg …` line → `-b v0.1.0-testnet`
-   Commit those on the branch **after** the tag is cut; they are what the *next* clone reads.
+5. Confirm every reference to the tag names the tag — **all four are already flipped**, and the
+   list is here because the sweep that produced it found one that had been missed for a week:
+   * `testnet/operator/install.sh:22` — `REF="${PTX_REF:-v0.1.0-testnet}"` ✓
+   * `vps-install.sh:37` — `TAG="${PTX_TAG:-v0.1.0-testnet}"` ✓
+   * `testnet/operator/OPERATOR_GUIDE.md` — `git clone -b v0.1.0-testnet …` ✓ (was
+     `-b feature/ptx-dkg`, a **moving branch**, until 2026-08-21)
+   * `GM_QUICKSTART.md` and `vps-install.sh`'s own header — the `raw.githubusercontent` URL that
+     fetches the bootstrap ✓ (was `/main/`, where a file of the same name is the **upstream Hemis
+     mainnet installer** — BUG-044)
+
+   ★ **The pattern to sweep for is not "the tag string"; it is "any ref that fetches PTX tooling".**
+   Three of the four above pinned correctly and the fourth floated, and a floating fetch defeats
+   all three: it decides which `install.sh` you run before `PTX_REF` gets to decide anything.
 6. Tell the operators: the tag, the sha256, and one line on what changed.
 
 ### Cutting a fix release
@@ -97,6 +137,25 @@ Same procedure with `v0.1.1-testnet`. Do **not** move an existing tag — an ope
 installed would silently keep old code while believing they had the fix, and `install.sh`'s
 fast-forward check would not catch it because a moved tag is not a fast-forward it looks at. New tag,
 new message, every time.
+
+### ★ The one exception, and exactly how narrow it is
+
+**A tag NOBODY HAS EVER CONSUMED may be deleted and re-cut under the same name.** The rule above
+protects operators who already installed; where there are none, there is nothing to protect and the
+version number is better spent meaning what it was meant to mean.
+
+The test is not "we do not think anyone used it" — it is **"no clone, no download, and no reference
+outside this repository exists"**, established rather than assumed. For `v0.1.0-testnet` on
+2026-08-21 that held: the release was a rehearsal, no operator had been given the tag, and every
+reference to the string was in-tree (`install.sh:22`, `vps-install.sh:37`,
+`OPERATOR_GUIDE.md`, this file, and two KDD entries that describe the *decisions* taken for the
+release named `v0.1.0-testnet` and stay true when it is re-cut).
+
+★ **Delete the RELEASE as well as the tag.** Deleting only the tag leaves the release page standing
+with its artefacts still downloadable and now pointing at nothing.
+
+★ **Once a tag has been handed to a single operator this exception is gone for good.** There is no
+way to tell afterwards which code they are running, and asking is not the same as knowing.
 
 ---
 

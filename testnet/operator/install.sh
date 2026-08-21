@@ -223,9 +223,24 @@ build_from_source() {
         || die "only ${free_gb}G free at $PREFIX; a source build needs ~8G. Free some space and re-run."
 
     say "3b.1 Build dependencies (this is an apt-get install -- it changes your system)"
-    $SUDO apt-get -qq update
+    # ★ DEBIAN_FRONTEND=noninteractive, AND VIA `$SUDO env`, FOR TWO SEPARATE REASONS.
+    #
+    # The frontend: without it, any package in this list that pulls in a
+    # configuration prompt -- tzdata is the usual one, and libboost-all-dev's
+    # dependency closure is wide -- stops and WAITS FOR INPUT. In a bootstrap an
+    # operator started and walked away from, that is not a failure, it is a hang,
+    # and the ten-minute build never begins. -y answers apt's own questions; it
+    # does not answer debconf's.
+    #
+    # The `env`: as root $SUDO is empty, and a variable assignment is only an
+    # assignment PREFIX if the parser sees it in that position. After $SUDO
+    # expands to nothing the next word becomes the COMMAND, and you get
+    # "DEBIAN_FRONTEND=noninteractive: command not found". vps-install.sh:71-76
+    # was caught by exactly this, on the first container run, as root -- which is
+    # how most VPSes arrive. It was fixed there and the same form is used here.
+    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get -qq update
     # --no-install-recommends keeps this to the packages the build genuinely needs.
-    $SUDO apt-get -qq install -y --no-install-recommends \
+    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get -qq install -y --no-install-recommends \
         build-essential autoconf automake libtool pkg-config \
         libssl-dev libevent-dev libboost-all-dev libdb5.3++-dev \
         libzmq3-dev libgmp-dev libsodium-dev curl ca-certificates \

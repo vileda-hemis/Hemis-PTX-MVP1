@@ -1,4 +1,19 @@
 #!/usr/bin/env bash
+#
+# ★★ SUPERSEDED -- DO NOT SEND AN OPERATOR HERE.
+#
+# This is the FIRST-GENERATION ptxbea self-check. The live one is
+# testnet/operator/self-check.sh, and the difference is not cosmetic:
+# this file writes "hemis.conf" LOWERCASE, which the daemon never opens
+# (util/system.cpp:81), writes no [ptxtestnet] section, so every port line in it
+# is silently dropped, and installs no Sapling parameters, without which the
+# daemon exits 1 at startup. Those are the defects fixed in f37bf34 and e414e77
+# -- in testnet/operator/ ONLY. Nothing here was fixed, because nothing here is
+# on the path any operator should be taking.
+#
+# Kept for the ptxbea history it records. doc/ptx/OPERATOR_GUIDE.md, which is the
+# only document that points at this file, now carries the same warning.
+#
 # ptxbea gamemaster self-check — runs at the end of install and standalone after.
 #
 # Verifies the states that look HEALTHY from some angles but silently fail:

@@ -2,8 +2,16 @@
 #
 # PTX testnet — VPS bootstrap for gamemaster operators.
 #
-#   wget https://raw.githubusercontent.com/vileda-hemis/Hemis-PTX-MVP1/main/vps-install.sh
+#   wget https://raw.githubusercontent.com/vileda-hemis/Hemis-PTX-MVP1/v0.1.0-testnet/vps-install.sh
 #   bash vps-install.sh
+#
+# ★★ BY TAG, NOT BY BRANCH, AND NOT BY `main`. This header used to say `main`.
+# raw.githubusercontent serves whatever the ref points at now, so a branch there
+# pins nothing -- and in THIS repository `main` holds a DIFFERENT FILE OF THE
+# SAME NAME: the upstream Hemis mainnet bootstrap, which installs
+# Hemis-Blockchain/Hemis mainnet and exits saying "Hemis successfully
+# configured." It does not error. An operator who followed the old line got a
+# working mainnet node and no indication that anything was wrong.
 #
 # Read it before you run it. It is short on purpose: it does NOT install anything
 # itself. It fetches the pinned release and hands off to testnet/operator/install.sh,
