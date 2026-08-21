@@ -779,6 +779,67 @@ else
     warn "RPC password was generated for you; it is in $CONF. Do not paste it into chat or tickets."
 fi
 
+# ---------------------------------------------------------------------------
+# 6. systemd unit.
+#
+# ★★ THIS EXISTS BECAUSE A BARE `Hemisd` SYNCS MAINNET, AND IT HAPPENED.
+# The config this script writes lives in $DATADIR. The daemon's DEFAULT datadir
+# is ~/.Hemis. They are not the same directory, so `Hemisd` with no -datadir
+# never reads the config at all -- it takes every default and comes up on
+# MAINNET, exactly as the lowercase-hemis.conf bug did (f37bf34).
+#
+# Measured on a fresh operator VM, 2026-08-21, on this very tag:
+#   Using data directory /home/ptx01/.Hemis
+#   Using config file    /home/ptx01/.Hemis/Hemis.conf     <- does not exist
+#   Bound to [::]:49165                                    <- MAINNET P2P
+# 17MB of mainnet blocks in half an hour, on a machine installed for ptxtestnet.
+# f37bf34 fixed the config FILENAME and left the config PATH open; this is the
+# same failure with a different cause, and install-test.sh cannot catch it
+# because the test always passes -datadir explicitly.
+#
+# A unit file removes the trap instead of documenting around it, and a 24/7
+# gamemaster wants one regardless -- it also restarts the node after a reboot,
+# which the guide previously left to the operator to remember.
+# ---------------------------------------------------------------------------
+say "6. systemd unit"
+# ★ Resolve the binaries rather than assuming $BINDIR: section 3 has three routes
+# (release artefact -> $BINDIR, already-on-PATH, source build) and only the first
+# puts them there. A unit with a path that does not exist fails at boot, which is
+# the worst time to find out.
+UNIT_HEMISD="$BINDIR/Hemisd"; UNIT_CLI="$BINDIR/Hemis-cli"
+[ -x "$UNIT_HEMISD" ] || UNIT_HEMISD="$(command -v Hemisd || true)"
+[ -x "$UNIT_CLI" ]    || UNIT_CLI="$(command -v Hemis-cli || true)"
+UNIT=/etc/systemd/system/hemis-ptx.service
+if [ -d /run/systemd/system ] && [ -x "$UNIT_HEMISD" ] && [ -x "$UNIT_CLI" ]; then
+    $SUDO tee "$UNIT" >/dev/null <<UNITEOF
+[Unit]
+Description=Hemis PTX testnet gamemaster
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=$(id -un)
+# ★ -datadir is the whole point of this file. Without it the daemon reads
+# ~/.Hemis and synchronises MAINNET.
+ExecStart=$UNIT_HEMISD -datadir=$DATADIR -daemon
+ExecStop=$UNIT_CLI -datadir=$DATADIR stop
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=300
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+    $SUDO systemctl daemon-reload 2>/dev/null || true
+    ok "wrote $UNIT (not started -- you need your BLS key in the config first)"
+    echo "  start it with:  sudo systemctl enable --now hemis-ptx"
+else
+    warn "no systemd here -- no unit written."
+    echo "         ★ START THE DAEMON WITH -datadir OR IT SYNCS MAINNET:"
+    echo "           Hemisd -datadir=$DATADIR -daemon"
+fi
+
 say "Done"
 cat <<EOF
   Config:  $CONF
@@ -792,6 +853,10 @@ cat <<EOF
   silently never receive a signing request. Four GMs means four hosts, each with
   its own internet-routable address and this same port pair.
   The 32000-33000 kernel reservation is host-wide and is set once; re-running is safe.
+
+  ★★ NEVER RUN A BARE \`Hemisd\`. Without -datadir it reads ~/.Hemis, not the
+  config above, and synchronises MAINNET -- silently, and it looks healthy.
+  Use the unit (systemctl start hemis-ptx) or always pass -datadir=$DATADIR.
 
   NEXT, in order:
     1. Open $P2P_PORT and $RPC_PORT in your firewall AND any NAT/cloud security group.
