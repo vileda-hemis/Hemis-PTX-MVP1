@@ -636,11 +636,23 @@ UniValue ptx_debug_setnodefailmode(const JSONRPCRequest& request)
         throw std::runtime_error(
             "ptx_debug_setnodefailmode target_node_id mode\n"
             "\nSimulate a node fail mode for testing (coordinator side only).\n"
+            "\nTEST-GATED: regtest and ptxbea ONLY -- hard error on every other network.\n"
             "\nArguments:\n"
             "1. target_node_id (str) Node to target\n"
             "2. mode           (str) abstain | withhold | invalid_commit | clear\n"
             + HelpExampleRpc("ptx_debug_setnodefailmode", "\"node1\", \"withhold\"")
         );
+    }
+
+    // ★ NETWORK GATE ADDED 2026-08-21. This RPC had NO gate at all -- it was
+    // callable on every network including MAINNET. It perturbs ceremony messaging
+    // (abstain / withhold / invalid_commit), so an authenticated caller could
+    // degrade their own node's participation and their own PoSe score. It is a
+    // debug-injection tool and belongs behind the same gate as its two siblings,
+    // ptx_debug_ptxdkgpopulate (:901-903) and ptx_debug_selectquorum (:1711-1713).
+    if (!Params().IsRegTestNet() && !Params().IsPTXBeaTestNet()) {
+        throw JSONRPCError(RPC_MISC_ERROR,
+            "ptx_debug_setnodefailmode is only available on regtest or the ptxbea test network");
     }
 
     std::string target = request.params[0].get_str();

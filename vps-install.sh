@@ -37,11 +37,22 @@ set -euo pipefail
 TAG="${PTX_TAG:-v0.1.0-testnet}"
 REPO="${PTX_REPO:-https://github.com/vileda-hemis/Hemis-PTX-MVP1.git}"
 
-# ★ THREE GMs, not one. A quorum needs 11 members and there are five operators,
-# so 5 x 1 would never form a quorum at all. 5 x 3 = 15 covers 11 with four spare.
-# Each needs its OWN datadir and its OWN port pair -- two daemons can share
-# neither. Set PTX_GM_COUNT=1 if the coordinator has told you to run fewer.
-GM_COUNT="${PTX_GM_COUNT:-3}"
+# ★★ ONE GM PER HOST. Run this bootstrap ONCE ON EACH of your four machines.
+#
+# A quorum needs 11 members and there are five operators, so one node each would
+# never form a quorum. 5 x 4 = 20 covers 11 with NINE spare; at 3 each, losing one
+# operator plus any single other GM lands exactly on the floor of 11.
+#
+# ★ WHY NOT SEVERAL ON ONE HOST, which this script used to do by default. The PTX
+# signing fan-out dials every member on the SAME port number --
+# PTX_FanoutRpcPort() (src/ptx/ptx_fanout.cpp:117-120) takes no per-member
+# argument -- so two GMs sharing a host at different RPC ports cannot both be
+# reached. One of them registers, is selected into quorums, shows ENABLED, and
+# silently never signs. One GM per host, with its own internet-routable address,
+# removes the problem rather than documenting around it.
+#
+# PTX_GM_COUNT is retained for a coordinator-directed exception only. Leave it 1.
+GM_COUNT="${PTX_GM_COUNT:-1}"
 CLONE_DIR="${PTX_CLONE_DIR:-$HOME/Hemis-PTX-MVP1}"
 
 if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
@@ -123,9 +134,20 @@ echo "  commit: $(git -C "$CLONE_DIR" rev-parse --short HEAD)"
 # ---------------------------------------------------------------------------
 say "3. Gamemasters"
 for n in $(seq 1 "$GM_COUNT"); do
-    p2p=$((29992 + 2 * n))
-    rpc=$((29993 + 2 * n))
-    datadir="$HOME/.hemis-ptxtestnet-$n"
+    # ★ At the documented GM_COUNT=1 these are install.sh's own defaults and no
+    # override is passed at all -- the ports are the SAME on every host, because
+    # the hosts differ rather than the ports. The n>1 arithmetic survives only for
+    # the coordinator-directed exception above, and it is NOT the supported shape:
+    # a second GM here would sit on RPC 29997, which the fan-out never dials.
+    if [ "$n" = "1" ]; then
+        p2p=29994; rpc=29995; datadir="$HOME/.hemis-ptxtestnet"
+    else
+        p2p=$((29992 + 2 * n)); rpc=$((29993 + 2 * n))
+        datadir="$HOME/.hemis-ptxtestnet-$n"
+        warn "GM $n is a SECOND gamemaster on this host, on RPC $rpc."
+        warn "  The signing fan-out dials one port for every member; this GM will"
+        warn "  register and never be contacted. Use a separate host instead."
+    fi
     printf '\n---------- GM %s of %s: datadir %s, P2P %s, RPC %s ----------\n' \
         "$n" "$GM_COUNT" "$datadir" "$p2p" "$rpc"
     # ★ Run it from its own directory. install.sh resolves siblings (RELEASE.env)

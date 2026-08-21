@@ -25,7 +25,7 @@ five nodes would never form a quorum at all — 5 × 3 = 15 covers 11 with four 
 **node side three times**; the **wallet side is done once**, from one wallet, registering all three.
 That is also the realistic pattern: nobody runs a separate wallet per GM.
 
-**Collateral: 3× per operator.** See "Funding the collateral" below — there are two routes and they
+**Collateral: 4× per operator** — one per GM, one GM per host. See "Funding the collateral" below — there are two routes and they
 differ in how much back-and-forth they cost you.
 
 ---
@@ -47,39 +47,38 @@ router or cloud security group. Opening only one is the most common setup failur
 
 ---
 
-## Running three GMs on one host
+## ★★ One GM per host, one routable address per GM
 
-You will almost certainly put more than one GM on the same machine. That is fine and expected, but
-**each one needs its own datadir and its own port pair** — two daemons cannot share either.
+**Four gamemasters means four hosts and four internet-routable addresses.** Not four datadirs on
+one machine, and not one address with four port pairs. This changes what you provision, so it is
+here rather than at registration.
 
-| GM | datadir | P2P | RPC |
-|---|---|---|---|
-| 1 | `~/.hemis-ptxtestnet-1` | 29994 | 29995 |
-| 2 | `~/.hemis-ptxtestnet-2` | 29996 | 29997 |
-| 3 | `~/.hemis-ptxtestnet-3` | 29998 | 29999 |
+| per operator | |
+|---|---|
+| gamemasters | **4** |
+| hosts | **4** — one GM each, no sharing |
+| routable addresses | **4** — one per GM, reachable from the public internet |
+| ports per host | **29994 P2P** and **29995 RPC**, the same pair on every host |
+| collateral | **4 × 100 HMS**, one exact unspent output each |
 
-```bash
-PTX_DATADIR=~/.hemis-ptxtestnet-1 PTX_P2P_PORT=29994 PTX_RPC_PORT=29995 ./install.sh
-PTX_DATADIR=~/.hemis-ptxtestnet-2 PTX_P2P_PORT=29996 PTX_RPC_PORT=29997 ./install.sh
-PTX_DATADIR=~/.hemis-ptxtestnet-3 PTX_P2P_PORT=29998 PTX_RPC_PORT=29999 ./install.sh
-```
+★ **Why one address per GM, and it is not a preference.** The PTX signing fan-out dials each
+member at the address it registered on-chain, paired with **one port number that is the same for
+every member** — `PTX_FanoutRpcPort()` (`src/ptx/ptx_fanout.cpp:117-120`) takes no per-member
+argument. So two GMs sharing a host at different RPC ports cannot both be reached by any single
+configuration: whichever port the fan-out uses, the other GM never receives a signing request. It
+registers, is selected into quorums, shows `ENABLED`, and silently never signs.
 
-Run `self-check.sh` the same way, one GM at a time:
+★ **Both ports are the same on every host** — 29994 and 29995 — because the hosts differ, not the
+ports. There is no port table to keep straight any more.
 
-```bash
-PTX_DATADIR=~/.hemis-ptxtestnet-2 ./self-check.sh
-```
+★ **Do NOT reuse one BLS key across your four.** Each GM generates its own in step A4. A shared
+key means the chain cannot tell your nodes apart.
 
-★ **Every port in the table must be open at your registered address** — all six, in both the host
-firewall and the NAT/security group. It is easy to open the first pair, verify GM 1, and forget the
-other four; GMs 2 and 3 then look healthy and never sign.
+★ **The port reservation 32000–33000 is host-wide** and `install.sh` sets it once per host. With
+one GM per host that is simply once each.
 
-★ **Do NOT reuse one BLS key across the three.** Each GM generates its own in step A4. A shared key
-means the chain cannot tell your nodes apart.
-
-★ **The port reservation 32000–33000 is host-wide** — `install.sh` sets it once and all three GMs use
-it. Running the installer three times does not reserve it three times, and the merge logic means it
-will not clobber itself.
+★ **Behind CGNAT this cannot work.** If you cannot get an inbound-reachable address for each GM,
+tell the coordinator before you start.
 
 ---
 
@@ -100,8 +99,15 @@ apt-get update && apt-get install -y --no-install-recommends git curl ca-certifi
 ```bash
 git clone -b v0.1.0-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 cd Hemis-PTX-MVP1/testnet/operator
-PTX_DATADIR=~/.hemis-ptxtestnet-1 PTX_P2P_PORT=29994 PTX_RPC_PORT=29995 ./install.sh
+./install.sh
 ```
+
+★ **No datadir or port overrides, and repeat this unchanged on each of your four hosts.** One GM
+per host means the defaults are already right: datadir `~/.hemis-ptxtestnet`, P2P 29994, RPC 29995.
+`PTX_DATADIR` / `PTX_P2P_PORT` / `PTX_RPC_PORT` still exist for unusual deployments but are no
+longer the documented path — and **the RPC port in particular must not be changed**, because the
+signing fan-out dials one port number for every member (`src/ptx/ptx_fanout.cpp:117-120`), so a GM
+on a non-standard RPC port is never contacted.
 
 ★★ **`-b <the release tag>` is required, and a BRANCH NAME HERE DEFEATS THE ENTIRE POINT.**
 This line used to read `-b feature/ptx-dkg`. A branch moves: two operators running that command a
@@ -139,7 +145,7 @@ branch checkout, which is source only, and **until a release tag is cut this is 
 lands.** Build from source; the script does the whole thing:
 
 ```bash
-PTX_BUILD_FROM_SOURCE=1 PTX_DATADIR=~/.hemis-ptxtestnet-1 PTX_P2P_PORT=29994 PTX_RPC_PORT=29995 ./install.sh
+PTX_BUILD_FROM_SOURCE=1 ./install.sh
 ```
 
 It installs the build dependencies, sizes `make -j` **from free RAM rather than core count** (a
@@ -159,12 +165,12 @@ Nothing below this line works until the daemon is running — including generati
 which is an **RPC call**, not an offline command.
 
 ```bash
-Hemisd -datadir=$HOME/.hemis-ptxtestnet-1 -daemon
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet-1 getblockcount     # should answer within a few seconds
+Hemisd -datadir=$HOME/.hemis-ptxtestnet -daemon
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getblockcount     # should answer within a few seconds
 ```
 
 If `Hemisd` is not found, `install.sh` did not install binaries — go back to A1.
-To stop it: `Hemis-cli -datadir=$HOME/.hemis-ptxtestnet-1 stop`.
+To stop it: `Hemis-cli -datadir=$HOME/.hemis-ptxtestnet stop`.
 
 ★ **This is a 24/7 node.** `-daemon` survives your shell but not a reboot. Arrange for it to start
 at boot (a systemd unit, or `@reboot` in cron) before you report the node as ready — a GM that is
@@ -192,7 +198,7 @@ forward 29994 and 29995 to this machine.
 ### A4. Generate your BLS key
 
 ```bash
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet-1 generateblskeypair
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet generateblskeypair
 ```
 
 Output has two halves:
@@ -217,13 +223,13 @@ file, which is inside the section, so the commands below are correct as written.
 
 ```bash
 # Add the secret AND enable the gamemaster role, then restart the daemon:
-echo "gamemasterblsprivkey=<BLS SECRET>" >> $HOME/.hemis-ptxtestnet-1/Hemis.conf
-echo "gamemaster=1"                      >> $HOME/.hemis-ptxtestnet-1/Hemis.conf
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet-1 stop
-Hemisd -datadir=$HOME/.hemis-ptxtestnet-1 -daemon
+echo "gamemasterblsprivkey=<BLS SECRET>" >> $HOME/.hemis-ptxtestnet/Hemis.conf
+echo "gamemaster=1"                      >> $HOME/.hemis-ptxtestnet/Hemis.conf
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet stop
+Hemisd -datadir=$HOME/.hemis-ptxtestnet -daemon
 
 # Prove it took -- this answers only if the daemon came back up:
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet-1 getblockcount
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getblockcount
 ```
 
 ### ★ HANDOFF 1 — Node ➜ Wallet
@@ -266,7 +272,7 @@ You need **one collateral output per GM**, so **three**.
 ★★ **The amount is 100 HMS per GM, and it is EXACT.** Source, not folklore:
 `CPTXTestNetParams` sets `consensus.nGMCollateralAmt = 100 * COIN`
 (`src/chainparams.cpp:757`; the class starts at `:733` and its `strNetworkID` is `"ptxtestnet"` at
-`:738`). So three GMs need **300 HMS**, and five operators need **1500 HMS** across the network.
+`:738`). So four GMs need **400 HMS**, and five operators need **2000 HMS** across the network.
 
 ★★ **1000 HMS IS THE WRONG NUMBER AND IT WILL BE OFFERED TO YOU.** 1000 is what mainnet
 (`src/chainparams.cpp:254`) and the *old* Hemis testnet (`:426`) use, so it is what anyone with
@@ -355,7 +361,7 @@ Nothing secret travels in this direction.
 
 ```bash
 cd Hemis-PTX-MVP1/testnet/operator
-PTX_DATADIR=~/.hemis-ptxtestnet-1 ./self-check.sh     # then -2, then -3
+./self-check.sh          # on each of your four hosts
 ```
 
 Work top to bottom and fix every `[FAIL]`. ★ **There are three outcomes, not two.** Besides `[ok]`

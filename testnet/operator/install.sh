@@ -22,9 +22,13 @@ REPO="${PTX_REPO:-https://github.com/vileda-hemis/Hemis-PTX-MVP1.git}"
 REF="${PTX_REF:-v0.1.0-testnet}"
 PREFIX="${PTX_PREFIX:-/opt/hemis-ptx}"
 DATADIR="${PTX_DATADIR:-$HOME/.hemis-ptxtestnet}"
-# ★ Overridable so a host can run several GMs. Each GM needs its OWN datadir AND
-# its own port pair -- two daemons cannot share either. See OPERATOR_GUIDE.md
-# "Running three GMs on one host" for the allocation table.
+# ★ Overridable, but the DOCUMENTED DEPLOYMENT IS ONE GM PER HOST, so the defaults
+# are what an operator should use. These remain for unusual deployments and for
+# install-test.sh's fixture. ★ RPC_PORT in particular must stay 29995: the signing
+# fan-out dials ONE port number for EVERY member (ptx/ptx_fanout.cpp:117-120 --
+# PTX_FanoutRpcPort() takes no per-member argument), so a GM on a non-standard RPC
+# port is never contacted and silently never signs. See OPERATOR_GUIDE.md
+# "One GM per host, one routable address per GM".
 P2P_PORT="${PTX_P2P_PORT:-29994}"
 RPC_PORT="${PTX_RPC_PORT:-29995}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -659,6 +663,33 @@ fi
 # already-exists branch tells you to compare against. Previously that branch said
 # "compare it against the template printed below" and nothing was printed below --
 # an instruction pointing at something that did not exist.
+# ★ Build the rpcbind lines from THIS host's own global addresses. One GM per
+# host means one address per GM, so binding explicitly is free and removes both
+# the wildcard exposure and the ODC-076 double-bind collision. If no global
+# address is found -- a NATted box, or a host addressed only after boot -- fall
+# back to the dual-stack wildcard and say so, because refusing to write a config
+# is worse than writing a working one with a warning.
+RPCBIND_LINES="$(ip -o addr show scope global 2>/dev/null \
+    | awk '{print $4}' | cut -d/ -f1 | sort -u \
+    | sed 's/^/rpcbind=/')"
+if [ -z "$RPCBIND_LINES" ]; then
+    RPCBIND_LINES="rpcbind=0.0.0.0
+rpcbind=::"
+    warn "no global address found on this host -- RPC is bound to the WILDCARD."
+    echo "         That listens on every interface; only your firewall stops the"
+    echo "         internet reaching it, and the rpcpassword is in $CONF."
+    echo "         Once this host has its public address, replace the two rpcbind"
+    echo "         lines with that address and restart."
+else
+    ok "RPC will bind this host's own address(es): $(printf '%s' "$RPCBIND_LINES" | sed 's/^rpcbind=//' | tr '\n' ' ')"
+    if [ "$(printf '%s\n' "$RPCBIND_LINES" | grep -c .)" -gt 2 ]; then
+        warn "this host has several global addresses, so several rpcbind lines were written."
+        echo "         That is safe but wider than needed. A gamemaster should bind the"
+        echo "         address it REGISTERS; delete the other rpcbind lines from $CONF"
+        echo "         once you know which one that is, then restart."
+    fi
+fi
+
 emit_conf() {   # $1 = value to put in rpcpassword
     cat <<EOF
 # PTX testnet node configuration.
@@ -681,14 +712,26 @@ ptxtestnet=1
 rpcuser=${RPCUSER:-ptxop}
 rpcpassword=$1
 rpcport=$RPC_PORT
-# Dual-stack: IPv4 and IPv6. Binding one family only is a silent failure mode.
-rpcbind=0.0.0.0
-rpcbind=::
-# Your quorum peers must reach this RPC. Narrow these to peer addresses once
-# you know them; leaving it wide open on a public IP is NOT acceptable long-term.
+# ★★ BOUND TO THIS HOST'S OWN GLOBAL ADDRESSES, NOT THE WILDCARD.
+# The wildcard pair (0.0.0.0 + ::) leaves RPC listening on every interface with
+# only the firewall between it and the internet, and the credentials above are in
+# this file -- one rule away from exposure. With one GM per host there is no
+# reason to bind anything but this host's own address.
+# ★ It also sidesteps ODC-076: on Linux with the default net.ipv6.bindv6only=0 a
+# "::" wildcard already covers IPv4, so the second of the two wildcard binds
+# collided with the first and failed ("Binding RPC on address :: port N failed"),
+# leaving one family unbound. Explicit per-address binds cannot collide.
+$RPCBIND_LINES
+# ★★ WHO MAY CALL THIS RPC, AND THIS LIST AS SHIPPED CANNOT SIGN.
+# PTX fan-out dials each member's RPC directly to request a signature, so your
+# quorum peers MUST be allowed here. localhost-only is a safe firewall posture and
+# a node that never signs. Add one line per peer address from the coordinator at
+# onboarding, then restart:
+#   rpcallowip=<peer-address>/128    (IPv6 host)   or  /32 (IPv4 host)
+# Keep it to peer addresses. Do NOT open it to 0.0.0.0/0 or ::/0.
 rpcallowip=127.0.0.1
 rpcallowip=::1
-# rpcallowip=<peer-address>/32     <-- add one line per peer
+# rpcallowip=<peer-address>/128    <-- add one line per peer, from the coordinator
 
 # --- P2P -------------------------------------------------------------------
 port=$P2P_PORT
@@ -743,8 +786,11 @@ cat <<EOF
   Params:  $PARAMS_DST
   P2P:     $P2P_PORT      RPC: $RPC_PORT
 
-  Running more than one GM on this host? Repeat with BOTH overridden, e.g.:
-    PTX_DATADIR=~/.hemis-ptxtestnet-2 PTX_P2P_PORT=29996 PTX_RPC_PORT=29997 ./install.sh
+  ★ ONE GM PER HOST. Do not run a second gamemaster on this machine. The signing
+  fan-out dials every member on the SAME port number (ptx/ptx_fanout.cpp:117-120),
+  so a second GM here on a different RPC port would register, be selected, and
+  silently never receive a signing request. Four GMs means four hosts, each with
+  its own internet-routable address and this same port pair.
   The 32000-33000 kernel reservation is host-wide and is set once; re-running is safe.
 
   NEXT, in order:

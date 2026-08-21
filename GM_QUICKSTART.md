@@ -33,25 +33,37 @@ must be the same one that appears in the URL above.
 | **Two machines** | a **node** (public IP, 24/7) and a **wallet** machine (offline/local). Your collateral never goes on the node. |
 | **Node OS** | any Linux with **glibc ≥ 2.31** and x86_64 or aarch64. Ubuntu 20.04+, Debian 11+, and most others. The installer checks glibc and CPU, **not** the distro name. |
 | **Node resources** | 2 GB RAM, 10 GB disk. |
-| **Collateral** | **3 × 100 HMS**, one exact unspent output per GM, on the **wallet** machine. ★ **100, not 1000** — 1000 is mainnet and the old Hemis testnet; ptxtestnet is `nGMCollateralAmt = 100 * COIN` (`src/chainparams.cpp:757`). The check is exact equality, and neither the RPC nor the consensus rejection tells you the number you should have used. See `OPERATOR_GUIDE.md` B1. |
+| **Collateral** | **4 × 100 HMS**, one exact unspent output per GM, on the **wallet** machine. ★ **100, not 1000** — 1000 is mainnet and the old Hemis testnet; ptxtestnet is `nGMCollateralAmt = 100 * COIN` (`src/chainparams.cpp:757`). The check is exact equality, and neither the RPC nor the consensus rejection tells you the number you should have used. See `OPERATOR_GUIDE.md` B1. |
 
-★ **You will run THREE gamemasters, not one.** A quorum needs **11 members** and there are five
-operators; five nodes would never form a quorum at all. 5 × 3 = 15 covers 11 with four spare. The
-bootstrap installs all three.
+★★ **You will run FOUR gamemasters, on FOUR separate hosts, each with its own routable address.**
+A quorum needs **11 members** and there are five operators, so five nodes would never form one at
+all. 5 × 4 = **20** covers 11 with **nine** spare — at 3 each, losing one operator plus any single
+other GM lands exactly on the floor of 11.
+
+★ **One GM per host is a requirement, not a preference.** The signing fan-out dials every member on
+the *same* port number (`src/ptx/ptx_fanout.cpp:117-120`), so two GMs sharing a host at different
+RPC ports cannot both be reached — one of them registers, is selected, and silently never signs.
+Run the bootstrap once on each host.
 
 ---
 
-## Ports — open these in two places
+## Ports — the same two on every host
 
-| GM | datadir | P2P | RPC |
-|---|---|---|---|
-| 1 | `~/.hemis-ptxtestnet-1` | 29994 | 29995 |
-| 2 | `~/.hemis-ptxtestnet-2` | 29996 | 29997 |
-| 3 | `~/.hemis-ptxtestnet-3` | 29998 | 29999 |
+| | port | who must reach it |
+|---|---|---|
+| **P2P** | **29994** | everyone — it is how you sync and relay |
+| **RPC** | **29995** | **the other gamemasters**, at the address you register. NOT the world |
 
-Open **both** ports for **each** GM in the host firewall (`ufw`/`firewalld`/`iptables`) **and** in
-the NAT router or cloud security group. Opening only one of the two places is the most common setup
-failure.
+**Every host uses the same pair.** There is no per-GM port table any more: your four GMs are on
+four hosts, so the ports never collide and never change.
+
+Open both in the host firewall (`ufw`/`firewalld`/`iptables`) **and** in the NAT router or cloud
+security group. Opening only one of the two places is the most common setup failure.
+
+★★ **RPC is not simply "closed".** It must be reachable **by the other gamemasters** and blocked
+from everyone else. The mechanism is `rpcallowip` in `Hemis.conf`, and the coordinator gives you
+the peer addresses at onboarding — see `OPERATOR_GUIDE.md`. As installed it allows localhost only,
+which is a safe firewall posture and **cannot sign**.
 
 ★★ **RPC being closed is the silent killer.** PTX fan-out dials each member's **RPC** directly to
 request a signature. A node with 29994 open and 29995 closed syncs perfectly, shows as registered
@@ -105,18 +117,18 @@ Open each GM's two ports, in both places. See the table above.
 The BLS key is an **RPC call**, so the daemon has to be running first.
 
 ```bash
-Hemisd -datadir=$HOME/.hemis-ptxtestnet-1 -daemon
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet-1 getblockcount      # answers within a few seconds
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet-1 generateblskeypair
+Hemisd -datadir=$HOME/.hemis-ptxtestnet -daemon
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getblockcount      # answers within a few seconds
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet generateblskeypair
 ```
 
 * the **`secret`** goes into *this* machine's config, **together with `gamemaster=1`**:
 
   ```bash
-  echo "gamemasterblsprivkey=<BLS SECRET>" >> $HOME/.hemis-ptxtestnet-1/Hemis.conf
-  echo "gamemaster=1"                      >> $HOME/.hemis-ptxtestnet-1/Hemis.conf
-  Hemis-cli -datadir=$HOME/.hemis-ptxtestnet-1 stop
-  Hemisd    -datadir=$HOME/.hemis-ptxtestnet-1 -daemon
+  echo "gamemasterblsprivkey=<BLS SECRET>" >> $HOME/.hemis-ptxtestnet/Hemis.conf
+  echo "gamemaster=1"                      >> $HOME/.hemis-ptxtestnet/Hemis.conf
+  Hemis-cli -datadir=$HOME/.hemis-ptxtestnet stop
+  Hemisd    -datadir=$HOME/.hemis-ptxtestnet -daemon
   ```
 
 * the **`public`** half goes to the wallet operator. **Send the public half only.**
@@ -154,7 +166,7 @@ network). Install `git` and `curl` yourself and re-run.
 
 **`glibc 2.28 is too old (need >= 2.31)`** — the release binaries will not run on this OS. Either
 use a newer OS, or build from source on the box:
-`PTX_BUILD_FROM_SOURCE=1 PTX_DATADIR=$HOME/.hemis-ptxtestnet-1 ./install.sh` (tens of minutes, ~8 GB
+`PTX_BUILD_FROM_SOURCE=1 PTX_DATADIR=$HOME/.hemis-ptxtestnet ./install.sh` (tens of minutes, ~8 GB
 of disk, and it installs build dependencies).
 
 **`COULD NOT RESERVE PORTS 32000-33000`** — you are in an unprivileged container, and this is not a
@@ -182,7 +194,7 @@ All optional; the defaults are what the coordinator expects.
 | `PTX_GM_COUNT` | `3` | the coordinator told you to run fewer |
 | `PTX_TAG` | the release tag | testing an untagged fix, on instruction |
 | `PTX_CLONE_DIR` | `~/Hemis-PTX-MVP1` | you keep sources elsewhere |
-| `PTX_DATADIR` / `PTX_P2P_PORT` / `PTX_RPC_PORT` | per the table | passed to `install.sh` directly, for a one-off GM |
+| `PTX_DATADIR` / `PTX_P2P_PORT` / `PTX_RPC_PORT` | the defaults | still accepted, but **not the documented path** — one GM per host means the defaults are correct. ★ Do not change the RPC port: the fan-out dials one port for every member |
 
 ★ **Do not point `PTX_TAG` at `main`.** The operator tooling is not on the default branch; a clone of
 `main` has no `testnet/operator/` directory in it. The bootstrap checks for this and stops with that

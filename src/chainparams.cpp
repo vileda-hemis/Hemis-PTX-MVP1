@@ -764,10 +764,42 @@ public:
         consensus.nTargetTimespan = 20 * 60;
         consensus.nTargetTimespanV2 = 20 * 60;
         consensus.nTargetSpacing = 1 * 60;
-        consensus.nTimeSlotLength = 1;
+        // ★ 1 -> 15 (2026-08-21). This is NOT only a stake-slot knob: it also sets
+        // the P2P clock-skew tolerance, `abs64(nTimeOffset) < 2 * nTimeSlotLength`
+        // (net_processing.cpp:1507-1513), so 1 gave a +/-2s window. Across five
+        // internet-separated operators with ordinary NTP drift that is constant
+        // mutual disconnection. 15 gives +/-30s and matches main (:264), test
+        // (:436), regtest (:596) and ptxbea (:920) -- ptxtestnet was the outlier.
+        // ★ It also sets FutureBlockTimeDrift under Time Protocol v2
+        // (consensus/params.h: `return nTimeSlotLength - 1`) = 14s, and the block
+        // timestamp mask `nTime % nTimeSlotLength == 0`.
+        consensus.nTimeSlotLength = 15;
         consensus.nMaxProposalPayments = 6;
 
+        // ★★ THE SPORK KEY IS SHARED WITH CTestNetParams (:440) AND MUST BE
+        // REPLACED BEFORE LAUNCH. Anyone able to sign a spork for the Hemis
+        // testnet can sign one here. Generate a fresh keypair, put the PUBLIC half
+        // below and the PRIVATE half in $PTXTESTNET_SPORK_KEY in the deployment
+        // environment -- never in this repository. Precedent and reasoning: the
+        // ptxbea FLEET-ONLY DIVERGENCE marker at :923.
+        // TODO(launch): replace before the tag is cut.
         consensus.strSporkPubKey = "047F4B276E7852D6FC9AE1869B758C479759FD8CD0DC0E760EAE370161E0A75076E2CB12FE351431BA2ECAEF749FDADE63F18C0BB9BD5A0B7183C223724D9CDB48";
+
+        // ★★ SET EXPLICITLY BECAUSE THE DEFAULT IS INDETERMINATE, NOT ZERO.
+        // These five have no in-class initialiser (consensus/params.h:310-312,
+        // :320-321), CChainParams has a user-provided empty ctor
+        // (chainparams.h:126) and `Consensus::Params consensus;` (:130) is in no
+        // mem-init list -- so they are default-initialised and their values are
+        // INDETERMINATE, on every network including mainnet. They are then READ on
+        // live paths: CheckWork (validation.cpp:2962-2963) will accept a block with
+        // the wrong PoW threshold if its nTime/nBits happen to match the garbage,
+        // and spork.cpp:149/:153/:275/:321 decide whether the OLD spork key is
+        // still accepted. Explicit no-ops here; the general fix is BUG-046.
+        consensus.strSporkPubKeyOld = consensus.strSporkPubKey;
+        consensus.nTime_EnforceNewSporkKey = 0;
+        consensus.nTime_RejectOldSporkKey = 0;
+        consensus.nHemisBadBlockTime = 0;
+        consensus.nHemisBadBlockBits = 0;
 
         consensus.height_last_invalid_UTXO = -1;
         consensus.height_last_ZC_AccumCheckpoint = -1;
@@ -787,7 +819,28 @@ public:
         consensus.ZC_TimeStart = 4070908800;
         consensus.ZC_HeightStart = 100000000;
 
-        // Network upgrades — all active from genesis so PTX nodes are ready immediately
+        // Network upgrades.
+        //
+        // ★★ UPGRADE_POS / POS_V2 = 50 and V3_4 = 51 ARE BOOTSTRAP HEIGHTS AND MUST
+        // NOT BE MOVED TO 0 OR 1. doc/ptx/PTX_TESTNET_GENESIS_CONFIG.md §3 says
+        // "state 1 and mean it" for every activation height. That principle is right
+        // for grandfathering gates and WRONG for these, and following it here
+        // produces a chain permanently stuck at height 0:
+        //
+        //   rpc/mining.cpp:321-322
+        //     const int nHeight = chainActive.Height() + 1;              // = 1 at genesis
+        //     if (fGenerate && NetworkUpgradeActive(nHeight, UPGRADE_POS))
+        //         throw JSONRPCError(..., "Proof of Work phase has already ended");
+        //
+        // With POS active at height 1, NetworkUpgradeActive(1, POS) is true
+        // (upgrades.cpp:92, nHeight >= nActivationHeight) and the FIRST generate call
+        // is refused. No PoW block can be mined, so no coins exist, so nothing can
+        // stake -- the chain cannot leave block 0. Blocks 1..49 must be PoW to mint
+        // the initial supply before anything can stake.
+        //
+        // ptxbea proves 50/51 works: its chain has PoW blocks 1-49 and PoS from h50
+        // (verified live 2026-08-21). ★ If you are here to "fix" these back to 1
+        // because §3 says so, read rpc/mining.cpp:321 first.
         consensus.vUpgrades[Consensus::BASE_NETWORK].nActivationHeight =
                 Consensus::NetworkUpgrade::ALWAYS_ACTIVE;
         consensus.vUpgrades[Consensus::UPGRADE_TESTDUMMY].nActivationHeight =
@@ -805,13 +858,31 @@ public:
         consensus.vUpgrades[Consensus::UPGRADE_V5_2].nActivationHeight          = 50;
         consensus.vUpgrades[Consensus::UPGRADE_V5_3].nActivationHeight          = 50;
         consensus.vUpgrades[Consensus::UPGRADE_V5_5].nActivationHeight          = 50;
+        // ★★ THE MASTER PTX GATE. Was NO_ACTIVATION_HEIGHT (-1), which is not
+        // "later" -- it is NEVER (upgrades.cpp:90-91 returns UPGRADE_DISABLED).
+        // With it disabled the entire PTX/DGM subsystem is dead on this network:
+        // every protx_* RPC throws "Evo upgrade is not active yet"
+        // (rpc/rpcevo.cpp:177-182), CheckSpecialTx rejects any ProRegTx as
+        // bad-txns-v6-not-active (specialtx_validation.cpp:1017-1023), and
+        // IsDIP3Enforced() is false so no deterministic gamemaster list exists.
+        // A chain that syncs and stakes and can never register a gamemaster.
+        // ★ Measured both ways 2026-08-21: on ptxbea (ALWAYS_ACTIVE, :976-977)
+        // protx_list returns 153 registered GMs; on the ptxtestnet node running
+        // this value it returns the "Evo upgrade is not active yet" error.
         consensus.vUpgrades[Consensus::UPGRADE_V6_0].nActivationHeight          =
-                Consensus::NetworkUpgrade::NO_ACTIVATION_HEIGHT;
+                Consensus::NetworkUpgrade::ALWAYS_ACTIVE;
 
+        // ★★ MAGIC "PTX2" -> "PTXT" (2026-08-21), and it is load-bearing for the
+        // genesis regeneration. A pre-existing ptxtestnet chain runs PTX2 with the
+        // OLD genesis (a node at height 62069 was still live when this changed).
+        // Keeping PTX2 while regenerating genesis means old and new nodes SHARE
+        // magic and DISAGREE on genesis: they handshake, fail, and ban each other.
+        // Changing the magic means they never meet. Verified absent elsewhere:
+        // main a014dd99, Hemis testnet f5e6d5ca, regtest a1cf7eac, ptxbea "PTX3".
         pchMessageStart[0] = 0x50; // 'P'
         pchMessageStart[1] = 0x54; // 'T'
         pchMessageStart[2] = 0x58; // 'X'
-        pchMessageStart[3] = 0x32; // '2'
+        pchMessageStart[3] = 0x54; // 'T'  -- "PTXT"
         nDefaultPort = 29993;
 
         vSeeds.clear();
@@ -842,18 +913,61 @@ public:
         nLLMQConnectionRetryTimeout = 10;
         consensus.llmqChainLocks = Consensus::LLMQ_TEST;
 
-        // PTX formation cadence (W2.2 SG-1b): dev test-N = 80, M-coupled
-        // (~1.7x the ceremony floor M~47; SG-1b plan-gate decision 1).
-        consensus.ptxFormation = {"ptxtest", 80, 80, 80, 1};
+        // ★ ALL TEN FIELDS, POSITIONAL, WRITTEN EXPLICITLY. This struct is brace
+        // aggregate-initialised, so a field-name grep finds nothing and a short
+        // literal silently takes in-class defaults for everything it omits. The
+        // previous {"ptxtest", 80, 80, 80, 1} set five and defaulted five.
+        // Order: {name, B, R, budget, L, retire, grace, rate, statelessH, boundaryH}
+        //
+        //  name  "ptxtestnet"  matches strNetworkID; the old "ptxtest" did not.
+        //  B     60   formation boundary. doc/ptx/PTX_TESTNET_GENESIS_CONFIG.md §4:
+        //             M = S + 6*pb + W_mine, so B bounds tolerated per-phase
+        //             propagation as 6*pb + 11 <= B. B=30 (ptxbea) => pb <= 3, which
+        //             only holds at single-host RTT; B=60 => pb <= 8, 33% above the
+        //             mainnet-grade pb=6 baseline. B is a security ceiling only --
+        //             handover-at-accept (KDD-063) means a wider B never costs
+        //             availability; rotation cadence is R, not B.
+        //  R     1440 KDD-045 key-compromise window, ~1 day at 60s spacing.
+        //  bud   80   ODC-050 stall-out span; must NOT track B (a ~27-block ceremony
+        //             under a 30-block cadence lives on exactly this separation).
+        //  L     1    five operators support ONE quorum. L_max = floor(pool/11) = 1
+        //             at both 15 and 20 GMs. Declaring 8 like ptxbea would be a lie
+        //             Guard 1 cannot catch.
+        //  retire 200 KDD-074 idle arm, as ptxbea.
+        //  grace  1   ODC-054: L>1 hard-requires grace>0 or AppInitSanityChecks
+        //             aborts (ptx_formation.cpp:140-149). Harmless at L=1, correct
+        //             if L ever rises.
+        //  rate   40  KDD-074 limiter, as ptxbea.
+        //  statelessH 0  NOT 900. ptxbea's 900 exists only so its pre-BUG-036
+        //             history replays byte-identically; a fresh genesis has no such
+        //             history, and 900 would run the launch window on the known-
+        //             fragile stored-stamp path with its self-heal disarmed.
+        //  boundaryH  0  V11 enforced from genesis -- correct for a fresh chain, so
+        //             every PTXDKG this network accepts is on-boundary and the gate
+        //             never needs to move.
+        consensus.ptxFormation = {"ptxtestnet", 60, 1440, 80, 1, 200, 1, 40, 0, 0};
 
         nFulfilledRequestExpireTime = 60 * 60;
 
-        // PTX lottery pool — burn-style address, no known private key
-        // Derived from RIPEMD160(SHA256("Hemis PTX lottery pool ptxtestnet v1")) with prefix 0x8B
-        strPTXLotteryPoolAddress = "y9ameyKwSUpyX8EY1L8FfniMfSSfYHahhB";
+        // ★ Accumulation is via LOTTERY_ACCUM_SCRIPT (ODC-022), a derived burn
+        // script -- no named pool address is used or needed. The populated address
+        // here was legacy; ptxbea correctly sets "" (:1028).
+        strPTXLotteryPoolAddress = "";
         nPTXServiceFee = 1 * COIN;
         // KDD-030: 5-block window for testnet (~5 min at 1 block/min); mainnet default 1440.
         nPTXSettlementWindow = 5;
+        // ★ These two live on CChainParams, not Consensus::Params, so a
+        // Consensus::Params audit misses them -- and their in-class DEFAULTS are
+        // consensus-live. ptxtestnet was taking both defaults.
+        //   nPTXSeedHeightWindow default 0 = the ODC-073 stale-seed check DISABLED
+        //     (chainparams.h:147). 60 is bracketed by the commit-to-mine lag (~12
+        //     blocks) below and nRetireWindow (200) above, and equals the
+        //     settlement horizon. Enforced at specialtx_validation.cpp:984-987.
+        //   nPTXPayoutMinerFee default 0 (chainparams.h:148) = no miner incentive
+        //     inside PTXPAYOUT. Enforced at specialtx_validation.cpp:1495, :1528
+        //     and ptx_payout.cpp:23.
+        nPTXSeedHeightWindow = 60;
+        nPTXPayoutMinerFee = 10000; // 0.0001 HMS
     }
 
     const CCheckpointData& Checkpoints() const
@@ -864,7 +978,7 @@ public:
 
 /**
  * ptx-bea testnet -- ODC-022 Solution 1 (PTXCOALESCE nType=9, PTXPAYOUT nType=10)
- * pchMessageStart = "PTX3"  P2P port 29994  RPC port 29903
+ * pchMessageStart = "PTX3"  P2P port 29994  RPC port 29995 (chainparamsbase.cpp:56)
  * UPGRADE_V6_0 = ALWAYS_ACTIVE (required for protx_register + scriptPTXPayment)
  */
 class CPTXBeaTestNetParams : public CChainParams

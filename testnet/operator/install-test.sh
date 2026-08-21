@@ -51,6 +51,21 @@
 #          each asserting that the check which is supposed to catch it FAILS.
 #          A check that has never been seen to fail is not yet a check.
 #
+# ★★ THE THREE-GMs-ON-ONE-HOST SHAPE BELOW IS A TEST FIXTURE, NOT THE DEPLOYMENT
+# MODEL. As of 2026-08-21 the deployment model is ONE GM PER HOST with one
+# routable address each (see OPERATOR_GUIDE.md "One GM per host"), because the
+# signing fan-out dials one port number for every member
+# (ptx/ptx_fanout.cpp:117-120) and two GMs on one host at different RPC ports
+# cannot both be reached.
+#
+# ★ The fixture is kept deliberately, and it still tests what it claims. What it
+# exercises is INSTALL.SH under repeated invocation on one machine -- that each
+# run produces an independent, correctly-configured node, and that the f37bf34
+# port-collision defect (RED 4) still fails the check written for it. None of
+# that depends on the deployment model, and running three nodes on one host is
+# the cheapest way to get three nodes. ★ But do not read this file as operator
+# guidance, and do not "fix" the guides to match it.
+#
 # Usage:
 #   ./install-test.sh                 # green + all reds
 #   ./install-test.sh --green-only

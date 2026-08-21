@@ -140,12 +140,22 @@ new message, every time.
 
 ### ★ The one exception, and exactly how narrow it is
 
-**A tag NOBODY HAS EVER CONSUMED may be deleted and re-cut under the same name.** The rule above
-protects operators who already installed; where there are none, there is nothing to protect and the
-version number is better spent meaning what it was meant to mean.
+**A tag under which NOTHING HAS BEEN PUBLISHED may be deleted and re-cut under the same name.**
 
-The test is not "we do not think anyone used it" — it is **"no clone, no download, and no reference
-outside this repository exists"**, established rather than assumed. For `v0.1.0-testnet` on
+★ **The test is publication, not consumption, and that is a correction (2026-08-21).** This section
+used to say "nobody has ever consumed it", which is both weaker and unverifiable: you cannot
+establish that no one downloaded an artefact, and the hazard does not need a consumer. **The
+hazard is a version number with two different sets of bytes behind it** — once `Hemis-Linux.tar.gz`
+has been published under a tag and its sha256 quoted anywhere, re-cutting that name means two
+artefacts answer to one version, and no one holding the first can tell. That is true whether or
+not anybody fetched it.
+
+So the test is: **the release page never existed, or existed with no artefacts.** Established
+rather than assumed, and additionally "no reference outside this repository exists".
+
+★ **This exception has now been spent.** `v0.1.0-testnet` was re-cut at `1591450` on 2026-08-21,
+its artefacts published, downloaded and verified. **The next release is `v0.1.1-testnet`**, and
+the exception is not available for it. For `v0.1.0-testnet` on
 2026-08-21 that held: the release was a rehearsal, no operator had been given the tag, and every
 reference to the string was in-tree (`install.sh:22`, `vps-install.sh:37`,
 `OPERATOR_GUIDE.md`, this file, and two KDD entries that describe the *decisions* taken for the

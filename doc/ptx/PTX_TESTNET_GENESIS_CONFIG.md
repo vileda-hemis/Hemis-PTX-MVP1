@@ -29,6 +29,29 @@ Three ways out, and the choice changes the operator documents:
 | **B — parameterise quorum size** | consensus change to 11 and t | ★ see 0.2 — this is the exact un-gated class |
 | **C — recruit operators** | ≥11 GMs total by any split | schedule, not code |
 
+> ## ★★ SUPERSEDED 2026-08-21 — Option A stands, the NUMBER is now **4 per operator, 20 total**
+>
+> **≥3 / 15 as written below is superseded. The decision is 4 GMs per operator on 4 separate
+> hosts, 20 total, nine spare.** Option A itself is unchanged — the reasoning below for choosing it
+> over B and C still holds and is why this is a number change, not a re-decision.
+>
+> **Why the number moved.** At 3 each the margin is four. Losing one operator entirely (3 GMs) plus
+> any *single* other GM puts the pool at exactly **11** — `ptx_formation.cpp:92-93`'s floor, where
+> the next GM lost stops formation silently and every boundary thereafter is a deterministic skip.
+> At 4 each there are nine spare: it survives two whole operators plus stragglers. Host count is
+> not a constraint for the five operators.
+>
+> **Why nothing else moves.** `L_max = floor(pool/11)` is **1** at both 15 and 20, so
+> `nSupportedQuorums = 1` in §4 is unchanged and no chainparams value changes with it.
+>
+> ★ **And a second change that is not about margin at all: ONE GM PER HOST, one internet-routable
+> address per GM.** The PTX signing fan-out dials every member on the *same* port number —
+> `PTX_FanoutRpcPort()` (`src/ptx/ptx_fanout.cpp:117-120`) takes no per-member argument — so two
+> GMs sharing a host at different RPC ports cannot both be reached: one registers, is selected,
+> shows `ENABLED`, and silently never signs. Four GMs therefore means **four hosts and four
+> addresses**, not four datadirs on one machine. The operator guides and `vps-install.sh` were
+> rewritten accordingly on the same date.
+
 ★ **DECIDED: Option A — ≥3 GMs per operator (5 × 3 = 15, four spare).**
 Reasoning recorded, not just the value:
 * **What it does not touch.** Option B changes a consensus constant in the un-gated retroactive class,
@@ -123,6 +146,26 @@ assert(genesis.hashMerkleRoot   == uint256S("0x93ad7b455294f429da00d11b656d62f7f
 ---
 
 ## §3 Activation heights — ALL genesis-active, each stated deliberately
+
+> ### ★★ CORRECTION 2026-08-21 — `UPGRADE_POS` / `POS_V2` / `V3_4` are the exception
+>
+> The table below states **1** for `UPGRADE_POS` and `POS_V2` and *"State 1 and mean it."*
+> **That value produces a chain permanently stuck at height 0** and must not be used.
+>
+> `rpc/mining.cpp:321-322` refuses `generate` once PoS is active at the next height, and at
+> genesis `nHeight = Height() + 1 = 1`, so an activation height of 1 makes
+> `NetworkUpgradeActive(1, UPGRADE_POS)` true (`upgrades.cpp:92`) and the **first** `generate`
+> call throws *"Proof of Work phase has already ended"*. No PoW block can be mined, so no coins
+> exist, so nothing can stake.
+>
+> **Blocks 1..49 must be PoW to mint the initial supply before anything can stake.** ptxbea proves
+> the shape: `POS = POS_V2 = 50`, `V3_4 = 51`, PoW blocks 1–49 at 3800 HMS each, PoS from h50 —
+> verified live 2026-08-21. **The values now in `chainparams.cpp` are 50 / 50 / 51 and the reasoning
+> is repeated in a source comment beside them**, because §3 as written will otherwise persuade the
+> next reader to "fix" it back.
+>
+> The §3 *principle* — genesis-active for anything whose purpose is grandfathering — is correct and
+> unchanged. These three are **bootstrap** heights, not grandfathering gates.
 
 **Principle:** on a fresh genesis there is no pre-activation history to protect, so every gate whose
 purpose is grandfathering must be **open from block 0**. Inheriting a non-zero height from ptxbea

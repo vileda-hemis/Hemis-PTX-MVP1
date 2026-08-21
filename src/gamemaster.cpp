@@ -194,7 +194,17 @@ bool CGamemaster::IsValidNetAddr() const
 {
     // TODO: regtest is fine with any addresses for now,
     // should probably be a bit smarter if one day we start to implement tests for this
-    return Params().IsRegTestNet() || Params().IsPTXTestNet() ||
+    //
+    // ★ IsPTXTestNet() REMOVED 2026-08-21. It let a gamemaster advertise an
+    // unroutable (RFC1918/ULA) service address on ptxtestnet -- correct while that
+    // network was a private dev chain, wrong now that it is the public testnet
+    // five external operators register on. It is the exact twin of the ptxbea
+    // carve-out at specialtx_validation.cpp:40, and unlike that one it was NOT
+    // closed for free by keeping the network id, because it names ptxtestnet
+    // directly. The deterministic path already refuses unroutable addresses here
+    // (activegamemaster.cpp:251) and so does consensus, so this only removes a
+    // relaxation on the legacy broadcast path.
+    return Params().IsRegTestNet() ||
            (IsReachable(addr) && addr.IsRoutable());
 }
 

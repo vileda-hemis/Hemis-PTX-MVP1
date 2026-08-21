@@ -65,13 +65,21 @@ const struct NUInfo NetworkUpgradeInfo[Consensus::MAX_NETWORK_UPGRADES] = {
                 /*.strName =*/ "Hemis_v5.5",
                 /*.strInfo =*/ "New rewards structure",
         },
-        {
-                /*.strName =*/ "v6_evo",
-                /*.strInfo =*/ "Deterministic Gamemasters",
-        },
+        // ★ ORDER CORRECTED 2026-08-21. This table is indexed by Consensus::UpgradeIndex,
+        // and the enum (consensus/params.h:26-46) is 13 = UPGRADE_GM_ENABLE,
+        // 14 = UPGRADE_V6_0 -- the reverse of what these two entries used to be.
+        // The consequence was that `-nuparams=v6_evo:H` wrote the DEAD
+        // UPGRADE_GM_ENABLE while `-nuparams=GM_Enable:H` moved the real V6 gate,
+        // and every log line and RPC string naming the two was swapped. -nuparams is
+        // regtest-only (init.cpp:934-936) so no chain was ever affected, but anyone
+        // debugging the V6 gate through it was being lied to.
         {
                 /*.strName =*/ "GM_Enable",
                 /*.strInfo =*/ "Enable Gamemaster payments",
+        },
+        {
+                /*.strName =*/ "v6_evo",
+                /*.strInfo =*/ "Deterministic Gamemasters",
         },
         {
                 /*.strName =*/ "Test_dummy",

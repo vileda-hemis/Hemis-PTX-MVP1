@@ -46,7 +46,27 @@ std::unique_ptr<CBaseChainParams> CreateBaseChainParams(const std::string& chain
     else if (chain == CBaseChainParams::REGTEST)
         return std::make_unique<CBaseChainParams>("regtest", 51477);
     else if (chain == CBaseChainParams::PTXTESTNET)
-        return std::make_unique<CBaseChainParams>("ptxtestnet", 29902);
+        // ★★ 29902 -> 29995 (2026-08-21). THIS NUMBER IS NOT COSMETIC: it is the
+        // port the PTX signing fan-out dials. PTX_FanoutRpcPort()
+        // (ptx/ptx_fanout.cpp:117-120) returns
+        //     gArgs.GetArg("-ptxfanoutport", BaseParams().RPCPort())
+        // and BaseParams().RPCPort() is THIS value -- it never consults -rpcport
+        // (chainparamsbase.h:30 is a bare `return nRPCPort`; the daemon's actual
+        // bound port comes from httpserver.cpp:297 instead). The DGM record carries
+        // only the P2P endpoint, so PTX_ResolveMemberAddr takes the on-chain HOST
+        // and pairs it with THIS port (ptx_fanout.cpp:126-131).
+        //
+        // With 29902 here and install.sh writing rpcport=29995, the fan-out dialled
+        // a port nothing listened on: quorums form, every gm_bls_sign request lands
+        // on a closed port, and the member looks perfect on-chain while never
+        // signing. ptxbea never showed this because its default (29995, :56) already
+        // equalled its configured port -- a coincidence of that network's
+        // definition. ★ Verified live 2026-08-21: a ptxbea roll opened 60-80
+        // concurrent outbound sockets to remote port 29995 and none to 29994.
+        //
+        // ★ KEEP THIS EQUAL TO THE PORT install.sh WRITES. See the convention at
+        // ptx_fanout.cpp:104-116 and ptxbea-known-limitations.md §13.
+        return std::make_unique<CBaseChainParams>("ptxtestnet", 29995);
     else if (chain == CBaseChainParams::PTXBEATESTNET)
         // ptxbea testnet RPC = P2P+1 (P2P 29994, chainparams.cpp), restoring the
         // PIVX-lineage adjacency (cf. testnet 51474/51475) while staying BELOW the
