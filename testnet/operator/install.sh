@@ -720,6 +720,31 @@ if ! command -v ip >/dev/null 2>&1; then
     echo "         rpcbind lines in the config by hand."
 fi
 RPCBIND_LINES="$(printf '%s' "$GLOBAL_ADDRS" | grep -v '^$' | sed 's/^/rpcbind=/' || true)"
+# ★★ LOOPBACK GOES IN THE BIND LIST, AND LEAVING IT OUT BROKE EVERY LOCAL COMMAND.
+# The wildcard pair this per-address list replaced (ODC-076) covered loopback for
+# free; an explicit list does not, and rpcallowip stayed loopback-only. The two
+# lists were then DISJOINT: the daemon listened on the address it refused and
+# refused the address it listened on. Measured 2026-08-23 on a generated config --
+#   LISTEN 192.168.99.85:29995, 172.17.0.1:29995   (no 127.0.0.1)
+#   rpcallowip=127.0.0.1, ::1
+#   Hemis-cli -datadir=<dd> getblockcount  -> couldn't connect to server
+#   via 192.168.99.85                      -> HTTP 403
+# -- so generateblskeypair, self-check.sh, every verification step in both
+# documents, and the unit's ExecStartPost round-trip could not work at all.
+# Both halves were reasonable; nothing tested the CONJUNCTION. install-test.sh's
+# C1 now does, and it fails on the pre-fix config.
+#
+# ★ This does NOT reopen ODC-076. That collision needs a WILDCARD: with
+# bindv6only=0 a "::" bind already covers IPv4, so a second "0.0.0.0" bind on the
+# same port fails and httpserver.cpp:330 only LOGS it. 127.0.0.1 and ::1 are
+# specific addresses and cannot overlap. Verified by outcome the same day: all
+# three of 127.0.0.1, ::1 and the global address bound, and ZERO
+# "Binding RPC on address ... failed" lines in debug.log.
+if [ -n "$RPCBIND_LINES" ]; then
+    RPCBIND_LINES="rpcbind=127.0.0.1
+rpcbind=::1
+$RPCBIND_LINES"
+fi
 if [ -z "$RPCBIND_LINES" ]; then
     RPCBIND_LINES="rpcbind=0.0.0.0
 rpcbind=::"
@@ -729,8 +754,10 @@ rpcbind=::"
     echo "         Once this host has its public address, replace the two rpcbind"
     echo "         lines with that address and restart."
 else
-    ok "RPC will bind this host's own address(es): $(printf '%s' "$RPCBIND_LINES" | sed 's/^rpcbind=//' | tr '\n' ' ')"
-    if [ "$(printf '%s\n' "$RPCBIND_LINES" | grep -c .)" -gt 2 ]; then
+    ok "RPC will bind loopback plus this host's own address(es): $(printf '%s' "$RPCBIND_LINES" | sed 's/^rpcbind=//' | tr '\n' ' ')"
+    # ★ -gt 4, not -gt 2: the list now carries two loopback lines that are always
+    # present, so "more than one global address" starts at four.
+    if [ "$(printf '%s\n' "$RPCBIND_LINES" | grep -c .)" -gt 4 ]; then
         warn "this host has several global addresses, so several rpcbind lines were written."
         echo "         That is safe but wider than needed. A gamemaster should bind the"
         echo "         address it REGISTERS; delete the other rpcbind lines from $CONF"

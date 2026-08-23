@@ -42,8 +42,40 @@ const std::string CLIENT_NAME(PACKAGE_NAME);
 #include "obj/build.h"
 #endif
 
-//! git will put "#define GIT_ARCHIVE 1" on the next line inside archives. 
-#define GIT_ARCHIVE 1
+//! git will put "#define GIT_ARCHIVE 1" on the next line inside archives.
+// ★★ THE `#define GIT_ARCHIVE 1` THAT USED TO SIT HERE WAS COMMITTED BY MISTAKE,
+// AND IT MADE EVERY GIT-LESS BUILD LIE ABOUT ITS OWN COMMIT.
+// Upstream keeps that define inside the comment above and lets `git archive`
+// substitute it in (.gitattributes marks this file export-subst). Here both the
+// define AND the substituted values were committed -- GIT_COMMIT_ID below is
+// frozen at a 3 Sep 2023 hash that does not exist in this repository -- so
+// GIT_ARCHIVE was ALWAYS defined and GIT_COMMIT_ID always available.
+//
+// It only showed when a build had no git metadata. The precedence at :63-69
+// takes BUILD_DESC from obj/build.h first, which genbuild.sh fills in whenever
+// git is readable, so an ordinary checkout was always right. Build from an
+// exported tree and it fell through to the 2023 constant and reported it as
+// authoritative. Measured 2026-08-23: a `git archive` shipment built to
+// "v1.3.1.0-g652c668d3ebf51f0b168e7ff00ffdc86e45daa4f"; the same source from a
+// real clone built to "v1.3.1.0-ec980b9".
+//
+// ★ That is not a cosmetic label. Identifying a STALE BINARY by its version
+// string is how the 4d558e6 retraction was reached that same day -- the daemon
+// said 60ff2a1, which predated the fix it appeared to be missing. That
+// diagnostic worked only because .git happened to be present.
+//
+// Removing the define makes a git-less build report "-unk" (BUILD_DESC_FROM_UNKNOWN,
+// :60) -- honest, and obviously unusable as provenance. It cannot change an
+// ordinary build: BUILD_DESC from obj/build.h still wins, and configure.ac:482
+// sets -DHAVE_BUILD_INFO unconditionally with src/Makefile.am:392-396
+// regenerating build.h every time. Release builds are unaffected either way --
+// .github/workflows/build-and-release.yml uses actions/checkout@v4 with
+// fetch-depth: 0, a full clone.
+//
+// ★ NOT restored to the upstream `$Format:%H$` form, which would be the fuller
+// fix: that makes `git archive` substitute correctly, but any tarball produced
+// WITHOUT git substitution would then carry the literal "$Format:%H$" in its
+// version string. Left for a deliberate decision rather than taken here.
 #ifdef GIT_ARCHIVE
 #define GIT_COMMIT_ID "652c668d3ebf51f0b168e7ff00ffdc86e45daa4f"
 #define GIT_COMMIT_DATE "Sun, 3 Sep 2023 08:37:37 -0400"

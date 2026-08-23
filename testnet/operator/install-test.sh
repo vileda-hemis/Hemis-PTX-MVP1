@@ -117,10 +117,34 @@ fi
 BASE="${PTX_TEST_BASE:-$(mktemp -d -t ptx-install-test.XXXXXX)}"
 mkdir -p "$BASE"
 PIDS=""
+# ★★ BUG-047 TRIPWIRE. A daemon started with no -datadir reads $HOME/.Hemis and
+# synchronises MAINNET, silently, looking healthy. On 2026-08-23 a stray bare
+# `Hemisd -daemon` was found on a clean px1 with 18 MB of mainnet already in
+# /root/.Hemis, 27 minutes after a run of this script had ended.
+# ★ It was NOT this script that started it -- the only daemon start here is
+# `$HEMISD -datadir=...` at start_daemon, and the mainnet default ports are only
+# ever CHECKED (:361, :432), never bound on purpose. The attribution to this
+# trap was wrong and is corrected here. But the incident is worth a check
+# regardless: nothing in this harness would have noticed, and BUG-047's whole
+# character is that it is invisible while it happens.
+# So: snapshot whether the default datadir exists BEFORE the run, and fail loudly
+# if the run leaves one behind that was not there. Not removed automatically --
+# 18 MB of someone else's mainnet is theirs to look at first.
+DEFAULT_DATADIR="${HOME:-/root}/.Hemis"
+DEFAULT_DATADIR_PREEXISTED=0
+[ -e "$DEFAULT_DATADIR" ] && DEFAULT_DATADIR_PREEXISTED=1
 cleanup() {
     for p in $PIDS; do kill -TERM "$p" 2>/dev/null; done
     sleep 1
     for p in $PIDS; do kill -KILL "$p" 2>/dev/null; done
+    # ★ Sweep any daemon this run started that is NOT in PIDS -- a start that
+    # failed to record its pid is exactly the case that leaked before.
+    pkill -f "Hemisd -datadir=$BASE" 2>/dev/null
+    if [ "$DEFAULT_DATADIR_PREEXISTED" = 0 ] && [ -e "$DEFAULT_DATADIR" ]; then
+        printf '\n  \033[31m[BUG-047]\033[0m this run created %s -- something ran a daemon with NO -datadir,\n' "$DEFAULT_DATADIR"
+        printf '           which means it was synchronising MAINNET. Left in place on purpose;\n'
+        printf '           inspect it, then remove it.\n'
+    fi
     [ "$KEEP" = "1" ] || rm -rf "$BASE"
 }
 trap cleanup EXIT
@@ -462,8 +486,8 @@ check_ports() {   # $1 = pid, $2 = datadir label, $3 = p2p, $4 = rpc
 # -conf and lets the client read the credential out of the file, the way an
 # operator's own client does. The negative limb passes a wrong password, which
 # is not a secret.
-check_config_read() {   # $1 = conf path, $2 = rpc port, $3 = label
-    local conf="$1" rpc="$2" label="$3" rc=0 pw
+check_config_read() {   # $1 = conf path, $2 = rpc port, $3 = label, $4 = datadir
+    local conf="$1" rpc="$2" label="$3" dd="$4" rc=0 pw
     if [ ! -f "$conf" ]; then
         bad "C1 $label: $conf does not exist."
         return 1
@@ -479,8 +503,15 @@ check_config_read() {   # $1 = conf path, $2 = rpc port, $3 = label
             getblockcount >/dev/null 2>&1; then
         : # positive limb held
     else
-        bad "C1 $label: the credentials in $conf do not authenticate against the daemon on port $rpc."
-        note "that means the daemon never read this file. It is not a permissions problem."
+        bad "C1 $label: no RPC round-trip on 127.0.0.1:$rpc using the credentials in $conf."
+        note "THREE things can cause this and they need different fixes:"
+        note "  (a) the daemon never read this file;"
+        note "  (b) the credentials are wrong;"
+        note "  (c) the daemon is not LISTENING on loopback -- rpcbind and"
+        note "      rpcallowip name disjoint sets, so the address it listens on"
+        note "      is the one it refuses. That is what happened on 2026-08-23"
+        note "      and the message here said 'credentials' and pointed away from it."
+        note "Check first:  ss -ltn | grep $rpc   against the rpcbind lines in $conf."
         rc=1
     fi
     # ★ NO -rpcwait on this limb. A 401 is not a "not up yet", and retrying it
@@ -491,7 +522,38 @@ check_config_read() {   # $1 = conf path, $2 = rpc port, $3 = label
         bad "C1 $label: a WRONG password was accepted -- authentication is not in force, so the positive limb proves nothing."
         rc=1
     fi
-    [ "$rc" = 0 ] && ok "C1 $label: config credentials authenticate; a wrong password is refused"
+    # ★★ THE CONJUNCTION LEG -- the one whose absence let the disjoint
+    # rpcbind/rpcallowip pair ship. Everything above passes -rpcconnect and
+    # -rpcport explicitly, which is NOT what an operator types. Every command in
+    # OPERATOR_GUIDE.md and every line of self-check.sh is `-datadir` and nothing
+    # else, and that is the invocation that broke: the client defaults to
+    # 127.0.0.1 and the daemon was not bound there.
+    if timeout 60 "$HEMISCLI" -rpcwait -datadir="$dd" getblockcount >/dev/null 2>&1; then
+        : # the operator's own invocation works
+    else
+        bad "C1 $label: \`Hemis-cli -datadir=$dd getblockcount\` -- the operator's own invocation -- does NOT work."
+        note "everything in OPERATOR_GUIDE.md and self-check.sh uses exactly this"
+        note "form. If the explicit-port limb above passed and this one did not,"
+        note "the daemon is not listening on loopback: add rpcbind=127.0.0.1 and"
+        note "rpcbind=::1 to $conf."
+        rc=1
+    fi
+    # ★★ AND THE OTHER HALF OF THE CONJUNCTION: an address that is NOT in
+    # rpcallowip must be REFUSED. Without this leg the fix could be "bind the
+    # wildcard and allow everyone", which would pass every other check here.
+    # PTX_CALLER is never set in this harness, so any global address qualifies.
+    local ext
+    ext="$(ip -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1 || true)"
+    if [ -n "$ext" ]; then
+        if timeout 20 "$HEMISCLI" -conf="$conf" -rpcconnect="$ext" -rpcport="$rpc" \
+                getblockcount >/dev/null 2>&1; then
+            bad "C1 $label: RPC ANSWERED from $ext, which is not in rpcallowip -- the ACL is not in force."
+            rc=1
+        fi
+    else
+        note "C1 $label: no global address on this host, so the not-permitted leg could not run (VACUOUS)."
+    fi
+    [ "$rc" = 0 ] && ok "C1 $label: local -datadir round-trip works; wrong password and non-permitted address both refused"
     return $rc
 }
 
@@ -623,7 +685,7 @@ green_run() {
         pid="$(echo "$specs" | tr ' ' '\n' | grep ":GM$n:" | cut -d: -f1)"
         check_network "$dd"
         alive "$pid" && check_ports "$pid" "GM$n" "$p2p" "$rpc"
-        alive "$pid" && check_config_read "$dd/Hemis.conf" "$rpc" "GM$n"
+        alive "$pid" && check_config_read "$dd/Hemis.conf" "$rpc" "GM$n" "$dd"
         alive "$pid" && observe_rpc_families "$pid" "$rpc" "GM$n"
     done
     # shellcheck disable=SC2086
@@ -710,7 +772,7 @@ red_run() {
         note "the daemon started and looks healthy -- which is the whole problem."
         red_expect_fail "C2 (chain)  vs lowercase config" check_network "$dd"
         red_expect_fail "C3 (ports)  vs lowercase config" check_ports "$pid" "red1" 29994 29995
-        red_expect_fail "C1 (config) vs lowercase config" check_config_read "$dd/hemis.conf" 29995 "red1"
+        red_expect_fail "C1 (config) vs lowercase config" check_config_read "$dd/hemis.conf" 29995 "red1" "$dd"
         stop_daemon "$pid"
     else
         printf '  \033[32m[RED ok]\033[0m RED 1 -- the daemon did not survive; C1-C3 could not be evaluated, which is itself a fail\n'
