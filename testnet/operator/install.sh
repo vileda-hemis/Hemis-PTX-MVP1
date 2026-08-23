@@ -731,6 +731,39 @@ else
     echo "         coordinator, add them under [ptxtestnet] in $CONF, and restart."
 fi
 
+# ★★ THE CALLER'S ACCESS. Two lines, both from the coordinator, both unchanged
+# when another operator joins -- see ONBOARDING.md.
+#
+# WHY rpcauth AND NOT JUST rpcallowip: the fan-out authenticates with the DIALLING
+# node's own credentials (ptx/ptx_fanout.cpp:612-616 reads -rpcuser/-rpcpassword
+# and sends them as Basic auth). This script generates a RANDOM rpcpassword per
+# host, so the coordinator's credential does not match any GM's and every
+# gm_bls_sign would answer 401 -- with the roll failing at threshold AFTER the
+# commitment tx is broadcast and its 1 HMS service fee forfeited. Opening
+# rpcallowip alone does not fix that; the GM has to accept the caller's USER too.
+CALLER_LINES=""
+if [ -n "$PTX_CALLER" ]; then
+    CALLER_LINES="rpcallowip=$PTX_CALLER"
+    ok "caller permitted at $PTX_CALLER"
+else
+    CALLER_LINES="# rpcallowip=<caller-address>    <-- REQUIRED to sign, ask the coordinator"
+fi
+if [ -n "$PTX_RPCAUTH" ]; then
+    CALLER_LINES="$CALLER_LINES
+rpcauth=$PTX_RPCAUTH"
+    ok "caller credential (rpcauth) installed"
+else
+    CALLER_LINES="$CALLER_LINES
+# rpcauth=ptxcaller:<salt>\$<hmac>    <-- REQUIRED to sign, ask the coordinator"
+fi
+if [ -z "$PTX_CALLER" ] || [ -z "$PTX_RPCAUTH" ]; then
+    warn "CALLER ACCESS NOT CONFIGURED -- this gamemaster cannot sign."
+    echo "         It will register, show as enabled, sync and look perfect, and every"
+    echo "         signing request will be refused (403 without rpcallowip, 401 without"
+    echo "         rpcauth). Both lines come from the coordinator; add them under"
+    echo "         [ptxtestnet] in $CONF and restart."
+fi
+
 emit_conf() {   # $1 = value to put in rpcpassword
     cat <<EOF
 # PTX testnet node configuration.
@@ -763,16 +796,24 @@ rpcport=$RPC_PORT
 # collided with the first and failed ("Binding RPC on address :: port N failed"),
 # leaving one family unbound. Explicit per-address binds cannot collide.
 $RPCBIND_LINES
-# ★★ WHO MAY CALL THIS RPC, AND THIS LIST AS SHIPPED CANNOT SIGN.
-# PTX fan-out dials each member's RPC directly to request a signature, so your
-# quorum peers MUST be allowed here. localhost-only is a safe firewall posture and
-# a node that never signs. Add one line per peer address from the coordinator at
-# onboarding, then restart:
-#   rpcallowip=<peer-address>/128    (IPv6 host)   or  /32 (IPv4 host)
-# Keep it to peer addresses. Do NOT open it to 0.0.0.0/0 or ::/0.
+# ★★ WHO MAY CALL THIS RPC -- THE COORDINATOR'S CALLER, AND NOTHING ELSE.
+# ★ NOT "your quorum peers". Gamemasters never dial each other's RPC: the DKG
+# ceremony runs over P2P (ptx/ptx_dkg_net.cpp:419-427) and the ONLY node-to-node
+# RPC in the daemon is the signing fan-out, whose single caller is ptx_roll
+# (src/rpc/ptx.cpp:325) on the coordinator's caller node. So this list needs ONE
+# address, it is the same address for every operator, and it does not change when
+# another operator joins.
+# ★ The ACL is checked BEFORE any authentication (httpserver.cpp:236, HTTP 403 on
+# reject) and the credential AFTER it (httprpc.cpp:157, HTTP 401) -- you need both
+# lines below or the roll comes back short with nothing in YOUR log: an ACL
+# rejection is logged only under -debug=http.
+# ★ Do NOT open this to 0.0.0.0/0 or ::/0. There is no per-method restriction in
+# this daemon -- jreq.authUser (httprpc.cpp:157) is never read and there is no
+# -rpcwhitelist -- so anything that authenticates gets the WHOLE RPC surface of
+# this node, including stop and the wallet. Keep it to the one caller address.
 rpcallowip=127.0.0.1
 rpcallowip=::1
-# rpcallowip=<peer-address>/128    <-- add one line per peer, from the coordinator
+$CALLER_LINES
 
 # --- P2P -------------------------------------------------------------------
 port=$P2P_PORT
@@ -797,6 +838,29 @@ $ADDNODE_LINES
 # uncomment BOTH of these and restart.
 # gamemaster=1
 # gamemasterblsprivkey=<the BLS key you generate in the OPERATOR_GUIDE>
+
+# --- Wallet posture on a gamemaster host -----------------------------------
+# ★ THE WALLET IS LEFT ON DELIBERATELY, and here is the trade, because the
+# alternative is one line and you should be able to make the choice yourself.
+#
+# The caller credential above can call ANY rpc on this node (no -rpcwhitelist in
+# this daemon; httprpc.cpp:157's authUser is never read), so if it leaks, an
+# attacker gets `stop`, `setban`, and this node's wallet. Your COLLATERAL is not
+# here -- it lives on your wallet machine -- so what is at risk is a few HMS of
+# fee money and the node's availability.
+#
+# Uncommenting this shrinks that to availability only:
+# disablewallet=1
+#
+# ★ But it forecloses the on-node PoSe recovery route. Un-banning a gamemaster
+# needs protx_update_service, which needs a wallet to pay the fee
+# (rpc/rpcevo.cpp:913, :977) -- and a BANNED gamemaster cannot supply its own BLS
+# key to that call (GetValidGM returns nullptr while banned,
+# evo/deterministicgms.cpp:114-121), so the key must be passed explicitly and the
+# call must be made from a machine that has BOTH the key and a funded wallet.
+# With the wallet on, that machine is this one and the BLS secret never moves.
+# With disablewallet=1, you must copy the BLS secret to your wallet machine.
+# See OPERATOR_GUIDE.md "If your GM is PoSe-banned".
 EOF
 }
 
