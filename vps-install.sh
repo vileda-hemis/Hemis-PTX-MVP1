@@ -140,7 +140,13 @@ for n in $(seq 1 "$GM_COUNT"); do
     # the coordinator-directed exception above, and it is NOT the supported shape:
     # a second GM here would sit on RPC 29997, which the fan-out never dials.
     if [ "$n" = "1" ]; then
-        p2p=29994; rpc=29995; datadir="$HOME/.hemis-ptxtestnet"
+        # ★ GM 1 goes in the DAEMON'S OWN DEFAULT datadir, matching install.sh.
+        # That is BUG-047's fix: a bare `Hemisd` on this host then finds a real
+        # config and comes up on ptxtestnet instead of silently syncing mainnet.
+        # GMs 2+ below keep suffixed directories -- they cannot all be the
+        # default -- and they already carry the warning that a second GM on one
+        # host is the wrong deployment anyway.
+        p2p=29994; rpc=29995; datadir="$HOME/.Hemis"
     else
         p2p=$((29992 + 2 * n)); rpc=$((29993 + 2 * n))
         datadir="$HOME/.hemis-ptxtestnet-$n"
@@ -193,6 +199,6 @@ cat <<EOF
       go on this box. See OPERATOR_GUIDE.md, "Wallet side" -- 3x per operator.
 
    4. START, then verify:
-        Hemisd -datadir=\$HOME/.hemis-ptxtestnet-1 -daemon
+        Hemisd -datadir=\$HOME/.Hemis -daemon
         cd $CLONE_DIR/testnet/operator && ./self-check.sh
 EOF

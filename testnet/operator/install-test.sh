@@ -921,13 +921,66 @@ red_run() {
 }
 
 # ===========================================================================
+# ★★ THE BARE-INVOCATION LEG -- BUG-047, AND THE REASON IT WAS INVISIBLE HERE.
+#
+# Every other leg in this file passes -datadir explicitly, because the fixture
+# runs three GMs on one host. That fixture is exactly why the harness could not
+# see BUG-047: the defect only exists for an invocation the harness never made.
+# On 2026-08-23 two real ones happened on a clean host -- install.sh executing a
+# backticked `Hemisd -daemon` out of a heredoc, and a bare Hemis-cli creating the
+# tree -- and nothing here noticed either.
+#
+# ★ HOME is redirected rather than using the real one. GetDefaultDataDir() reads
+# getenv("HOME") (util/system.cpp), so pointing HOME at the scratch tree exercises
+# the REAL default-datadir code path without writing to the operator's actual
+# $HOME/.Hemis. Installing for real would test the same thing and cost the tester
+# their own datadir.
+bare_invocation_run() {
+    say "BARE INVOCATION — no -datadir anywhere (BUG-047)"
+    local fh="$BASE/fakehome" dd="$fh/.Hemis" pid rc=0
+    rm -rf "$fh"; mkdir -p "$fh"
+    ( cd "$HERE" && HOME="$fh" PATH="$(dirname "$HEMISD"):$PATH" \
+        PTX_REPO="$TEST_REPO" PTX_REF="$TEST_REF" \
+        PTX_PREFIX="$BASE/bare-prefix" PTX_PARAMS_DIR="$BASE/bare-params" \
+        bash ./install.sh ) >"$BASE/bare-install.log" 2>&1 \
+        || { bad "install.sh failed with no PTX_DATADIR -- see $BASE/bare-install.log"; return 1; }
+    [ -f "$dd/Hemis.conf" ] \
+        && ok "install.sh wrote the config into the DEFAULT datadir ($dd/Hemis.conf)" \
+        || { bad "install.sh did not write $dd/Hemis.conf -- a bare daemon will find no config."; return 1; }
+
+    # Bare: no -datadir, no -conf, no -ptxtestnet. Only HOME points anywhere.
+    HOME="$fh" "$HEMISD" >"$BASE/bare-stdout.log" 2>&1 &
+    pid=$!; PIDS="$PIDS $pid"
+    wait_settled "$pid" || { bad "the bare daemon did not stay up"; return 1; }
+
+    local chain
+    chain="$(HOME="$fh" timeout 60 "$HEMISCLI" -rpcwait getblockchaininfo 2>/dev/null \
+             | sed -n 's/.*"chain"[^"]*"\([^"]*\)".*/\1/p' | head -1)"
+    if [ "$chain" = "ptxtestnet" ]; then
+        ok "a BARE Hemisd came up on ptxtestnet (chain=\"$chain\")"
+    else
+        bad "a BARE Hemisd came up on '\''${chain:-<no answer>}'\'', not ptxtestnet. THAT IS BUG-047."
+        rc=1
+    fi
+    # ★ The independent limb: the chain NAME could be right while mainnet data is
+    # also on disk. Mainnet lands at the datadir top; ptxtestnet in a subdir.
+    if [ -d "$dd/blocks" ]; then
+        bad "$dd/blocks exists -- that is MAINNET chain data at the datadir top."
+        rc=1
+    else
+        ok "no mainnet chain data at the datadir top (ptxtestnet/ subdir only)"
+    fi
+    stop_daemon "$pid"
+    return $rc
+}
+
 preflight
 
 MODE="${1:-all}"
 case "$MODE" in
     --green-only) green_run ;;
     --red-only)   green_run >/dev/null 2>&1; red_run ;;
-    all|"")       green_run; red_run ;;
+    all|"")       green_run; bare_invocation_run || true; red_run ;;
     *) die "unknown argument '$MODE' (expected --green-only, --red-only, or nothing)" ;;
 esac
 

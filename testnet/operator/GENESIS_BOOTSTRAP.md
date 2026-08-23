@@ -100,7 +100,7 @@ sudo systemctl enable --now hemis-ptx     # the unit install.sh wrote
 
 # ★ Verify by OUTCOME, not by the command returning. Both must answer:
 systemctl is-active hemis-ptx                                  # -> active
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getblockcount        # -> a number
+Hemis-cli getblockcount        # -> a number
 ```
 
 ★ **`systemctl is-active` alone is not enough on an old unit.** The unit `install.sh` writes is
@@ -109,10 +109,22 @@ If you are on a unit written before 2026-08-23 it is `Type=forking` with `-daemo
 `active` for a daemon that already died — `Hemisd -daemon` forks and exits 0 before it validates
 anything. The `getblockcount` is what settles it either way.
 
-★ **Every command below passes `-datadir` explicitly.** `install.sh` installs to
-`$HOME/.hemis-ptxtestnet`, not the daemon's default `~/.Hemis` (`util/system.cpp:556`). A bare
-`Hemis-cli` talks to the wrong datadir, and a bare `Hemisd` **synchronises mainnet** — that is
-BUG-047, measured on `ptx01`, and it is the reason install.sh writes a systemd unit at all.
+★★ **No command below passes `-datadir`, and that is the fix for BUG-047 rather than an
+abbreviation.** `install.sh` now installs into the daemon's **own default** datadir,
+`$HOME/.Hemis` (`GetDefaultDataDir()` in `util/system.cpp`), and writes `ptxtestnet=1` at the top of
+`$HOME/.Hemis/Hemis.conf` — the config file the daemon reads from the *base* of that directory
+(`Hemis_CONF_FILENAME`, `util/system.cpp:81`; `GetConfigFile` resolves it with `net_specific=false`).
+
+So a bare `Hemisd` finds a real config, selects ptxtestnet (`util/system.cpp:865`), and puts its
+chain data in `$HOME/.Hemis/ptxtestnet/`. Previously the installer used a *different* directory, so
+a bare `Hemisd` read a config that was not there, took every default and came up on **mainnet** —
+silently, looking healthy. Verified 2026-08-23 with no `-datadir`, `-conf` or `-ptxtestnet`:
+`"chain": "ptxtestnet"`, `Using data directory .../.Hemis/ptxtestnet`, and no `blocks/` at the top.
+
+★ **The consequence, stated rather than left implicit: on this host the default network is now PTX
+testnet.** Running Hemis **mainnet** on the same machine requires an explicit
+`-datadir=<somewhere else>`. That is the correct trade for a machine deployed as a PTX gamemaster,
+and it is the whole point — the dangerous default was the one that pointed at mainnet.
 
 ---
 
@@ -135,14 +147,14 @@ sudo systemctl enable --now hemis-ptx
 # cannot extend the chain without them, so a node that silently failed to start
 # looks exactly like the staking bug you are trying to avoid.
 systemctl is-active hemis-ptx                                  # -> active
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getblockcount        # -> a number
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getconnectioncount   # -> >= 1
+Hemis-cli getblockcount        # -> a number
+Hemis-cli getconnectioncount   # -> >= 1
 ```
 
 Then point the mining host at both of them and restart it:
 
 ```bash
-printf 'addnode=%s\naddnode=%s\n' "<node-2>" "<node-3>" >> $HOME/.hemis-ptxtestnet/Hemis.conf
+printf 'addnode=%s\naddnode=%s\n' "<node-2>" "<node-3>" >> $HOME/.Hemis/Hemis.conf
 sudo systemctl restart hemis-ptx
 ```
 
@@ -154,8 +166,8 @@ as written.
 **Check both gates before you go on:**
 
 ```bash
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getconnectioncount     # must be >= 2
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getstakingstatus | grep -E 'haveconnections|gmsync'
+Hemis-cli getconnectioncount     # must be >= 2
+Hemis-cli getstakingstatus | grep -E 'haveconnections|gmsync'
 ```
 
 | field | required | if false |
@@ -175,26 +187,31 @@ whether or not the file is there, and that is exactly what hid the lowercase-`he
 Check outcomes instead.
 
 ```bash
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getblockhash 0
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getblockchaininfo | grep '"chain"'
-ls $HOME/.hemis-ptxtestnet/ptxtestnet/           # chain data must be HERE
-ls $HOME/.hemis-ptxtestnet/blocks 2>/dev/null    # must NOT exist — that is the mainnet layout
+Hemis-cli getblockhash 0
+Hemis-cli getblockchaininfo | grep '"chain"'
+ls $HOME/.Hemis/ptxtestnet/           # chain data must be HERE
+ls $HOME/.Hemis/blocks 2>/dev/null    # must NOT exist — that is the mainnet layout
 ```
 
 | check | expected | if wrong |
 |---|---|---|
 | `getblockhash 0` | the new genesis hash in `chainparams.cpp` | you are on the old chain or the wrong binary |
 | `"chain"` | `ptxtestnet` | the config was not read — **stop** |
-| `$HOME/.hemis-ptxtestnet/ptxtestnet/` exists | yes | as above |
-| `$HOME/.hemis-ptxtestnet/blocks` exists | **no** | you are on **mainnet** — stop, delete, re-check the config |
+| `$HOME/.Hemis/ptxtestnet/` exists | yes | as above |
+| `$HOME/.Hemis/blocks` exists | **no** | you are on **mainnet** — stop, delete, re-check the config |
 
-★ **These are the installer's paths, not `~/.Hemis`.** The network subdirectory is `ptxtestnet`
+★ **These paths are now `~/.Hemis`, the daemon's own default** (that is BUG-047's fix — see
+section 1). The network subdirectory is `ptxtestnet`
 (`chainparamsbase.cpp:68`); `blocks/` sitting at the *top* of a datadir is the mainnet layout
 (mainnet's subdirectory is `""`) and is the one wrong-network case this check catches on its own.
 Every other wrong network — `testnet5`, `regtest`, `ptxbea` — is caught by the `"chain"` row.
 
-★ The last row is not hypothetical. It happened on `ptx01` on 2026-08-21 (BUG-047): 17 MB of
-mainnet blocks and `Bound to [::]:49165` while a correct config sat unread in another directory.
+★ The last row is not hypothetical, and it has now happened three times. On `ptx01` on
+2026-08-21 (BUG-047): 17 MB of mainnet blocks and `Bound to [::]:49165` while a correct config sat
+unread in another directory. Then twice more on 2026-08-23, on a clean host, caused by our **own
+tooling** — `install.sh` executing a backticked `Hemisd -daemon` out of an unquoted heredoc (18 MB
+of mainnet), and a bare `Hemis-cli`, which creates the default datadir tree merely by being invoked.
+Installing into the default directory is what removes the trap; keep the check anyway.
 
 Magic bytes are not exposed by any RPC. They are verified by the fact that you connect only to
 peers on this chain and by `getblockhash 0` matching — a magic mismatch produces a clean peer
@@ -205,8 +222,8 @@ drop, so a wrong-magic node simply finds nobody.
 ## 4. A receiving address
 
 ```bash
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getwalletinfo | grep walletname
-ADDR=$(Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getnewaddress "genesis-float")
+Hemis-cli getwalletinfo | grep walletname
+ADDR=$(Hemis-cli getnewaddress "genesis-float")
 echo "$ADDR"
 ```
 
@@ -228,8 +245,8 @@ synchronous, and it returns the block hashes it produced (`rpc/mining.cpp:151`; 
 comes from your address at `:165`, and it selects PoW vs PoS from `UPGRADE_POS` at `:174`).
 
 ```bash
-time Hemis-cli -datadir=$HOME/.hemis-ptxtestnet generatetoaddress 49 "$ADDR"
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getblockcount        # must read 49
+time Hemis-cli generatetoaddress 49 "$ADDR"
+Hemis-cli getblockcount        # must read 49
 ```
 
 **How long: seconds. Not an hour.** ★★ An earlier version of this runbook said "budget about an
@@ -289,9 +306,9 @@ producing PoS blocks. If it has no stakeable coins it says
 **What you should see:** blocks 1–49 are PoW with a 3800 HMS coinbase; block 50 onward are PoS.
 
 ```bash
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet generatetoaddress 2 "$ADDR"    # blocks 50 and 51, PoS
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getblockcount                  # 51
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getstakingstatus
+Hemis-cli generatetoaddress 2 "$ADDR"    # blocks 50 and 51, PoS
+Hemis-cli getblockcount                  # 51
+Hemis-cli getstakingstatus
 ```
 
 ★ **Now the two gates from the top of this document matter.** From here the chain is supposed to
@@ -306,7 +323,7 @@ skipped step 2, they are not, and the chain stops at 51 until you fix it.
 after the block that produced it** — not 10 blocks after you finish mining.
 
 ```bash
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getwalletinfo | grep -E '"balance"|immature_balance'
+Hemis-cli getwalletinfo | grep -E '"balance"|immature_balance'
 ```
 
 * **`balance`** — spendable now.
@@ -331,7 +348,7 @@ staking continues producing blocks at roughly one per minute, that is about ten 
 flip. Check rather than count:
 
 ```bash
-watch -n30 'Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getwalletinfo | grep -E "\"balance\"|immature_balance"'
+watch -n30 'Hemis-cli getwalletinfo | grep -E "\"balance\"|immature_balance"'
 # done when immature_balance reaches 0.00000000
 ```
 
@@ -348,7 +365,7 @@ record. Do this before you send a single coin anywhere.
 
 ```bash
 mkdir -p ~/ptx-backups
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet backupwallet ~/ptx-backups/wallet-genesis-$(date -u +%Y%m%dT%H%M%SZ).dat
+Hemis-cli backupwallet ~/ptx-backups/wallet-genesis-$(date -u +%Y%m%dT%H%M%SZ).dat
 
 # VERIFY it — a backup you have not checked is not a backup
 ls -la ~/ptx-backups/
@@ -377,7 +394,7 @@ Staking is on by default: `-staking` defaults to `!IsRegTestNet() && DEFAULT_STA
 they pass:
 
 ```bash
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getstakingstatus
+Hemis-cli getstakingstatus
 ```
 
 | field | required | meaning |

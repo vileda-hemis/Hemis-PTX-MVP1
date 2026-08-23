@@ -123,7 +123,7 @@ cd Hemis-PTX-MVP1/testnet/operator
 ```
 
 ★ **No datadir or port overrides, and repeat this unchanged on each of your four hosts.** One GM
-per host means the defaults are already right: datadir `~/.hemis-ptxtestnet`, P2P 29994, RPC 29995.
+per host means the defaults are already right: datadir `~/.Hemis`, P2P 29994, RPC 29995.
 `PTX_DATADIR` / `PTX_P2P_PORT` / `PTX_RPC_PORT` still exist for unusual deployments but are no
 longer the documented path — and **the RPC port in particular must not be changed**, because the
 signing fan-out dials one port number for every member (`src/ptx/ptx_fanout.cpp:117-120`), so a GM
@@ -181,12 +181,12 @@ Nothing below this line works until the daemon is running — including generati
 which is an **RPC call**, not an offline command.
 
 ```bash
-Hemisd -datadir=$HOME/.hemis-ptxtestnet -daemon
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getblockcount     # should answer within a few seconds
+Hemisd -daemon
+Hemis-cli getblockcount     # should answer within a few seconds
 ```
 
 If `Hemisd` is not found, `install.sh` did not install binaries — go back to A1.
-To stop it: `Hemis-cli -datadir=$HOME/.hemis-ptxtestnet stop`.
+To stop it: `Hemis-cli stop`.
 
 ★ **This is a 24/7 node.** `-daemon` survives your shell but not a reboot. Arrange for it to start
 at boot (a systemd unit, or `@reboot` in cron) before you report the node as ready — a GM that is
@@ -217,9 +217,9 @@ commented placeholder when it cannot choose. **Behind NAT it cannot choose, and 
 you leave it** — the daemon would advertise the private address.
 
 ```bash
-grep externalip $HOME/.hemis-ptxtestnet/Hemis.conf
+grep externalip $HOME/.Hemis/Hemis.conf
 # if it is commented out, set it to the SAME address you will register, under [ptxtestnet]:
-echo "externalip=203.0.113.10" >> $HOME/.hemis-ptxtestnet/Hemis.conf
+echo "externalip=203.0.113.10" >> $HOME/.Hemis/Hemis.conf
 ```
 
 Why it is not optional: `CActiveDeterministicGamemasterManager::Init` refuses to arm without a
@@ -232,7 +232,7 @@ gamemaster registers, syncs, shows as enabled — and `getgamemasterstatus` neve
 ### A4. Generate your BLS key
 
 ```bash
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet generateblskeypair
+Hemis-cli generateblskeypair
 ```
 
 Output has two halves:
@@ -289,13 +289,13 @@ file, which is inside the section, so the commands below are correct as written.
 
 ```bash
 # Add the secret AND enable the gamemaster role, then restart the daemon:
-echo "gmoperatorprivatekey=<BLS SECRET>" >> $HOME/.hemis-ptxtestnet/Hemis.conf
-echo "gamemaster=1"                      >> $HOME/.hemis-ptxtestnet/Hemis.conf
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet stop
-Hemisd -datadir=$HOME/.hemis-ptxtestnet -daemon
+echo "gmoperatorprivatekey=<BLS SECRET>" >> $HOME/.Hemis/Hemis.conf
+echo "gamemaster=1"                      >> $HOME/.Hemis/Hemis.conf
+Hemis-cli stop
+Hemisd -daemon
 
 # Prove it took -- this answers only if the daemon came back up:
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getblockcount
+Hemis-cli getblockcount
 ```
 
 ### ★ HANDOFF 1 — Node ➜ Wallet
@@ -469,7 +469,7 @@ but something could not be checked.
 ### ★★ The acceptance criterion is one line: `status: Ready`
 
 ```bash
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getgamemasterstatus | grep '"status"'
+Hemis-cli getgamemasterstatus | grep '"status"'
 ```
 
 **`"Ready"` and nothing else means armed.** `CActiveDeterministicGamemasterManager::GetStatus()`
@@ -544,7 +544,7 @@ A revival with the fault still present is banned again in another forty minutes.
 ```bash
 # ON THE GAMEMASTER HOST, which already has the BLS secret in its Hemis.conf.
 # Needs a few HMS in this node's own wallet to pay the fee.
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet protx_update_service \
+Hemis-cli protx_update_service \
     "<your protx txid>" "" "" "<YOUR BLS SECRET>"
 ```
 
@@ -603,7 +603,7 @@ pipeline, **silently suppresses every match**. You conclude your node logged not
 logged everything.
 
 ```bash
-grep -a "PTX" ~/.hemis-ptxtestnet/debug.log      # -a = treat as text. ALWAYS use this.
+grep -a "PTX" ~/.Hemis/debug.log      # -a = treat as text. ALWAYS use this.
 ```
 
 Use `grep -a` by default on any `debug.log` from a daemon that did not shut down cleanly.

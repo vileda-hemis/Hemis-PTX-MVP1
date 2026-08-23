@@ -117,18 +117,18 @@ Open each GM's two ports, in both places. See the table above.
 The BLS key is an **RPC call**, so the daemon has to be running first.
 
 ```bash
-Hemisd -datadir=$HOME/.hemis-ptxtestnet -daemon
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getblockcount      # answers within a few seconds
-Hemis-cli -datadir=$HOME/.hemis-ptxtestnet generateblskeypair
+Hemisd -daemon
+Hemis-cli getblockcount      # answers within a few seconds
+Hemis-cli generateblskeypair
 ```
 
 * the **`secret`** goes into *this* machine's config, **together with `gamemaster=1`**:
 
   ```bash
-  echo "gamemasterblsprivkey=<BLS SECRET>" >> $HOME/.hemis-ptxtestnet/Hemis.conf
-  echo "gamemaster=1"                      >> $HOME/.hemis-ptxtestnet/Hemis.conf
-  Hemis-cli -datadir=$HOME/.hemis-ptxtestnet stop
-  Hemisd    -datadir=$HOME/.hemis-ptxtestnet -daemon
+  echo "gamemasterblsprivkey=<BLS SECRET>" >> $HOME/.Hemis/Hemis.conf
+  echo "gamemaster=1"                      >> $HOME/.Hemis/Hemis.conf
+  Hemis-cli stop
+  Hemisd    -daemon
   ```
 
 * the **`public`** half goes to the wallet operator. **Send the public half only.**
@@ -166,7 +166,7 @@ network). Install `git` and `curl` yourself and re-run.
 
 **`glibc 2.28 is too old (need >= 2.31)`** — the release binaries will not run on this OS. Either
 use a newer OS, or build from source on the box:
-`PTX_BUILD_FROM_SOURCE=1 PTX_DATADIR=$HOME/.hemis-ptxtestnet ./install.sh` (tens of minutes, ~8 GB
+`PTX_BUILD_FROM_SOURCE=1 PTX_DATADIR=$HOME/.Hemis ./install.sh` (tens of minutes, ~8 GB
 of disk, and it installs build dependencies).
 
 **`COULD NOT RESERVE PORTS 32000-33000`** — you are in an unprivileged container, and this is not a

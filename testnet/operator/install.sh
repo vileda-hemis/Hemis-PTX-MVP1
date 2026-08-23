@@ -21,7 +21,31 @@ REPO="${PTX_REPO:-https://github.com/vileda-hemis/Hemis-PTX-MVP1.git}"
 #   PTX_REF=feature/ptx-dkg PTX_BUILD_FROM_SOURCE=1 ./install.sh
 REF="${PTX_REF:-v0.1.0-testnet}"
 PREFIX="${PTX_PREFIX:-/opt/hemis-ptx}"
-DATADIR="${PTX_DATADIR:-$HOME/.hemis-ptxtestnet}"
+# ★★ THE DEFAULT DATADIR, AND THIS IS BUG-047's FIX -- NOT A TIDY-UP.
+# The daemon's own default is $HOME/.Hemis (util/system.cpp GetDefaultDataDir),
+# and its config file is read from the BASE of that, $HOME/.Hemis/Hemis.conf
+# (Hemis_CONF_FILENAME at util/system.cpp:81; GetConfigFile resolves it with
+# net_specific=false). Installing to a DIFFERENT directory left a gap: a bare
+# `Hemisd` -- no -datadir -- read a config that did not exist, took every
+# default, and came up on MAINNET, silently, looking healthy.
+# ★ That is not hypothetical. On 2026-08-23, on a clean host, our own tooling
+# produced it twice: install.sh (18 MB of mainnet in ~/.Hemis) and a bare
+# `Hemis-cli`, which creates the tree merely by being invoked.
+# Installing INTO the default closes the gap instead of documenting around it:
+# `ptxtestnet=1` at the top of that file selects the network
+# (util/system.cpp:865, GetChainName -> CBaseChainParams::PTXTESTNET), so a bare
+# daemon lands on ptxtestnet and its chain data goes to $HOME/.Hemis/ptxtestnet/.
+# Verified by outcome the same day, with NO -datadir, -conf or -ptxtestnet:
+#   "chain": "ptxtestnet" ; Using data directory /root/.Hemis/ptxtestnet
+#   no blocks/ at the top level, i.e. no mainnet
+# ★ NOT `testnet=1`. That selects the HEMIS testnet (CBaseChainParams::TESTNET,
+# util/system.cpp:864) -- a different chain with different magic -- and would
+# produce a perfectly healthy daemon on the wrong network, which is the same
+# class of failure with a friendlier face.
+# ★ CONSEQUENCE, stated rather than left implicit: on this host the default is
+# now PTX testnet. Running MAINNET here needs an explicit -datadir pointing
+# somewhere else. That is correct for a machine deployed as a PTX gamemaster.
+DATADIR="${PTX_DATADIR:-$HOME/.Hemis}"
 # ★ Overridable, but the DOCUMENTED DEPLOYMENT IS ONE GM PER HOST, so the defaults
 # are what an operator should use. These remain for unusual deployments and for
 # install-test.sh's fixture. ★ RPC_PORT in particular must stay 29995: the signing
@@ -1087,8 +1111,11 @@ StartLimitBurst=5
 # daemon that then dies. The pidfile would be present, correct, and stale.
 Type=simple
 User=$(id -un)
-# ★ -datadir is the whole point of this file. Without it the daemon reads
-# ~/.Hemis and synchronises MAINNET.
+# ★ -datadir is passed explicitly even though it now equals the daemon's own
+# default. It is not redundant: PTX_DATADIR can move the install (vps-install.sh
+# runs a second GM that way), and a unit that assumed the default would then
+# supervise the wrong directory. It also keeps the unit correct if HOME differs
+# under systemd, which is how the first systemd test failed.
 ExecStart=$UNIT_HEMISD -datadir=$DATADIR
 # ★ STARTED MEANS RPC ANSWERS, NOT "THE PROCESS EXISTS". Type=simple marks the
 # unit active the moment ExecStart is spawned, which is still too early to mean
@@ -1129,9 +1156,13 @@ cat <<EOF
   its own internet-routable address and this same port pair.
   The 32000-33000 kernel reservation is host-wide and is set once; re-running is safe.
 
-  ★★ NEVER RUN A BARE \`Hemisd\`. Without -datadir it reads ~/.Hemis, not the
-  config above, and synchronises MAINNET -- silently, and it looks healthy.
-  Use the unit (systemctl start hemis-ptx) or always pass -datadir=$DATADIR.
+  ★ A BARE \`Hemisd\` IS NOW SAFE ON THIS HOST, and that is deliberate. The config
+  above lives in the daemon's OWN default datadir ($DATADIR), so a bare Hemisd
+  reads it, sees ptxtestnet=1 and comes up on ptxtestnet. It used to read an
+  empty ~/.Hemis, take every default and synchronise MAINNET, silently, looking
+  healthy -- that was BUG-047, and installing into the default is its fix.
+  ★ The other side of that trade: MAINNET on this machine now needs an explicit
+  -datadir pointing somewhere else. Correct for a PTX gamemaster host.
 
   NEXT, in order:
     1. Open $P2P_PORT and $RPC_PORT in your firewall AND any NAT/cloud security group.

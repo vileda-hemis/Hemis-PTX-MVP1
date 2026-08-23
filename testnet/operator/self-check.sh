@@ -12,7 +12,11 @@
 # silently. Nothing in the normal status output says so.
 set -uo pipefail
 
-DATADIR="${PTX_DATADIR:-$HOME/.hemis-ptxtestnet}"
+# ★ Matches install.sh's default, which is now the daemon's OWN default,
+# $HOME/.Hemis -- see the BUG-047 note there. A self-check that looked in a
+# different directory from the one the operator installed into would report a
+# perfectly healthy node as missing.
+DATADIR="${PTX_DATADIR:-$HOME/.Hemis}"
 CLI="${PTX_CLI:-Hemis-cli}"
 # ★ Read the ports from THIS GM's own config, not from a constant. A host running
 # three GMs has three port pairs, and probing the wrong pair reports a healthy

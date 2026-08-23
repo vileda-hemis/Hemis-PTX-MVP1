@@ -33,10 +33,25 @@ running without a new genesis or a new binary.
 
 ## 1. Genesis
 
+### ★ The launch date is fixed: **2026-08-23, 00:00:00 UTC** → `nTime = 1787443200`
+
+Vileda's decision, 2026-08-23. Use this value; do not recompute it from "today" when you run the
+generator, or two people will produce two different genesis blocks.
+
+★★ **THIS IS NOT A COMMITMENT TO LAUNCH ON THAT DATE.** `nTime` is a *timestamp written into block
+0*, not a trigger and not a deadline. The chain begins when **block 1** is mined, which may be days
+or weeks later, and **a genesis `nTime` in the past needs no re-mine** — which is exactly why it is
+safe to fix the value now and take the time you need over everything else. The only visible artefact
+is a gap between block 0 and block 1 in an explorer, and that is cosmetic.
+
+★ Midnight UTC is worth choosing rather than "now": 1787443200 is divisible by 86400 and therefore
+by `nTimeSlotLength = 15` (`chainparams.cpp:776` for ptxtestnet), so the Time Protocol v2 timestamp
+mask `nTime % nTimeSlotLength == 0` is satisfied for free. An arbitrary wall-clock second has a
+14-in-15 chance of failing it.
+
 `findGenesisPTXBea()` is commented out at `src/chainparams.cpp:202-228`; the `found` flag it needs
-is live at `:24`. Uncomment, set `nTime` to the intended launch date at 00:00:00 UTC, run once,
-record the nonce and hash, update **both** asserts at `:740-744`, and add the genesis-only
-`mapCheckpoints` entry.
+is live at `:24`. Uncomment, set `nTime = 1787443200`, run once, record the nonce and hash, update
+**both** asserts at `:740-744`, and add the genesis-only `mapCheckpoints` entry.
 
 ★ The merkle root will be **unchanged** (`93ad7b45…`) — it derives from the shared genesis coinbase
 message. That is expected, not a mistake.
@@ -55,25 +70,33 @@ Generate on any node of a network sharing `base58Prefixes[SECRET_KEY] = 239` —
 (`:893`), ptxbea (`:1104`), Hemis testnet (`:515`) and regtest (`:662`) all do; **mainnet is 212
 and will produce a WIF this chain cannot decode**.
 
-### Run this on px1 — paste-ready, nothing to edit
+### Run this on ptx01 — paste-ready, nothing to edit
 
-**Host: px1 (`192.168.99.85`), reachable by key from node1.** Chosen over `ptx01` for three
-reasons, all measured 2026-08-23: it carries binaries built from **current source** (`ad51d1c`), so
-`validateaddress` and `dumpprivkey` behave exactly as the launch build will; the datadir below is
-**brand new**, so the wallet holding the spork key can never be the wallet holding the 193,800 HMS;
-and a ptxtestnet node was started there minutes before this was written and served wallet RPC
-(`Creating HD Wallet`, `ActivateSaplingWallet : sapling spkm setup completed`). `ptx01` could not
-be verified — it is not a container on node1 and the px1 guests do not answer the guest agent, so
-nothing here can confirm it comes up far enough to serve wallet RPC.
+**Host: `ptx01`.** It is already installed, already has a wallet, and you have direct access to it.
 
-The chain state is irrelevant: this needs the wallet only. Height 0 with no peers is fine.
+★ **Its binaries are old, and that is fine — verified, not assumed.** ptx01 runs `v0.1.0-testnet`
+(`1591450`), which predates the Gate 0 cut. What matters for a key is the WIF prefix, and in
+`1591450`'s own tree `base58Prefixes[SECRET_KEY]` for ptxtestnet is **239** — byte-identical to
+current source (`chainparams.cpp:893`), as are regtest (`:662`) and ptxbea (`:1104`), and the
+address prefix `PUBKEY_ADDRESS` is 139 in both. **So a key generated on ptx01 today decodes on the
+launch build.** The Gate 0 cut changed `UPGRADE_V6_0` and the magic; it did not touch the base58
+prefixes.
+
+★ **A fresh, disposable datadir — not ptx01's node datadir, and not the default.** Whichever wallet
+this runs in ends up holding the spork key, so it must not be the wallet that will hold 193,800 HMS
+and it must not be the node's own. The commands below therefore pass `-datadir` explicitly, which
+is deliberate: everywhere else in these documents `-datadir` has just been removed, because the
+installed node now lives in the daemon's default directory. This is the one place a separate
+directory is the point.
+
+The ports below are deliberately not 29994/29995, so this cannot collide with the node already
+running on ptx01. The chain state is irrelevant — this needs the wallet only, and height 0 with
+zero peers is fine.
 
 ```bash
-ssh root@192.168.99.85
-
 # --- a disposable datadir, used for nothing else, ever ---
-mkdir -p /root/ptx-spork/.hemis-ptxtestnet
-cat > /root/ptx-spork/.hemis-ptxtestnet/Hemis.conf <<'EOF'
+mkdir -p $HOME/.hemis-spork
+cat > $HOME/.hemis-spork/Hemis.conf <<'EOF'
 ptxtestnet=1
 [ptxtestnet]
 rpcuser=sporkgen
@@ -85,73 +108,73 @@ port=29974
 listen=1
 EOF
 
-# --- start; the sapling params are already at /root/.Hemis-params ---
-/root/ptx-build/bin/Hemisd -datadir=/root/ptx-spork/.hemis-ptxtestnet -daemon
+# --- start it ---
+Hemisd -datadir=$HOME/.hemis-spork -daemon
 
 # ★ VERIFY BY OUTCOME. `-daemon` forks and exits 0 even when startup then fails,
 #   so "Hemis server starting" and $?=0 mean nothing. This is the real check:
 sleep 30
-/root/ptx-build/bin/Hemis-cli -datadir=/root/ptx-spork/.hemis-ptxtestnet getblockcount
-# -> 0    (a number, not an error, is what you need; 0 is correct here)
+Hemis-cli -datadir=$HOME/.hemis-spork getblockcount
+# -> a number (0 is correct here). If instead it says it cannot connect, the
+#    daemon died: check $HOME/.hemis-spork/ptxtestnet/debug.log. The usual cause
+#    is the sapling params; they live in $HOME/.Hemis-params and ptx01's install
+#    already put them there, but you can point at them with -paramsdir=<dir>.
 
 # --- the three commands ---
-ADDR=$(/root/ptx-build/bin/Hemis-cli -datadir=/root/ptx-spork/.hemis-ptxtestnet \
-        getnewaddress "ptxtestnet-spork")
+ADDR=$(Hemis-cli -datadir=$HOME/.hemis-spork getnewaddress "ptxtestnet-spork")
 echo "$ADDR"
 
-/root/ptx-build/bin/Hemis-cli -datadir=/root/ptx-spork/.hemis-ptxtestnet \
-        validateaddress "$ADDR"
+Hemis-cli -datadir=$HOME/.hemis-spork validateaddress "$ADDR"
 # -> read TWO fields off this: "pubkey" (the hex) and "iscompressed"
 
-/root/ptx-build/bin/Hemis-cli -datadir=/root/ptx-spork/.hemis-ptxtestnet \
-        dumpprivkey "$ADDR"
+Hemis-cli -datadir=$HOME/.hemis-spork dumpprivkey "$ADDR"
 # ★★ THIS IS THE WIF. IT DOES NOT LEAVE THIS HOST.
 #    Not into chat, not into a report, not into the standup, not into git.
 #    The ONLY value that travels is the "pubkey" hex from validateaddress.
 
 # --- store the private half ---
 umask 077
-printf '%s\n' "<paste the WIF here>" > /root/ptxtestnet_spork.key
-chmod 600 /root/ptxtestnet_spork.key
-export PTXTESTNET_SPORK_KEY=/root/ptxtestnet_spork.key
+printf '%s\n' "<paste the WIF here>" > $HOME/ptxtestnet_spork.key
+chmod 600 $HOME/ptxtestnet_spork.key
+export PTXTESTNET_SPORK_KEY=$HOME/ptxtestnet_spork.key
 
 # --- stop it ---
-/root/ptx-build/bin/Hemis-cli -datadir=/root/ptx-spork/.hemis-ptxtestnet stop
+Hemis-cli -datadir=$HOME/.hemis-spork stop
 ```
 
 ★ **Send back the `pubkey` hex, and only that.** Not the address, not the WIF, not the whole
 `validateaddress` object — the one hex string from the `pubkey` field.
 
-★ **Before launch, move `/root/ptxtestnet_spork.key` into the coordinator's real secret store and
-shred the px1 copy.** px1 is a build host; it is where this was convenient to make, not where a
-production credential should live. The ptxbea precedent is the same shape:
-`chainparams.cpp:1042` records that its private half *"lives in `$PTXBEA_SPORK_KEY` in the
-environment, never in this repo"*.
+★★ **Compression must match, and this is the one that fails silently.** `validateaddress` will
+almost certainly report `"iscompressed": true` and a **66-character** pubkey. **Paste it verbatim.**
+Do not convert it to the 130-character uncompressed form to make it look like the `047F4B27…` it
+replaces. Verification recovers a pubkey from the signature and compares the `CKeyID` — the HASH160
+(`messagesigner.cpp:88-104`) — and `CKey::SignCompact` encodes the compression flag in the recovery
+header (`key.cpp:243`), which `RecoverCompact` reconstructs from. A compressed WIF against an
+uncompressed hex pubkey yields a different HASH160 and the signature never verifies.
 
-Put the **`pubkey` hex verbatim** at `src/chainparams.cpp:786`, replacing the shared-with-Hemis-
-testnet key the `TODO(launch)` marker sits on.
+★ **Before launch, move `$HOME/ptxtestnet_spork.key` into the real secret store.** The ptxbea
+precedent is the same shape: `chainparams.cpp:1042` records that its private half *"lives in
+`$PTXBEA_SPORK_KEY` in the environment, never in this repo"*.
 
-★★ **Both halves must be the same compression form.** Verification recovers a pubkey from the
-signature and compares `CKeyID` — the HASH160 (`messagesigner.cpp:88-104`) — and
-`CKey::SignCompact` sets the recovery header from `fCompressed` (`key.cpp:243`). A compressed WIF
-with an uncompressed hex pubkey does not match. Use the `pubkey` field verbatim and do not convert
-it by hand; `validateaddress` reports `iscompressed` so you can see which you have.
 
 **Prove the pair before launch — the daemon does it for you, and it is fatal if wrong:**
 
+★★ **DO NOT RUN THIS YET, AND DO NOT READ ITS FAILURE AS A PROBLEM.** Against the binaries that
+exist today it is **worthless**: they still carry the shared Hemis-testnet spork pubkey, so a
+freshly generated pair *will* be rejected — correctly, and it tells you nothing about your pair.
+The check only becomes meaningful once a build has **your** pubkey compiled into
+`chainparams.cpp:786`. Run it after that rebuild, not before.
+
 ```bash
-# On px1, AFTER a build that has the new pubkey compiled in:
-/root/ptx-build/bin/Hemisd -datadir=/root/ptx-spork/.hemis-ptxtestnet \
-    -sporkkey="$(cat /root/ptxtestnet_spork.key)" -daemon
+# AFTER a build that has the new pubkey compiled in. Same disposable datadir.
+Hemisd -datadir=$HOME/.hemis-spork \
+    -sporkkey="$(cat $HOME/ptxtestnet_spork.key)" -daemon
 sleep 30
 grep -E "Successfully initialized as spork signer|wrong key" \
-    /root/ptx-spork/.hemis-ptxtestnet/ptxtestnet/debug.log
-/root/ptx-build/bin/Hemis-cli -datadir=/root/ptx-spork/.hemis-ptxtestnet stop
+    $HOME/.hemis-spork/ptxtestnet/debug.log
+Hemis-cli -datadir=$HOME/.hemis-spork stop
 ```
-
-★ This step is **worthless against the current binaries** — they still carry the shared
-Hemis-testnet key, so any freshly generated pair will "fail" correctly and tell you nothing about
-your pair. Run it only after a build with the new pubkey in `chainparams.cpp:786`.
 
 `SetPrivKey` signs a test message and verifies it against the compiled-in pubkey
 (`src/spork.cpp:266-289`); a mismatch makes the daemon refuse to start
