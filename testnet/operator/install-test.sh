@@ -935,6 +935,14 @@ red_run() {
 # the REAL default-datadir code path without writing to the operator's actual
 # $HOME/.Hemis. Installing for real would test the same thing and cost the tester
 # their own datadir.
+# AND NO PTX_PARAMS_DIR HERE, DELIBERATELY. The sapling params are found at
+# $HOME/.Hemis-params (ZC_GetBaseParamsDir, util/system.cpp -- it reads HOME the
+# same way GetDefaultDataDir does). Pointing PTX_PARAMS_DIR outside the redirected
+# HOME put the params where install.sh wrote them and NOT where the daemon looks,
+# so LoadSaplingParams failed and the daemon exited during init -- which this leg
+# duly reported as "the bare daemon did not stay up": correct, and for a reason
+# that had nothing to do with what it was testing. Letting install.sh use its own
+# default keeps params and datadir under the same HOME, as a real install does.
 bare_invocation_run() {
     say "BARE INVOCATION — no -datadir anywhere (BUG-047)"
     # ★ Separate statements: in a single `local a=X b="$a/y"`, $a is not yet
@@ -946,7 +954,7 @@ bare_invocation_run() {
     rm -rf "$fh"; mkdir -p "$fh"
     ( cd "$HERE" && HOME="$fh" PATH="$(dirname "$HEMISD"):$PATH" \
         PTX_REPO="$TEST_REPO" PTX_REF="$TEST_REF" \
-        PTX_PREFIX="$BASE/bare-prefix" PTX_PARAMS_DIR="$BASE/bare-params" \
+        PTX_PREFIX="$BASE/bare-prefix" \
         bash ./install.sh ) >"$BASE/bare-install.log" 2>&1 \
         || { bad "install.sh failed with no PTX_DATADIR -- see $BASE/bare-install.log"; return 1; }
     [ -f "$dd/Hemis.conf" ] \
