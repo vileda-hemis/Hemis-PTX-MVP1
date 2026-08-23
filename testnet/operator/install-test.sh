@@ -937,7 +937,12 @@ red_run() {
 # their own datadir.
 bare_invocation_run() {
     say "BARE INVOCATION — no -datadir anywhere (BUG-047)"
-    local fh="$BASE/fakehome" dd="$fh/.Hemis" pid rc=0
+    # ★ Separate statements: in a single `local a=X b="$a/y"`, $a is not yet
+    # assigned when b is expanded, and under `set -u` that is an unbound-variable
+    # abort -- which is exactly how this leg failed on its first run.
+    local fh dd pid rc=0
+    fh="$BASE/fakehome"
+    dd="$fh/.Hemis"
     rm -rf "$fh"; mkdir -p "$fh"
     ( cd "$HERE" && HOME="$fh" PATH="$(dirname "$HEMISD"):$PATH" \
         PTX_REPO="$TEST_REPO" PTX_REF="$TEST_REF" \
