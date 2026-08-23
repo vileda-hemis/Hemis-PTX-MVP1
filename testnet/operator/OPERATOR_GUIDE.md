@@ -270,6 +270,36 @@ out on purpose. A config with `gamemaster=1` and no key does not start a limited
 `generateblskeypair` is an RPC call, that would lock you out of the daemon you need in order to
 produce the key. Both lines, together, after you have the key.
 
+★★ **There is a SECOND refusal, and it is not about your key.** Arming a node whose chain has no
+blocks past genesis fails with a different and misleading message:
+
+```
+Error: Cannot start deterministic gamemaster before enforcement.
+Remove -gmoperatorprivatekey to start as legacy gamemaster
+```
+
+Do **not** act on what it tells you to do. Removing `-gmoperatorprivatekey` is wrong, and
+"before enforcement" is not the real reason: on this network `UPGRADE_V6_0` is `ALWAYS_ACTIVE`
+(`src/chainparams.cpp:872-873`), so enforcement is active at *every* height including 0. The real
+condition is that **the daemon does not yet know its own chain tip**. `IsDIP3Enforced()` reads
+`tipIndex` and substitutes height `-1` when it is unset (`src/evo/deterministicgms.cpp:948-952`),
+and `-1 >= 0` is false, so the check fails. `tipIndex` is set either when a block is connected
+(`src/validation.cpp:2207`) or by `InitTierTwoChainTip()` — which runs inside the background
+`ThreadImport` (`src/init.cpp:645`, `:712`), while the arming check runs on the main init thread
+(`src/init.cpp:1939`). On a datadir that already has genesis, the main thread does not wait for
+that thread: `fHaveGenesis` is set directly (`src/init.cpp:1742-1747`) so the wait at `:1777`
+returns at once. A genesis-only node therefore loses this race every time.
+
+In normal operation you will not meet this, because you arm *after* registering and by then your
+node has synced real blocks. It bites on a node that is armed before it has ever connected a
+block. **The fix is to sync first, then arm** — `getblockcount` must be greater than 0 before you
+add these two lines.
+
+★ **`Hemisd -daemon` prints `Hemis server starting` and exits 0 even when startup then fails.**
+The parent forks and returns before the child reaches either check above, so a script that tests
+`$?` sees success on a daemon that is not running. Measured 2026-08-23 on both refusals. This is
+why the check below is `getblockcount` and not the exit status of the start command.
+
 ★ **Both lines must land under the `[ptxtestnet]` section**, not above it — `Hemis.conf` has a
 section header and settings above it are ignored on this network. `>>` appends to the end of the
 file, which is inside the section, so the commands below are correct as written.

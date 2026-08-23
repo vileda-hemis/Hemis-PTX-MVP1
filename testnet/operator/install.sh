@@ -903,6 +903,25 @@ $ADDNODE_LINES
 # locks you out of the very daemon you need in order to produce the key. Verified
 # 2026-08-21 as a single-variable change against an otherwise working node.
 #
+# ★★ AND A SECOND REFUSAL, WHICH IS NOT ABOUT THE KEY AT ALL. Arming a node
+# whose chain has no blocks past genesis dies with a DIFFERENT and misleading
+# message: "Cannot start deterministic gamemaster before enforcement. Remove
+# -gmoperatorprivatekey to start as legacy gamemaster". Do not follow that
+# advice. UPGRADE_V6_0 is ALWAYS_ACTIVE on this network (chainparams.cpp:872-873)
+# so enforcement is on at every height -- the real condition is that the daemon
+# does not yet know its tip. IsDIP3Enforced() substitutes height -1 for an unset
+# tipIndex (evo/deterministicgms.cpp:948-952) and -1 >= 0 is false. tipIndex is
+# set by a block connect (validation.cpp:2207) or by InitTierTwoChainTip(), which
+# runs in the BACKGROUND ThreadImport (init.cpp:645, :712) while the arming check
+# runs on the main thread (init.cpp:1939). With genesis already on disk the main
+# thread never waits for it -- fHaveGenesis is set directly (init.cpp:1742-1747)
+# -- so a genesis-only node loses the race every time. Measured 2026-08-23,
+# reproduced 4/4. SYNC FIRST, THEN ARM: getblockcount must be > 0.
+#
+# ★ Both refusals exit 0. `Hemisd -daemon` forks and the parent returns before
+# the child reaches either check, so "Hemis server starting" and $?=0 mean
+# NOTHING. Verify with getblockcount, never with the start command's status.
+#
 # So: start the daemon as it is, generate the key (OPERATOR_GUIDE.md A4), then
 # uncomment BOTH of these and restart.
 # gamemaster=1
