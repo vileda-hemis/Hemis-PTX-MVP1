@@ -159,7 +159,7 @@ cold-collateral pattern; also works before the wallet finishes syncing):
 # NODE SIDE — arm and verify
 
 **§Arm**: put the operator **secret** key from wallet-side step 3 into the node's
-config — `gamemasterblsprivkey=...` — then `Hemis-cli -ptxbea stop && Hemisd -ptxbea`
+config — `gmoperatorprivatekey=...` — then `Hemis-cli -ptxbea stop && Hemisd -ptxbea`
 (the restart ritual still works).
 
 **Verify**:
@@ -186,7 +186,7 @@ A timeout here = the silent-failure state: healthy on-chain, never signing.
 
 | Symptom | Meaning | Fix |
 |---|---|---|
-| Registered but status ≠ Ready | **Unarmed** — operator key not on the node | `gamemasterblsprivkey=` in the node conf, restart |
+| Registered but status ≠ Ready | **Unarmed** — operator key not on the node | `gmoperatorprivatekey=` in the node conf, restart |
 | Ready but never signs / rolls against your quorum fail | **Unreachable RPC** — localhost-bound, firewalled, wrong address family | `rpcbind=[::]`, open 29995 at edge + ufw, verify from another host |
 | Height stuck / behind peers | **Unsynced or partitioned** | check peers; `stop && Hemisd` (if in doubt, repeat). After a fork + mass bans: `clearbanned` — and note a stale `banlist.dat` **survives a resync wipe**; delete it too |
 | `ptx_quorum_health`: `member: true, share_current: false` | **Share lost** (node-side) | §Recovery — no recovery exists; keep the node Ready |

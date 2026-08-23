@@ -643,7 +643,7 @@ mkdir -p "$DATADIR"
 # operator would (2026-08-21): the node came up on MAINNET, not ptxtestnet -- blocks/
 # and chainstate/ at the top of the datadir instead of under ptxtestnet/, "Bound to
 # [::]:49165" instead of the P2P port asked for, no gamemaster=1, no rpcuser, and any
-# gamemasterblsprivkey the operator had added silently unread. The second and third
+# gmoperatorprivatekey the operator had added silently unread. The second and third
 # GMs on the host then failed outright, binding mainnet RPC 51473 which the first had
 # already taken -- "Unable to bind any endpoint for RPC server".
 #
@@ -659,14 +659,14 @@ TEMPLATE="$DATADIR/Hemis.conf.ptx-template"
 # a ptxtestnet datadir will not become a testnet one by fixing the config.
 if [ -f "$DATADIR/hemis.conf" ] && [ ! -e "$CONF" ]; then
     # ★ RENAME rather than tell the operator to. They may have added
-    # gamemasterblsprivkey= by hand -- the one line in there that is expensive to
+    # gmoperatorprivatekey= by hand -- the one line in there that is expensive to
     # recreate and dangerous to mistype -- and it is the whole content of the file
     # that was being ignored. Only when the correct name is free, so this can never
     # overwrite a good config with a stale one.
     mv "$DATADIR/hemis.conf" "$CONF"
     warn "found $DATADIR/hemis.conf -- LOWERCASE, AND THE DAEMON NEVER READ IT."
     echo "         An older version of this script wrote that name. Everything in it,"
-    echo "         including any gamemasterblsprivkey you added, was being ignored."
+    echo "         including any gmoperatorprivatekey you added, was being ignored."
     echo "         It has been renamed to $CONF, which the daemon does read."
     echo "         Check it before starting: the ports and rpcbind lines in it are"
     echo "         whatever that older run wrote, not necessarily this run's."
@@ -861,7 +861,7 @@ $ADDNODE_LINES
 
 # --- Node role -------------------------------------------------------------
 # ★★ THESE TWO LINES GO IN TOGETHER, AND NOT BEFORE YOU HAVE THE KEY.
-# gamemaster=1 with an empty gamemasterblsprivkey does not start a limited node --
+# gamemaster=1 with an empty gmoperatorprivatekey does not start a limited node --
 # it REFUSES TO START AT ALL: "Error: ERROR: Gamemaster priv key cannot be empty."
 # Since generateblskeypair is an RPC call, a config carrying gamemaster=1 up front
 # locks you out of the very daemon you need in order to produce the key. Verified
@@ -870,7 +870,7 @@ $ADDNODE_LINES
 # So: start the daemon as it is, generate the key (OPERATOR_GUIDE.md A4), then
 # uncomment BOTH of these and restart.
 # gamemaster=1
-# gamemasterblsprivkey=<the BLS key you generate in the OPERATOR_GUIDE>
+# gmoperatorprivatekey=<the BLS key you generate in the OPERATOR_GUIDE>
 
 # --- Wallet posture on a gamemaster host -----------------------------------
 # ★ THE WALLET IS LEFT ON DELIBERATELY, and here is the trade, because the

@@ -89,7 +89,7 @@ three coordinator nodes need public reachability on 29994 — they are the `addn
 operator is given.
 
 ★ **The mining node's config differs from a GM's in exactly one respect: it never gets
-`gamemaster=1` or `gamemasterblsprivkey`.** Everything else — network selection, ports, rpcbind,
+`gamemaster=1` or `gmoperatorprivatekey`.** Everything else — network selection, ports, rpcbind,
 rpcallowip — is identical. There is no mining-specific setting: the internal miner is driven
 entirely by RPC (step 5), not by config.
 

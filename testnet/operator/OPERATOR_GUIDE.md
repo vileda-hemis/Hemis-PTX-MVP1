@@ -241,9 +241,28 @@ Output has two halves:
 { "secret": "<BLS SECRET>", "public": "<BLS PUBLIC>" }
 ```
 
-* **`secret`** — goes into `Hemis.conf` on **this** machine, as `gamemasterblsprivkey=<secret>`.
+* **`secret`** — goes into `Hemis.conf` on **this** machine, as `gmoperatorprivatekey=<secret>`.
   **It never leaves this machine.** Not in chat, not in email, not in a ticket.
 * **`public`** — this is what you hand to the wallet operator.
+
+★★ **The setting is spelled `gmoperatorprivatekey`, and nothing else works.** It is read at
+`src/tiertwo/init.cpp:290` and registered in the daemon's own help at `:39`
+(`-gmoperatorprivatekey=<bech32>`). ★ **A wrong spelling is not rejected — it is ignored**, and the
+consequences are worse than a typo deserves. `gmoperatorkeyStr` comes back empty, `fDeterministic`
+is therefore false (`:291`), and the daemon takes the **legacy** gamemaster branch (`:313-323`),
+which wants an entirely different setting (`-gamemasterprivkey`, a pre-DIP3 key this network does
+not use). What you see is:
+
+```
+Error: ERROR: Gamemaster priv key cannot be empty.
+```
+
+★ That message names **`gamemasterprivkey`**, not the setting you got wrong, and not the setting
+you need. It is the third name in the story, it belongs to a system this chain does not run, and
+following it leads nowhere. If you see it, the answer is almost always that the key line above is
+misspelled or missing — check the spelling character by character before you change anything else.
+`debug.log` settles it in one line: `IS DETERMINISTIC GAMEMASTER` means the name was read,
+`IS GAMEMASTER` (no "DETERMINISTIC") means it was not (`:292`).
 
 ★★ **`gamemaster=1` goes in NOW, with the key, and not before.** `install.sh` leaves it commented
 out on purpose. A config with `gamemaster=1` and no key does not start a limited node — the daemon
@@ -257,7 +276,7 @@ file, which is inside the section, so the commands below are correct as written.
 
 ```bash
 # Add the secret AND enable the gamemaster role, then restart the daemon:
-echo "gamemasterblsprivkey=<BLS SECRET>" >> $HOME/.hemis-ptxtestnet/Hemis.conf
+echo "gmoperatorprivatekey=<BLS SECRET>" >> $HOME/.hemis-ptxtestnet/Hemis.conf
 echo "gamemaster=1"                      >> $HOME/.hemis-ptxtestnet/Hemis.conf
 Hemis-cli -datadir=$HOME/.hemis-ptxtestnet stop
 Hemisd -datadir=$HOME/.hemis-ptxtestnet -daemon
@@ -593,8 +612,12 @@ outbound 29994 is allowed. `getconnectioncount`.
 "If your GM is PoSe-banned" above, and fix the reachability before you revive.
 
 **`Error: ERROR: Gamemaster priv key cannot be empty.`**
-→ `gamemaster=1` is uncommented and `gamemasterblsprivkey=` is not. Both lines go in together —
-A4.
+→ `gamemaster=1` is uncommented and `gmoperatorprivatekey=` is missing **or misspelled**. Both
+lines go in together — A4. ★ Do not go looking for `gamemasterprivkey`, which is what this message
+literally names: that is the pre-DIP3 legacy setting, the daemon only asks for it because your
+operator key was not read, and setting it will not arm this gamemaster. Check the spelling of
+`gmoperatorprivatekey` first; `grep DETERMINISTIC debug.log` tells you in one line whether it was
+read.
 
 **The daemon refuses to start with "Enabling Gamemaster support requires turning on transaction
 indexing"**
