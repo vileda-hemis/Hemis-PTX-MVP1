@@ -684,8 +684,16 @@ UniValue protx_register_fund(const JSONRPCRequest& request)
     if (request.fHelp || request.params.size() < 6 || request.params.size() > 10) {
         throw std::runtime_error(
                 "protx_register_fund \"collateralAddress\" \"ipAndPort\" \"ownerAddress\" \"operatorPubKey\" \"votingAddress\" \"payoutAddress\" (operatorReward \"operatorPayoutAddress\" \"ptxPaymentAddress\" \"ptxNodeId\")\n"
-                "\nCreates, funds and sends a ProTx to the network. The resulting transaction will move 10000 HMS\n"
-                "to the address specified by collateralAddress and will then function as gamemaster collateral.\n"
+                // ★ WAS THE LITERAL "10000 HMS", WHICH IS NOT THE AMOUNT ON ANY
+                // NETWORK THIS BINARY BUILDS: nGMCollateralAmt is 100 on
+                // ptxtestnet/ptxbea and 1000 on main. An operator self-funding
+                // four gamemasters types `help protx_register_fund` and was told
+                // a number an order of magnitude out, on a chain where the
+                // 1000-vs-100 confusion has already had to be fought twice in the
+                // operator guide. Read it from consensus instead of restating it.
+                + strprintf("\nCreates, funds and sends a ProTx to the network. The resulting transaction will move %s HMS\n"
+                "to the address specified by collateralAddress and will then function as gamemaster collateral.\n",
+                            FormatMoney(Params().GetConsensus().nGMCollateralAmt))
                 + HelpRequiringPassphrase(pwallet) + "\n"
                 "\nArguments:\n"
                 + GetHelpString(1, collateralAddress)
