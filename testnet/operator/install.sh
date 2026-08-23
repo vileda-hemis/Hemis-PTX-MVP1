@@ -31,6 +31,28 @@ DATADIR="${PTX_DATADIR:-$HOME/.hemis-ptxtestnet}"
 # "One GM per host, one routable address per GM".
 P2P_PORT="${PTX_P2P_PORT:-29994}"
 RPC_PORT="${PTX_RPC_PORT:-29995}"
+
+# ---------------------------------------------------------------------------
+# ★★ COORDINATOR-SUPPLIED NETWORK VALUES — SET BEFORE THE TAG IS CUT.
+#
+# These three cannot be derived, guessed or defaulted. They are minted by the
+# coordinator once, for the whole network, and every operator needs the same
+# values. See testnet/operator/ONBOARDING.md for who mints each and when.
+#
+# ★ PTX_SEEDS is the one that stops a node working entirely if it is missing.
+# This network has NO peer discovery of any kind: chainparams.cpp clears both
+# vSeeds (:887) and vFixedSeeds (:898), and there are no DNS seeds. A node with
+# no addnode= has nothing to dial, stays at height 0 forever, and looks like a
+# healthy daemon while doing it. A competent operator cannot guess an address.
+#
+# ★ Empty is not fatal here on purpose: the config is still written, the
+# placeholders are still emitted as comments, and section 5 says loudly what is
+# missing. Refusing to install because the coordinator has not filled these in
+# yet is worse than installing a node whose one missing line is named.
+PTX_SEEDS="${PTX_SEEDS:-}"      # space/comma separated host or host:port, 3 recommended
+PTX_CALLER="${PTX_CALLER:-}"    # the coordinator's caller address -> rpcallowip
+PTX_RPCAUTH="${PTX_RPCAUTH:-}"  # ptxcaller:<salt>$<hmac> -> rpcauth
+PTX_EXTERNALIP="${PTX_EXTERNALIP:-}"  # this host's registered address (B3)
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ★ Root does not need sudo, and plenty of boxes (Debian minimal, container images,
@@ -690,6 +712,25 @@ else
     fi
 fi
 
+# ★ PEER DISCOVERY. Built from PTX_SEEDS, and if it is empty the node has no way
+# to find a single peer -- see the variable's comment at the top. Emitted as
+# commented placeholders when unset so the operator can paste addresses in
+# without guessing the syntax, and warned about below.
+ADDNODE_LINES=""
+if [ -n "$PTX_SEEDS" ]; then
+    ADDNODE_LINES="$(printf '%s' "$PTX_SEEDS" | tr ', ' '\n\n' | grep -v '^$' | sed 's/^/addnode=/')"
+    ok "seed peers: $(printf '%s' "$ADDNODE_LINES" | sed 's/^addnode=//' | tr '\n' ' ')"
+else
+    ADDNODE_LINES="# addnode=<coordinator-seed-1>    <-- REQUIRED, ask the coordinator
+# addnode=<coordinator-seed-2>
+# addnode=<coordinator-seed-3>"
+    warn "NO SEED PEERS CONFIGURED (PTX_SEEDS empty)."
+    echo "         This network has no DNS seeds and no fixed seeds, so this node has"
+    echo "         NOTHING to dial: it will sit at height 0 with zero peers and still"
+    echo "         look like a healthy daemon. Get the addnode addresses from the"
+    echo "         coordinator, add them under [ptxtestnet] in $CONF, and restart."
+fi
+
 emit_conf() {   # $1 = value to put in rpcpassword
     cat <<EOF
 # PTX testnet node configuration.
@@ -736,6 +777,13 @@ rpcallowip=::1
 # --- P2P -------------------------------------------------------------------
 port=$P2P_PORT
 listen=1
+# ★★ WITHOUT AT LEAST ONE addnode= THIS NODE NEVER FINDS A PEER.
+# chainparams.cpp:887 clears vSeeds and :898 clears vFixedSeeds, and there is no
+# DNS seed for this network -- peer discovery is entirely by addnode. A node with
+# none stays at height 0, syncs nothing, registers nothing, and reports no error.
+# ★ addnode is a NETWORK-ONLY setting (util/system.cpp:329), so these lines must
+# stay INSIDE [ptxtestnet]; above the header they are dropped with a warning.
+$ADDNODE_LINES
 
 # --- Node role -------------------------------------------------------------
 # ★★ THESE TWO LINES GO IN TOGETHER, AND NOT BEFORE YOU HAVE THE KEY.

@@ -66,8 +66,20 @@ ok "RPC answers locally; height $HEIGHT"
 say "2. Chain sync"
 # ---------------------------------------------------------------------------
 PEERS=$(cli getconnectioncount || echo 0)
+# ★ THE MESSAGE USED TO SAY "seed addresses are correct", WHICH POINTED AT
+# NOTHING. This network has no DNS seeds and no fixed seeds (chainparams.cpp:887,
+# :898) -- peer discovery is entirely addnode=, and if the config has none there
+# is nothing to be correct or incorrect. Name the real cause.
 [ "${PEERS:-0}" -gt 0 ] && ok "$PEERS peer connection(s)" \
-    || bad "ZERO peers. Check that outbound $P2P_PORT is allowed and that seed addresses are correct."
+    || bad "ZERO peers. This network has NO peer discovery: check that Hemis.conf has addnode= lines UNDER the [ptxtestnet] header (above it they are ignored), that the coordinator gave you the seed addresses, and that outbound $P2P_PORT is allowed."
+# ★ Two peers, not one. The staking/tier-two sync needs GETSPORKS answered by two
+# DISTINCT peers before it leaves the sporks phase (gamemaster-sync.cpp:272-284,
+# GAMEMASTER_SYNC_THRESHOLD=2 in tiertwo/tiertwo_sync_state.h:22); one peer only
+# gets there after the 1h fulfilled-request expiry. Not fatal for a gamemaster,
+# which does not stake -- but a one-peer node is one disconnect from zero.
+if [ "${PEERS:-0}" = "1" ]; then
+    warn "only ONE peer. Add the coordinator's other addnode= seeds: a single peer is one disconnect away from an isolated node."
+fi
 
 # ---------------------------------------------------------------------------
 say "3. Registration and the registered address"
