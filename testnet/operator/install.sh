@@ -691,9 +691,35 @@ fi
 # address is found -- a NATted box, or a host addressed only after boot -- fall
 # back to the dual-stack wildcard and say so, because refusing to write a config
 # is worse than writing a working one with a warning.
+# ★ `|| true` IS LOAD-BEARING, AND ITS ABSENCE COST A WHOLE INSTALL. `ip` is
+# iproute2, which section 1 does not require and a minimal image does not ship.
+# Under `set -euo pipefail` the failing pipeline takes its exit status (127)
+# straight out of the command substitution and into the assignment, which ends
+# the script -- at SECTION 5, after the clone, the binaries and 50 MB of sapling
+# params, printing nothing but the section header. Measured on
+# debian:bookworm-slim, 2026-08-23: `install.sh exit=127`, no config written.
+# ★ The bitter part is that the fallback for exactly this case was already
+# written, ten lines below, and could never be reached: a missing `ip` is the
+# most obvious way in the world to find no global address, and it was the one
+# way that killed the script instead of falling back. `2>/dev/null` hid the
+# message; `set -e` supplied the exit. Suppressing a command's stderr does not
+# suppress its exit status.
 GLOBAL_ADDRS="$(ip -o addr show scope global 2>/dev/null \
-    | awk '{print $4}' | cut -d/ -f1 | sort -u)"
-RPCBIND_LINES="$(printf '%s' "$GLOBAL_ADDRS" | grep -v '^$' | sed 's/^/rpcbind=/')"
+    | awk '{print $4}' | cut -d/ -f1 | sort -u || true)"
+# ★ Reported separately from "no global address", because the two have different
+# fixes and the operator cannot tell them apart from the wildcard warning alone.
+# Not fatal: PTX_EXTERNALIP and an explicit rpcbind cover everything the probe
+# would have found, so a host that was told its address does not need iproute2.
+if ! command -v ip >/dev/null 2>&1; then
+    warn "iproute2 is not installed, so this host's own addresses could not be read."
+    echo "         RPC will fall back to the WILDCARD below, which is the shape"
+    echo "         ODC-076 records as failing its second bind on a dual-stack"
+    echo "         kernel. Install it and re-run this script:"
+    echo "           apt-get install -y iproute2"
+    echo "         Or set PTX_EXTERNALIP=<this host's address> and replace the"
+    echo "         rpcbind lines in the config by hand."
+fi
+RPCBIND_LINES="$(printf '%s' "$GLOBAL_ADDRS" | grep -v '^$' | sed 's/^/rpcbind=/' || true)"
 if [ -z "$RPCBIND_LINES" ]; then
     RPCBIND_LINES="rpcbind=0.0.0.0
 rpcbind=::"
@@ -718,7 +744,17 @@ fi
 # without guessing the syntax, and warned about below.
 ADDNODE_LINES=""
 if [ -n "$PTX_SEEDS" ]; then
-    ADDNODE_LINES="$(printf '%s' "$PTX_SEEDS" | tr ', ' '\n\n' | grep -v '^$' | sed 's/^/addnode=/')"
+    # ★ `|| true` for the same reason as the rpcbind probe above: `grep -v` exits
+    # 1 when nothing matches, and under `set -euo pipefail` that ends the script
+    # from inside an assignment. PTX_SEEDS=" " passes -n and reduces to nothing.
+    ADDNODE_LINES="$(printf '%s' "$PTX_SEEDS" | tr ', ' '\n\n' | grep -v '^$' | sed 's/^/addnode=/' || true)"
+fi
+# ★ Tested for CONTENT, not for whether PTX_SEEDS was set. A value that is all
+# separators is set, non-empty, and yields no seeds -- and taking the ok branch
+# on it would write a config with no addnode lines and print "seed peers:" with
+# nothing after it. That is the silent seedless install this whole block exists
+# to prevent, so it falls through to the placeholders and the warning instead.
+if [ -n "$ADDNODE_LINES" ]; then
     ok "seed peers: $(printf '%s' "$ADDNODE_LINES" | sed 's/^addnode=//' | tr '\n' ' ')"
 else
     ADDNODE_LINES="# addnode=<coordinator-seed-1>    <-- REQUIRED, ask the coordinator
