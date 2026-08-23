@@ -20,10 +20,14 @@ whole point:
 **Your collateral never goes on the node machine.** If the node is compromised, the attacker gets the
 node — not your coins.
 
-★ **You will run THREE gamemasters.** A quorum needs **11 members** and there are five operators, so
-five nodes would never form a quorum at all — 5 × 3 = 15 covers 11 with four spare. You repeat the
-**node side three times**; the **wallet side is done once**, from one wallet, registering all three.
+★ **You will run FOUR gamemasters.** A quorum needs **11 members** and there are five operators, so
+five nodes would never form a quorum at all — 5 × 4 = 20 covers 11 with nine spare. You repeat the
+**node side four times**; the **wallet side is done once**, from one wallet, registering all four.
 That is also the realistic pattern: nobody runs a separate wallet per GM.
+
+★ **Why four and not three.** At three each, losing one operator entirely plus any single other
+gamemaster puts the pool at exactly 11 — `ptx_formation.cpp:92-93`'s floor, where the next one lost
+stops quorum formation silently and every boundary after it is a deterministic skip.
 
 **Collateral: 4× per operator** — one per GM, one GM per host. See "Funding the collateral" below — there are two routes and they
 differ in how much back-and-forth they cost you.
@@ -35,12 +39,28 @@ differ in how much back-and-forth they cost you.
 | port | purpose | must be reachable from |
 |---|---|---|
 | **29994** | P2P | the internet |
-| **29995** | **RPC** | your quorum peers |
+| **29995** | **RPC** | **the coordinator's caller node — one address, and only that one** |
 
-★ **RPC being closed is the silent killer.** PTX fan-out dials each member's **RPC** directly to
-request a signature. A node with 29994 open and 29995 closed syncs perfectly, shows as registered and
-enabled, and **never signs anything** — because it is selected and then never successfully contacted.
-Nothing in the ordinary status output tells you this. `self-check.sh` section 5 is the check for it.
+★ **RPC being closed is the silent killer.** The PTX signing fan-out dials each member's **RPC**
+directly to request a signature. A node with 29994 open and 29995 closed syncs perfectly, shows as
+registered and enabled, and **never signs anything** — it is selected and then never successfully
+contacted. Nothing in the ordinary status output tells you this. `self-check.sh` section 5 is the
+check for it.
+
+★★ **It is ONE address, not "your quorum peers", and this matters at twenty gamemasters.**
+Gamemasters never dial each other's RPC. The DKG ceremony runs over P2P
+(`src/ptx/ptx_dkg_net.cpp:419-427`), and the only node-to-node RPC in the daemon is the signing
+fan-out, whose single caller is `ptx_roll` on the coordinator's caller node
+(`src/rpc/ptx.cpp:325`). So your `rpcallowip` needs **one entry**, it is the same entry every
+operator gets, and **it does not change when another operator joins**. If you were told to add a
+line per peer, that was this guide being wrong.
+
+★ **Two lines, not one — and the second is the one people forget.** The address check and the
+credential check are separate: `rpcallowip` is enforced before authentication
+(`src/httpserver.cpp:236`, HTTP 403) and the credential after it (`src/httprpc.cpp:157`, HTTP 401).
+`install.sh` generates a *different* random `rpcpassword` on every host, so the coordinator's
+credential does not match yours by default — you need the `rpcauth=` line as well. Both come from
+the coordinator, and `install.sh` writes both when `PTX_CALLER` and `PTX_RPCAUTH` are set.
 
 **Open both ports in TWO places** — the host firewall (`ufw`/`firewalld`/`iptables`) *and* the NAT
 router or cloud security group. Opening only one is the most common setup failure.
@@ -125,10 +145,6 @@ nothing in this guide will be found.
 disagreeing about them is how you end up running one release's installer against another
 release's source.
 
-★ **Pass the datadir and ports even for your first GM.** You are running three, and a bare
-`./install.sh` would write `~/.hemis-ptxtestnet` — a name that is not in the table above and that
-you would then have to translate in every command for the rest of this guide. Name it `-1` now.
-
 ★ **You will end up with the repository in two places, and that is intended.** The copy you just
 cloned is the one you run `install.sh` and `self-check.sh` from. `install.sh` keeps a second copy at
 `/opt/hemis-ptx`, which is the one it updates and builds against. **Run the scripts from your own
@@ -195,6 +211,24 @@ IPv4 address. The warning above matters only when you have both and could pick t
 If you are behind NAT, the address here is your **router's public address**, and the router must
 forward 29994 and 29995 to this machine.
 
+★★ **PUT THAT ADDRESS IN `externalip=` BEFORE YOU ARM, OR THE GM NEVER STARTS SIGNING.**
+`install.sh` writes it for you when this host has exactly one global address, and leaves a
+commented placeholder when it cannot choose. **Behind NAT it cannot choose, and it will be wrong if
+you leave it** — the daemon would advertise the private address.
+
+```bash
+grep externalip $HOME/.hemis-ptxtestnet/Hemis.conf
+# if it is commented out, set it to the SAME address you will register, under [ptxtestnet]:
+echo "externalip=203.0.113.10" >> $HOME/.hemis-ptxtestnet/Hemis.conf
+```
+
+Why it is not optional: `CActiveDeterministicGamemasterManager::Init` refuses to arm without a
+discoverable external address in the family you registered
+(`src/activegamemaster.cpp:152-157` — *"Can't detect valid external address"*), and refuses again
+if the address it finds is not identical to the one in your ProTx (`:161-167`). Either way the
+gamemaster registers, syncs, shows as enabled — and `getgamemasterstatus` never says `Ready`.
+`self-check.sh` section 3 checks exactly this.
+
 ### A4. Generate your BLS key
 
 ```bash
@@ -234,12 +268,19 @@ Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getblockcount
 
 ### ★ HANDOFF 1 — Node ➜ Wallet
 
-Send the wallet operator exactly two things:
+**Both machines are yours.** This is you copying two values from a gamemaster host to your own
+wallet machine, not a message to anybody. Nothing here goes to the coordinator or to another
+operator.
 
-1. your **BLS PUBLIC key**
-2. your **external address and P2P port**, e.g. `203.0.113.10:29994`
+Copy to your wallet machine, per gamemaster:
 
-**Do not send the BLS secret.** Anyone asking you for it is either mistaken or attacking you.
+1. that host's **BLS PUBLIC key**
+2. that host's **external address and P2P port**, e.g. `203.0.113.10:29994`
+
+**Do not send the BLS secret — to anywhere, including your own wallet machine.** It belongs on the
+node that uses it and nowhere else. Anyone asking you for it is either mistaken or attacking you.
+(The one exception is a PoSe recovery, which is documented at the end of this guide and tells you
+exactly why and how.)
 
 ---
 
@@ -254,6 +295,11 @@ Send the wallet operator exactly two things:
    start is the one that proves the file opens;
 3. **only then** give the coordinator an address.
 
+★ **Your four gamemaster hosts also create a `wallet.dat`**, because the shipped config leaves the
+wallet on. Those wallets hold nothing and you do not need to back them up — but keep **a few HMS**
+in one of them if you want the on-node PoSe recovery route to work without moving your BLS secret.
+See "If your GM is PoSe-banned".
+
 ★ **The reason is Berkeley DB, and it is specific to this build.** `install.sh` compiles with
 `--with-incompatible-bdb` (`install.sh` section 3b, and it says so out loud on every source build:
 *"this build uses the SYSTEM Berkeley DB, not 4.8: wallets it creates are NOT readable by a stock
@@ -265,9 +311,10 @@ day someone swaps in a release binary, and by then the wallet has coins in it.
 A funded wallet that later will not open is a bad way to learn this. An empty one is free to throw
 away.
 
-### B1. Funding the collateral — two routes
+### B1. Funding the collateral
 
-You need **one collateral output per GM**, so **three**.
+You need **one collateral output per GM**, so **four**. ★ You do **not** have to create them by
+hand — see the procedure below, which creates each one as part of registering.
 
 ★★ **The amount is 100 HMS per GM, and it is EXACT.** Source, not folklore:
 `CPTXTestNetParams` sets `consensus.nGMCollateralAmt = 100 * COIN`
@@ -288,50 +335,66 @@ supposed to use, which is why it is written above.
 
 ★ **One output, not a total.** Each collateral must be a **single unspent output** of exactly
 100 HMS. Two payments of 50 do not combine into one, and a 100-HMS payment that your wallet later
-consolidates is no longer a collateral. Confirm with `listunspent` that you can see three separate
-outputs of exactly `100.00000000` before you register anything.
+consolidates is no longer a collateral. ★ `protx_register_fund` below builds this output itself, so
+there is nothing for you to split and no `listunspent` check to pass first.
 
-**Route 1 — the coordinator sends you the coins (simplest, recommended).**
-The coordinator pays the collateral to **an address in your own wallet**. From then on it is ordinary
-collateral that you own, and everything below works with no extra steps. This is a faucet payment,
-nothing more.
+**You hold your own collateral.** The coordinator sends you testHMS — that is the entirety of their
+involvement. They do not hold your coins, do not receive your BLS public key, and do not register
+your gamemasters. **Nothing secret leaves your machines at any point in this guide.**
 
-**Route 2 — the coordinator keeps the collateral key.**
-Also supported, and genuinely: `protx_register_prepare` requires only that the collateral be *an
-unspent output* — **not** that your wallet can spend it. (`protx_register` and `protx_register_fund`
-*do* require the output be "spendable by this wallet"; `_prepare` deliberately does not.) The flow is:
+**How much:** ask for **500 HMS**. 400 is the four collaterals; the rest covers fees, a re-send and
+a mistyped address.
 
-1. you run `protx_register_prepare` with the coordinator's collateral `txid`/`vout`
-2. it returns an **unsigned** ProTx
-3. **the coordinator signs it with the collateral key** and returns the signature
-4. you run `protx_register_submit` to broadcast
+### B2. Register — `protx_register_fund`, four times
 
-★ **Route 2 costs one extra round trip per GM — three per operator, fifteen across the network.**
-Choose it only if the coordinator needs to retain the ability to reclaim collateral. For a testnet,
-**Route 1 is almost always the right answer.**
+★★ **This is the procedure. There is nothing to pre-split.** `protx_register_fund` creates the
+exact 100 HMS collateral output itself as part of the registration transaction —
+`src/rpc/rpcevo.cpp:713-718`:
 
-Once funded, find the outputs:
+```cpp
+const CAmount collAmt = Params().GetConsensus().nGMCollateralAmt;   // 100 * COIN
+tx.vout.emplace_back(collAmt, collateralScript);
+FundSpecialTx(pwallet, tx, pl);
+```
+
+Your wallet just needs ~100 HMS plus fees spendable, in any denomination, at each call.
 
 ```bash
-Hemis-cli listunspent
+COLL=$(Hemis-cli getnewaddress "gm1-collateral")
+PAY=$(Hemis-cli getnewaddress "gm1-payout")
+
+Hemis-cli protx_register_fund \
+  "$COLL" "203.0.113.10:29994" "$PAY" "<BLS PUBLIC>" "" "$PAY" 0 "" "$PAY" "yourname-1"
 ```
 
-Note the `txid` and `vout` of each collateral output.
+| position | argument | value |
+|---|---|---|
+| 1 | `collateralAddress` | a fresh address of **your own** wallet |
+| 2 | `ipAndPort` | the address from Handoff 1, e.g. `203.0.113.10:29994` |
+| 3 | `ownerAddress` | yours |
+| 4 | `operatorPubKey` | the **BLS PUBLIC** key from Handoff 1 |
+| 5 | `votingAddress` | `""` — defaults to `ownerAddress` (`rpcevo.cpp:427-430`) |
+| 6 | `payoutAddress` | yours |
+| 7 | `operatorReward` | **`0`** |
+| 8 | `operatorPayoutAddress` | **`""`** |
+| 9 | `ptxPaymentAddress` | yours — see below, this one is not optional |
+| 10 | `ptxNodeId` | `yourname-1` … `yourname-4` |
 
-### B2. Register
+★★ **Arguments 7 and 8 look optional and are not.** They are positional, so you cannot reach
+`ptxPaymentAddress` (9) or `ptxNodeId` (10) without passing them. `0` and `""` is the accepted
+pair — a non-empty payout address with a zero reward is refused with *"operatorPayoutAddress must
+be empty when operatorReward is 0"* (`rpcevo.cpp:437-455`).
 
-```
-protx_register "collateralHash" collateralIndex "ipAndPort" "ownerAddress" "operatorPubKey" \
-               "votingAddress" "payoutAddress" ( operatorReward "operatorPayoutAddress" \
-               "ptxPaymentAddress" "ptxNodeId" )
-```
+★ **Your collateral is protected from your own staker, automatically.** The moment the
+registration transaction lands in your wallet it is locked (`CWallet::LockIfMyCollateral`, called
+from `AddToWalletIfInvolvingMe`, `src/wallet/wallet.cpp:1102`), and every DGM collateral is
+re-locked at each startup (`src/tiertwo/init.cpp:258-266`, gated only by `-gmconflock`, default
+on). You do not need to do anything, and you should not need to worry about it — it is the obvious
+worry and the answer is good.
 
-* `collateralHash` / `collateralIndex` — the `txid`/`vout` from B1
-* `ipAndPort` — the address from **Handoff 1**, e.g. `203.0.113.10:29994`
-* `operatorPubKey` — the **BLS PUBLIC key** from Handoff 1
-
-Use `protx_register_fund "collateralAddress" …` instead if you want the wallet to create the
-collateral output for you in the same transaction (same trailing arguments).
+★ **The help text says the wrong number.** `Hemis-cli help protx_register_fund` claims the
+transaction "will move 10000 HMS" (`src/rpc/rpcevo.cpp:687`). It moves `nGMCollateralAmt`, which is
+**100** here. The help string is inherited and wrong; the code is right.
 
 ### ★★ The last two arguments are optional to the RPC and NOT optional to you
 
@@ -346,14 +409,15 @@ They are easy to leave off because they are in the optional group. Do not.
   no leading/trailing `-`/`_`, not all-numeric, not a reserved word. The full `label:suffix` is echoed
   back in the RPC response — **record it**, it is how your node is identified in quorum output.
 
-Use a distinct `ptxNodeId` per GM (`yourname-1`, `yourname-2`, `yourname-3`).
+Use a distinct `ptxNodeId` per GM (`yourname-1` … `yourname-4`).
 
 Record the returned **protx transaction id** for each GM.
 
 ### ★ HANDOFF 2 — Wallet ➜ Node
 
-Send the node operator the **protx txid** and the echoed **`ptxNodeId` (label:suffix)**, per GM.
-Nothing secret travels in this direction.
+Copy back to each gamemaster host: the **protx txid** and the echoed **`ptxNodeId`
+(label:suffix)**. Nothing secret travels in this direction, and again this is your own two
+machines.
 
 ---
 
@@ -370,6 +434,28 @@ exits **2** when any appear, precisely so that "nothing failed" cannot be mistak
 ready". Exit codes: **0** every check ran and passed · **1** something failed · **2** nothing failed
 but something could not be checked.
 
+### ★★ The acceptance criterion is one line: `status: Ready`
+
+```bash
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getgamemasterstatus | grep '"status"'
+```
+
+**`"Ready"` and nothing else means armed.** `CActiveDeterministicGamemasterManager::GetStatus()`
+(`src/activegamemaster.cpp:60-71`) returns it only after *every* gate in `Init()` passes: the
+upgrade active, `listen=1`, your ProTx on-chain, not PoSe-banned, an external address discoverable
+in the family you registered, that address equal to the one in your ProTx, and a successful
+connection to your own registered service. Nothing else in this guide covers the last three.
+`self-check.sh` section 3 asserts it. **Do not report a node as ready on any other evidence.**
+
+The other states you may legitimately see:
+
+| status | meaning |
+|---|---|
+| `Waiting for ProTx to appear on-chain` | normal for the first minutes after registering |
+| `Error. Can't detect valid external address…` | `externalip=` missing or wrong — A3 |
+| `Error. Local address … does not match the address from ProTx` | you registered a different address than the node advertises |
+| `Gamemaster was PoSe banned` | see the PoSe section below — this one does **not** clear by itself |
+
 The sections that matter most:
 
 * **Section 4 — bind coverage.** Catches the IPv4/IPv6 mismatch described in A3.
@@ -381,9 +467,76 @@ The sections that matter most:
   itself. A **non-zero PoSe penalty means peers are failing to reach you**, whatever section 5 said.
   It is read from *your* on-chain record (`dgmstate.PoSePenalty`), not from the network-wide list —
   the network-wide list is every operator's score, and reading the first entry of it tells you about
-  a stranger.
+  a stranger. ★ **Below three registered gamemasters a zero here proves nothing** — the number is
+  structurally incapable of moving that early, and the script now says so instead of passing you.
 * **Section 3 also checks `ptxPaymentAddress`.** If it FAILs there, your GM is registered but can
   never win a PTXPAYOUT — and no config change fixes it. See B2.
+
+---
+
+## ★★ If your GM is PoSe-banned
+
+**This is the one failure on this network that does not fix itself, and it arrives fast.**
+
+### What happens, and how quickly
+
+PoSe penalty has exactly one cause: your gamemaster was a member of an LLMQ session that produced a
+final commitment marking you invalid (`src/evo/deterministicgms.cpp:828`). In practice that means
+**your peers could not reach you when it mattered**. Each such failure costs
+`CalcPenalty(66)` — 66 points of a maximum of `max(100, registered GM count)` (`:272-278`) — and
+the score decays by **1 per block** (`:605`).
+
+Sessions run every `dkgInterval = 20` blocks (`src/chainparams.cpp:75-84`). So two failures twenty
+blocks apart is 132 against a limit of 100:
+
+> **A gamemaster that peers cannot reach goes from clean to banned in roughly forty minutes.**
+
+★ It cannot happen at all below **three** registered gamemasters — a session needs `minSize = 2`
+(`src/llmq/quorums_dkgsession.cpp:98`, `src/llmq/quorums_commitment.cpp:71`) — which is why an
+early clean score is not evidence of anything.
+
+### It does not decay back
+
+Once `nPoSeBanHeight` is set you are out of the eligible set, and the decay does not apply: the ban
+clears **only** when a `ProUpServTx` lands on chain (`src/evo/deterministicgms.cpp:693-700`). Until
+then your node is not selected, not paid, and not part of any quorum.
+
+### Fix the cause first
+
+A revival with the fault still present is banned again in another forty minutes. Work section 5 of
+`self-check.sh`, check `externalip=`, check the firewall **and** the NAT rule, and confirm
+`getgamemasterstatus` can reach `Ready`.
+
+### Then recover — and read this before you copy anything
+
+```bash
+# ON THE GAMEMASTER HOST, which already has the BLS secret in its Hemis.conf.
+# Needs a few HMS in this node's own wallet to pay the fee.
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet protx_update_service \
+    "<your protx txid>" "" "" "<YOUR BLS SECRET>"
+```
+
+★★ **The BLS secret must be passed explicitly, as argument 4, and there is no way around it.**
+Left empty, the RPC falls back to the node's own active gamemaster key — but that path calls
+`GetValidGM`, which returns `nullptr` for a banned gamemaster
+(`src/evo/deterministicgms.cpp:114-121`), and the manager is in `GAMEMASTER_POSE_BANNED` rather
+than `Ready` (`src/activegamemaster.cpp:146-147`). **A banned gamemaster cannot supply its own key
+to un-ban itself.** This is the single exception to "the BLS secret never moves" in Handoff 1 — and
+running the command *on the gamemaster host* is what keeps it from moving at all, which is why this
+guide leaves the wallet enabled there and suggests keeping a few HMS in it.
+
+★ **The second argument is `""` and that is deliberate.** `Hemis-cli help protx_update_service`
+says *"If the IP is changed for a gamemaster that got PoSe-banned, the ProUpServTx will also revive
+this gamemaster"* (`src/rpc/rpcevo.cpp:921`), which reads as though you must change your address.
+**You do not.** The revival code (`src/evo/deterministicgms.cpp:693-700`) fires on any
+`ProUpServTx` once all keys are set and never compares the address; passing `""` keeps your
+existing one (`src/rpc/rpcevo.cpp:955-957`). The help text is more restrictive than the code.
+
+Confirm:
+
+```bash
+./self-check.sh          # section 3 must read: status: Ready
+```
 
 ---
 
@@ -428,10 +581,28 @@ Use `grep -a` by default on any `debug.log` from a daemon that did not shut down
 and 6. Check the NAT/security group as well as the host firewall.
 
 **Zero peers**
-→ Outbound 29994 blocked, or the seed addresses are wrong. Check `getconnectioncount`.
+→ This network has **no peer discovery at all** — no DNS seeds, no fixed seeds
+(`src/chainparams.cpp:887`, `:898`). Peers come only from `addnode=` lines, which the coordinator
+supplies. Check that they are in `Hemis.conf` **under the `[ptxtestnet]` header** (above it they are
+silently ignored — `addnode` is a network-only setting, `src/util/system.cpp:329`), then check that
+outbound 29994 is allowed. `getconnectioncount`.
 
 **PoSe score climbing**
 → Peers cannot reach you. This is the authoritative signal; trust it over a local test that passed.
+★ You have roughly **forty minutes** before it becomes a ban that does not clear by itself — see
+"If your GM is PoSe-banned" above, and fix the reachability before you revive.
+
+**`Error: ERROR: Gamemaster priv key cannot be empty.`**
+→ `gamemaster=1` is uncommented and `gamemasterblsprivkey=` is not. Both lines go in together —
+A4.
+
+**The daemon refuses to start with "Enabling Gamemaster support requires turning on transaction
+indexing"**
+→ Something set `txindex=0`. Do not: `DEFAULT_TXINDEX = true` (`src/validation.h:70`) so it is on
+unless you turn it off, and a gamemaster will not start without it
+(`src/tiertwo/init.cpp:273-276`). Mainnet habits sometimes include disabling it to save disk; on
+this chain it costs nothing and is required. If you already did, the daemon tells you to add
+`txindex=1` and restart with `-reindex`, and it means it.
 
 **`Hemis-cli: command not found`**
 → The binaries are not installed or not on your PATH. Re-run `install.sh`: it either fetches the
