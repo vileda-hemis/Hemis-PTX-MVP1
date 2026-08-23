@@ -691,9 +691,9 @@ fi
 # address is found -- a NATted box, or a host addressed only after boot -- fall
 # back to the dual-stack wildcard and say so, because refusing to write a config
 # is worse than writing a working one with a warning.
-RPCBIND_LINES="$(ip -o addr show scope global 2>/dev/null \
-    | awk '{print $4}' | cut -d/ -f1 | sort -u \
-    | sed 's/^/rpcbind=/')"
+GLOBAL_ADDRS="$(ip -o addr show scope global 2>/dev/null \
+    | awk '{print $4}' | cut -d/ -f1 | sort -u)"
+RPCBIND_LINES="$(printf '%s' "$GLOBAL_ADDRS" | grep -v '^$' | sed 's/^/rpcbind=/')"
 if [ -z "$RPCBIND_LINES" ]; then
     RPCBIND_LINES="rpcbind=0.0.0.0
 rpcbind=::"
@@ -764,6 +764,32 @@ if [ -z "$PTX_CALLER" ] || [ -z "$PTX_RPCAUTH" ]; then
     echo "         [ptxtestnet] in $CONF and restart."
 fi
 
+# ★★ THE ADDRESS THIS NODE ADVERTISES, AND IT MUST EQUAL THE ONE YOU REGISTER.
+# CActiveDeterministicGamemasterManager::Init refuses to arm without it:
+#   src/activegamemaster.cpp:152-157  GetLocalAddress() fails  -> GAMEMASTER_ERROR
+#     "Can't detect valid external address. Please consider using the externalip
+#      configuration option if problem persists."
+#   src/activegamemaster.cpp:161-167  discovered != ProTx addr -> GAMEMASTER_ERROR
+#     "Local address %s does not match the address from ProTx (%s)"
+# A host with its public address directly on an interface discovers it; a host
+# behind NAT, or one addressed only after boot, does NOT -- and then registers
+# fine, syncs fine, and never reaches "Ready". Every gamemaster on the reference
+# fleet sets -externalip explicitly.
+if [ -n "$PTX_EXTERNALIP" ]; then
+    EXTERNALIP_LINE="externalip=$PTX_EXTERNALIP"
+    ok "advertising external address $PTX_EXTERNALIP"
+elif [ "$(printf '%s\n' "$GLOBAL_ADDRS" | grep -c .)" = "1" ] && [ -n "$GLOBAL_ADDRS" ]; then
+    EXTERNALIP_LINE="externalip=$GLOBAL_ADDRS"
+    ok "advertising external address $GLOBAL_ADDRS (this host's only global address)"
+else
+    EXTERNALIP_LINE="# externalip=<the address you will REGISTER>    <-- set this before you arm"
+    warn "could not choose an external address for you."
+    echo "         This host has $(printf '%s\n' "$GLOBAL_ADDRS" | grep -c .) global address(es), or none."
+    echo "         Set externalip= in $CONF to the address you will put in your ProTx"
+    echo "         BEFORE you uncomment gamemaster=1, or the node will register and"
+    echo "         then never reach 'Ready'. Behind NAT it is the ROUTER's address."
+fi
+
 emit_conf() {   # $1 = value to put in rpcpassword
     cat <<EOF
 # PTX testnet node configuration.
@@ -818,6 +844,13 @@ $CALLER_LINES
 # --- P2P -------------------------------------------------------------------
 port=$P2P_PORT
 listen=1
+# ★★ THE ADDRESS PEERS DIAL, AND IT MUST MATCH YOUR ProTx EXACTLY.
+# Without a discoverable external address in the family you registered, the
+# gamemaster never arms: activegamemaster.cpp:152-157 (cannot detect) and :161-167
+# (detected address != ProTx address) both leave it in GAMEMASTER_ERROR, and
+# getgamemasterstatus "status" reads something other than "Ready" while everything
+# else about the node looks perfect. Behind NAT this is the ROUTER's address.
+$EXTERNALIP_LINE
 # ★★ WITHOUT AT LEAST ONE addnode= THIS NODE NEVER FINDS A PEER.
 # chainparams.cpp:887 clears vSeeds and :898 clears vFixedSeeds, and there is no
 # DNS seed for this network -- peer discovery is entirely by addnode. A node with
