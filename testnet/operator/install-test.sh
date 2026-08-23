@@ -141,9 +141,21 @@ cleanup() {
     # failed to record its pid is exactly the case that leaked before.
     pkill -f "Hemisd -datadir=$BASE" 2>/dev/null
     if [ "$DEFAULT_DATADIR_PREEXISTED" = 0 ] && [ -e "$DEFAULT_DATADIR" ]; then
-        printf '\n  \033[31m[BUG-047]\033[0m this run created %s -- something ran a daemon with NO -datadir,\n' "$DEFAULT_DATADIR"
-        printf '           which means it was synchronising MAINNET. Left in place on purpose;\n'
-        printf '           inspect it, then remove it.\n'
+        # ★ States what it OBSERVED, not what it assumes. The first version said
+        # "something ran a daemon ... which means it was synchronising MAINNET".
+        # On its first real firing that was wrong twice over: it was Hemis-cli, not
+        # Hemisd, and the directory held an empty wallets/ and nothing else. A
+        # tripwire that overstates its evidence gets disbelieved the first time it
+        # is right.
+        printf '\n  \033[31m[BUG-047]\033[0m this run created %s -- something ran WITHOUT -datadir.\n' "$DEFAULT_DATADIR"
+        if [ -s "$DEFAULT_DATADIR/debug.log" ] || [ -d "$DEFAULT_DATADIR/blocks" ]; then
+            printf '           It has a chain in it, so a DAEMON ran there: that is MAINNET.\n'
+        else
+            printf '           No chain in it (%s), so this is most likely Hemis-cli, which\n' "$(du -sh "$DEFAULT_DATADIR" 2>/dev/null | cut -f1)"
+            printf '           creates the tree merely by being invoked. Still worth removing:\n'
+            printf '           it is the directory a later bare Hemisd would sync mainnet into.\n'
+        fi
+        printf '           Left in place on purpose; inspect it, then remove it.\n'
     fi
     [ "$KEEP" = "1" ] || rm -rf "$BASE"
 }
@@ -558,7 +570,13 @@ check_config_read() {   # $1 = conf path, $2 = rpc port, $3 = label, $4 = datadi
     # ★ NO -rpcwait on this limb. A 401 is not a "not up yet", and retrying it
     # would turn a correct refusal into a 90-second hang.
     pw='definitely-not-the-configured-password'
-    if timeout 20 "$HEMISCLI" -rpcconnect=127.0.0.1 -rpcport="$rpc" -rpcuser=nobody -rpcpassword="$pw" \
+    # ★ -datadir, even though the credentials are supplied on the command line and
+    # override the file. Without it Hemis-cli falls back to the DEFAULT datadir and
+    # CREATES $HOME/.Hemis (an empty wallets/ tree) just by being invoked. That is
+    # how this harness tripped its own BUG-047 tripwire on the tripwire's first
+    # real run -- 8 KB, no debug.log, nothing synced, but the directory a later
+    # bare `Hemisd` would happily fill with mainnet.
+    if timeout 20 "$HEMISCLI" -datadir="$dd" -rpcconnect=127.0.0.1 -rpcport="$rpc" -rpcuser=nobody -rpcpassword="$pw" \
             getblockcount >/dev/null 2>&1; then
         bad "C1 $label: a WRONG password was accepted -- authentication is not in force, so the positive limb proves nothing."
         rc=1
