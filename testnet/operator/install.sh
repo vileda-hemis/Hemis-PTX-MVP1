@@ -1018,13 +1018,21 @@ StartLimitIntervalSec=600
 StartLimitBurst=5
 
 [Service]
-# ★★ Type=simple AND NO -daemon, AND THAT IS THE WHOLE POINT.
-# Type=forking judges the service by the PARENT's exit status, and `Hemisd
-# -daemon` forks and returns 0 BEFORE any config is validated -- measured
-# 2026-08-23: both arming refusals print "Hemis server starting", exit 0, and
-# leave no daemon running. So the old unit reported a dead node as started.
-# Type=simple removes the fork entirely: systemd supervises the real process, so
-# a daemon that dies during init is a FAILED unit, immediately and unambiguously.
+# ★★ Type=simple AND NO -daemon.
+# ★ HONEST SCOPE, BECAUSE THE FIRST VERSION OF THIS COMMENT OVERSTATED IT.
+# `Hemisd -daemon` does fork and return 0 before any config is validated --
+# measured 2026-08-23, both arming refusals print "Hemis server starting", exit
+# 0, and leave no daemon running. That fools a SHELL checking $?. It does NOT
+# fool systemd: measured on px1 the same day, an old-shape Type=forking unit with
+# a config the daemon rejects reports `failed`, not `active`, because with no
+# PIDFile= systemd tracks the cgroup and sees it empty. Both shapes reported
+# `active` on a healthy config and `failed` on a broken one -- they did not
+# differ on that leg.
+#
+# So this is an IMPROVEMENT, not a bug fix, and it rests on what survived:
+# Type=simple removes the fork so systemd supervises the real process rather than
+# inferring it, and -- the part that actually adds a guarantee -- ExecStartPost
+# below makes "started" mean RPC ANSWERED instead of "a process exists".
 #
 # ★ A PIDFile= would NOT have fixed it. GetPidFile() resolves through
 # AbsPathForConfigVal (util/system.cpp:853-859) to the NETWORK-SPECIFIC datadir,

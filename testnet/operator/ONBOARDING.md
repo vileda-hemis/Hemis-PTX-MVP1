@@ -55,15 +55,78 @@ Generate on any node of a network sharing `base58Prefixes[SECRET_KEY] = 239` —
 (`:893`), ptxbea (`:1104`), Hemis testnet (`:515`) and regtest (`:662`) all do; **mainnet is 212
 and will produce a WIF this chain cannot decode**.
 
-```bash
-ADDR=$(Hemis-cli -datadir=<datadir> getnewaddress "ptxtestnet-spork")
-Hemis-cli -datadir=<datadir> validateaddress "$ADDR"   # -> "pubkey": <hex>, "iscompressed"
-Hemis-cli -datadir=<datadir> dumpprivkey     "$ADDR"   # -> the WIF. NEVER LEAVES THIS HOST.
+### Run this on px1 — paste-ready, nothing to edit
 
+**Host: px1 (`192.168.99.85`), reachable by key from node1.** Chosen over `ptx01` for three
+reasons, all measured 2026-08-23: it carries binaries built from **current source** (`ad51d1c`), so
+`validateaddress` and `dumpprivkey` behave exactly as the launch build will; the datadir below is
+**brand new**, so the wallet holding the spork key can never be the wallet holding the 193,800 HMS;
+and a ptxtestnet node was started there minutes before this was written and served wallet RPC
+(`Creating HD Wallet`, `ActivateSaplingWallet : sapling spkm setup completed`). `ptx01` could not
+be verified — it is not a container on node1 and the px1 guests do not answer the guest agent, so
+nothing here can confirm it comes up far enough to serve wallet RPC.
+
+The chain state is irrelevant: this needs the wallet only. Height 0 with no peers is fine.
+
+```bash
+ssh root@192.168.99.85
+
+# --- a disposable datadir, used for nothing else, ever ---
+mkdir -p /root/ptx-spork/.hemis-ptxtestnet
+cat > /root/ptx-spork/.hemis-ptxtestnet/Hemis.conf <<'EOF'
+ptxtestnet=1
+[ptxtestnet]
+rpcuser=sporkgen
+rpcpassword=sporkgen
+rpcport=29975
+rpcbind=127.0.0.1
+rpcallowip=127.0.0.1
+port=29974
+listen=1
+EOF
+
+# --- start; the sapling params are already at /root/.Hemis-params ---
+/root/ptx-build/bin/Hemisd -datadir=/root/ptx-spork/.hemis-ptxtestnet -daemon
+
+# ★ VERIFY BY OUTCOME. `-daemon` forks and exits 0 even when startup then fails,
+#   so "Hemis server starting" and $?=0 mean nothing. This is the real check:
+sleep 30
+/root/ptx-build/bin/Hemis-cli -datadir=/root/ptx-spork/.hemis-ptxtestnet getblockcount
+# -> 0    (a number, not an error, is what you need; 0 is correct here)
+
+# --- the three commands ---
+ADDR=$(/root/ptx-build/bin/Hemis-cli -datadir=/root/ptx-spork/.hemis-ptxtestnet \
+        getnewaddress "ptxtestnet-spork")
+echo "$ADDR"
+
+/root/ptx-build/bin/Hemis-cli -datadir=/root/ptx-spork/.hemis-ptxtestnet \
+        validateaddress "$ADDR"
+# -> read TWO fields off this: "pubkey" (the hex) and "iscompressed"
+
+/root/ptx-build/bin/Hemis-cli -datadir=/root/ptx-spork/.hemis-ptxtestnet \
+        dumpprivkey "$ADDR"
+# ★★ THIS IS THE WIF. IT DOES NOT LEAVE THIS HOST.
+#    Not into chat, not into a report, not into the standup, not into git.
+#    The ONLY value that travels is the "pubkey" hex from validateaddress.
+
+# --- store the private half ---
 umask 077
-printf '%s\n' "<the WIF>" > /path/to/ptxtestnet_spork.key
-chmod 600 /path/to/ptxtestnet_spork.key
+printf '%s\n' "<paste the WIF here>" > /root/ptxtestnet_spork.key
+chmod 600 /root/ptxtestnet_spork.key
+export PTXTESTNET_SPORK_KEY=/root/ptxtestnet_spork.key
+
+# --- stop it ---
+/root/ptx-build/bin/Hemis-cli -datadir=/root/ptx-spork/.hemis-ptxtestnet stop
 ```
+
+★ **Send back the `pubkey` hex, and only that.** Not the address, not the WIF, not the whole
+`validateaddress` object — the one hex string from the `pubkey` field.
+
+★ **Before launch, move `/root/ptxtestnet_spork.key` into the coordinator's real secret store and
+shred the px1 copy.** px1 is a build host; it is where this was convenient to make, not where a
+production credential should live. The ptxbea precedent is the same shape:
+`chainparams.cpp:1042` records that its private half *"lives in `$PTXBEA_SPORK_KEY` in the
+environment, never in this repo"*.
 
 Put the **`pubkey` hex verbatim** at `src/chainparams.cpp:786`, replacing the shared-with-Hemis-
 testnet key the `TODO(launch)` marker sits on.
@@ -77,9 +140,18 @@ it by hand; `validateaddress` reports `iscompressed` so you can see which you ha
 **Prove the pair before launch — the daemon does it for you, and it is fatal if wrong:**
 
 ```bash
-Hemisd -datadir=<disposable> -sporkkey="$(cat /path/to/ptxtestnet_spork.key)" -daemon
-grep -E "Successfully initialized as spork signer|wrong key" <disposable>/ptxtestnet/debug.log
+# On px1, AFTER a build that has the new pubkey compiled in:
+/root/ptx-build/bin/Hemisd -datadir=/root/ptx-spork/.hemis-ptxtestnet \
+    -sporkkey="$(cat /root/ptxtestnet_spork.key)" -daemon
+sleep 30
+grep -E "Successfully initialized as spork signer|wrong key" \
+    /root/ptx-spork/.hemis-ptxtestnet/ptxtestnet/debug.log
+/root/ptx-build/bin/Hemis-cli -datadir=/root/ptx-spork/.hemis-ptxtestnet stop
 ```
+
+★ This step is **worthless against the current binaries** — they still carry the shared
+Hemis-testnet key, so any freshly generated pair will "fail" correctly and tell you nothing about
+your pair. Run it only after a build with the new pubkey in `chainparams.cpp:786`.
 
 `SetPrivKey` signs a test message and verifies it against the compiled-in pubkey
 (`src/spork.cpp:266-289`); a mismatch makes the daemon refuse to start
