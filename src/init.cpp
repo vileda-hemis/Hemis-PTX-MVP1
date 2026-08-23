@@ -766,7 +766,12 @@ static void LoadSaplingParams()
         initZKSNARKS();
     } catch (std::runtime_error &e) {
         std::string strError = strprintf(_("Cannot find the Sapling parameters in the following directory:\n%s"), ZC_GetParamsDir());
-        std::string strErrorPosix = strprintf(_("Please run the included %s script and then restart."), "install-params.sh");
+        // The release tarball carries three binaries and NOT the params, and
+        // install-params.sh copies from a share/Hemis/ that a release layout does
+        // not have -- so an operator who follows the old advice runs a script that
+        // cannot work. testnet/operator/install.sh section 3c is the path that
+        // does: it copies both files out of the checkout it already made.
+        std::string strErrorPosix = strprintf(_("Run %s (section 3c installs them from the checkout), or copy sapling-spend.params and sapling-output.params from the repository's params/ directory into the path above, and then restart."), "testnet/operator/install.sh");
         std::string strErrorWin = strprintf(_("Please copy the included params files to the %s directory."), ZC_GetParamsDir());
         uiInterface.ThreadSafeMessageBox(strError + "\n"
 #ifndef WIN32

@@ -9,7 +9,7 @@ result, because "it looked fine" is how four defects got as far as a shipped tag
 
 ---
 
-## ★★ Two things to know before you start
+## ★★ Three things to know before you start
 
 **Nothing auto-starts at `nTime`.** The genesis `nTime` is a timestamp compiled into block 0. It
 is not a trigger, not a countdown, and no daemon does anything when wall-clock passes it. **The
@@ -33,6 +33,38 @@ system being broken, which is why it is written here rather than only in the ope
 **Do not treat "no quorums" as a fault until `protx_list` shows 11 or more registered, enabled
 gamemasters.**
 
+**★★ A SOLO NODE DOES NOT STAKE, SO ONE MACHINE CANNOT RUN THIS CHAIN.** The staking loop is
+gated twice, and both gates need peers (`src/miner.cpp:144-146`):
+
+```cpp
+while ((g_connman && g_connman->GetNodeCount(CConnman::CONNECTIONS_ALL) == 0 && Params().MiningRequiresPeers())
+        || pwallet->IsLocked() || !fStakeableCoins || gamemasterSync.NotCompleted()) {
+    MilliSleep(5000);
+}
+```
+
+* **Gate A — at least one peer.** `MiningRequiresPeers()` is `!IsRegTestNet()`
+  (`src/chainparams.h:83`), so it is **true** here.
+* **Gate B — at least two *distinct* peers.** `gamemasterSync.NotCompleted()`
+  (`src/gamemaster-sync.cpp:30-37`) stays true until the sporks phase ends, and that needs
+  GETSPORKS sent to `GAMEMASTER_SYNC_THRESHOLD = 2` different peers
+  (`src/tiertwo/tiertwo_sync_state.h:22`, `src/gamemaster-sync.cpp:272-284` — the same peer is
+  skipped by `HasFulfilledRequest` until its 1-hour expiry).
+
+Measured on a real solo node, 2026-08-23 — a wallet with 7,719 stakeable coins and 73,492 HMS,
+unlocked, staking enabled, that has **never attempted a stake**:
+
+```
+"staking_status": false,  "haveconnections": false,  "gmsync": false,
+"staking_enabled": true,  "walletunlocked": true,    "stakeablecoins": 7719,
+"lastattempt_tries": 0
+```
+
+**This is why step 2 exists.** `generatetoaddress` is not affected — it bypasses both gates — so a
+solo host can mine blocks 1–51 by hand and then the chain simply stops. Earlier notes claiming the
+chain "self-extends with no further intervention" were measured on a **twelve-peer fleet** and do
+not hold for one host.
+
 ---
 
 ## 1. Install, with the wallet
@@ -48,12 +80,18 @@ cd Hemis-PTX-MVP1/testnet/operator
 ```
 
 Run it on **the mining host**. This host is not a gamemaster and does not need to be — it needs a
-wallet and a public address is optional for it. Your four GMs are separate machines.
+wallet, and it **does** need to be publicly reachable on P2P 29994, because it is the first
+bootstrap peer the whole network dials.
+
+★ **Provisioning consequence, before you build anything: this is seven machines, not five.** One
+mining/caller host, **two** further coordinator nodes (step 2), and your four gamemaster hosts. All
+three coordinator nodes need public reachability on 29994 — they are the `addnode` seeds every
+operator is given.
 
 ★ **The mining node's config differs from a GM's in exactly one respect: it never gets
 `gamemaster=1` or `gamemasterblsprivkey`.** Everything else — network selection, ports, rpcbind,
 rpcallowip — is identical. There is no mining-specific setting: the internal miner is driven
-entirely by RPC (step 4), not by config.
+entirely by RPC (step 5), not by config.
 
 Start it:
 
@@ -61,27 +99,81 @@ Start it:
 sudo systemctl enable --now hemis-ptx     # the unit install.sh wrote
 ```
 
+★ **Every command below passes `-datadir` explicitly.** `install.sh` installs to
+`$HOME/.hemis-ptxtestnet`, not the daemon's default `~/.Hemis` (`util/system.cpp:556`). A bare
+`Hemis-cli` talks to the wrong datadir, and a bare `Hemisd` **synchronises mainnet** — that is
+BUG-047, measured on `ptx01`, and it is the reason install.sh writes a systemd unit at all.
+
 ---
 
-## 2. Confirm you are on the new chain — by observation
+## 2. Stand up the other two coordinator nodes
+
+**Do this before you mine, not after.** See the third note at the top: below two peers the staking
+thread never runs, so a chain mined by a solo host stops at whatever height you mined by hand.
+
+Two more machines, same `install.sh`, no gamemaster role, no collateral, nothing to register:
+
+```bash
+# on each of the two extra coordinator hosts
+git clone -b <the tag> https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
+cd Hemis-PTX-MVP1/testnet/operator
+PTX_SEEDS="<mining-host-address>" ./install.sh
+sudo systemctl enable --now hemis-ptx
+```
+
+Then point the mining host at both of them and restart it:
+
+```bash
+printf 'addnode=%s\naddnode=%s\n' "<node-2>" "<node-3>" >> $HOME/.hemis-ptxtestnet/Hemis.conf
+sudo systemctl restart hemis-ptx
+```
+
+★ **`addnode` must land under the `[ptxtestnet]` header.** It is a network-only setting
+(`util/system.cpp:329`); above the header it is dropped with nothing but a startup warning.
+`>>` appends to the end of the file, which is inside the section, so the command above is correct
+as written.
+
+**Check both gates before you go on:**
+
+```bash
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getconnectioncount     # must be >= 2
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getstakingstatus | grep -E 'haveconnections|gmsync'
+```
+
+| field | required | if false |
+|---|---|---|
+| `haveconnections` | `true` | zero peers — the `addnode` lines are missing, above the header, or the port is blocked |
+| `gmsync` | `true` | fewer than two peers have answered GETSPORKS; with exactly one peer this clears only after ~1 hour |
+
+★ These three nodes are also the `PTX_SEEDS` value every operator gets. Record all three addresses
+now — they go in the onboarding message (`ONBOARDING.md`).
+
+---
+
+## 3. Confirm you are on the new chain — by observation
 
 The daemon's `Using config file` line is not evidence; it prints the path it *intends* to open
 whether or not the file is there, and that is exactly what hid the lowercase-`hemis.conf` bug.
 Check outcomes instead.
 
 ```bash
-Hemis-cli getblockhash 0          # must equal the genesis hash in chainparams.cpp
-Hemis-cli getblockchaininfo | grep '"chain"'      # must be "ptxtestnet"
-ls ~/.Hemis/ptxtestnet/           # chain data must be HERE
-ls ~/.Hemis/blocks 2>/dev/null    # must NOT exist — that is the mainnet layout
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getblockhash 0
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getblockchaininfo | grep '"chain"'
+ls $HOME/.hemis-ptxtestnet/ptxtestnet/           # chain data must be HERE
+ls $HOME/.hemis-ptxtestnet/blocks 2>/dev/null    # must NOT exist — that is the mainnet layout
 ```
 
 | check | expected | if wrong |
 |---|---|---|
-| `getblockhash 0` | the new genesis hash | you are on the old chain or the wrong binary |
+| `getblockhash 0` | the new genesis hash in `chainparams.cpp` | you are on the old chain or the wrong binary |
 | `"chain"` | `ptxtestnet` | the config was not read — **stop** |
-| `~/.Hemis/ptxtestnet/` exists | yes | as above |
-| `~/.Hemis/blocks` exists | **no** | you are on **mainnet** — stop, delete, re-check the config |
+| `$HOME/.hemis-ptxtestnet/ptxtestnet/` exists | yes | as above |
+| `$HOME/.hemis-ptxtestnet/blocks` exists | **no** | you are on **mainnet** — stop, delete, re-check the config |
+
+★ **These are the installer's paths, not `~/.Hemis`.** The network subdirectory is `ptxtestnet`
+(`chainparamsbase.cpp:68`); `blocks/` sitting at the *top* of a datadir is the mainnet layout
+(mainnet's subdirectory is `""`) and is the one wrong-network case this check catches on its own.
+Every other wrong network — `testnet5`, `regtest`, `ptxbea` — is caught by the `"chain"` row.
 
 ★ The last row is not hypothetical. It happened on `ptx01` on 2026-08-21 (BUG-047): 17 MB of
 mainnet blocks and `Bound to [::]:49165` while a correct config sat unread in another directory.
@@ -92,19 +184,19 @@ drop, so a wrong-magic node simply finds nobody.
 
 ---
 
-## 3. A receiving address
+## 4. A receiving address
 
 ```bash
-Hemis-cli getwalletinfo | grep walletname     # which wallet you are talking to
-ADDR=$(Hemis-cli getnewaddress "genesis-float")
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getwalletinfo | grep walletname
+ADDR=$(Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getnewaddress "genesis-float")
 echo "$ADDR"
 ```
 
-Keep `$ADDR`. Everything mined in step 4 pays to it, and you will need it again in step 6.
+Keep `$ADDR`. Everything mined in step 4 pays to it, and you will need it again in step 7.
 
 ---
 
-## 4. Mine blocks 1–51
+## 5. Mine blocks 1–51
 
 ★★ **`generate` does NOT work here.** `rpc/mining.cpp:99-100` refuses it off regtest:
 
@@ -118,29 +210,36 @@ synchronous, and it returns the block hashes it produced (`rpc/mining.cpp:151`; 
 comes from your address at `:165`, and it selects PoW vs PoS from `UPGRADE_POS` at `:174`).
 
 ```bash
-# a few first, to measure
-time Hemis-cli generatetoaddress 5 "$ADDR"
-
-# then the rest, in batches so you can watch the difficulty move
-Hemis-cli generatetoaddress 20 "$ADDR"
-Hemis-cli generatetoaddress 24 "$ADDR"     # stop at height 49
-
-Hemis-cli getblockcount                    # must read 49
+time Hemis-cli -datadir=$HOME/.hemis-ptxtestnet generatetoaddress 49 "$ADDR"
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getblockcount        # must read 49
 ```
 
-**How long.** At the floor difficulty `nBits = 0x1e00ffff` the target is ≈ 2^231, so a block is
-expected in ≈ **2^24 ≈ 16.8 million hashes** — seconds on any modern CPU. The genesis mine's own
-evidence agrees: ptxbea's winning thread found its nonce after ~136,000 iterations, ~4.4M across
-32 threads.
+**How long: seconds. Not an hour.** ★★ An earlier version of this runbook said "budget about an
+hour" and told you to mine in batches so you could watch the difficulty move. Both were wrong, and
+the reason is worth knowing because it also tells you what a *correct* run looks like.
 
-★ **But the first blocks will be the fastest ones.** Difficulty retargets toward
-`nTargetSpacing = 60` (`chainparams.cpp`), so as you mine faster than one per minute the work per
-block climbs. **Expect the first handful to be near-instant and the rate to converge toward roughly
-one per minute.** Budget about an hour for 51 blocks and watch rather than assume:
+* **Blocks 1–24 do not retarget at all.** `pow.cpp:38-40` returns `powLimit` outright while
+  `pindexLast->nHeight < PastBlocksMin (24)`. The genesis `nBits = 0x1e00ffff` is irrelevant to
+  every block after block 0.
+* **`powLimit` is far lower than it looks.** The literal at `chainparams.cpp:748` is
+  **66** hex digits, and `base_blob::SetHex` fills from the *end* (`uint256.cpp:44-55`), so the two
+  leading digits are dropped and the stored value is ≈ 2^252 — about **16 expected hashes** per
+  block, not 16.8 million. (Same literal on mainnet at `:245`; inherited, not a ptxtestnet defect.)
+* **From block 25 DGW is clamped.** `nActualTimespan` is floored at `_nTargetTimespan / 3`
+  (`pow.cpp:106-109`), so the target can fall by at most a factor of three per block against a
+  24-block average that lags — nowhere near enough to bite inside 51 blocks.
 
-```bash
-watch -n5 'Hemis-cli getblockcount; Hemis-cli getmininginfo | grep -E "difficulty|blocks"'
-```
+**Measured on ptxbea**, which has the identical `powLimit` and activation heights:
+
+| height | nBits | difficulty | block time |
+|---|---|---|---|
+| 1 | `200fffff` | 3.7e-09 | 1786788690 |
+| 24 | `200fffff` | 3.7e-09 | 1786788695 |
+| 25 | `1f246857` | 4.2e-07 | 1786788695 |
+| 49 | `1f06ffb4` | 2.2e-06 | 1786788699 |
+
+**Blocks 1→49 took nine seconds.** If yours takes an hour, something is wrong — that is the alarm,
+not the expectation.
 
 ★ `CheckWork` applies a **±50 % tolerance** to PoW difficulty below height 68589
 (`validation.cpp:2949`) — a mainnet-history carve-out that applies to every non-regtest chain. It
@@ -149,39 +248,47 @@ means early difficulty is loosely enforced; it does not need action, but do not 
 
 ---
 
-## 5. The PoS flip at height 50
+## 6. The PoS flip at height 50
 
 `UPGRADE_POS` and `POS_V2` activate at **50**, `UPGRADE_V3_4` at **51**
-(`chainparams.cpp`, the ptxtestnet block). The flip is enforced in the mining RPC itself
-(`rpc/mining.cpp:301-302`):
+(`chainparams.cpp`, the ptxtestnet block).
+
+★★ **`generatetoaddress` KEEPS WORKING PAST 50, AND THAT IS CORRECT.** An earlier version of this
+runbook said to stop and report it if it did. That instruction would have raised an alarm on a
+healthy chain. The throw it quoted —
 
 ```cpp
 if (fGenerate && NetworkUpgradeActive(nHeight, UPGRADE_POS))
     throw JSONRPCError(RPC_INVALID_REQUEST, "Proof of Work phase has already ended");
 ```
 
-**What you should see:** at height 49, one more `generatetoaddress` produces block 50 and then PoW
-mining stops being possible. Blocks 50 onward are **proof of stake**, produced by the wallet's
-staking thread rather than by you. The Phase D-bootstrap run is the precedent: 49 PoW blocks, flip
-at 50.
+— is at `rpc/mining.cpp:320-321` and lives in **`setgenerate`**, a different RPC.
+`generatetoaddress` has no such gate: `generateBlocks` computes `fPoS` from `UPGRADE_POS` and
+flips it mid-loop (`rpc/mining.cpp:70`), so one call simply switches from mining PoW blocks to
+producing PoS blocks. If it has no stakeable coins it says
+`No available coins to stake` (`:46`) — that is the only refusal you should see.
+
+**What you should see:** blocks 1–49 are PoW with a 3800 HMS coinbase; block 50 onward are PoS.
 
 ```bash
-Hemis-cli getblockcount           # 50
-Hemis-cli getstakingstatus        # the wallet's staking view
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet generatetoaddress 2 "$ADDR"    # blocks 50 and 51, PoS
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getblockcount                  # 51
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getstakingstatus
 ```
 
-★ If `generatetoaddress` keeps working past 50, the activation heights are wrong — **stop and
-report it**, because it means the chain is not the one that was cut.
+★ **Now the two gates from the top of this document matter.** From here the chain is supposed to
+extend itself, and it will only do so if `haveconnections` and `gmsync` are both `true`. If you
+skipped step 2, they are not, and the chain stops at 51 until you fix it.
 
 ---
 
-## 6. Balance, and when it is actually spendable
+## 7. Balance, and when it is actually spendable
 
 `nCoinbaseMaturity = 10` on ptxtestnet, so **each mined block's reward is spendable 10 blocks
 after the block that produced it** — not 10 blocks after you finish mining.
 
 ```bash
-Hemis-cli getwalletinfo | grep -E '"balance"|immature_balance'
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getwalletinfo | grep -E '"balance"|immature_balance'
 ```
 
 * **`balance`** — spendable now.
@@ -190,8 +297,14 @@ Hemis-cli getwalletinfo | grep -E '"balance"|immature_balance'
 **The total.** `GetBlockValue` (`validation.cpp:852-876`) branches only on `IsRegTestNet()` and
 `IsTestnet()`, and `IsTestnet()` is `NetworkIDString() == "test"` (`chainparams.h:98`) — ptxtestnet
 is neither, so it takes the mainnet schedule: `nHeight > V3_4(51) ? 5.35 : 3800 COIN`. Blocks 1–51
-therefore mint **3800 HMS each ≈ 193,800 HMS**. Confirmed on ptxbea, which has the same shape:
-h1, h2, h25 and h49 each paid 3800.00.
+therefore mint **3800 HMS each ≈ 193,800 HMS**, and from 52 onward 5.35.
+
+★ **But it does not all arrive the same way, and only 49 of those blocks have a coinbase.**
+Blocks 1–49 are PoW and pay 3800 in the **coinbase**. Blocks 50 and 51 are PoS: their coinbase is
+**0.00** and the 3800 rides the **coinstake** instead. Measured on ptxbea — h1 and h49 coinbase
+`3800.00`, h50 and h51 coinbase `0.00`, and h50's coinstake spends a 3800 input to 15 outputs
+totalling 7600 (stake returned + 3800 reward). You still receive it; it is simply not a coinbase,
+so do not go looking for one and do not expect `immature_balance` to move in 51 equal steps.
 
 ★ **This is the operator float and it is a deliberate decision, not an accident of inheritance.**
 
@@ -200,20 +313,24 @@ staking continues producing blocks at roughly one per minute, that is about ten 
 flip. Check rather than count:
 
 ```bash
-watch -n30 'Hemis-cli getwalletinfo | grep -E "\"balance\"|immature_balance"'
+watch -n30 'Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getwalletinfo | grep -E "\"balance\"|immature_balance"'
 # done when immature_balance reaches 0.00000000
 ```
 
+★ **This loop only terminates if the chain is still producing blocks** — i.e. if step 2 was done
+and both staking gates are true. On a solo host it waits forever, and the wait looks exactly like
+patience.
+
 ---
 
-## 7. ★★ BACK UP `wallet.dat` — before anything else happens
+## 8. ★★ BACK UP `wallet.dat` — before anything else happens
 
 **This wallet holds the entire supply of the network.** It is on hardware with a poor reliability
 record. Do this before you send a single coin anywhere.
 
 ```bash
 mkdir -p ~/ptx-backups
-Hemis-cli backupwallet ~/ptx-backups/wallet-genesis-$(date -u +%Y%m%dT%H%M%SZ).dat
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet backupwallet ~/ptx-backups/wallet-genesis-$(date -u +%Y%m%dT%H%M%SZ).dat
 
 # VERIFY it — a backup you have not checked is not a backup
 ls -la ~/ptx-backups/
@@ -223,25 +340,46 @@ sha256sum ~/ptx-backups/wallet-genesis-*.dat
 Then **copy it off this machine** — a second host, removable media, anywhere that does not share a
 disk, a PSU or a room with the original.
 
-★ `backupwallet` writes a consistent snapshot through the wallet's own database layer. Copying
-`wallet.dat` out from under a running daemon does not, and can produce a file that opens and is
-subtly wrong. Use the RPC.
+★ `backupwallet` writes a consistent snapshot through the wallet's own database layer — it waits
+for the file to be idle, closes the handle and **checkpoints the BDB log into the `.dat`** before
+copying (`wallet/db.cpp:777-820`, via `CWallet::BackupWallet` at `wallet/wallet.cpp:4424`). Copying
+`wallet.dat` out from under a running daemon skips the checkpoint and can produce a file that opens
+and is subtly wrong. Use the RPC.
 
-★ **Repeat the backup after the distribution in step 9**, because the change addresses created by
+★ **Repeat the backup after the distribution in step 10**, because the change addresses created by
 those sends are new keys that the first backup does not contain.
 
 ---
 
-## 8. Confirm staking has taken over, and that the chain is stable
+## 9. Confirm staking has taken over, and that the chain is stable
 
 Staking is on by default: `-staking` defaults to `!IsRegTestNet() && DEFAULT_STAKING`
-(`init.cpp:1928`), so a wallet-enabled node with mature coins stakes without configuration.
+(`init.cpp:1928`), so a wallet-enabled node with mature coins stakes without configuration —
+**provided it has peers.** Check the two gates first, because nothing below is meaningful until
+they pass:
+
+```bash
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getstakingstatus
+```
+
+| field | required | meaning |
+|---|---|---|
+| `haveconnections` | `true` | Gate A — `miner.cpp:144`, at least one peer |
+| `gmsync` | `true` | Gate B — `miner.cpp:145`, sporks answered by two distinct peers |
+| `walletunlocked` | `true` | |
+| `stakeablecoins` | `> 0` | mature and `nStakeMinDepth = 20` deep |
+| `staking_status` | `true` | the staker is actually running |
+| `lastattempt_tries` | `> 0` | it has actually tried — a `0` here with everything else green is the solo-node signature |
 
 **The chain is stable when, over 60 consecutive blocks:**
 
 1. **Cadence** — median inter-block time 45–90 s (target 60), no gap over 300 s.
-2. **Staking** — `getstakingstatus` healthy, and **at least two distinct stakers** producing
-   blocks once operators are on. During your solo period one is expected and correct.
+2. **Staking** — every field in the table above is green, and **at least two distinct stakers**
+   produce blocks once operators are on. ★ **Correction:** an earlier version said "during your
+   solo period one staker is expected and correct". A solo host produces **no** stakers at all —
+   see the third note at the top. With step 2 done you have three coordinator nodes, and only the
+   mining host holds coins, so **one staker is what you should see until operators arrive**; zero
+   means the gates are not passing.
 3. **Reorgs** — none deeper than 1. Check `debug.log` for `InvalidChainFound` and disconnect
    events, not just the tip height.
 4. **Registration** — every GM in `protx_list` with `PoSePenalty: 0` and `service` equal to the
@@ -254,7 +392,7 @@ their absence is not instability. See the note at the top.
 
 ---
 
-## 9. Distribution to operators
+## 10. Distribution to operators
 
 ★★ **The ordering is not negotiable: install → create the wallet → receive coins.**
 
@@ -294,9 +432,9 @@ amount that was required.**
 
 ---
 
-## 10. After distribution
+## 11. After distribution
 
-* Repeat the `wallet.dat` backup (step 7) — the sends created change addresses.
+* Repeat the `wallet.dat` backup (step 8) — the sends created change addresses.
 * Add each operator's node addresses to the `addnode` lines in the config template so later
   operators bootstrap from more than one host. **Do this once three operators are up**, so no
   single machine is load-bearing.
