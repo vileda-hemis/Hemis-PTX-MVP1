@@ -125,8 +125,32 @@ else
         *) unk "'$REGADDR' does not look like host:port; refusing to probe it."; REGADDR="" ;;
     esac
 
+    # ★★ THE ONE-LINE VERDICT, AND IT WAS ONLY BEING ECHOED.
+    # "Ready" is returned by CActiveDeterministicGamemasterManager::GetStatus()
+    # (src/activegamemaster.cpp:60-71) and ONLY after every gate in Init() passes:
+    # DIP3 active, listen=1, the ProTx on-chain, not PoSe-banned, an external
+    # address discoverable in the registered family (:152-157), that address equal
+    # to the ProTx address (:161-167), and a successful self-connect to the
+    # registered service (:169-186). Nothing else this script checks covers the
+    # last three. Printing it and moving on was the difference between "the node
+    # is configured" and "the node is armed".
     STATE=$(jval status)
-    [ -n "$STATE" ] && echo "  on-chain status: $STATE"
+    if [ -z "$STATE" ]; then
+        unk "getgamemasterstatus carried no 'status'. Whether this gamemaster is ARMED is UNKNOWN -- this is not a pass."
+    elif [ "$STATE" = "Ready" ]; then
+        ok "status: Ready -- this gamemaster is armed and the daemon agrees with its own ProTx"
+    else
+        case "$STATE" in
+            "Waiting for ProTx"*)
+                warn "status: $STATE. Normal for the first minutes after protx_register; re-run when it confirms." ;;
+            "Gamemaster was PoSe banned")
+                bad "status: $STATE. You are OUT of the eligible set and it does NOT clear by itself -- it needs an on-chain protx_update_service. See OPERATOR_GUIDE.md 'If your GM is PoSe-banned'." ;;
+            "Error."*|*"external address"*)
+                bad "status: $STATE. The daemon cannot agree with its own registration -- almost always a missing or wrong externalip= in Hemis.conf. See OPERATOR_GUIDE.md A3." ;;
+            *)
+                bad "status: $STATE. Not 'Ready', so this gamemaster is NOT armed and will not sign." ;;
+        esac
+    fi
     NODEID=$(jval ptxNodeId)
     [ -n "$NODEID" ] && echo "  ptxNodeId: $NODEID"
 
@@ -228,16 +252,33 @@ say "6. PoSe -- the network's verdict on your reachability"
 # The score for THIS node is already in the section-3 output: dgmstate.PoSePenalty
 # is the chain's own count for this gamemaster. Use that as the verdict, and use
 # ptx_gm_pose -- with the node_id it actually wants -- only for the extra detail.
+# ★★ AND WHAT A ZERO CANNOT PROVE. PoSe penalty has exactly ONE increment site:
+# evo/deterministicgms.cpp:828, for a member marked invalid in a SUCCESSFUL LLMQ
+# final commitment. A commitment needs minSize=2 valid members
+# (llmq/quorums_commitment.cpp:71) and a session below minSize aborts outright
+# (llmq/quorums_dkgsession.cpp:98), with null commitments skipped entirely
+# (evo/deterministicgms.cpp:769). So below THREE registered gamemasters the
+# penalty is structurally incapable of moving, and "0" is a guaranteed pass that
+# proves nothing at all. Say so, rather than letting an early operator read it as
+# evidence that peers can reach them.
+# protx_list takes POSITIONAL booleans (detailed wallet_only valid_only height,
+# rpc/rpcevo.cpp:874-876) -- "protx_list valid_only" throws on get_bool. Ask for
+# the undetailed, valid-only list and count the txids.
+GMCOUNT=$(cli protx_list false false true 2>/dev/null | grep -c '"[0-9a-f]\{64\}"' || echo 0)
 PENALTY=$(jnum PoSePenalty)
 BANHEIGHT=$(jnum PoSeBanHeight)
 if [ -n "$PENALTY" ]; then
     if [ "$PENALTY" -eq 0 ]; then
-        ok "PoSe penalty 0 -- the network is reaching you"
+        if [ "${GMCOUNT:-0}" -lt 3 ] 2>/dev/null; then
+            unk "PoSe penalty 0, but there are only ${GMCOUNT:-?} registered gamemasters. Below three, this number CANNOT move (it only changes on a failed LLMQ session, which needs two other members), so it proves nothing yet. It is not evidence that peers can reach you -- section 5 and another operator connecting to you are."
+        else
+            ok "PoSe penalty 0 across ${GMCOUNT} registered gamemasters -- the network is reaching you"
+        fi
     else
         bad "PoSe penalty $PENALTY (non-zero). The network is FAILING to reach you. Re-read section 5; trust this over anything section 5 said."
     fi
     if [ -n "$BANHEIGHT" ] && [ "$BANHEIGHT" -ge 0 ]; then
-        bad "PoSe BANNED at height $BANHEIGHT. You are out of the eligible set until revived."
+        bad "PoSe BANNED at height $BANHEIGHT. This does NOT decay back on its own: the ban is cleared only by an on-chain protx_update_service (evo/deterministicgms.cpp:693-700). See OPERATOR_GUIDE.md 'If your GM is PoSe-banned'."
     fi
 elif [ -z "$GMSTATUS" ]; then
     warn "not registered yet, so the network has no verdict on you (normal before protx_register)"
