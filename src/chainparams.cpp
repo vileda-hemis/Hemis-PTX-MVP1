@@ -708,14 +708,25 @@ public:
 
 /**
  * PTX closed testnet — isolated network for PTX protocol development.
- * pchMessageStart = "PTX2"  P2P port 29993  RPC port 29902
+ * pchMessageStart = "PTXT"  P2P port 29993  -- both set in CPTXTestNetParams below.
+ * RPC port 29995 -- set in CBaseChainParams for "ptxtestnet", NOT here.
+ *
+ * ★ This line said `"PTX2" … RPC port 29902` until 2026-08-23 and was wrong on both
+ * counts: the magic became PTXT and the RPC default became 29995, BOTH on 2026-08-21,
+ * and this summary was not carried along. The stale RPC figure is the more dangerous
+ * half — 29902-vs-29995 is the exact mismatch that had the PTX fan-out dialling a port
+ * nothing listened on (see the note above the ptxtestnet entry in chainparamsbase.cpp).
+ * ★ Deliberately NO line numbers: this block sits ~190 lines above what it describes,
+ * so any :NNN written here rots on the next edit. It did, immediately — the first
+ * version of this correction cited three line numbers and two were already stale.
+ * A summary comment is a second source of truth; point at symbols, not lines.
  */
 static MapCheckpoints mapCheckpointsPTXTestNet = {
-    {0, uint256S("0x000000db769489f483ec8f2a48ef03a9c030933084087097376ef7985a58c8ce")}
+    {0, uint256S("0x00000094a6ac77ae3503093e9529981cc724c4410265f727bc762f713b0da6e2")}
 };
 static const CCheckpointData dataPTXTestNet = {
     &mapCheckpointsPTXTestNet,
-    1779115621,
+    1787443200,
     0,
     0
 };
@@ -737,10 +748,10 @@ public:
     {
         strNetworkID = "ptxtestnet";
 
-        genesis = CreateGenesisBlock(1779115621, 9801932, 0x1e00ffff, 1, 0 * COIN);
+        genesis = CreateGenesisBlock(1787443200, 10954950, 0x1e00ffff, 1, 0 * COIN);
         consensus.hashGenesisBlock = genesis.GetHash();
 
-        assert(consensus.hashGenesisBlock == uint256S("0x000000db769489f483ec8f2a48ef03a9c030933084087097376ef7985a58c8ce"));
+        assert(consensus.hashGenesisBlock == uint256S("0x00000094a6ac77ae3503093e9529981cc724c4410265f727bc762f713b0da6e2"));
         assert(genesis.hashMerkleRoot == uint256S("0x93ad7b455294f429da00d11b656d62f7fb197a72b7315f58de8c9380dbdaa113"));
 
         consensus.fPowAllowMinDifficultyBlocks = false;
@@ -776,14 +787,21 @@ public:
         consensus.nTimeSlotLength = 15;
         consensus.nMaxProposalPayments = 6;
 
-        // ★★ THE SPORK KEY IS SHARED WITH CTestNetParams (:440) AND MUST BE
-        // REPLACED BEFORE LAUNCH. Anyone able to sign a spork for the Hemis
-        // testnet can sign one here. Generate a fresh keypair, put the PUBLIC half
-        // below and the PRIVATE half in $PTXTESTNET_SPORK_KEY in the deployment
-        // environment -- never in this repository. Precedent and reasoning: the
-        // ptxbea FLEET-ONLY DIVERGENCE marker at :923.
-        // TODO(launch): replace before the tag is cut.
-        consensus.strSporkPubKey = "047F4B276E7852D6FC9AE1869B758C479759FD8CD0DC0E760EAE370161E0A75076E2CB12FE351431BA2ECAEF749FDADE63F18C0BB9BD5A0B7183C223724D9CDB48";
+        // ★★ NO LONGER SHARED WITH CTestNetParams (:440). Replaced 2026-08-23 with a
+        // key generated for this chain alone. Until then this held the byte-identical
+        // Hemis-testnet key, so anyone able to sign a spork there could sign one here.
+        // The PRIVATE half lives in $PTXTESTNET_SPORK_KEY in the deployment environment
+        // and NEVER in this repository -- same discipline as the ptxbea FLEET-ONLY
+        // DIVERGENCE marker at :923.
+        //
+        // ★ COMPRESSED (66 hex chars, `03` prefix), and that is deliberate, not an
+        // oversight against the 130-char key it replaces. CKey::SignCompact encodes the
+        // compression flag in the recovery header (key.cpp:243) and verification compares
+        // the CKeyID HASH160 recovered from the signature (messagesigner.cpp:88-104), so
+        // re-expanding this to the uncompressed form would simply never verify.
+        // Validated before landing: 66 chars, hex, x < field p, on-curve, y-parity
+        // matches the `03` prefix.
+        consensus.strSporkPubKey = "03612ded861c44f9c9e56baff7d0a6acee59b720c8972085551a59a65f14a4e1ff";
 
         // ★★ SET EXPLICITLY BECAUSE THE DEFAULT IS INDETERMINATE, NOT ZERO.
         // These five have no in-class initialiser (consensus/params.h:310-312,
