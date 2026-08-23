@@ -97,7 +97,17 @@ Start it:
 
 ```bash
 sudo systemctl enable --now hemis-ptx     # the unit install.sh wrote
+
+# ★ Verify by OUTCOME, not by the command returning. Both must answer:
+systemctl is-active hemis-ptx                                  # -> active
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getblockcount        # -> a number
 ```
+
+★ **`systemctl is-active` alone is not enough on an old unit.** The unit `install.sh` writes is
+`Type=simple` with an RPC round-trip in `ExecStartPost`, so `active` does mean the daemon answered.
+If you are on a unit written before 2026-08-23 it is `Type=forking` with `-daemon`, which reports
+`active` for a daemon that already died — `Hemisd -daemon` forks and exits 0 before it validates
+anything. The `getblockcount` is what settles it either way.
 
 ★ **Every command below passes `-datadir` explicitly.** `install.sh` installs to
 `$HOME/.hemis-ptxtestnet`, not the daemon's default `~/.Hemis` (`util/system.cpp:556`). A bare
@@ -119,6 +129,14 @@ git clone -b <the tag> https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 cd Hemis-PTX-MVP1/testnet/operator
 PTX_SEEDS="<mining-host-address>" ./install.sh
 sudo systemctl enable --now hemis-ptx
+
+# ★ CHECK THIS ON EACH OF THE TWO NODES BEFORE MOVING ON.
+# These two are not spectators -- section 2's whole point is that the mining host
+# cannot extend the chain without them, so a node that silently failed to start
+# looks exactly like the staking bug you are trying to avoid.
+systemctl is-active hemis-ptx                                  # -> active
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getblockcount        # -> a number
+Hemis-cli -datadir=$HOME/.hemis-ptxtestnet getconnectioncount   # -> >= 1
 ```
 
 Then point the mining host at both of them and restart it:
