@@ -903,20 +903,14 @@ $ADDNODE_LINES
 # locks you out of the very daemon you need in order to produce the key. Verified
 # 2026-08-21 as a single-variable change against an otherwise working node.
 #
-# ★★ AND A SECOND REFUSAL, WHICH IS NOT ABOUT THE KEY AT ALL. Arming a node
-# whose chain has no blocks past genesis dies with a DIFFERENT and misleading
-# message: "Cannot start deterministic gamemaster before enforcement. Remove
-# -gmoperatorprivatekey to start as legacy gamemaster". Do not follow that
-# advice. UPGRADE_V6_0 is ALWAYS_ACTIVE on this network (chainparams.cpp:872-873)
-# so enforcement is on at every height -- the real condition is that the daemon
-# does not yet know its tip. IsDIP3Enforced() substitutes height -1 for an unset
-# tipIndex (evo/deterministicgms.cpp:948-952) and -1 >= 0 is false. tipIndex is
-# set by a block connect (validation.cpp:2207) or by InitTierTwoChainTip(), which
-# runs in the BACKGROUND ThreadImport (init.cpp:645, :712) while the arming check
-# runs on the main thread (init.cpp:1939). With genesis already on disk the main
-# thread never waits for it -- fHaveGenesis is set directly (init.cpp:1742-1747)
-# -- so a genesis-only node loses the race every time. Measured 2026-08-23,
-# reproduced 4/4. SYNC FIRST, THEN ARM: getblockcount must be > 0.
+# ★ A DIFFERENT REFUSAL, "Cannot start deterministic gamemaster before
+# enforcement", MEANS THE BINARIES ARE TOO OLD -- not that anything here is
+# wrong. UPGRADE_V6_0 was NO_ACTIVATION_HEIGHT on ptxtestnet until 4e1c9e6
+# (2026-08-21), and NO_ACTIVATION_HEIGHT short-circuits to UPGRADE_DISABLED
+# (consensus/upgrades.cpp:99-100) before any height is compared, so the message
+# is literally true in that build. Do not take its advice to drop
+# -gmoperatorprivatekey; that starts a LEGACY gamemaster, which this network
+# does not run. Build from the current tag instead.
 #
 # ★ Both refusals exit 0. `Hemisd -daemon` forks and the parent returns before
 # the child reaches either check, so "Hemis server starting" and $?=0 mean
@@ -1016,16 +1010,44 @@ if [ -d /run/systemd/system ] && [ -x "$UNIT_HEMISD" ] && [ -x "$UNIT_CLI" ]; th
 Description=Hemis PTX testnet gamemaster
 After=network-online.target
 Wants=network-online.target
+# ★ Stop retrying eventually. A config the daemon will never accept (bad key,
+# wrong network) would otherwise flap every RestartSec forever, and a unit that
+# is perpetually "activating" reads as busy rather than broken. After 5 failures
+# in 10 minutes it stays FAILED, which is the signal the operator needs.
+StartLimitIntervalSec=600
+StartLimitBurst=5
 
 [Service]
-Type=forking
+# ★★ Type=simple AND NO -daemon, AND THAT IS THE WHOLE POINT.
+# Type=forking judges the service by the PARENT's exit status, and `Hemisd
+# -daemon` forks and returns 0 BEFORE any config is validated -- measured
+# 2026-08-23: both arming refusals print "Hemis server starting", exit 0, and
+# leave no daemon running. So the old unit reported a dead node as started.
+# Type=simple removes the fork entirely: systemd supervises the real process, so
+# a daemon that dies during init is a FAILED unit, immediately and unambiguously.
+#
+# ★ A PIDFile= would NOT have fixed it. GetPidFile() resolves through
+# AbsPathForConfigVal (util/system.cpp:853-859) to the NETWORK-SPECIFIC datadir,
+# so the path depends on which network the daemon chose -- precisely what is in
+# dispute when the config is wrong. And CreatePidFile() runs at init.cpp:1207,
+# far before the gamemaster check at init.cpp:1939, so the file is written by a
+# daemon that then dies. The pidfile would be present, correct, and stale.
+Type=simple
 User=$(id -un)
 # ★ -datadir is the whole point of this file. Without it the daemon reads
 # ~/.Hemis and synchronises MAINNET.
-ExecStart=$UNIT_HEMISD -datadir=$DATADIR -daemon
+ExecStart=$UNIT_HEMISD -datadir=$DATADIR
+# ★ STARTED MEANS RPC ANSWERS, NOT "THE PROCESS EXISTS". Type=simple marks the
+# unit active the moment ExecStart is spawned, which is still too early to mean
+# anything -- init can fail seconds later. This round-trip is the outcome check:
+# the unit does not report started until the daemon actually answers an RPC.
+# Bounded at ~2 minutes; a slow first start (fresh HD wallet) takes seconds, not
+# minutes.
+ExecStartPost=/bin/sh -c 'n=0; while [ \$n -lt 60 ]; do "$UNIT_CLI" -datadir=$DATADIR getblockcount >/dev/null 2>&1 && exit 0; n=\$((n+1)); sleep 2; done; exit 1'
 ExecStop=$UNIT_CLI -datadir=$DATADIR stop
 Restart=on-failure
 RestartSec=30
+TimeoutStartSec=180
 TimeoutStopSec=300
 
 [Install]

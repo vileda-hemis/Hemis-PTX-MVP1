@@ -270,30 +270,13 @@ out on purpose. A config with `gamemaster=1` and no key does not start a limited
 `generateblskeypair` is an RPC call, that would lock you out of the daemon you need in order to
 produce the key. Both lines, together, after you have the key.
 
-★★ **There is a SECOND refusal, and it is not about your key.** Arming a node whose chain has no
-blocks past genesis fails with a different and misleading message:
-
-```
-Error: Cannot start deterministic gamemaster before enforcement.
-Remove -gmoperatorprivatekey to start as legacy gamemaster
-```
-
-Do **not** act on what it tells you to do. Removing `-gmoperatorprivatekey` is wrong, and
-"before enforcement" is not the real reason: on this network `UPGRADE_V6_0` is `ALWAYS_ACTIVE`
-(`src/chainparams.cpp:872-873`), so enforcement is active at *every* height including 0. The real
-condition is that **the daemon does not yet know its own chain tip**. `IsDIP3Enforced()` reads
-`tipIndex` and substitutes height `-1` when it is unset (`src/evo/deterministicgms.cpp:948-952`),
-and `-1 >= 0` is false, so the check fails. `tipIndex` is set either when a block is connected
-(`src/validation.cpp:2207`) or by `InitTierTwoChainTip()` — which runs inside the background
-`ThreadImport` (`src/init.cpp:645`, `:712`), while the arming check runs on the main init thread
-(`src/init.cpp:1939`). On a datadir that already has genesis, the main thread does not wait for
-that thread: `fHaveGenesis` is set directly (`src/init.cpp:1742-1747`) so the wait at `:1777`
-returns at once. A genesis-only node therefore loses this race every time.
-
-In normal operation you will not meet this, because you arm *after* registering and by then your
-node has synced real blocks. It bites on a node that is armed before it has ever connected a
-block. **The fix is to sync first, then arm** — `getblockcount` must be greater than 0 before you
-add these two lines.
+★ **If you see `Cannot start deterministic gamemaster before enforcement`, your binaries are too
+old.** It means `UPGRADE_V6_0` is not active on the network you are running, which on `ptxtestnet`
+was true only before `4e1c9e6` ("land the Gate 0 cut — V6_0 on", 2026-08-21). The message is
+accurate: enforcement really is off in that build, and `NO_ACTIVATION_HEIGHT` short-circuits to
+`UPGRADE_DISABLED` (`src/consensus/upgrades.cpp:99-100`) at every height. Do **not** follow its
+advice to remove `-gmoperatorprivatekey` — that starts you as a legacy gamemaster, which is not
+what this network runs. Get binaries built from the current tag instead.
 
 ★ **`Hemisd -daemon` prints `Hemis server starting` and exits 0 even when startup then fails.**
 The parent forks and returns before the child reaches either check above, so a script that tests
