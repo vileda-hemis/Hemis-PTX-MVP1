@@ -369,8 +369,43 @@ all_listening_ports() {
 }
 
 DEFAULTS_HELD=""
+# ★★ STATIC CHECK, AND IT IS HERE BECAUSE THE DYNAMIC ONES ALL MISSED IT.
+# install.sh builds the config with an UNQUOTED heredoc (it must -- $1,
+# $RPC_PORT, $RPCBIND_LINES have to expand), and in an unquoted heredoc a
+# backtick is COMMAND SUBSTITUTION. On 2026-08-23 an example command written in
+# backticks inside a COMMENT in that heredoc -- "`Hemisd -daemon`" -- was executed
+# on every single run: a bare daemon with no -datadir, syncing MAINNET into
+# ~/.Hemis, which then hung install.sh forever because command substitution waits
+# for a pipe a forked daemon never closes. It also blanked the comment in every
+# config ever written, and no runtime check noticed, because the config still
+# parsed and the daemon still started.
+# A grep is the right instrument for this: the failure is in the SOURCE TEXT, and
+# by the time anything is running the evidence has already been substituted away.
+check_no_live_backticks() {
+    local f="$HERE/install.sh" bad_lines
+    [ -f "$f" ] || { bad "cannot find install.sh to check"; return 1; }
+    # Inside emit_conf's heredoc: any backtick that is not backslash-escaped.
+    # ★ The range starts at the `cat <<EOF` line, NOT at `emit_conf() {`. Shell
+    # comments between the two are ordinary comments and their backticks are
+    # inert; only the HEREDOC BODY is substituted. A first version of this check
+    # used the function opener and flagged its own explanatory comment -- a false
+    # positive that would have taught the next person to ignore it.
+    bad_lines="$(awk '/cat <<EOF$/{inf=1;next} inf && /^EOF$/{inf=0} inf' "$f" \
+                 | grep -n '`' | grep -v '\\`' || true)"
+    if [ -n "$bad_lines" ]; then
+        bad "install.sh: UNESCAPED BACKTICK inside emit_conf's heredoc -- it will be EXECUTED."
+        printf '%s\n' "$bad_lines" | sed 's/^/           /'
+        note "escape them as \\\` or the generated config loses the text and the"
+        note "command runs on every install. See BUG-047."
+        return 1
+    fi
+    ok "emit_conf heredoc: no unescaped backticks (nothing in it will execute)"
+    return 0
+}
+
 preflight() {
     say "Pre-flight — this host"
+    check_no_live_backticks || true
     local p busy=""
     for p in 29994 29995 29996 29997 29998 29999; do
         port_held "$p" && busy="$busy $p"

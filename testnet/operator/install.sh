@@ -854,6 +854,24 @@ else
 fi
 
 emit_conf() {   # $1 = value to put in rpcpassword
+    # ★★ EVERY BACKTICK IN THIS HEREDOC MUST BE ESCAPED, AND ONE THAT WAS NOT
+    # RAN A MAINNET DAEMON ON EVERY INSTALL. `cat <<EOF` is UNQUOTED -- it has to
+    # be, because $1, $RPC_PORT, $RPCBIND_LINES and the rest must expand -- and in
+    # an unquoted heredoc backticks are COMMAND SUBSTITUTION. A comment I added in
+    # 4794ce0 and kept through its retraction contained the words
+    # "\`Hemisd -daemon\`" as an example, so every run of this script EXECUTED it:
+    # a bare daemon with no -datadir, which is BUG-047 -- ~/.Hemis, mainnet,
+    # 18 MB in half an hour -- and then hung install.sh forever, because command
+    # substitution waits for the write end of the pipe to close and a forked
+    # daemon never closes it. Measured 2026-08-23: `bash -x` trace line 304
+    # "++ Hemisd -daemon", install.sh killed at the 300s timeout, exit 124.
+    # ★ It also silently CORRUPTED the config it writes. The substitutions were
+    # replaced by their (empty) output, so shipped configs read
+    #   "# ★ Both refusals exit 0.  forks and the parent returns before"
+    #   "# attacker gets , , and this node'"'"'s wallet"
+    # -- text that survived review because nobody diffed the OUTPUT against the
+    # source. The irony is exact: the comment warning that a bare Hemisd syncs
+    # mainnet was itself starting one.
     cat <<EOF
 # PTX testnet node configuration.
 
@@ -939,7 +957,7 @@ $ADDNODE_LINES
 # -gmoperatorprivatekey; that starts a LEGACY gamemaster, which this network
 # does not run. Build from the current tag instead.
 #
-# ★ Both refusals exit 0. `Hemisd -daemon` forks and the parent returns before
+# ★ Both refusals exit 0. \`Hemisd -daemon\` forks and the parent returns before
 # the child reaches either check, so "Hemis server starting" and $?=0 mean
 # NOTHING. Verify with getblockcount, never with the start command's status.
 #
@@ -954,7 +972,7 @@ $ADDNODE_LINES
 #
 # The caller credential above can call ANY rpc on this node (no -rpcwhitelist in
 # this daemon; httprpc.cpp:157's authUser is never read), so if it leaks, an
-# attacker gets `stop`, `setban`, and this node's wallet. Your COLLATERAL is not
+# attacker gets \`stop\`, \`setban\`, and this node's wallet. Your COLLATERAL is not
 # here -- it lives on your wallet machine -- so what is at risk is a few HMS of
 # fee money and the node's availability.
 #
