@@ -1065,13 +1065,13 @@ StartLimitBurst=5
 [Service]
 # ★★ Type=simple AND NO -daemon.
 # ★ HONEST SCOPE, BECAUSE THE FIRST VERSION OF THIS COMMENT OVERSTATED IT.
-# `Hemisd -daemon` does fork and return 0 before any config is validated --
+# \`Hemisd -daemon\` does fork and return 0 before any config is validated --
 # measured 2026-08-23, both arming refusals print "Hemis server starting", exit
 # 0, and leave no daemon running. That fools a SHELL checking $?. It does NOT
 # fool systemd: measured on px1 the same day, an old-shape Type=forking unit with
-# a config the daemon rejects reports `failed`, not `active`, because with no
+# a config the daemon rejects reports \`failed\`, not \`active\`, because with no
 # PIDFile= systemd tracks the cgroup and sees it empty. Both shapes reported
-# `active` on a healthy config and `failed` on a broken one -- they did not
+# \`active\` on a healthy config and \`failed\` on a broken one -- they did not
 # differ on that leg.
 #
 # So this is an IMPROVEMENT, not a bug fix, and it rests on what survived:

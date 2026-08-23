@@ -384,22 +384,28 @@ DEFAULTS_HELD=""
 check_no_live_backticks() {
     local f="$HERE/install.sh" bad_lines
     [ -f "$f" ] || { bad "cannot find install.sh to check"; return 1; }
-    # Inside emit_conf's heredoc: any backtick that is not backslash-escaped.
-    # ★ The range starts at the `cat <<EOF` line, NOT at `emit_conf() {`. Shell
-    # comments between the two are ordinary comments and their backticks are
-    # inert; only the HEREDOC BODY is substituted. A first version of this check
-    # used the function opener and flagged its own explanatory comment -- a false
-    # positive that would have taught the next person to ignore it.
-    bad_lines="$(awk '/cat <<EOF$/{inf=1;next} inf && /^EOF$/{inf=0} inf' "$f" \
-                 | grep -n '`' | grep -v '\\`' || true)"
+    # ★ EVERY unquoted heredoc in the file, not just emit_conf's. The first
+    # version of this check only looked at emit_conf and reported clean while the
+    # systemd-unit heredoc (<<UNITEOF) was still executing `Hemisd -daemon` three
+    # lines apart -- a check scoped to the place the bug was FOUND rather than the
+    # place it can LIVE. `<<'"'"'EOF'"'"'` (quoted delimiter) does not substitute and is
+    # skipped; only bare <<WORD is a risk.
+    bad_lines="$(awk '
+        inhd == "" { if (match($0, /<<[A-Za-z_][A-Za-z0-9_]*[ \t]*$/)) {
+                         d = substr($0, RSTART+2, RLENGTH-2); gsub(/[ \t]+$/, "", d); inhd = d }
+                     next }
+        { t = $0; gsub(/^[ \t]+|[ \t]+$/, "", t); if (t == inhd) { inhd = ""; next } }
+        /`/ { printf "%d: %s\n", NR, $0 }
+    ' "$f" | grep -v '\\`' || true)"
     if [ -n "$bad_lines" ]; then
-        bad "install.sh: UNESCAPED BACKTICK inside emit_conf's heredoc -- it will be EXECUTED."
+        bad "install.sh: UNESCAPED BACKTICK inside an unquoted heredoc -- it WILL be executed."
         printf '%s\n' "$bad_lines" | sed 's/^/           /'
-        note "escape them as \\\` or the generated config loses the text and the"
-        note "command runs on every install. See BUG-047."
+        note "escape as \\\` . An example command written in backticks inside a"
+        note "COMMENT still runs: that is how install.sh came to start a bare"
+        note "mainnet daemon on every install, and then hang. See BUG-047."
         return 1
     fi
-    ok "emit_conf heredoc: no unescaped backticks (nothing in it will execute)"
+    ok "heredocs: no unescaped backticks anywhere (nothing in them will execute)"
     return 0
 }
 
