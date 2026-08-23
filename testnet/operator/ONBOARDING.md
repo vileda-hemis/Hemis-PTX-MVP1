@@ -89,9 +89,16 @@ is deliberate: everywhere else in these documents `-datadir` has just been remov
 installed node now lives in the daemon's default directory. This is the one place a separate
 directory is the point.
 
-The ports below are deliberately not 29994/29995, so this cannot collide with the node already
-running on ptx01. The chain state is irrelevant — this needs the wallet only, and height 0 with
-zero peers is fine.
+The ports below are deliberately outside every default this chain uses, so this cannot collide with
+the node already running on ptx01. ★ The defaults, from source rather than memory: ptxtestnet is
+P2P **29993** (`chainparams.cpp:886`) and RPC **29995** (`chainparamsbase.cpp:69`) — and on the
+binary ptx01 actually runs, `1591450`, the RPC default is **29902** (`chainparamsbase.cpp:49` in
+that tree; the 29902→29995 change landed later the same day). 29974/29975 clears all three, and
+29994 as well, which is **ptxbea's** P2P port (`chainparams.cpp:1097`), not ptxtestnet's. None of
+this actually reaches the daemon below — the conf sets both ports explicitly — but the reason for
+the choice should be the true one.
+
+The chain state is irrelevant — this needs the wallet only, and height 0 with zero peers is fine.
 
 ```bash
 # --- a disposable datadir, used for nothing else, ever ---
@@ -127,16 +134,22 @@ echo "$ADDR"
 Hemis-cli -datadir=$HOME/.hemis-spork validateaddress "$ADDR"
 # -> read TWO fields off this: "pubkey" (the hex) and "iscompressed"
 
-Hemis-cli -datadir=$HOME/.hemis-spork dumpprivkey "$ADDR"
-# ★★ THIS IS THE WIF. IT DOES NOT LEAVE THIS HOST.
-#    Not into chat, not into a report, not into the standup, not into git.
-#    The ONLY value that travels is the "pubkey" hex from validateaddress.
-
-# --- store the private half ---
+# --- the private half: straight to a 0600 file, NEVER to the terminal ---
 umask 077
-printf '%s\n' "<paste the WIF here>" > $HOME/ptxtestnet_spork.key
+Hemis-cli -datadir=$HOME/.hemis-spork dumpprivkey "$ADDR" > $HOME/ptxtestnet_spork.key
 chmod 600 $HOME/ptxtestnet_spork.key
 export PTXTESTNET_SPORK_KEY=$HOME/ptxtestnet_spork.key
+# ★★ THAT FILE IS THE WIF. IT DOES NOT LEAVE THIS HOST.
+#    Not into chat, not into a report, not into the standup, not into git.
+#    The ONLY value that travels is the "pubkey" hex from validateaddress.
+# ★ It is redirected, not printed, DELIBERATELY: the earlier form ran a bare
+#   `dumpprivkey` and then asked you to paste the result back in, which put the
+#   one value that must not travel into your scrollback and your shell history
+#   before it ever reached the file. `umask 077` means the redirect creates it
+#   0600 already; the chmod is belt-and-braces.
+# Confirm it landed WITHOUT echoing it — a length and a mode, not the value:
+wc -c < $HOME/ptxtestnet_spork.key   # -> 53 (52-char WIF + newline)
+stat -c '%a' $HOME/ptxtestnet_spork.key   # -> 600
 
 # --- stop it ---
 Hemis-cli -datadir=$HOME/.hemis-spork stop
@@ -178,8 +191,19 @@ Hemis-cli -datadir=$HOME/.hemis-spork stop
 
 `SetPrivKey` signs a test message and verifies it against the compiled-in pubkey
 (`src/spork.cpp:266-289`); a mismatch makes the daemon refuse to start
-(`src/init.cpp:1241-1244`). A pubkey with no matching private half is exactly the failure the
+(`src/init.cpp:1246-1249`). A pubkey with no matching private half is exactly the failure the
 ptxbea comment at `:1037-1046` records, and it was not discovered until someone needed a spork.
+
+★ **The grep can see BOTH branches — checked, because a grep that only ever matches the pass is
+not a test.** Success writes `Successfully initialized as spork signer` via `LogPrintf`
+(`spork.cpp:283`). Failure returns `UIError(_("Unable to sign spork message, wrong key?"))`
+(`init.cpp:1249`), and `UIError` raises `MSG_ERROR` **without** the `SECURE` flag
+(`guiinterfaceutil.h:12`), which is the flag that would suppress logging — so `noui.cpp:39`
+`LogPrintf`s it to `debug.log` as well as stderr. Both outcomes leave a line; **empty output means
+neither happened**, i.e. the daemon never got that far, which is a third thing and not a pass.
+
+★ On the failure branch the daemon is already gone, so the trailing `stop` will answer *"couldn't
+connect to server"*. That is the expected consequence of the refusal, not a second fault.
 
 ---
 
