@@ -945,6 +945,32 @@ $RPCBIND_LINES
 rpcallowip=127.0.0.1
 rpcallowip=::1
 $CALLER_LINES
+# ★★ RPC SERVER CAPACITY -- SIZED FOR THE FAN-OUT, NOT FOR A HUMAN AT A PROMPT.
+# The stock values are DEFAULT_HTTP_WORKQUEUE=16 and DEFAULT_HTTP_THREADS=4
+# (httpserver.h:13-14, read at httpserver.cpp:404 and :435). Those are sized for
+# an operator typing one command at a time. This node is not that: it is a
+# signing member, and the whole quorum is asked at once.
+# ★ WHY THE LOAD LANDS ON ELEVEN NODES AND NOT ON THE WHOLE FLEET: roll routing
+# keys on the TIP HASH, so every roll in a given block resolves to the SAME
+# quorum. Measured 2026-08-23 over 178 blocks of fleet traffic: 161 of them used
+# exactly ONE quorum (the rest were tip-change races mid-batch). So N concurrent
+# rolls in a block arrive as N concurrent signing requests at each of the 11
+# members -- fleet size does not divide that load, it concentrates it.
+# ★★ AND THE OVERFLOW IS INVISIBLE FROM THE GM SIDE. Past the queue depth the
+# daemon returns HTTP 500 "Work queue depth exceeded" (httpserver.cpp:271) and
+# then stops accepting entirely. The roll comes back short at the CALLER while
+# this node looks perfectly healthy to its operator -- same shape as the ACL
+# rejection noted above, a failure whose evidence is on the other machine.
+# ★ WHAT THIS DOES AND DOES NOT BUY, because the first version of this comment
+# overstated it. A concurrency sweep the same day (1,6,12,16,20,24,30,45,60
+# simultaneous rolls) put the first work-queue refusals at N=30, NOT at the
+# stock depth of 16 -- so the queue is not the first thing to give way, and
+# these two lines are BURST TOLERANCE, not a throughput fix. The limit that
+# binds first is on the CALLER side and no GM setting affects it. Raising these
+# is still worth doing -- the refusals above N=30 were real, and the cost is a
+# few idle threads -- but do not expect them to raise the roll ceiling.
+rpcworkqueue=128
+rpcthreads=16
 
 # --- P2P -------------------------------------------------------------------
 port=$P2P_PORT

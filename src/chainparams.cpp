@@ -767,7 +767,31 @@ public:
         consensus.nMaxMoneyOut = 30000000 * COIN;
         consensus.nGMCollateralAmt = 100 * COIN;
         consensus.nGMBlockReward = 3 * COIN;
-        consensus.nNewGMBlockReward = 6 * COIN;
+        // ★★ 6 -> 2.674999995, matching mainnet (:256), Hemis testnet (:428) and
+        // ptxbea (:1038). This is the post-V5_5 payment: GetGamemasterPayment
+        // (validation.cpp:881-886) returns nNewGMBlockReward above the UPGRADE_V5_5
+        // activation height and nGMBlockReward below it.
+        //
+        // ★ IT IS INERT TODAY AND WILL NOT STAY THAT WAY. GM payments are OFF:
+        // IsSporkActive is `GetSporkValue(id) < GetAdjustedTime()` (spork.cpp:223)
+        // and SPORK_7's default 4070908800 is the year 2099, so the spork is
+        // inactive -- spork.cpp:17 labels it `// OFF` in source. Measured on the
+        // fleet: block 10443 pays 0.0 in coinbase and the payee GM's payoutAddress
+        // appears nowhere in the block, while `lastPaidHeight` advances anyway
+        // because deterministicgms.cpp:801-805 records the rotation with no spork
+        // check. The plumbing is correct and the tap is closed.
+        //
+        // ★★ SO THIS VALUE MUST BE RIGHT BEFORE THE SPORK IS EVER FLIPPED, which is
+        // why it lands with the tag rather than after it. And the cadence it will
+        // run at is NOT one this project has observed: payout is ONE GM PER BLOCK on
+        // a rotating queue (153 GMs on the fleet -> 153 distinct lastPaidHeight
+        // values spanning exactly 152 blocks, measured). At testnet's ~20 GMs that
+        // is every ~20 blocks per GM -- roughly 7.6x more often than the fleet would
+        // have seen. The payment PATH is proven in production; that CADENCE is not,
+        // and wallet fragmentation under it is unmeasured. For scale, the fleet
+        // already carries 5,540 dust outputs against 365 real coins with payments
+        // OFF entirely.
+        consensus.nNewGMBlockReward = 2.674999995 * COIN;
         consensus.nGMCollateralMinConf = 1;
         consensus.nProposalEstablishmentTime = 60 * 5;
         consensus.nStakeMinAge = 0;

@@ -92,7 +92,51 @@ std::string PTX_BuildRollCommitment(const CPTXRollCommitPayload& payload,
         throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED, "chain output vanished after funding");
     }
 
-    // Sign funding inputs (all confirmed → pcoinsTip).
+    // Sign funding inputs against pcoinsTip — the CONFIRMED UTXO set. ★ This is a
+    // KNOWN LIMITATION, left in place deliberately; the reason is at the end of
+    // this comment and it is a measured deadlock, not an oversight.
+    //
+    // ★ The previous comment here read "all confirmed → pcoinsTip" as though it
+    // were a guarantee. It is an assumption, and it breaks. Under sustained rolls
+    // the wallet's CONFIRMED coins
+    // are exhausted -- every roll spends one and returns its change UNCONFIRMED --
+    // so FundTransaction starts selecting this caller's own unconfirmed change.
+    // pcoinsTip is the confirmed UTXO set and has no entry for such an outpoint, so
+    // AccessCoin returned a default-constructed Coin, IsSpent() was true, and the
+    // roll died at 62 ms before the quorum was ever contacted.
+    //
+    // ★★ AND THE OLD MESSAGE SAID "already spent", WHICH IS FALSE. The input is
+    // not spent; it is NOT YET CONFIRMED, and a default-constructed Coin is
+    // indistinguishable from a spent one. That string cost a whole session chasing
+    // an RPC work queue -- the measured truth was that a SINGLE sequential roll
+    // (N=1, no concurrency at all) failed once the mempool was deep, which no
+    // thread or queue setting can explain.
+    //
+    // The obvious fix is the one the settle path below already uses: resolve
+    // through a CCoinsViewMemPool so unconfirmed change is visible.
+    //
+    // ★★★ IT IS NOT APPLIED HERE, AND THE REASON IS A MEASURED
+    // DEADLOCK. Resolving through CCoinsViewMemPool requires mempool.cs, and taking
+    // it here as `cs_main -> mempool.cs -> cs_wallet` (copying the settle path
+    // below) INVERTS against the wallet, which runs
+    // `cs_main -> cs_wallet -> mempool.cs`: CWallet::ReacceptWalletTransactions
+    // (wallet/wallet.cpp:1979) holds LOCK2(cs_main, cs_wallet) and then calls
+    // CTxMemPool::exists (txmempool.h:642), which takes mempool.cs.
+    //
+    // A DEBUG_LOCKORDER daemon carrying that change aborted on the FIRST roll:
+    //   POTENTIAL DEADLOCK DETECTED ... Assertion failed: detected inconsistent
+    //   lock order at sync.cpp:122
+    // Correct order is cs_main -> cs_wallet -> mempool.cs.
+    //
+    // ★★ AND THAT INDICTS THE SETTLE PATH BELOW, which already uses the inverted
+    // order and therefore carries the same latent deadlock today. It has never
+    // been caught because the fleet binary is built WITHOUT DEBUG_LOCKORDER --
+    // unstripped, but not instrumented. Fixing this properly means reordering BOTH
+    // sites, which touches shipping settle code, so it is a decision rather than a
+    // four-line patch and is registered, not taken here.
+    //
+    // What IS applied below is the message fix, which needs no lock change and is
+    // worth landing alone: the old text claimed "already spent".
     {
         LOCK2(cs_main, pwallet->cs_wallet);
         for (unsigned int i = 0; i < mtx.vin.size(); i++) {
@@ -100,7 +144,10 @@ std::string PTX_BuildRollCommitment(const CPTXRollCommitPayload& payload,
             const Coin& coin = pcoinsTip->AccessCoin(txin.prevout);
             if (coin.IsSpent()) {
                 unlockFundedInputs();
-                throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED, "commitment input already spent");
+                throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED,
+                                   "commitment input " + std::to_string(i) +
+                                   " not in the confirmed UTXO set (not yet "
+                                   "confirmed, or spent)");
             }
             const SigVersion sv = mtx.GetRequiredSigVersion();
             txin.scriptSig.clear();
