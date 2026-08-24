@@ -42,7 +42,7 @@
 # path while appearing to prove the validity one.
 #
 # Usage:
-#   PTX_TEST_BINDIR=/path/to/bin PTX_COLDSYNC_PEER=172.32.0.10:29994 \
+#   PTX_TEST_BINDIR=/path/to/bin PTX_COLDSYNC_PEER=<host:port> \
 #   PTX_REF_RPC=127.0.0.1:32000 PTX_REF_USER=u PTX_REF_PASS=p \
 #   [PTX_MUTANT_BINDIR=/path/to/mutant] ./cold-sync-test.sh
 set -u
@@ -59,6 +59,17 @@ RPCPORT="${PTX_COLDSYNC_RPCPORT:-31975}"
 P2PPORT="${PTX_COLDSYNC_P2PPORT:-31974}"
 TIMEOUT="${PTX_COLDSYNC_TIMEOUT:-1800}"
 STALL="${PTX_COLDSYNC_STALL:-120}"
+# ★ RED 1's PEER MUST BE UNREACHABLE FROM WHEREVER THIS RUNS, AND THAT IS A
+# PROPERTY OF THE ADDRESS, NOT OF THIS NETWORK. It was 172.32.0.250 -- an
+# address on the fleet's Docker bridge, which is unreachable from most hosts by
+# accident rather than by rule. ★ 172.32/12 is NOT RFC1918: private space stops
+# at 172.31.255.255, so 172.32.0.250 is globally-routable address space that
+# happens to be borrowed for a bridge here. Shipped to operators, RED 1 would
+# have been dialling a stranger's host and calling the result a controlled
+# falsification. 192.0.2.0/24 is TEST-NET-1 (RFC 5737), reserved for exactly
+# this and guaranteed never to route anywhere. Same port as the real peer, so
+# the address is the only variable between the green run and this leg.
+RED1_PEER="${PTX_COLDSYNC_RED1_PEER:-192.0.2.1:${PEER##*:}}"
 
 if [ -n "${PTX_TEST_BINDIR:-}" ]; then
     HEMISD="$PTX_TEST_BINDIR/Hemisd"; HEMISCLI="$PTX_TEST_BINDIR/Hemis-cli"
@@ -194,7 +205,7 @@ note "runtime: ${ELAPSED}s for $CS_HEIGHT blocks"
 
 # ── RED 1 — connectivity failure ────────────────────────────────────────────
 say "RED 1 — unreachable peer (must report CONNECTIVITY failure, not pass)"
-run_cold_sync red1 "$PTX_TEST_BINDIR" "172.32.0.250:29994"
+run_cold_sync red1 "$PTX_TEST_BINDIR" "$RED1_PEER"
 report_run red1
 if [ "$CS_HEIGHT" -eq 0 ] && [ "$CS_TIP" = "$CS_GENESIS" ]; then
     redok "RED 1 — height 0 and tip == genesis, so G1/G2 would FAIL as they must"
