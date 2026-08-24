@@ -24,6 +24,7 @@
 #include "evo/deterministicgms.h"   // KDD-072 P-b2: GM ptrs for the VerifyPremits harness
 #include "ptx/ptx_formation.h"      // KDD-072 P-b3a: driver rotation wrapper
 #include "chainparams.h"          // KDD-072 P-b6a: ptxFormation params for the due-rule stub
+#include "chainparamsbase.h" // BUG-053: network-id constants as the needles
 #include "evo/evodb.h"              // KDD-070 P2: the in-memory evoDb from BasicTestingSetup
 #include "evo/specialtx_validation.h"
 #include "ptx/ptx_accum_script.h"  // W2.4 W4-b: accum output for the roll-tx shape
@@ -4519,22 +4520,85 @@ BOOST_AUTO_TEST_CASE(W4f_UnstubAndWiring_Structural)
     // chains, dormant everywhere else.  Assert exactly that, and the row
     // survives future params while still catching a real un-stub leak.
     const std::string gate = "200, 1, 40";   // nRetireWindow, nReformGrace, nReformRateWindow
-    for (const char* net : {"main", "test", "ptxtest"}) {
-        const std::string line = P5_line_containing(cp, std::string("ptxFormation = {\"") + net + "\"");
-        BOOST_CHECK_MESSAGE(!line.empty(), std::string("no ptxFormation line for ") + net);
+
+    // ★ BUG-053 — THE CLASSIFICATION WAS STALE, AND THE NEEDLE WAS BLIND.
+    // This loop used to read {"main", "test", "ptxtest"} against a literal
+    // `ptxFormation = {"ptxtest"`.  Both halves were correct when written:
+    // the network's params were `{"ptxtest", 80, 80, 80, 1}` — five fields set,
+    // five defaulted, so the reform gate WAS dormant there and this assertion
+    // WAS true.  `4e1c9e6` (2026-08-21, the Gate 0 cut) then did two things in
+    // ONE commit and touched no test:
+    //   (i)  renamed the params' name field "ptxtest" -> "ptxtestnet" (so this
+    //        file's needle stopped matching anything), and
+    //   (ii) turned the reform gate ON for that network.
+    // So the change that FALSIFIED the assertion is the same change that
+    // BLINDED the guard, and the resulting failure message named the missing
+    // line rather than the live gate — it read as a typo, not as a finding.
+    //
+    // ★ The gate on ptxtestnet is DELIBERATE, not a leak: chainparams.cpp:958-989
+    // gives a per-field reason for all ten positional fields, and
+    // doc/ptx/PTX_TESTNET_GENESIS_CONFIG.md §4 derives them as a table
+    // (retire 200 "as ptxbea", grace 1 "ODC-054 ... harmless at L=1", rate 40
+    // "as ptxbea").  ptxtestnet is a fresh launch chain in the ptxbea family,
+    // not a mainnet-posture network.  So the CLASSIFICATION moves, not the
+    // params.  What this row guards is unchanged: mainnet and the inherited
+    // public testnet stay dormant.
+    //
+    // ★★ AND THE NEEDLES ARE NOW THE NETWORK-ID CONSTANTS, not literals, so a
+    // rename cannot silently disarm this row a second time: a missing line is a
+    // REQUIRE (hard stop), and NameMatchesNetworkId below pins the invariant
+    // chainparams.cpp:964 states in prose — the name field must equal the
+    // network id.  A guard a rename can switch off is not a guard.
+    for (const std::string& net : {CBaseChainParams::MAIN, CBaseChainParams::TESTNET}) {
+        const std::string line = P5_line_containing(cp, "ptxFormation = {\"" + net + "\"");
+        BOOST_REQUIRE_MESSAGE(!line.empty(), "no ptxFormation line for " + net +
+            " — a rename must fail this row LOUDLY, not silently disarm it (BUG-053)");
         BOOST_CHECK_MESSAGE(line.find(gate) == std::string::npos,
-            std::string(net) + " must NOT carry the reform gate (mainnet/testnet stay DORMANT): " + line);
+            net + " must NOT carry the reform gate (mainnet posture stays DORMANT): " + line);
     }
-    for (const char* net : {"regtest", "ptxbea"}) {
-        const std::string line = P5_line_containing(cp, std::string("ptxFormation = {\"") + net + "\"");
+    for (const std::string& net : {CBaseChainParams::REGTEST, CBaseChainParams::PTXBEATESTNET,
+                                   CBaseChainParams::PTXTESTNET}) {
+        const std::string line = P5_line_containing(cp, "ptxFormation = {\"" + net + "\"");
+        BOOST_REQUIRE_MESSAGE(!line.empty(), "no ptxFormation line for " + net +
+            " — a rename must fail this row LOUDLY, not silently disarm it (BUG-053)");
         BOOST_CHECK_MESSAGE(line.find(gate) != std::string::npos,
-            std::string(net) + " must carry the reform gate (drill chains LIVE): " + line);
+            net + " must carry the reform gate (drill + launch chains LIVE): " + line);
     }
 
     const std::string st = P5_slurp(src + "/src/ptx/ptx_quorum_store.cpp");
     BOOST_REQUIRE(!st.empty());
     BOOST_CHECK(P5_count(st, "MaybeReformAtBoundary(pindex, Params().GetConsensus().ptxFormation") == 1);
     BOOST_CHECK(P5_count(st, "RestoreReformedAtHeight(pindex->nHeight);") == 1);
+}
+
+// ★ BUG-053 hardening — the invariant that would have prevented the blinding.
+// chainparams.cpp:964 states it in prose ("name \"ptxtestnet\" matches
+// strNetworkID; the old \"ptxtest\" did not") and nothing enforced it, so the
+// name field was free to drift away from the network id it is supposed to
+// label — which is exactly how W4f_UnstubAndWiring_Structural lost its target.
+// One row, five networks: every ptxFormation initializer must be named for a
+// real network id, and every real network id must have one.
+BOOST_AUTO_TEST_CASE(W4f_FormationNameMatchesNetworkId)
+{
+    const std::string src = PTX_SRCDIR;
+    BOOST_REQUIRE_MESSAGE(!src.empty(), "PTX_SRCDIR not injected");
+    const std::string cp = P5_slurp(src + "/src/chainparams.cpp");
+    BOOST_REQUIRE(!cp.empty());
+
+    const std::vector<std::string> ids = {
+        CBaseChainParams::MAIN,          CBaseChainParams::TESTNET,
+        CBaseChainParams::REGTEST,       CBaseChainParams::PTXTESTNET,
+        CBaseChainParams::PTXBEATESTNET,
+    };
+    size_t found = 0;
+    for (const std::string& id : ids) {
+        if (!P5_line_containing(cp, "ptxFormation = {\"" + id + "\"").empty()) ++found;
+    }
+    // Anti-vacuity: this must count what is really there, not merely not-crash.
+    BOOST_CHECK_EQUAL(found, ids.size());
+    // ...and there must be no SIXTH initializer named for nothing: the total
+    // number of ptxFormation assignments equals the number of network ids.
+    BOOST_CHECK_EQUAL(P5_count(cp, "consensus.ptxFormation = {"), ids.size());
 }
 
 // ★ W4-f AMENDMENT — THE AGE ANCHOR (the pre-drill finding): "N blocks of

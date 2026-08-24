@@ -227,10 +227,22 @@ struct PTXFormationParams {
     // gate off, nothing is ever terminal-eligible, the KDD-075 yield never
     // fires, the limiter never selects — the whole W2.4 lifecycle is
     // dormant-by-parameter.  The defaults are the MAINNET posture:
-    // main/test/ptxtest leave them 0; regtest and ptxbea set them LIVE in
-    // chainparams via the ptxFormation aggregate initializer (the W4-f
-    // un-stub, drill chains only — ptxbea currently {…, 200, 1, 40}).
-    // Mainnet reform stays off until deliberately enabled.  ★ GREP TRAP
+    // main and test leave them 0; regtest, ptxbea AND ptxtestnet set them LIVE
+    // in chainparams via the ptxFormation aggregate initializer (currently
+    // {…, 200, 1, 40} on all three).  Mainnet reform stays off until
+    // deliberately enabled.
+    // ★ CORRECTED 2026-08-25 (BUG-053).  This sentence used to read
+    // "main/test/ptxtest leave them 0 … drill chains only", which was true
+    // when written and was falsified by `4e1c9e6` (2026-08-21): that commit
+    // renamed the network's params from {"ptxtest", 80, 80, 80, 1} to
+    // {"ptxtestnet", …, 200, 1, 40, 0, 0} — turning the gate ON for a LAUNCH
+    // chain, not a drill chain — and the structural row that guards this
+    // property keyed off the OLD name, so the same commit that made the
+    // sentence false also blinded the only thing checking it.  "drill chains
+    // only" is therefore retired as a description: the correct statement is
+    // MAINNET-POSTURE networks stay dormant, and ptxtestnet is not one.
+    // The per-field reasoning for ptxtestnet lives at chainparams.cpp:958-989
+    // and doc/ptx/PTX_TESTNET_GENESIS_CONFIG.md §4.  ★ GREP TRAP
     // (cost a wrong eviction-model call, 2026-08-16): these fields are set
     // by POSITION in the chainparams aggregate init, so a search for the
     // field NAME finds only this header and tests — read the
