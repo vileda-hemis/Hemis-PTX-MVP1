@@ -494,6 +494,14 @@ Confirmed on the live fleet, read-only: every node's config carries `rpcuser=ptx
 `-rpcwhitelist` does not exist in this fork (grep: 0 hits), so an authenticated caller reaches the
 **entire** RPC surface — `stop`, `setban`, `invalidateblock`, the wallet.
 
+★ **That pair is bounded, and the boundary is the point.** These RPC ports are bound inside a
+private Docker network on a single host and the coins are testnet, so the credential guards nothing
+an attacker could not reach by already being on the box — the qualifier ODC-079 carries, restated
+here because `rpcuser=ptxw2rpc` alongside `rpcallowip=0.0.0.0/0` reads as a live misconfiguration
+without it. ★ It is cited as evidence *because* the fan-out breaks exactly that boundary: it hands
+the dialling node's credential to eleven hosts the operator does not control and did not choose.
+The config is safe where it sits and unsafe the moment KDD-085 ships it off the host.
+
 ★ Note this is *additional to* the reason KDD-085 was originally registered (2026-08-12), which was
 address/port correctness: the PTX-RPC endpoint is not on-chain — DGM advertises only the P2P port —
 so the fan-out embeds *"GMs expose PTX-RPC at DGM-IP:convention-port"*, an assumption permissionless

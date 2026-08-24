@@ -116,24 +116,34 @@ problem cleanly: there is no window where a tag exists without artefacts.
    A checksum served from the same host as the artefact proves the download was not corrupted; it
    does not prove authenticity. The out-of-band copy is what makes it a real pin, and it costs one
    message.
-5. Confirm every reference to the tag names the tag — **all four are already flipped**, and the
-   list is here because the sweep that produced it found one that had been missed for a week:
-   * `testnet/operator/install.sh:22` — `REF="${PTX_REF:-v0.1.0-testnet}"` ✓
-   * `vps-install.sh:37` — `TAG="${PTX_TAG:-v0.1.0-testnet}"` ✓
-   * `testnet/operator/OPERATOR_GUIDE.md` — `git clone -b v0.1.0-testnet …` ✓ (was
-     `-b feature/ptx-dkg`, a **moving branch**, until 2026-08-21)
-   * `GM_QUICKSTART.md` and `vps-install.sh`'s own header — the `raw.githubusercontent` URL that
-     fetches the bootstrap ✓ (was `/main/`, where a file of the same name is the **upstream Hemis
-     mainnet installer** — BUG-044)
+5. **Confirm every reference to the tag names the tag — by running the check, not by reading a
+   list.** From the repository root:
+
+   ```bash
+   testnet/operator/pin-check.sh          # defaults to whatever install.sh:22 names
+   ```
+
+   Exit `0` means every pin in the operator-executable surface agrees and every historical
+   exemption still matches. Exit `1` prints each disagreement as `file:line`.
+
+   ★ **There used to be a list here and it is why this step is now a script.** It enumerated the
+   pin sites, complete with `✓` marks and the literal tag of the day, under the words *"all four
+   are already flipped"*. At the next cut it read as a record that the work was done — which for
+   the tag it named, it was — so nobody re-ran it, and `vps-install.sh` plus `GM_QUICKSTART.md`
+   shipped a full release cycle still pointing at the previous tag (**BUG-054**). It was also
+   incomplete: six live sites exist and it listed five. **A checklist of pin sites is itself a pin
+   site — it goes stale the same way, and nothing checks it** (**KDD-104**).
 
    ★ **The pattern to sweep for is not "the tag string"; it is "any ref that fetches PTX tooling".**
-   Three of the four above pinned correctly and the fourth floated, and a floating fetch defeats
-   all three: it decides which `install.sh` you run before `PTX_REF` gets to decide anything.
+   A pinned installer reached by a floating fetch is not pinned: the fetch decides which
+   `install.sh` you run before `PTX_REF` gets to decide anything. That is why the check covers the
+   `raw.githubusercontent` bootstrap URL and not just the `REF`/`TAG` defaults.
 6. Tell the operators: the tag, the sha256, and one line on what changed.
 
 ### Cutting a fix release
 
-Same procedure with `v0.1.1-testnet`. Do **not** move an existing tag — an operator who already
+Same procedure with the next unused patch version — a tag name is spent the moment it is published
+and cannot be reused. Do **not** move an existing tag — an operator who already
 installed would silently keep old code while believing they had the fix, and `install.sh`'s
 fast-forward check would not catch it because a moved tag is not a fast-forward it looks at. New tag,
 new message, every time.
