@@ -1,0 +1,35 @@
+CPTXRollCommitPayload
+   0 game_id              std::string              string
+   1 nSeedHeight          uint32_t                 u32
+   2 nExpiryHeight        uint32_t                 u32
+   3 caller_pubkey        std::vector<uint8_t>     bytes
+   4 nonce                uint256                  u256
+   5 ptx_params_hash      uint256                  u256
+   6 count                uint32_t                 u32
+   7 low                  int64_t                  i64
+   8 high                 int64_t                  i64
+   9 unique               bool                     bool
+  10 exclude_integers     std::vector<int64_t>     vec_i64
+  11 exclude_txids        std::vector<std::string> vec_string
+  12 round_seed           uint256                  u256
+  13 quorum_hash          uint256                  u256
+CProbabilisticTxPayload
+   0 game_id              std::string              string
+   1 nSeedHeight          uint32_t                 u32
+   2 nExpiryHeight        uint32_t                 u32
+   3 caller_pubkey        std::vector<uint8_t>     bytes
+   4 nonce                uint256                  u256
+   5 ptx_params_hash      uint256                  u256
+   6 count                uint32_t                 u32
+   7 low                  int64_t                  i64
+   8 high                 int64_t                  i64
+   9 unique               bool                     bool
+  10 exclude_integers     std::vector<int64_t>     vec_i64
+  11 exclude_txids        std::vector<std::string> vec_string
+  12 round_seed           uint256                  u256
+  13 beacon               uint256                  u256
+  14 results              std::vector<int64_t>     vec_i64
+  15 quorum_sig_hash      uint256                  u256
+  16 quorum_members       std::vector<std::string> vec_string
+  17 quorum_sig           std::vector<uint8_t>     bytes
+  18 quorum_hash          uint256                  u256
