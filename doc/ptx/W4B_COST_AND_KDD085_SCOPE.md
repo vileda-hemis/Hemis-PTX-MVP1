@@ -346,6 +346,111 @@ happen regardless of ordering, because a block's transactions are not individual
 
 ---
 
+## 5.4 ★★ BUG-052 DEMONSTRATED LIVE (2026-08-25) — the ordering, and the cost
+
+The §5.2 argument was source- and arithmetic-derived. It is now demonstrated on a node that can be
+saturated and restored: a copy of the fleet's append-only `blocks/` reindexed on px1 in isolation
+(`-connect=0 -listen=0`), release build, RPC + `sendrawtransaction`.
+
+**Method.** Lift a real confirmed PTXSESS's raw bytes; repoint its single input at a currently
+**unspent** coin (so *"do all inputs exist?"* passes) — which invalidates its `scriptSig`, giving
+exactly the junk-scriptSig the attack needs; keep every PTX field byte-valid. Three variants, each
+submitted with a per-copy `scriptSig` byte flipped so the txid differs (which also defeats
+`recentRejects`):
+
+| variant | quorum_hash | quorum_sig | where it must reject |
+|---|---|---|---|
+| `badqh` | random (no record) | a valid G2 point | store lookup — **before any pairing** |
+| `garbage` | real, ACTIVE | 96 bytes `0xAB` | inside `PTX_BLS_Verify`, at `blst_p2_uncompress` |
+| `forge` | real, ACTIVE | a valid G2 point lifted from a **different** roll | the **full pairing** |
+
+**Result 1 — the ordering, proven by the reject reason (this is the decisive part, not the timing).**
+All three inputs are unspendable by the sender (junk scriptSig). `forge` and `garbage` both come back:
+
+```
+error code: -26
+ptx-bad-quorum-sig
+```
+
+`ptx-bad-quorum-sig` is the pairing's own rejection (`specialtx_validation.cpp:1111`). **A transaction
+whose script was never going to verify is rejected by the BLS pairing — which can only happen if the
+pairing runs before `CheckInputs`.** If the script check ran first, the reject would be a script
+error. The reason code alone establishes the ordering the finding claims; `badqh` returns
+`ptx-unknown-quorum`, confirming the cheap store lookup still (correctly) precedes the pairing.
+
+**Result 2 — the cost, isolated by interleaved paired deltas** (forge and badqh alternating, N=120,
+which cancels host drift):
+
+```
+forge - badqh : median +1.74 ms   trimmed-mean +1.76 ms   (badqh = reject with NO pairing)
+forge - forge : median +0.01 ms   trimmed-mean -0.01 ms   (noise floor / control)
+```
+
+The pairing adds **~1.75 ms per rejected transaction inside ATMP**, resolved cleanly above a ~0.01 ms
+control floor. It is lower than the §1 microbench's 2.40 ms because `badqh` already pays the cheap
+checks and a store-lookup miss; the *marginal* cost of reaching the pairing is what an attacker adds
+per transaction, and it is unambiguously non-zero. (The ~52 ms absolute per-call figure is
+docker-exec + RPC overhead, not in-daemon cost — which is why the paired delta, not the absolute, is
+the measurement.)
+
+**Saturation, with the measured in-situ figure:** ~1.75 ms of `cs_main`+`mempool.cs`-holding work per
+attack transaction ⇒ **~570 tx/s saturates one validation thread**; at ~827 bytes/tx that is
+**~3.8 Mbit/s** from an unauthenticated, unbanned peer. Same order as the §5.2 estimate.
+
+**What is NOT shown here:** the ban behaviour, because the isolated node has no peers. That
+`ptx-bad-quorum-sig` carries DoS score 0 is definitional (`state.Invalid` ⇒ `DoS(0,…)`,
+`consensus/validation.h:55-61`), not a measurement, and stands on source.
+
+## 5.5 The minimal fix, its trade-offs, and whether it rides the recut
+
+**The fix is two changes that compose, and the composition is the point.**
+
+1. **Defer the pairing past `CheckInputs`, at ATMP only.** Today `CheckSpecialTx` runs at
+   `validation.cpp:510` and does the pairing inline; `CheckInputs` (script verification) is at `:599`.
+   Split the PTX arm's *expensive* check (the pairing) out of `CheckSpecialTx`'s *structural +
+   cheap-contextual* checks, and run it after `:599`. Then a junk-scriptSig transaction rejects at
+   `CheckInputs` — before it can buy a pairing — and the whole cheap-attack surface closes.
+   - ★ **Constraint that makes this plan-then-build, not a one-liner:** `CheckSpecialTx` has THREE
+     callers (`specialtx_validation.cpp:1004-1006`) — ATMP (tip), `ConnectBlock` (pprev), and
+     `CheckBlock`→`CheckSpecialTxNoContext` (null). **The deferral must be ATMP-only.** `ConnectBlock`
+     must keep verifying every PTXSESS regardless of ordering, because a block's transactions are not
+     individually rejectable — that is where §4.B (batch) belongs, not deferral. So the change is an
+     interface split with a per-caller policy, on the exact path (mempool acceptance) that produced
+     the last two surprises.
+
+2. **Raise `ptx-bad-quorum-sig`'s DoS score above 0.** A settle produced by a real quorum *always*
+   verifies; a well-formed signature that does not verify against the named group key cannot come from
+   a correct implementation, so it is unambiguously malicious.
+   - ★★ **Deferral is a PRECONDITION for the DoS score being safe, and this answers the operator's
+     concern directly.** The worry — "a legitimate node relaying a settle whose inputs are momentarily
+     unspendable should not be banned" — is real *only without deferral*. **With** deferral, reaching
+     the pairing (and thus the bannable `ptx-bad-quorum-sig`) means `CheckInputs` already passed, so
+     the inputs are spendable and the script is valid; a bad signature at that point is a forged
+     signature, not a transient relay condition. A momentarily-unspendable settle rejects earlier, at
+     `CheckInputs`, with an ordinary non-PTX score, and is never banned. **The two fixes are safe only
+     together: order first, then score.**
+
+3. **Then the validation cache (§4.A)**, so the deferred pairing is not re-paid at `ConnectBlock` for
+   anything that transited the mempool.
+
+**Rate-limiting per peer** is a weaker third option: it bounds the burst but not the steady rate, and
+an attacker rotating source addresses evades it. Prefer (1)+(2)+(3); reach for rate-limiting only if
+measurement after those still shows exposure.
+
+**Does it ride the recut?**
+
+- **The DoS-score change alone is a safe one-liner but insufficient alone** — it bans repeat senders
+  but does nothing about the first wave from each peer, or from rotating peers, and without deferral
+  it is *unsafe* per point 2. So it must not ship without the deferral.
+- **The deferral is NOT a blind land.** It restructures `CheckSpecialTx`'s interface and touches the
+  mempool-acceptance ordering — the same path as BUG-048 and the funding-view surprise. **It needs
+  the same plan-then-build treatment as W4-b's remaining half, not a spot fix on this pass.**
+
+★ **Recommendation: BUG-052 does NOT ride the recut as a code change.** It is now demonstrated,
+scoped, and its fix is specified; it should land as its own reviewed change (deferral + score + cache,
+in that dependency order) before the operator set opens — it is a KDD-103 member, cheap to exploit and
+present in `b637751` today, but the fix is on the path where "cheap-looking" has twice been wrong.
+
 ## 6. What W4-b's remaining half should cost — recommendation
 
 | Item | Verdict |
