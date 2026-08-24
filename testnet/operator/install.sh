@@ -91,6 +91,51 @@ warn() { printf '  [WARN] %s\n' "$*"; }
 die()  { printf '\n  [FAIL] %s\n\n' "$*" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
+# ★ RETRY THE NETWORK REACH -- STEP ONE IS THE MOST LIKELY THING TO FAIL, AND
+# THE WORST PLACE TO FAIL WITHOUT EXPLANATION.
+#
+# Observed on ptx01's console, 2026-08-24, VLAN 2: the first "git ls-remote"
+# died with "Temporary failure in name resolution" and the IMMEDIATE retry
+# succeeded. Unretried, that is an operator's very first command reporting what
+# looks like a broken installer, when nothing is wrong with it.
+#
+# ★ The inconsistency this closes: the tarball download at section 3 has carried
+# "curl --retry 3" all along; the clone and fetch -- which every operator runs,
+# and which run FIRST -- had nothing.
+#
+# ★ IT RETRIES, IT DOES NOT MASK. Every attempt's error is printed as it
+# happens, and after the last one the script still dies with the real message.
+# A permanent failure (wrong URL, deleted repo, no such tag) costs three
+# attempts and then reports itself; it is never swallowed into a success.
+#
+# ★ Retrying a CLONE is safe, measured rather than assumed (2026-08-24): a clone
+# that fails into a directory this script pre-created leaves that directory
+# EMPTY, and the next attempt reports the same network error -- not "already
+# exists". So no cleanup step is needed, and none is done: a cleanup here would
+# mean an rm -rf on an operator-supplied PREFIX.
+# ---------------------------------------------------------------------------
+git_net() {
+    local what="$1"; shift
+    local attempt=1 max=3 err=""
+    while :; do
+        if err="$("$@" 2>&1)"; then
+            [ "$attempt" -gt 1 ] && ok "$what succeeded on attempt $attempt"
+            return 0
+        fi
+        [ -n "$err" ] && printf '%s\n' "$err" | sed 's/^/         /'
+        [ "$attempt" -ge "$max" ] && break
+        warn "$what failed (attempt $attempt/$max) -- retrying in $((attempt * 3))s"
+        sleep "$((attempt * 3))"
+        attempt=$((attempt + 1))
+    done
+    die "$what failed after $max attempts; the last error is printed above.
+  If it says \"Temporary failure in name resolution\", DNS on this host is not
+  resolving github.com. Check /etc/resolv.conf and re-run -- this installer
+  needs DNS for nothing else. A single such failure is a known hiccup on some
+  networks and a re-run usually clears it."
+}
+
+# ---------------------------------------------------------------------------
 # 1. Environment checks.
 #
 # We check GLIBC VERSION and CPU ARCHITECTURE, deliberately NOT the distro name.
@@ -153,11 +198,11 @@ DISK_GB=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc '0-9')
 say "2. Source"
 if [ -d "$PREFIX/.git" ]; then
     ok "existing checkout at $PREFIX -- updating"
-    git -C "$PREFIX" fetch --all --tags --quiet
+    git_net "git fetch" git -C "$PREFIX" fetch --all --tags --quiet
 else
     $SUDO mkdir -p "$PREFIX"
     $SUDO chown "$(id -u):$(id -g)" "$PREFIX"
-    git clone --quiet "$REPO" "$PREFIX"
+    git_net "git clone" git clone --quiet "$REPO" "$PREFIX"
     ok "cloned $REPO"
 fi
 if [ -n "$REF" ]; then
