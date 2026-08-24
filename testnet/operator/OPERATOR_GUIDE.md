@@ -117,7 +117,7 @@ apt-get update && apt-get install -y --no-install-recommends git curl ca-certifi
 ```
 
 ```bash
-git clone -b v0.1.0-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
+git clone -b v0.1.1-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 cd Hemis-PTX-MVP1/testnet/operator
 ./install.sh
 ```
@@ -687,3 +687,22 @@ use a glibc-based distro.
   that is real.
 * **Registering via the RPC console is the supported path for launch.** A GM tab in the wallet UI is
   a deliberate fast-follow, built once we know what people actually struggled with here.
+* ★★ **`commitment input N not in the confirmed UTXO set` (error -32050) is YOUR wallet, not the
+  network, and it clears itself.** It means the roll could not be funded because your **confirmed**
+  coins are momentarily used up — every roll spends one and returns its change UNCONFIRMED, so
+  until a block confirms that change the coin is not spendable again. It is not a quorum failure,
+  not a peer failure, and nothing was charged: the roll stops **before** the commitment is
+  broadcast, so no service fee is paid.
+
+  **The sustainable rate is exactly "confirmed non-dust coins you hold" — one coin per roll,
+  measured 1:1.** Roll faster than your coins replenish and you will see this; it clears in a block
+  or two. If you need a higher sustained rate, hold more coins, not bigger ones — a single large
+  UTXO funds exactly one roll at a time, the same as a small one.
+
+  ★ Check with `listunspent 1` and count outputs above dust, **not** `getbalance`. A wallet showing
+  26,000 HMS can legitimately have zero spendable coins, because the balance is sitting in
+  unconfirmed change.
+* ★ **`install.sh` failing at the clone with "Temporary failure in name resolution" is a DNS
+  hiccup, not a broken script.** Observed once on VLAN 2, where the immediate retry succeeded. Run
+  it again before reporting it. If it recurs, check the resolver on that host — the installer needs
+  nothing from DNS except reaching github.com.

@@ -18,8 +18,8 @@ That is the whole failure this page prevents.
 | `addnode=` × 3 | coordinator, after standing up the three coordinator nodes | **before the tag** | `install.sh` `emit_conf`, via `PTX_SEEDS` |
 | `rpcallowip=<caller>` | coordinator — the caller node's public address | **before the tag** | GM config, via `PTX_CALLER` |
 | `rpcauth=ptxcaller:<salt>$<hmac>` | coordinator | **before the tag** | GM config, via `PTX_RPCAUTH` |
-| spork **public** key (hex) | coordinator, see below | **before the tag** | `src/chainparams.cpp:786` |
-| genesis `nTime` / nonce | `findGenesisPTXBea()` | **before the tag** | `src/chainparams.cpp:740-744` |
+| spork **public** key (hex) | coordinator, see below | ★ **DONE** — `03612ded…a4e1ff` landed `34e96e1` | `src/chainparams.cpp:828` |
+| genesis `nTime` / nonce | a standalone miner, not `findGenesisPTXBea()` | ★ **DONE** — `1787443200` / `10954950` landed `34e96e1` | `src/chainparams.cpp:751-755` |
 
 **The first three ship as documented placeholders.** `install.sh` writes commented placeholder
 lines and warns loudly when `PTX_SEEDS`, `PTX_CALLER` or `PTX_RPCAUTH` is empty, so an operator who
@@ -49,9 +49,26 @@ by `nTimeSlotLength = 15` (`chainparams.cpp:776` for ptxtestnet), so the Time Pr
 mask `nTime % nTimeSlotLength == 0` is satisfied for free. An arbitrary wall-clock second has a
 14-in-15 chance of failing it.
 
-`findGenesisPTXBea()` is commented out at `src/chainparams.cpp:202-228`; the `found` flag it needs
-is live at `:24`. Uncomment, set `nTime = 1787443200`, run once, record the nonce and hash, update
-**both** asserts at `:740-744`, and add the genesis-only `mapCheckpoints` entry.
+### ★★ GENESIS IS ALREADY MINED AND COMMITTED — DO NOT RE-RUN THE MINER
+
+Landed in `34e96e1`: **`nTime = 1787443200`, `nNonce = 10954950`**, hash
+`00000094a6ac77ae3503093e9529981cc724c4410265f727bc762f713b0da6e2`, at
+`src/chainparams.cpp:751-755` with the height-0 checkpoint and `dataPTXTestNet`'s timestamp updated
+to match. **Re-running any miner would produce a different block and invalidate the tag.**
+
+★ It was mined by a **standalone single-translation-unit miner**, not by the in-tree
+`findGenesisPTXBea()` (still commented out at `:202-228`, its `found` flag live at `:24`). The
+in-tree one runs from inside the daemon, so it costs one build to mine and a second to compile the
+answer; the header hash depends on nothing but 80 bytes and `HashQuark`, so a standalone program
+linking this tree's own quark primitives gets the same number for one build. That miner
+**re-derived the PREVIOUS committed genesis from its own `(1779115621, 9801932)` and refused to run
+unless the hash came back byte-identical** — the instrument verified against a known-correct answer
+before being trusted with a new one. It ran single-threaded from nonce 0, so `10954950` is the
+**minimal** nonce and is deterministically reproducible; the striped in-tree miner returns whichever
+thread wins, which is not the same property.
+
+★ Only ONE assert changed. `hashMerkleRoot` is invariant across all five networks — the coinbase
+depends on `pszTimestamp`, the output script and the reward, never on `nTime` or `nNonce`.
 
 ★ The merkle root will be **unchanged** (`93ad7b45…`) — it derives from the shared genesis coinbase
 message. That is expected, not a mistake.
@@ -177,7 +194,7 @@ precedent is the same shape: `chainparams.cpp:1042` records that its private hal
 exist today it is **worthless**: they still carry the shared Hemis-testnet spork pubkey, so a
 freshly generated pair *will* be rejected — correctly, and it tells you nothing about your pair.
 The check only becomes meaningful once a build has **your** pubkey compiled into
-`chainparams.cpp:786`. Run it after that rebuild, not before.
+`chainparams.cpp:828`. Run it after that rebuild, not before.
 
 ```bash
 # AFTER a build that has the new pubkey compiled in. Same disposable datadir.
@@ -262,7 +279,7 @@ Everything below is public. Nothing here is secret except in the sense that the 
 should not be posted where strangers can find it.
 
 ```
-Tag:            v0.1.0-testnet          (use it in BOTH places: git clone -b <tag>, and PTX_REF=<tag>)
+Tag:            v0.1.1-testnet          (use it in BOTH places: git clone -b <tag>, and PTX_REF=<tag>)
 Repository:     https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 
 Gamemasters:    4, on 4 separate hosts, each with its own routable address
