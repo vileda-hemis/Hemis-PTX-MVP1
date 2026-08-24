@@ -115,25 +115,35 @@ std::string PTX_BuildRollCommitment(const CPTXRollCommitPayload& payload,
     // The obvious fix is the one the settle path below already uses: resolve
     // through a CCoinsViewMemPool so unconfirmed change is visible.
     //
-    // ★★★ IT IS NOT APPLIED HERE, AND THE REASON IS A MEASURED
+    // ★★★ IT WAS NOT APPLIED HERE, AND THE REASON WAS A MEASURED
     // DEADLOCK. Resolving through CCoinsViewMemPool requires mempool.cs, and taking
-    // it here as `cs_main -> mempool.cs -> cs_wallet` (copying the settle path
-    // below) INVERTS against the wallet, which runs
+    // it here as `cs_main -> mempool.cs -> cs_wallet` (copying the settle path as
+    // it then stood) INVERTS against the wallet, which runs
     // `cs_main -> cs_wallet -> mempool.cs`: CWallet::ReacceptWalletTransactions
-    // (wallet/wallet.cpp:1979) holds LOCK2(cs_main, cs_wallet) and then calls
-    // CTxMemPool::exists (txmempool.h:642), which takes mempool.cs.
+    // (wallet/wallet.cpp:1977) holds LOCK2(cs_main, cs_wallet), at :1999 calls
+    // CWalletTx::AcceptToMemoryPool, which at wallet.cpp:4473 calls
+    // mempool.exists() -- CTxMemPool::exists takes LOCK(cs) at txmempool.h:642.
     //
     // A DEBUG_LOCKORDER daemon carrying that change aborted on the FIRST roll:
     //   POTENTIAL DEADLOCK DETECTED ... Assertion failed: detected inconsistent
     //   lock order at sync.cpp:122
     // Correct order is cs_main -> cs_wallet -> mempool.cs.
     //
-    // ★★ AND THAT INDICTS THE SETTLE PATH BELOW, which already uses the inverted
-    // order and therefore carries the same latent deadlock today. It has never
-    // been caught because the fleet binary is built WITHOUT DEBUG_LOCKORDER --
-    // unstripped, but not instrumented. Fixing this properly means reordering BOTH
-    // sites, which touches shipping settle code, so it is a decision rather than a
-    // four-line patch and is registered, not taken here.
+    // ★★ AND THAT INDICTED THE SETTLE PATH BELOW, which used the inverted order in
+    // shipping code and carried the same latent deadlock -- invisible only because
+    // the fleet binary is built WITHOUT DEBUG_LOCKORDER (unstripped, not
+    // instrumented). BUG-048.
+    //
+    // ★ STATUS: the settle block below now takes `cs_main -> cs_wallet ->
+    // mempool.cs`, so the canonical order is established in PTX code and the
+    // mempool-aware resolution IS NOW UNBLOCKED HERE -- it would be written as
+    //   LOCK2(cs_main, pwallet->cs_wallet); LOCK(mempool.cs);
+    // with a CCoinsViewMemPool over pcoinsTip, exactly as the settle path does.
+    // It is deliberately NOT taken in the same change as the lock fix: that fix is
+    // a pure reorder with no behavioural delta, and this is a funding-semantics
+    // change (unconfirmed self-change becomes spendable at commit time) that wants
+    // its own verification. Landing it is a scheduling decision, no longer a
+    // lock-order one.
     //
     // What IS applied below is the message fix, which needs no lock change and is
     // worth landing alone: the old text claimed "already spent".
@@ -242,9 +252,22 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
     // Sign all inputs. The coin-chain input spends the commitment's UNCONFIRMED
     // output, so resolve coins through a mempool-aware view (pcoinsTip alone would
     // not find it) — the standard spending-unconfirmed-chained-output pattern.
+    //
+    // ★ BUG-048: the lock order here is `cs_main -> cs_wallet -> mempool.cs`, and
+    // it is not a free choice. `CWallet::ReacceptWalletTransactions`
+    // (wallet/wallet.cpp:1977) holds LOCK2(cs_main, cs_wallet) and at :1999 calls
+    // `CWalletTx::AcceptToMemoryPool`, which at wallet.cpp:4473 calls
+    // `mempool.exists()` — `CTxMemPool::exists` takes LOCK(cs) at txmempool.h:642.
+    // That path, plus 84 canonical LOCK2(cs_main, [p]wallet->cs_wallet) sites
+    // (grep, 2026-08-24), is what establishes the order; this block previously took `cs_main -> mempool.cs ->
+    // cs_wallet` and inverted the last two, a latent deadlock that shipped and was
+    // invisible only because the fleet binary carries no DEBUG_LOCKORDER (KDD-102).
+    // ★ mempool.cs is taken LAST and innermost on purpose: it is the hot lock
+    // (PTX_RollCommitmentPresent scans all of mapTx under it, twice per
+    // gm_bls_sign), so it must not be held across the cs_wallet acquisition.
     {
-        LOCK2(cs_main, mempool.cs);
-        LOCK(pwallet->cs_wallet);
+        LOCK2(cs_main, pwallet->cs_wallet);
+        LOCK(mempool.cs);
         CCoinsViewMemPool viewMemPool(pcoinsTip.get(), mempool);
         CCoinsViewCache view(&viewMemPool);
         for (unsigned int i = 0; i < mtx.vin.size(); i++) {
