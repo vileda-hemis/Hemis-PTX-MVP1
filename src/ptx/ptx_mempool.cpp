@@ -324,18 +324,68 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
 // mempool at sign time — settle rides its block — so the mempool scan is the
 // authoritative signing-time check; a chain scan is unnecessary for the
 // same-block flow and would only matter if a window > 0 were ever allowed.
+// ── KDD-085 §9.4: GENERATION-CACHED INDEX ───────────────────────────────────
+// This predicate used to walk all of mapTx on EVERY call, copying a
+// CTransactionRef (an atomic refcount pair) per entry, while holding mempool.cs
+// — and it is the FIRST statement of both signing entry points
+// (PTX_SignRoundIfCommitted and PTX_AcceptAttachedCommitment).
+//
+// ★★ WHY THAT WAS THE WHOLE DoS SURFACE, AND WHY THE FIX IS SHAPED LIKE THIS.
+// The scan is linear in mempool size, and mempool.cs is contended by ATMP and
+// block assembly — so a caller that can trigger this cheaply is mounting a
+// LIVENESS attack on block production, not merely burning CPU. Measured
+// (W4B_COST_AND_KDD085_SCOPE.md §9.4): at the DEFAULT maxmempool=300
+// (policy/policy.h:25 — the fleet's 50 is NOT what operators get, KDD-106),
+// ~47 kbit/s of requests holds this lock continuously. Today the RPC credential
+// is what bounds that; KDD-085 removes the credential, so the bound has to be
+// structural before the endpoint can be opened.
+//
+// ★ THE KEY PROPERTY: A FLOOD OF REQUESTS DOES NOT MUTATE THE MEMPOOL. The
+// expensive rebuild is gated on mempool CHANGE, not on being ASKED. An attacker
+// controls how often they ask; they do not cheaply control how often mapTx
+// changes. So the scan is paid per mempool mutation (which the node was already
+// doing work for) and every request in between is an O(log n) set lookup.
+//
+// ★ WHY A CACHE KEYED ON THE UPDATE COUNTER RATHER THAN AN INDEX MAINTAINED BY
+// HOOKS. A hook-maintained index is stored-and-trusted: it must be updated at
+// every add/remove/clear site, and if one is ever missed it DRIFTS silently and
+// this predicate starts lying — in the direction that refuses legitimate rolls
+// or, worse, admits illegitimate ones. That is exactly BUG-036's REGISTER 2
+// (derive-don't-store: stored copies drift; a lost write is a latent divergence
+// source). Here the cache is DERIVED and recomputed whenever mapTx changes, so
+// staleness is unrepresentable rather than merely unlikely, and there is no new
+// invariant for a future mempool change to violate.
+//
+// nTransactionsUpdated is a complete mutation counter for mapTx: incremented in
+// addUnchecked (txmempool.cpp:471), removeUnchecked (:568) and clear() (:884).
+// GetTransactionsUpdated() takes cs, which is a RecursiveMutex (txmempool.h:471),
+// so calling it under our own LOCK(mempool.cs) is safe.
+//
+// A validity FLAG rather than a sentinel generation: unsigned wrap-around cannot
+// then alias "never built" onto a live counter value.
+static bool                                  g_ptx_commit_index_valid = false;
+static unsigned int                          g_ptx_commit_index_gen   = 0;
+static std::set<std::pair<uint256, uint256>> g_ptx_commit_index;
+
 bool PTX_RollCommitmentPresent(const uint256& round_seed, const uint256& quorum_hash)
 {
     LOCK(mempool.cs);
-    for (const auto& e : mempool.mapTx) {
-        const CTransactionRef tx = e.GetSharedTx();
-        if (!tx->IsPTXRollCommitTx()) continue;
-        CPTXRollCommitPayload p;
-        if (!GetTxPayload(*tx, p)) continue;
-        if (p.round_seed == round_seed && p.quorum_hash == quorum_hash)
-            return true;
+
+    const unsigned int gen = mempool.GetTransactionsUpdated();
+    if (!g_ptx_commit_index_valid || gen != g_ptx_commit_index_gen) {
+        g_ptx_commit_index.clear();
+        for (const auto& e : mempool.mapTx) {
+            const CTransactionRef tx = e.GetSharedTx();
+            if (!tx->IsPTXRollCommitTx()) continue;
+            CPTXRollCommitPayload p;
+            if (!GetTxPayload(*tx, p)) continue;
+            g_ptx_commit_index.emplace(p.round_seed, p.quorum_hash);
+        }
+        g_ptx_commit_index_gen   = gen;
+        g_ptx_commit_index_valid = true;
     }
-    return false;
+
+    return g_ptx_commit_index.count(std::make_pair(round_seed, quorum_hash)) > 0;
 }
 
 // ── KDD-088 direct-attach: accept caller-supplied commitment bytes ───────────

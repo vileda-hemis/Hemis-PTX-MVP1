@@ -5365,6 +5365,70 @@ BOOST_AUTO_TEST_CASE(Bug032_2b_SignsOnRealMempoolCommitment)
     mempool.clear();
 }
 
+// ---------------------------------------------------------------------------
+// KDD-085 §9.4 — the generation-cached commitment index.
+//
+// PTX_RollCommitmentPresent caches its (round_seed, quorum_hash) set and rebuilds
+// it only when mempool.GetTransactionsUpdated() changes. That is what removes the
+// per-request O(mapTx) scan under mempool.cs (the ~47 kbit/s liveness surface),
+// and it introduces exactly ONE way to be wrong: SERVING A STALE ANSWER.
+//
+// ★ So the RED leg is not "does it find a commitment" (Bug032_2b already covers
+// that, and would still pass with a permanently-warm cache). The RED leg is that
+// the cache must NOTICE MEMPOOL CHANGE — in both directions. Delete the
+// generation comparison and legs 3 and 5 below fail; delete the whole cache and
+// none of them do, which is why this case is written against staleness and not
+// against lookup.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(Kdd085_CommitmentIndex_TracksMempoolChange)
+{
+    mempool.clear();
+    const uint256 qhA = QHk(0xC1), seedA = QHk(0xC2);
+    const uint256 qhB = QHk(0xC3), seedB = QHk(0xC4);
+
+    // 1 — empty mempool: absent. (Also primes the cache in the "valid, empty" state,
+    //     which is the case a sentinel-generation implementation gets wrong.)
+    BOOST_CHECK_MESSAGE(!PTX_RollCommitmentPresent(seedA, qhA),
+        "empty mempool must not report a commitment present");
+
+    // 2 — inject A: present. The cache was already warm and must rebuild.
+    CommitInjectToMempool(seedA, qhA);
+    BOOST_CHECK_MESSAGE(PTX_RollCommitmentPresent(seedA, qhA),
+        "commitment added AFTER the cache was primed must be seen "
+        "(generation change must force a rebuild)");
+
+    // 3 — ★ RED LEG: removal must be seen. A cache that never invalidates keeps
+    //     answering true here, which would let a member sign for a commitment that
+    //     is no longer in its mempool — the BUG-032 gate defeated by a stale read.
+    mempool.clear();
+    BOOST_CHECK_MESSAGE(!PTX_RollCommitmentPresent(seedA, qhA),
+        "commitment REMOVED from the mempool must stop being reported present — "
+        "a stale cache here defeats the BUG-032 payment gate");
+
+    // 4 — a different pair is not confused with A (the key is the PAIR, per BUG-033).
+    CommitInjectToMempool(seedB, qhB);
+    BOOST_CHECK_MESSAGE(PTX_RollCommitmentPresent(seedB, qhB), "B must be present");
+    BOOST_CHECK_MESSAGE(!PTX_RollCommitmentPresent(seedA, qhA),
+        "A must not be reported present merely because B is — the index key is the "
+        "(round_seed, quorum_hash) PAIR, which is the BUG-033 quorum-shop close");
+
+    // 5 — ★ RED LEG: cross-pair mismatch. seedB under qhA never existed; a cache
+    //     keyed on only one half of the pair would report it present.
+    BOOST_CHECK_MESSAGE(!PTX_RollCommitmentPresent(seedB, qhA),
+        "a seed from one commitment must not match another commitment's quorum");
+    BOOST_CHECK_MESSAGE(!PTX_RollCommitmentPresent(seedA, qhB),
+        "a quorum from one commitment must not match another commitment's seed");
+
+    // 6 — repeated identical queries are stable (the cached path is the hot path;
+    //     this is the branch every flooded request takes).
+    for (int i = 0; i < 3; ++i)
+        BOOST_CHECK_MESSAGE(PTX_RollCommitmentPresent(seedB, qhB),
+            "cached lookups must be stable across repeated queries");
+
+    mempool.clear();
+    BOOST_CHECK_MESSAGE(!PTX_RollCommitmentPresent(seedB, qhB), "cleared at end");
+}
+
 // 2b-i anti-vacuity: with NO commitment anywhere (empty mempool), signing refuses.
 BOOST_AUTO_TEST_CASE(Bug032_2b_RefusesWithNoMempoolCommitment)
 {
