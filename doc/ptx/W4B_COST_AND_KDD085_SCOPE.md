@@ -686,3 +686,357 @@ adversary-reachable.
 - **BUG-052** — the pairing precedes fee and script verification at mempool acceptance, under
   `cs_main` + `mempool.cs`, with DoS score 0.
 - **KDD-103** — the class: *what breaks when the operator set opens*.
+- **KDD-105** — a credential used where the question is not about identity is a design error,
+  not a configuration one; reducing its blast radius does not fix it. (§9)
+- **KDD-106** — a measurement taken on the fleet is not automatically conservative. (§9.4)
+- **ODC-083** — the shared `ptxcaller` credential, accepted with a written expiry. (§9.10)
+- **ODC-084** — Sybil / pool-share accumulation: previously unregistered. (§9.12)
+
+---
+
+## 9. KDD-085 sign-over-P2P — the build plan
+
+Recon 2026-08-25 against `9ff584a`, read-only. §7 is the scope; this is the plan. Where the two
+disagree this section is later and cites source.
+
+### 9.0 ★★ The frame: no identity anywhere
+
+KDD-085 is not a hardening item. The current design has a **credential answering a question that
+was never about identity**, and the cryptography already answers it correctly.
+
+The right question at a GM is *"is there a funded commitment for this?"* — which every GM can
+answer **independently, from data it already holds, about a caller it has never heard of.** So the
+target model is:
+
+- the caller does not authenticate — nothing about the caller matters;
+- the GM trusts neither the caller, nor the requester (which may not be the caller), nor the other
+  ten members;
+- each member checks and signs, or does not.
+
+Eleven mutually-distrusting strangers each reaching the same verdict from public data is the only
+shape that works permissionlessly, and it is what threshold BLS exists to make possible.
+**"Replace, not flag" follows from this rather than being a preference:** a flag leaves a path in
+which identity still decides, and one operator enabling it re-creates the assumption for everyone.
+
+★ **Why per-operator credentials were rejected** (and this generalises — see KDD-105, §9.10): in
+the real network eleven members may be eleven operators, none of whom knows who the caller is or
+should trust each other. Per-operator credentials assume a GM can *enumerate the callers it
+trusts*. It cannot. Five secrets instead of one reduces blast radius and leaves the defect intact.
+
+### 9.1 Two corrections to §7
+
+**(a) §7.3 overstates and §7.7 contradicts it.** §7.3: a P2P sign request "can be unauthenticated
+and lose no security property." §7.7: the mempool scan "becomes the DoS surface." Same claim,
+negated; neither cites the other. ★ Precisely: **the credential is not load-bearing as
+authorisation and IS load-bearing as a DoS bound.** Both must be replaced. BUG-053's shape — two
+passages in one document, each locally true.
+
+**(b) The shared credential is `ptxcaller`, and it has a second factor.** `install.sh:865-890`
+installs two coordinator-supplied lines on every GM — `rpcauth=ptxcaller:<salt>$<hmac>` and
+`rpcallowip=<caller>` — both, per `:866`, "**unchanged when another operator joins**". Each host
+gets its own random `rpcpassword` (`:1108`). So the exposure is not copies at rest: **the caller
+transmits the plaintext `ptxcaller` password to eleven members per roll** as HTTP Basic
+(`ptx_fanout.cpp:612-616`), and any member reads it off its own wire. `rpcauth` protects the config
+at rest and nothing in transit. ★ `rpcallowip=<caller>` is a real second factor — a harvester must
+connect *from the caller's address*. **Realistic severity: "one hostile operator plus one widened
+config", not "one hostile operator."** Lower than assumed, still unacceptable, because nothing
+detects the widening and the fleet already runs `0.0.0.0/0`.
+
+### 9.2 ★★ S1 — what a GM can verify alone, from chain data, about a stranger
+
+| # | check | site | input | trust required? |
+|---|---|---|---|---|
+| 1 | a funded commitment exists for this exact (`round_seed`,`quorum_hash`) | `ptx_mempool.cpp:327-339` | **local mempool** | ★ none — but see below |
+| 2 | commitment well-formed; pays exactly one service-fee output to the accumulator | `specialtx_validation.cpp:955-962` | tx bytes + chainparams | none |
+| 3 | quorum is **canonical**: a real record ACTIVE at `nSeedHeight` (BUG-033) | `:977-981` | `ptxQuorumStore`, chain-derived | none |
+| 4 | seed height not stale — anchor lag ≤ 60 (ODC-073) | `:984-987` | `pindexPrev` + payload | none |
+| 5 | this GM is a member — holds a CURRENT share for `quorum_hash` | `PTX_BLS_GetCurrentShare` | local keystore | none |
+| 6 | inputs exist and are unspent | `TryATMP` → `CheckInputs` | local UTXO set | none |
+
+★ Checked and worth recording: `nPTXSeedHeightWindow` is **60 on ptxtestnet**
+(`chainparams.cpp:1011`) — an in-source note records that ptxtestnet was previously taking the
+`0`-means-disabled default. The launch chain has the bound.
+
+★ **Nothing requires believing the requester.** Every check reads either the GM's own chain state
+or caller-supplied bytes that are *self-validating* (signatures, funding). That is the whole
+argument, and it holds.
+
+★★ **But check 1 is the exception that shapes the design: the mempool is not consensus state.** It
+is node-local, varies by propagation, policy and eviction, and GMs legitimately disagree about it —
+which is exactly why the retryable "commitment not seen" path exists (`ptx_mempool.cpp:430`). So
+"eleven strangers reach the same verdict from public data" is **not true of the mempool**.
+
+**The fix is that the request must carry its own evidence** — KDD-088's direct-attach, made
+mandatory. Then the GM derives its verdict from caller-supplied self-validating bytes checked
+against its own chain state (2,3,4,6), and check 1 becomes a local cache rather than a dependency.
+★ **The mandatory-commitment decision is therefore load-bearing twice, for two independent
+reasons** — it is what makes the model correct (here) *and* what makes it survivable (§9.4).
+
+★ **The current model stated in the same terms, for the comparison:** today a GM signs because
+someone presented a shared secret. That is a proxy for authorisation which the network cannot
+verify, which every GM must hold *identically*, and which any holder can replay against any other
+GM. It is strictly weaker than the check it stands in for, and it is the only part of the system
+that requires operators to trust each other's operational hygiene.
+
+**One honest caveat, pre-existing and unchanged by KDD-085:** "funded" means *fundable in my
+current UTXO view*, not *irrevocably paid* — an unconfirmed commitment can in principle be
+replaced. That is BUG-032's existing design point, not something this change introduces, but the
+reframe should not claim more than it delivers.
+
+### 9.3 S1.3 — the trade, stated explicitly
+
+Under the new model anyone may ask any GM to sign anything satisfying the gate. What that buys:
+a partial signature over a round **they funded**. A hostile requester who satisfies the gate is a
+paying customer.
+
+**More acceptable than today? Yes, decisively.** Today a credential-holder gets the *entire* RPC
+surface — `stop`, `setban`, `invalidateblock`, the wallet — because this fork has no
+`-rpcwhitelist` (grep: 0 hits).
+
+★ **But it is not strictly better, and must not be sold as such.** Severity falls; *reachability*
+rises. Today the endpoint needs a secret **and** an IP on the allow-list. Tomorrow it needs a TCP
+handshake. **Severity down, exposed surface up** — sound only if §9.4 holds.
+
+### 9.4 ★★ S1.4 — the security model, quantified
+
+With no credential, **the bound on work-before-rejection is the entire defence.**
+
+**Today's cheapest bogus request.** `PTX_RollCommitmentPresent` (`ptx_mempool.cpp:327-339`) is a
+full linear pass over `mapTx` that copies a `shared_ptr` per entry, under `LOCK(mempool.cs)` — and
+it is the **first statement** of both entry points (`:352`, `:419`). Attacker cost: 88 bytes
+(24-byte P2P header + two `uint256`). Victim cost: the whole scan, holding the global mempool lock.
+
+★ **The lock is the amplifier, not the CPU.** `mempool.cs` is contended by ATMP, block assembly and
+the settle path (lock order corrected only in `063d5d3`). This is a **liveness attack on block
+production**, not a CPU burn.
+
+At ~50 ns/entry (iteration + atomic refcount dominate; `IsPTXRollCommitTx` is two field compares,
+`transaction.h:370`):
+
+| mempool | scan | req/s to hold the lock continuously | attacker bitrate |
+|---|---|---|---|
+| 1,000 tx | 0.05 ms | 20,000 | 14 Mbit/s |
+| 10,000 tx | 0.5 ms | 2,000 | 1.4 Mbit/s |
+| 100,000 tx | 5 ms | 200 | **141 kbit/s** |
+| 300,000 tx | 15 ms | 67 | **47 kbit/s** |
+
+★★ **At the default `maxmempool=300` (`policy.h:25`), roughly 47 kbit/s — a dial-up trickle — holds
+a GM's mempool lock continuously.** And the mempool is partly attacker-controlled: filling it is a
+one-off fee cost, after which every subsequent 88-byte request is amplified.
+
+★ **The fleet understates this by 6×** — it runs `maxmempool=50`, and `install.sh` does **not** set
+`maxmempool`, so every real operator gets the 300 default. A fleet measurement of this is not
+conservative; it is wrong in the reassuring direction.
+
+**The fix, in order of strength:**
+
+1. ★★ **Mandatory commitment in the request.** The responder then runs size cap → hex → decode →
+   `IsPTXRollCommitTx` → payload names the requested round — **five cheap checks, none touching
+   `mempool.cs`** — before any mempool access. `PTX_AcceptAttachedCommitment` (`:345-380`) already
+   has exactly this ordering; it needs promoting from optional to required. An attacker must
+   produce a well-formed PTXROLLCOMMIT for their own round before a victim takes any lock, and
+   then `TryATMP` rejects it for the same cost as relaying any junk transaction.
+   **This is BUG-052's lesson applied before the fact:** cheap discriminator first, expensive work
+   unreachable without passing it.
+2. **Index the lookup** — `(round_seed, quorum_hash) -> txid`, maintained on mempool add/remove.
+   O(1), no `shared_ptr` churn. **Prerequisite; a standalone win** (the happy path pays two scans
+   per request, and `ptx_sign_tick` re-dials every pending member every 150 ms up to 200 attempts,
+   `ptx_fanout.cpp:516-545`).
+3. **Per-peer token bucket.** ★ Do not design one — **copy `m_addr_token_bucket`** (`net.h:737`,
+   used at `net_processing.cpp:1645-1649` for ADDR). Score misbehaviour via the existing
+   `Misbehaving()` (`net_processing.cpp:643`) and **only after a cheap check fails**, never after a
+   lock-taking one.
+
+**After:** cheapest rejection is a decode failure at ~1–2 µs with **no lock taken**; at 563 bytes
+on the wire that is **2.2–4.5 Gbit/s** to saturate one core.
+
+★★ **~47 kbit/s → multi-Gbit/s: five orders of magnitude, and a qualitative change — the
+bottleneck moves from an exclusive lock that stalls block production to NIC bandwidth that only
+costs the attacker.**
+
+**Can a request be rejected without touching chain state at all?** Yes, and that is the design
+target: everything through step 1 above is pure byte inspection. Only a request that is
+*syntactically a plausible paid round* earns a lock.
+
+### 9.5 S2 — message design
+
+- **`ptxsignreq`** { `round_seed`, `quorum_hash`, `commit_raw` **(mandatory)** } — mandatory per
+  §9.2 *and* §9.4.
+- **`ptxsignresp`** { `round_seed`, `quorum_hash`, `sig[96]` } **or** typed refusal
+  { `retryable | terminal`, reason }. The distinction already exists
+  (`RPC_PTX_COMMITMENT_NOT_SEEN`) and must survive the transport change.
+- **Correlation:** `(round_seed, quorum_hash)` — already unique per round; no new nonce.
+- **Reachability:** the member's DGM-advertised P2P address — on-chain, KDD-085's original
+  argument. Most members are already connected for block relay.
+- ★ **GMAUTH does not transfer and could not be used.** `ptx_dkg_net.cpp:32-45` keys the relay on
+  `pnode->verifiedProRegTxHash` matched against session members: GM-to-GM **by construction**. A
+  caller is not a gamemaster. The new message must be accepted from an unverified peer *by
+  design* — which is why §9.4 is the whole risk and the whole plan.
+- ★ **The caller does not become anything new.** `ptx_roll` is an in-process RPC on a full node
+  today and remains one. Operator story and SDK story unchanged — worth stating, because "move to
+  P2P" invites the assumption that callers must now run a node. They already did.
+- **Timeouts:** keep the 30 s wall (`FANOUT_WALL_MS`), already the single authority by its own
+  comment (`:350-360`). The 3 s/5 s per-dial timeouts (`:169`, `:599`) **disappear** — they are
+  `evhttp_connection` setup and there is no connection to set up. A block-denominated deadline is
+  *not* available: the only height bound is the consensus same-block mandate
+  `nExpiryHeight == nSeedHeight`. (Grepped `ptx_dkg.cpp`; none found — low-confidence negative,
+  confirm during build.)
+
+### 9.6 S3 — the operator-story delta: there is no secret to distribute at all
+
+★★ **`ONBOARDING.md` calls them "The five values". KDD-085 deletes two of the five** —
+`rpcallowip=<caller>` and `rpcauth=ptxcaller:<salt>$<hmac>`. The remaining three are the `addnode`
+seeds, the spork **public** key and the genesis `nTime`/nonce — **all public**.
+
+**So after KDD-085 the coordinator mints only public values. There is no secret to distribute, and
+no operator has to be trusted to keep one.** That is the strongest form of the argument and it is
+the one to lead with: not "a simpler operator story" but *the confidentiality requirement is gone*.
+
+★ **The deletion surface.** `PTX_FanOutSign` has **exactly one** production caller
+(`rpc/ptx.cpp:325`). `PTX_FanOutCommit` / `PTX_FanOutReveal` have **zero** — declared, defined,
+referenced nowhere, tests included. **~200 of the file's 711 lines are already dead.**
+`ptx_fanout.cpp` goes entirely **except** `PTX_ResolveMemberAddr`, which **moves** (DGM host
+resolution is the permanent half of fix A).
+
+| removed | count | today |
+|---|---|---|
+| coordinator-minted **secrets** | **2 → 0** | the only two values requiring confidentiality |
+| GM config lines | 2 | `rpcauth`, `rpcallowip` |
+| daemon options | 1 | `-ptxfanoutport` (`init.cpp:552`) |
+| inbound-reachability requirement | 1 | 29995 open to the caller → **loopback-only for everyone** |
+| operator failure modes | ≥4 | 401 (no `rpcauth`), 403 (no `rpcallowip`), wrong fan-out port, firewall/NAT/IP-family unreachable |
+| `self-check.sh` | most of it | its stated purpose is *"IS MY RPC REACHABLE AT THE ADDRESS I REGISTERED ON CHAIN?"* — a question that ceases to exist |
+
+★ Each removed failure mode shares one signature, which is why documentation cannot fix them: the
+GM **registers, syncs, shows ENABLED and silently refuses every signing request**
+(`install.sh:891-896`). The node looks healthy and is not.
+
+### 9.7 S4 — admission control
+
+§7.8 stands: **adjacent, not identical.** "Will you sign?" is forbidden by BUG-032 — a member
+cannot commit before payment is irrevocable, which is the property the gate exists to hold.
+
+★ A weaker probe works and is nearly free: *"do you hold a CURRENT share for `quorum_hash`?"* —
+gate check 5 in isolation. No signature, so BUG-032 is untouched; no leak, since membership is
+already on-chain. Six affirmatives → broadcast. Converts a **certain** fee loss into a **risked**
+one; it does not eliminate it.
+
+Keep the mitigating measurement attached: threshold is `formed_size/2 + 1` = **6 of 11**
+(`ptx_quorum_store.cpp:967`); five members can be absent and rolls still complete, and selection is
+by tip hash so an attacker cannot choose their quorum. **The fee is the exposure; the freeze is
+not.** Separate increment, ~0.5 d. Do not let it grow the core.
+
+### 9.8 S5 — what actually demonstrates this
+
+★★ **The fleet cannot, and the reason is structural: 161 containers on one host sharing one
+credential is precisely the configuration this change makes unnecessary.** A green fleet run proves
+the transport works and says nothing about the property. It also understates the DoS surface 6×
+(§9.4).
+
+**The minimum that demonstrates it — two properties, both cheap:**
+
+1. **A GM signs for a caller it has no credential relationship with.** Venue: two hosts, no shared
+   `rpcauth`, no `rpcallowip` entry for the caller. Under today's build this *must* fail with 401;
+   under KDD-085 it must succeed. **The RED leg is the current binary** — which makes it a real
+   discriminator rather than a green that proves nothing.
+2. **A GM rejects a request lacking a funded commitment** — and rejects it *before* taking
+   `mempool.cs`, which is the §9.4 claim and must be asserted directly, not inferred from timing.
+
+**Venue:** ptx001/002/003 + ptx01, once they exist — real hosts, distinct operators-in-principle,
+no shared secret between them. Add one deliberately instrumented node logging what it receives:
+today it harvests a working `ptxcaller` credential for the others; under KDD-085 it receives a sign
+request and nothing else. **Two nodes, and it is the only experiment that proves the point.**
+
+Everything else — protocol correctness, threshold behaviour, mixed-fleet transition — the fleet
+tests fine.
+
+### 9.9 Risk, sequencing, size
+
+**Blast radius: total — failure mode benign.** Every roll depends on this path. ★ A BLS signature
+is self-verifying, so a broken transport yields a *missing* result, never a wrong one, failing loud
+into the existing forfeit/abandon machinery. No block format, validation rule or consensus change:
+node-local transport only.
+
+| component | est | note |
+|---|---|---|
+| Index `PTX_RollCommitmentPresent` | **0.5 d** | ★ prerequisite; standalone win; do now regardless |
+| `ptxsignreq`/`ptxsignresp` + serialization + protocol bump | 1 d | |
+| Directed request/reply, correlation, stop-at-threshold | 2 d | replaces the libevent dialer |
+| Mandatory-commitment ordering + token bucket (copy `m_addr_token_bucket`) | 0.5 d | cheap: ordering exists, limiter is in-tree |
+| Capability advertisement + mixed-fleet transition | 1 d | |
+| Delete `ptx_fanout.cpp`, move `PTX_ResolveMemberAddr`, drop `-ptxfanoutport`, rewrite `self-check.sh`, ONBOARDING five-values → three | 1 d | ★ the payoff, and real work |
+| Fleet run + the two-host adversarial test (§9.8) | 2 d | |
+| **total** | **~8 d** | availability probe (§9.7) +0.5 d, separate |
+
+### 9.10 ★ Timing — recommendation
+
+Per-operator credentials are off the table (§9.0), so the options reduce to two.
+
+**Recommend option 2, with a recorded expiry.**
+
+**Accept the shared credential across ptx001–003 now; land KDD-085 before any *external* operator
+receives it.**
+
+Why:
+
+1. ★ **The trust assumption is real rather than assumed.** ptx001–003 are Vileda's own hosts. The
+   defect is that the model *requires trusting parties you cannot enumerate* — on three hosts one
+   person controls, there is nothing being assumed that is not true. That is precisely the
+   distinction per-operator credentials failed: they pretended to fix the model; this does not
+   pretend, it accepts a bounded exposure while the model is fixed.
+2. **Option 1 delays the chain ~8 days** to remove an exposure that, for those three hosts, does
+   not exist.
+3. ★ **The expiry must be written down, not left to drift** — *"the shared `ptxcaller` credential
+   does not leave Vileda's own hosts; KDD-085 lands before operator #2 is invited."* An acceptance
+   without an expiry is how the fleet arrived at `rpcallowip=0.0.0.0/0` and ODC-079.
+4. **The index (0.5 d) is unconditional and rides now** — not blocked on the message design, a
+   strict improvement to a live per-roll cost, and it removes the §9.4 exposure's worst term
+   independently of when the rest lands.
+
+**Sequence:** index this week alongside the chain → cold-sync green → chain proven on ptx001–003 →
+KDD-085 (~7.5 d) → *then* invite external operators.
+
+★ And a sharper statement of the boundary than "distribution": **the line is the moment the
+credential reaches a host its holder did not choose.** Cloning onto Vileda's own three does not
+cross it. Inviting operator #2 does.
+
+### 9.11 Register — KDD-105
+
+> **★★ KDD-105 (adopted 2026-08-25) — A CREDENTIAL USED WHERE THE QUESTION IS NOT ABOUT IDENTITY IS
+> A DESIGN ERROR, NOT A CONFIGURATION ONE; REDUCING ITS BLAST RADIUS DOES NOT FIX IT.** Raised when
+> per-operator caller credentials were proposed as a mitigation for KDD-085 and rejected. ★ **The
+> test that decides it:** ask what question the credential answers. `gm_bls_sign` asks *"should I
+> sign this?"*, and its actual authorisation is the BUG-032 payment gate — *"is there a funded
+> commitment?"* — which every GM answers independently from data it already holds. The credential
+> answers *"do you know a secret?"*, which is a **proxy the network cannot verify**, must be held
+> identically by every member, and can be replayed by any holder against any other. ★ **Why the
+> mitigation is not a fix:** issuing five credentials instead of one narrows blast radius and
+> leaves the model intact — it still requires each GM to enumerate the callers it trusts, which in
+> a quorum of eleven mutually-distrusting operators is not something a GM can do. **A mitigation
+> that scales the damage without changing the question is a delay, not a remedy.** ★
+> **Generalisation:** when a secret is used to authorise, ask whether the thing being authorised is
+> checkable from public state. If it is, the secret is standing in for a check that the system can
+> already perform, and it is strictly weaker than that check — it can be stolen, must be
+> distributed, must be rotated, and forces mutual trust between parties who otherwise need none.
+> ★ Same family as KDD-097/098/099 — *a mechanism asserting something it does not deliver* — with
+> the failure one level up: not a setting that misstates what it binds, but **a whole mechanism
+> answering the wrong question, correctly.**
+
+### 9.12 ★★ The honest boundary — what KDD-085 does NOT fix
+
+**KDD-085 makes the network credential-free. It does not make it trustless.** Stated here so
+nobody reads more into it than it claims, with register coverage checked rather than assumed.
+
+| | status | where |
+|---|---|---|
+| **Collusion** | ★ **COVERED, and the source is ahead of the prose.** 6 of 11 still produces a signature; threshold BLS gives *"no individual can influence the output"*, never *"no coalition can"*. `ptx_quorum_store.cpp:963-967` already carries the **ODC-036 addendum**: `t == n/2+1` is an explicit **STOPGAP**, with **KDD-048** pre-documenting a `t=7-at-n=11` upgrade — and names the hazard, that the derivation *"would silently return 6 for a ceremony that baked 7"*. **The durable fix is persisting `t` in the record rather than deriving it.** | ODC-036, KDD-048 |
+| **Liveness / withholding** | **COVERED.** Five absent is survivable, six stalls. Per-round participation is not on chain, so a withholding member is indistinguishable from an unreachable one — which is the same indistinguishability KDD-077 §5 owns. | KDD-077 §5, ptxbea-known-limitations |
+| **Beacon correctness** | **COVERED as a known gap.** W4-b's remaining half: `beacon == SHA256(quorum_sig)` and `results == PTX_MapBeacon(…)` are still not consensus-checked, so a staker can stamp arbitrary results into a PTXSESS. Auditability is on-chain; enforcement is absent. | 2c-iii, ODC-081, §0 above |
+| **Sybil** | ★★ **UNCOVERED — zero occurrences of "sybil" in any document in this repository.** Anyone may run a GM, so anyone may run many. Selection by tip hash stops quorum-*shopping* but not **pool-share accumulation**: an actor holding a large fraction of registered GMs gets a proportionate fraction of seats in every quorum, and at `t = 6 of 11` needs only a majority of one quorum. The barrier is collateral, and on ptxtestnet collateral is **100 HMS** (`chainparams.cpp:757`). **Registered now as ODC-084.** | **ODC-084 (new)** |
+
+★ **The point of this table is that KDD-085 sits underneath all four and touches none of them.**
+Removing the credential removes a mechanism that was answering the wrong question; it does not
+answer any of the questions above. Three were already registered. The fourth was not, and the
+reason it was missed is instructive: *"permissionless"* was discussed throughout as an
+**operational** property (who may join, who must be trusted) and never as an **economic** one (how
+much does controlling six seats cost).

@@ -29,6 +29,34 @@ one. Set them at cut time and they are baked into the script the operators clone
 **The last two are compiled in and gate the tag.** They cannot be changed after operators are
 running without a new genesis or a new binary.
 
+### ★★ Two of these five are secrets, and that is temporary — ODC-083
+
+`rpcallowip=<caller>` and `rpcauth=ptxcaller:<salt>$<hmac>` are the **only two values here that
+require confidentiality**, and they are the same on every gamemaster — `install.sh:866` says so:
+"unchanged when another operator joins". The caller sends that password in plaintext to all eleven
+members of every roll (HTTP Basic, `ptx/ptx_fanout.cpp:612-616`), so **any member can read it off
+its own wire** and present it to the other ten. `rpcallowip` is a real second factor — a harvester
+must connect from the caller's address — but it is one config line away from not being one.
+
+**The acceptance, recorded deliberately rather than drifted into:**
+
+> **The shared `ptxcaller` credential does not leave Vileda's own hosts. KDD-085 lands before
+> operator #2 is invited.**
+
+★ **Why this sentence is written down — do not delete it as boilerplate.** *An acceptance without
+an expiry is how the fleet arrived at `rpcallowip=0.0.0.0/0` and ODC-079*, which records that
+exposure as "accepted implicitly, not decided". This row exists so that does not happen twice in
+the operator-facing configuration, where it would matter.
+
+★ **The boundary is not "distribution".** It is **the moment the credential reaches a host its
+holder did not choose.** Cloning onto ptx001–003 does not cross it; inviting operator #2 does.
+
+★ **KDD-085 discharges this by deleting both lines** — the sign request moves to P2P, where
+authorisation is the on-chain payment gate rather than a shared secret. **After it lands, all five
+values above are public and there is no secret to distribute at all.** See
+`doc/ptx/W4B_COST_AND_KDD085_SCOPE.md` §9, and KDD-105 for why per-operator credentials were
+rejected rather than adopted as a mitigation.
+
 ---
 
 ## 1. Genesis
