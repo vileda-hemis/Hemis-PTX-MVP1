@@ -989,8 +989,15 @@ static bool CheckPTXRollCommitTx(const CTransaction& tx, const CBlockIndex* pind
         // commitment is created at tip==nSeedHeight and mined a few blocks later,
         // so its lag is small and positive; a future/zero-lag anchor (nSeedHeight
         // >= tip, e.g. the mempool path where pindexPrev IS the creation tip) has
-        // a non-positive lag and is never rejected here. Window 0 == disabled
-        // (main/test/ptxtest); ptxbea/regtest set 60 (see chainparams rationale).
+        // a non-positive lag and is never rejected here. Window 0 == disabled,
+        // which is main/test ONLY -- ptxtestnet, ptxbea and regtest all set 60
+        // (chainparams.cpp:1011, :1199, :697; see the chainparams rationale).
+        // ★ Corrected 2026-09-01: this comment previously listed "ptxtest" among
+        // the DISABLED networks. True when written, false since ptxtestnet's
+        // params were filled in -- and wrong in the dangerous direction, because
+        // it describes a LIVE consensus bound as absent on the network about to
+        // launch. Comment only; the check itself reads chainparams and was
+        // always correct.
         const int seedWindow = Params().PTXSeedHeightWindow();
         if (seedWindow > 0 &&
             pindexPrev->nHeight - (int)payload.nSeedHeight > seedWindow) {
