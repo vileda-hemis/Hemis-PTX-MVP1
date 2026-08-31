@@ -6053,6 +6053,18 @@ static std::string P5_strip_comments(const std::string& in)
     return out;
 }
 
+// Run the cheap check the way production does. ★ There is no way to obtain a
+// vetted token except through this call -- the token's constructor is private --
+// so every case below exercises the real origination path rather than a
+// synthetic stand-in.
+struct SignCheck { PTXSignReqReject why; PTXSignReqVetted tok; };
+static SignCheck RunCheapCheck(const PTXSignReq& req)
+{
+    PTXSignReqReject why = PTXSignReqReject::NONE;
+    PTXSignReqVetted tok = PTX_SignReq_CheapCheck(req, why);
+    return SignCheck{why, tok};
+}
+
 // Serialize a tx the way a caller would put it on the wire.
 static std::vector<unsigned char> SignReqRaw(const CMutableTransaction& mtx)
 {
@@ -6077,13 +6089,13 @@ BOOST_AUTO_TEST_CASE(Kdd085_SignReq_CommitmentIsMandatoryNotOptional)
     req.round_seed  = QHk(0xD1);
     req.quorum_hash = QHk(0xD2);
     // commit_raw deliberately left empty — the whole case.
-    CTransactionRef out;
-    BOOST_CHECK_MESSAGE(PTX_SignReq_CheapCheck(req, out) == PTXSignReqReject::MISSING_COMMITMENT,
+    BOOST_CHECK_MESSAGE(RunCheapCheck(req).why == PTXSignReqReject::MISSING_COMMITMENT,
         "KDD-085 §9.2: a sign request with NO attached commitment was not refused. "
         "There must be no 'look in my mempool and hope' path — that fallback is the "
         "node-local disagreement the no-identity model cannot tolerate, and it re-opens "
         "the pre-attachment DoS surface at the same time.");
-    BOOST_CHECK(out == nullptr);
+    BOOST_CHECK_MESSAGE(!RunCheapCheck(req).tok.IsVetted(),
+        "a REFUSED request produced a usable vetted token — the expensive path is reachable");
 }
 
 // Size before parse: the cap is checked against a vector we already hold, so a
@@ -6094,8 +6106,7 @@ BOOST_AUTO_TEST_CASE(Kdd085_SignReq_RejectsOversizeBeforeParsing)
     req.round_seed  = QHk(0xD3);
     req.quorum_hash = QHk(0xD4);
     req.commit_raw.assign(PTX_SIGNREQ_MAX_COMMIT_BYTES + 1, 0xAB);
-    CTransactionRef out;
-    BOOST_CHECK(PTX_SignReq_CheapCheck(req, out) == PTXSignReqReject::TOO_LARGE);
+    BOOST_CHECK(RunCheapCheck(req).why == PTXSignReqReject::TOO_LARGE);
 
     // ★ The cap is the same 100 kB the KDD-088 RPC attach path applies. If the
     // two ever disagree, one entry point is abusive by the other's definition.
@@ -6107,12 +6118,11 @@ BOOST_AUTO_TEST_CASE(Kdd085_SignReq_RejectsOversizeBeforeParsing)
 BOOST_AUTO_TEST_CASE(Kdd085_SignReq_RejectsUndecodableAndTrailingBytes)
 {
     const uint256 qh = QHk(0xD5), seed = QHk(0xD6);
-    CTransactionRef out;
 
     PTXSignReq garbage;
     garbage.round_seed = seed; garbage.quorum_hash = qh;
     garbage.commit_raw = {0xde, 0xad, 0xbe, 0xef};
-    BOOST_CHECK(PTX_SignReq_CheapCheck(garbage, out) == PTXSignReqReject::DECODE_FAILED);
+    BOOST_CHECK(RunCheapCheck(garbage).why == PTXSignReqReject::DECODE_FAILED);
 
     // ★ Canonical-encoding leg: a valid commitment with junk appended must NOT
     // be accepted. Without this, the same commitment has unboundedly many wire
@@ -6121,7 +6131,7 @@ BOOST_AUTO_TEST_CASE(Kdd085_SignReq_RejectsUndecodableAndTrailingBytes)
     trailing.round_seed = seed; trailing.quorum_hash = qh;
     trailing.commit_raw = SignReqRaw(CommitMakeTx(qh, seed, 10));
     trailing.commit_raw.push_back(0x00);
-    BOOST_CHECK_MESSAGE(PTX_SignReq_CheapCheck(trailing, out) == PTXSignReqReject::DECODE_FAILED,
+    BOOST_CHECK_MESSAGE(RunCheapCheck(trailing).why == PTXSignReqReject::DECODE_FAILED,
         "KDD-085: a commitment with trailing bytes was accepted — the wire encoding "
         "is no longer canonical");
 }
@@ -6135,8 +6145,7 @@ BOOST_AUTO_TEST_CASE(Kdd085_SignReq_RejectsNonRollCommitTx)
     PTXSignReq req;
     req.round_seed = seed; req.quorum_hash = qh;
     req.commit_raw = SignReqRaw(plain);
-    CTransactionRef out;
-    BOOST_CHECK(PTX_SignReq_CheapCheck(req, out) == PTXSignReqReject::NOT_ROLLCOMMIT);
+    BOOST_CHECK(RunCheapCheck(req).why == PTXSignReqReject::NOT_ROLLCOMMIT);
 }
 
 // ★ The round-binding leg, both fields independently. An attachment for someone
@@ -6147,16 +6156,15 @@ BOOST_AUTO_TEST_CASE(Kdd085_SignReq_RejectsCommitmentForAnotherRound)
 {
     const uint256 qh = QHk(0xD9), seed = QHk(0xDA);
     const auto raw = SignReqRaw(CommitMakeTx(qh, seed, 10));
-    CTransactionRef out;
 
     PTXSignReq wrongSeed;
     wrongSeed.round_seed = QHk(0xDB); wrongSeed.quorum_hash = qh; wrongSeed.commit_raw = raw;
-    BOOST_CHECK_MESSAGE(PTX_SignReq_CheapCheck(wrongSeed, out) == PTXSignReqReject::ROUND_MISMATCH,
+    BOOST_CHECK_MESSAGE(RunCheapCheck(wrongSeed).why == PTXSignReqReject::ROUND_MISMATCH,
         "a commitment for a DIFFERENT round_seed was accepted for this round");
 
     PTXSignReq wrongQh;
     wrongQh.round_seed = seed; wrongQh.quorum_hash = QHk(0xDC); wrongQh.commit_raw = raw;
-    BOOST_CHECK_MESSAGE(PTX_SignReq_CheapCheck(wrongQh, out) == PTXSignReqReject::ROUND_MISMATCH,
+    BOOST_CHECK_MESSAGE(RunCheapCheck(wrongQh).why == PTXSignReqReject::ROUND_MISMATCH,
         "a commitment for a DIFFERENT quorum_hash was accepted — the signing-path "
         "quorum-shop close (BUG-033) does not survive the transport change");
 }
@@ -6169,16 +6177,16 @@ BOOST_AUTO_TEST_CASE(Kdd085_SignReq_AcceptsWellFormedRequest)
     PTXSignReq req;
     req.round_seed = seed; req.quorum_hash = qh;
     req.commit_raw = SignReqRaw(CommitMakeTx(qh, seed, 10));
-    CTransactionRef out;
-    BOOST_REQUIRE_MESSAGE(PTX_SignReq_CheapCheck(req, out) == PTXSignReqReject::NONE,
+    BOOST_REQUIRE_MESSAGE(RunCheapCheck(req).why == PTXSignReqReject::NONE,
         "a well-formed request was refused — the rejection cases above would then "
         "all be passing vacuously");
-    BOOST_REQUIRE(out != nullptr);
-    BOOST_CHECK(out->IsPTXRollCommitTx());
+    const SignCheck ok = RunCheapCheck(req);
+    BOOST_REQUIRE(ok.tok.IsVetted());
+    BOOST_CHECK(ok.tok.Commitment()->IsPTXRollCommitTx());
     // The decoded commitment is handed back so the expensive path (component 2)
     // never deserializes the same bytes twice.
     CPTXRollCommitPayload p;
-    BOOST_REQUIRE(GetTxPayload(*out, p));
+    BOOST_REQUIRE(GetTxPayload(*ok.tok.Commitment(), p));
     BOOST_CHECK(p.round_seed == seed);
     BOOST_CHECK(p.quorum_hash == qh);
 }
@@ -6352,6 +6360,215 @@ BOOST_AUTO_TEST_CASE(Kdd085_CheapCheck_TakesNoLocks_Structural)
     BOOST_CHECK_MESSAGE(sreq < spork,
         "KDD-085: PTXSIGNREQ is listed AFTER the tier-two marker, so it is a tier-two "
         "message type — served only to GMs, gated on sync phase");
+}
+
+
+// ===========================================================================
+// KDD-085 component 2 — the expensive path, and the token that gates it.
+// ===========================================================================
+
+// ★★ THE ORDERING GUARANTEE IS THE COMPILER'S, AND THIS RECORDS WHAT IS AND IS
+// NOT COVERED BY IT.
+//
+// PTXSignReqVetted has a private constructor whose only friend is
+// PTX_SignReq_CheapCheck, and PTX_SignReq_ServeVetted -- the sole entry to the
+// expensive path -- takes one. So "cheap check first" is not a convention: code
+// that skips it does not compile. That is the BUG-052 shape closed structurally
+// rather than by review, on a codebase where it is a demonstrated defect.
+//
+// ★ What the compiler CANNOT do is force a caller to READ the return value, and
+// this case covers exactly that residue: a rejected request must leave an EMPTY
+// token, so an ignored reject code cannot smuggle a null commitment into the
+// mempool path.
+BOOST_AUTO_TEST_CASE(Kdd085_Vetted_RejectionLeavesNoUsableToken)
+{
+    const uint256 qh = QHk(0xE7), seed = QHk(0xE8);
+    PTXSignReq good;
+    good.round_seed = seed; good.quorum_hash = qh;
+    good.commit_raw = SignReqRaw(CommitMakeTx(qh, seed, 10));
+    const SignCheck vetted = RunCheapCheck(good);
+    BOOST_REQUIRE(vetted.why == PTXSignReqReject::NONE);
+    BOOST_REQUIRE(vetted.tok.IsVetted());
+
+    PTXSignReq bad;
+    bad.round_seed = QHk(0xE9); bad.quorum_hash = QHk(0xEA);
+    bad.commit_raw.clear();
+    const SignCheck refused = RunCheapCheck(bad);
+    BOOST_CHECK(refused.why == PTXSignReqReject::MISSING_COMMITMENT);
+    BOOST_CHECK_MESSAGE(!refused.tok.IsVetted(),
+        "KDD-085: a REJECTED cheap check returned a USABLE token — a caller that ignores "
+        "the reject code would reach the mempool with an unvetted request");
+}
+
+// The behavioural half: an empty token refuses terminally and signs nothing.
+BOOST_AUTO_TEST_CASE(Kdd085_ServeVetted_RefusesUnvettedToken)
+{
+    mempool.clear();
+    PTXSignReq req;
+    req.round_seed = QHk(0xEB); req.quorum_hash = QHk(0xEC);
+    // ★ A REAL empty token, obtained the only way one can be: a refused check.
+    // There is no synthetic stand-in, because the type does not permit one.
+    const SignCheck empty = RunCheapCheck(req);   // req has no commitment attached
+    BOOST_REQUIRE(!empty.tok.IsVetted());
+    PTXSignResp resp;
+    PTX_SignReq_ServeVetted(req, empty.tok, resp);
+    BOOST_CHECK(resp.status == (uint8_t)PTXSignStatus::TERMINAL);
+    BOOST_CHECK_MESSAGE(resp.sig.empty(),
+        "KDD-085: an UNVETTED request produced a partial signature");
+    // Correlation must survive even a refusal, or the caller cannot match it.
+    BOOST_CHECK(resp.round_seed == req.round_seed);
+    BOOST_CHECK(resp.quorum_hash == req.quorum_hash);
+}
+
+// ★ The gate is CALLED, not reproduced. A member with no CURRENT share for the
+// quorum must refuse over P2P for the same reason it refuses over RPC — the P2P
+// arm must be incapable of signing under conditions the RPC arm would refuse.
+// RED: reimplement the gate's logic inside ServeVetted and this keeps passing
+// until the two drift, which is the whole reason it is a call and not a copy.
+BOOST_AUTO_TEST_CASE(Kdd085_ServeVetted_RefusesWithoutShare)
+{
+    mempool.clear();
+    const uint256 qh = QHk(0xED), seed = QHk(0xEE);   // no share installed for qh
+    PTXSignReq req;
+    req.round_seed = seed; req.quorum_hash = qh;
+    req.commit_raw = SignReqRaw(CommitMakeTx(qh, seed, 10));
+    // ★ Inject the commitment first so PTX_AcceptVettedCommitment takes its
+    // already-present short-circuit. That is deliberate, not a convenience: it
+    // isolates the variable under test to the GATE, and it keeps this case out
+    // of TryATMP, which needs a validation environment BasicTestingSetup does
+    // not provide (see Kdd085_ServeVetted_AcceptFailureIsTerminal_Structural for
+    // what that costs and how it is covered instead).
+    CommitInjectToMempool(seed, qh);
+    const SignCheck c = RunCheapCheck(req);
+    BOOST_REQUIRE(c.why == PTXSignReqReject::NONE);
+
+    PTXSignResp resp;
+    PTX_SignReq_ServeVetted(req, c.tok, resp);
+    BOOST_CHECK_MESSAGE(resp.status != (uint8_t)PTXSignStatus::OK,
+        "KDD-085: signed for a quorum this node holds no CURRENT share for");
+    BOOST_CHECK(resp.sig.empty());
+}
+
+// ★★ THE ONE PLACE THE P2P ARM IS DELIBERATELY STRICTER THAN THE RPC ARM.
+// Over RPC an unusable attachment falls through to "maybe my mempool has it
+// anyway" and answers RETRYABLE. Here there is no mempool fallback by design
+// (§9.2), so a commitment this node could not accept is TERMINAL: re-sending
+// identical bytes cannot change our UTXO set, and a retryable verdict would
+// spend the caller's retry budget on a certainty.
+//
+// ★★ COVERAGE BOUND, STATED RATHER THAN GLOSSED. This is asserted STRUCTURALLY,
+// not by driving a real rejection, and the reason is a real limit: reaching the
+// accept-failure branch requires TryATMP to REJECT, and TryATMP needs a
+// validation environment (chain, coins view, relay) that BasicTestingSetup --
+// this suite's fixture -- does not provide. Driving it here does not fail the
+// assertion; it SEGFAULTS, which was confirmed by writing the runtime case
+// first and watching it crash at a null deref rather than assuming.
+// ★ So what is proven here is that the branch SETS terminal and never
+// retryable. What is NOT proven is that an unacceptable commitment actually
+// reaches that branch. **OWED: runtime verification on the fleet / the two-host
+// test** (§9.8) -- send a sign request carrying a well-formed commitment that
+// spends a nonexistent output, assert a TERMINAL response and no signature.
+BOOST_AUTO_TEST_CASE(Kdd085_ServeVetted_AcceptFailureIsTerminal_Structural)
+{
+    const std::string src = PTX_SRCDIR;
+    BOOST_REQUIRE_MESSAGE(!src.empty(), "KDD-085: PTX_SRCDIR not injected — check could not run");
+    const std::string code = P5_strip_comments(P5_slurp(src + "/src/ptx/ptx_sign_net.cpp"));
+    BOOST_REQUIRE(!code.empty());
+
+    const size_t accept = code.find("PTX_AcceptVettedCommitment");
+    BOOST_REQUIRE_MESSAGE(accept != std::string::npos,
+        "KDD-085: the acceptance call is gone — this check would pass vacuously");
+    const size_t gate = code.find("PTX_SignRoundIfCommitted");
+    BOOST_REQUIRE_MESSAGE(gate != std::string::npos && gate > accept,
+        "KDD-085: the BUG-032 gate no longer runs AFTER acceptance — the gate's "
+        "commitment-present check would then be answered by gossip rather than by the "
+        "evidence the request carried, which is the mempool fallback §9.2 removes");
+
+    // The accept-failure branch is the source between the two calls. It must
+    // not contain a RETRYABLE verdict.
+    const std::string branch = code.substr(accept, gate - accept);
+    BOOST_CHECK_MESSAGE(branch.find("RETRYABLE") == std::string::npos,
+        "KDD-085 §9.2: the accept-failure branch can answer RETRYABLE. There is no mempool "
+        "fallback on this arm, so retrying identical bytes cannot succeed — a retryable "
+        "verdict tells the caller to burn its budget on a certainty");
+    // ...and the gate's own retryable verdict must still be carried through,
+    // or ordinary propagation delay becomes a forfeited fee.
+    BOOST_CHECK_MESSAGE(code.find("RETRYABLE", gate) != std::string::npos,
+        "KDD-085: the gate's retryable verdict is no longer carried into the response — "
+        "ordinary propagation delay is now charged to the caller as a failure");
+}
+
+// The response must carry who signed, or a partial cannot be given its Lagrange
+// x. Advisory and self-checking — the caller verifies it against the member's
+// public share rather than trusting it (KDD-105, one level down).
+BOOST_AUTO_TEST_CASE(Kdd085_SignResp_CarriesSignerIdentity)
+{
+    PTXSignResp resp;
+    resp.round_seed   = QHk(0xF1);
+    resp.quorum_hash  = QHk(0xF2);
+    resp.status       = (uint8_t)PTXSignStatus::OK;
+    resp.signer_protx = QHk(0xF3);
+    resp.sig.assign(96, 0xAB);
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << resp;
+    PTXSignResp back;
+    ss >> back;
+    BOOST_CHECK(back.signer_protx == resp.signer_protx);
+    BOOST_CHECK(back.sig.size() == 96);
+    BOOST_CHECK_MESSAGE(!back.signer_protx.IsNull(),
+        "KDD-085: the response does not say WHO signed — the correlation key names the "
+        "ROUND, not the MEMBER, so the caller cannot choose the right Lagrange x");
+}
+
+// ★★ Structural: the ENFORCEMENT MECHANISM itself must stay in place. The
+// ordering guarantee rests on the token's constructor being private and
+// ServeVetted taking one; both are one edit from being undone, and undoing
+// either turns a compiler-enforced invariant back into a convention with no
+// visible change at the call sites.
+// Tested against comment-stripped source for the same reason as component 1:
+// this header EXPLAINS the mechanism at length, and the check must read the
+// declaration, not the explanation.
+BOOST_AUTO_TEST_CASE(Kdd085_VettedToken_EnforcementIsStructural)
+{
+    const std::string src = PTX_SRCDIR;
+    BOOST_REQUIRE_MESSAGE(!src.empty(), "KDD-085: PTX_SRCDIR not injected — check could not run");
+    const std::string hdr = P5_strip_comments(P5_slurp(src + "/src/ptx/ptx_sign_net.h"));
+    BOOST_REQUIRE_MESSAGE(hdr.find("class PTXSignReqVetted") != std::string::npos,
+        "KDD-085: PTXSignReqVetted is gone from ptx_sign_net.h — the compiler-enforced "
+        "ordering was removed, and the limbs below would pass vacuously");
+
+    const size_t cls  = hdr.find("class PTXSignReqVetted");
+    const size_t priv = hdr.find("private:", cls);
+    const size_t ctor = hdr.find("PTXSignReqVetted() = default;", cls);
+    const size_t frnd = hdr.find("friend PTXSignReqVetted PTX_SignReq_CheapCheck", cls);
+    BOOST_CHECK_MESSAGE(priv != std::string::npos && ctor != std::string::npos && ctor > priv,
+        "KDD-085: PTXSignReqVetted's constructor is no longer private — anyone can forge a "
+        "vetted token, so the expensive path is reachable without the cheap check");
+    BOOST_CHECK_MESSAGE(frnd != std::string::npos,
+        "KDD-085: PTX_SignReq_CheapCheck is no longer the token's friend — either the token "
+        "cannot be produced at all, or something else now produces it");
+
+    // And the expensive path still demands one.
+    BOOST_CHECK_MESSAGE(hdr.find("PTX_SignReq_ServeVetted") != std::string::npos &&
+                        hdr.find("const PTXSignReqVetted& vetted") != std::string::npos,
+        "KDD-085: PTX_SignReq_ServeVetted no longer takes a vetted token — the ordering is "
+        "back to being a convention someone has to remember");
+
+    // ★ One acceptance implementation, two arms. If the P2P arm ever grows its
+    // own copy of the acceptance logic, the two transports can disagree about
+    // which commitments are valid — a member that signs when its peers will not.
+    const std::string guard = P5_strip_comments(P5_slurp(src + "/src/ptx/ptx_sign_net.cpp"));
+    BOOST_REQUIRE(!guard.empty());
+    BOOST_CHECK_MESSAGE(guard.find("PTX_AcceptVettedCommitment") != std::string::npos,
+        "KDD-085: the P2P arm no longer calls the shared acceptance path");
+    BOOST_CHECK_MESSAGE(guard.find("TryATMP") == std::string::npos,
+        "KDD-085: the P2P arm calls TryATMP directly — it has grown its own acceptance "
+        "path, and the two transports can now disagree about validity (the h385 shape)");
+    BOOST_CHECK_MESSAGE(guard.find("PTX_SignRoundIfCommitted") != std::string::npos,
+        "KDD-085: the P2P arm no longer calls the BUG-032 gate — if it reimplements the "
+        "gate, it can sign under conditions the RPC arm refuses");
+    BOOST_CHECK_MESSAGE(guard.find("PTX_BLS_PartialSign") == std::string::npos,
+        "KDD-085: the P2P arm signs directly instead of through the BUG-032 gate");
 }
 
 

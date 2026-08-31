@@ -81,6 +81,29 @@ bool PTX_RollCommitmentPresent(const uint256& round_seed, const uint256& quorum_
 // A hard reject on a not-yet-propagated commitment would fail legitimate rolls
 // under normal network delay. Terminal refusals (no share, sign failure) set it
 // false. On success it is false. nullptr is accepted (caller does not care).
+// ── KDD-085 component 2 ─────────────────────────────────────────────────────
+// The acceptance tail, shared by the RPC attach path and the P2P sign handler.
+// ★ ONE implementation, TWO callers, by construction: a commitment this node
+// would accept over RPC is exactly one it would accept over P2P. Two paths asked
+// to agree about validity eventually disagree (the h385 lesson), and here a
+// disagreement is a member that signs when its peers will not.
+//
+// ★★ THIS CALL IS WHAT MAKES THE ATTACHMENT SELF-VERIFYING RATHER THAN MERELY
+// PRESENT. The caller ASSERTS payment by attaching bytes; TryATMP PROVES it
+// against THIS node's UTXO set and chainparams -- signatures verify, inputs
+// exist and are unspent, and CheckPTXRollCommitTx runs the service-fee output
+// check, the BUG-033 canonical-quorum gate at nSeedHeight, and the ODC-073
+// anchor-lag bound. None of those reads anything about the requester, which is
+// the entire no-identity claim (KDD-105) discharged by an existing path.
+//
+// `commit` must already be a decoded PTXROLLCOMMIT whose payload names
+// (round_seed, quorum_hash); the P2P arm proves that in its cheap check and the
+// RPC arm proves it inline. true == a commitment for this round is now present.
+bool PTX_AcceptVettedCommitment(const CTransactionRef& commit,
+                                const uint256& round_seed,
+                                const uint256& quorum_hash,
+                                std::string& err);
+
 bool PTX_SignRoundIfCommitted(const uint256& round_seed, const uint256& quorum_hash,
                               uint8_t out_sig[96], std::string& err,
                               bool* out_retryable = nullptr);

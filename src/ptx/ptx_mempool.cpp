@@ -432,14 +432,51 @@ bool PTX_AcceptAttachedCommitment(const std::string& commit_hex,
         return false;
     }
 
+    return PTX_AcceptVettedCommitment(MakeTransactionRef(std::move(mtx)),
+                                      round_seed, quorum_hash, err);
+}
+
+// ── KDD-085 component 2: the acceptance tail, shared by both arms ────────────
+// Contract and rationale in ptx_mempool.h.
+//
+// ★★ THIS IS THE ONE ACCEPTANCE IMPLEMENTATION AND IT HAS EXACTLY TWO CALLERS:
+// the RPC attach path above (which hex-decodes first) and the P2P sign handler
+// (which already holds a decoded, cheap-checked commitment). Written as one
+// function because the h385 lesson on this codebase is that two paths asked to
+// agree about validity will eventually disagree — and here a disagreement means
+// one transport accepts a commitment the other rejects, i.e. a member that signs
+// when its peers will not.
+//
+// ★★ AND THIS IS WHERE "SELF-VERIFYING" STOPS BEING A WORD. Everything before
+// this point establishes only that the caller sent bytes SHAPED like a
+// commitment for this round — the caller ASSERTS payment. TryATMP is what
+// PROVES it, against THIS node's UTXO set and THIS node's chainparams: the
+// signatures verify, the inputs exist and are unspent, and CheckPTXRollCommitTx
+// (specialtx_validation.cpp:950-1000) runs the service-fee output check, the
+// BUG-033 canonical-quorum gate at nSeedHeight, and the ODC-073 anchor-lag
+// bound. Nothing in that list reads anything about the requester. That is the
+// whole no-identity claim, discharged by an existing code path rather than a
+// new one.
+bool PTX_AcceptVettedCommitment(const CTransactionRef& commit,
+                                const uint256& round_seed,
+                                const uint256& quorum_hash,
+                                std::string& err)
+{
+    // Already present (gossip won the race, or a previous request for this same
+    // round already accepted it) — nothing to do. Checked first because once a
+    // round is under way this is the common case, and it costs an O(log n)
+    // lookup against the bfea163 index rather than a validation pass.
+    if (PTX_RollCommitmentPresent(round_seed, quorum_hash)) return true;
+
     // The NORMAL acceptance path — byte-for-byte what gossip-delivered bytes get.
     // If it is unfunded, unsigned, or spends spent inputs, this rejects and the
     // gate refuses exactly as it would have without any attachment.
     try {
+        CMutableTransaction mtx(*commit);
         TryATMP(mtx, false);
-        RelayTx(attached.GetHash());   // our own relay carries it onward
+        RelayTx(commit->GetHash());   // our own relay carries it onward
         LogPrintf("PTX attach: accepted commitment %s (round_seed=%s)\n",
-                  attached.GetHash().GetHex(), round_seed.ToString());
+                  commit->GetHash().GetHex(), round_seed.ToString());
     } catch (const UniValue& objError) {
         err = "attached commitment mempool-rejected: " + objError["message"].getValStr();
         LogPrintf("PTX attach: %s\n", err);

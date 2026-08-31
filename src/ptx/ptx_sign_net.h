@@ -96,12 +96,27 @@ struct PTXSignResp {
     uint256                    round_seed;
     uint256                    quorum_hash;
     uint8_t                    status{(uint8_t)PTXSignStatus::TERMINAL};
+    // ★ WHO SIGNED. The one field added beyond the partial signature itself, and
+    // the reason it earns its place: a partial signature is useless without the
+    // signer's Lagrange x (the score-order share_index, KDD-052), and the
+    // correlation key (round_seed, quorum_hash) names the ROUND, not the MEMBER.
+    // Without this the response's meaning depends entirely on the caller's
+    // request-tracking state, and a mis-tracked reply yields the wrong lambda and
+    // a recovered signature that simply fails to verify, with no diagnostic.
+    //
+    // ★★ IT IS ADVISORY AND SELF-CHECKING, WHICH IS WHY IT DOES NOT REINTRODUCE
+    // IDENTITY. A peer may claim to be anyone; the partial then either verifies
+    // against that member's public share or it does not. So the caller VERIFIES
+    // this field rather than TRUSTING it -- exactly the KDD-105 discipline, one
+    // level down: a hint that public state can check is not a credential.
+    uint256                    signer_protx;
     std::vector<unsigned char> sig;      // 96 bytes iff status == OK
     std::string                reason;   // diagnostic only; never parsed
 
     SERIALIZE_METHODS(PTXSignResp, obj)
     {
-        READWRITE(obj.round_seed, obj.quorum_hash, obj.status, obj.sig, obj.reason);
+        READWRITE(obj.round_seed, obj.quorum_hash, obj.status,
+                  obj.signer_protx, obj.sig, obj.reason);
     }
 };
 
@@ -147,6 +162,9 @@ bool   PTX_SignReq_SpendToken(double& bucket);
 // The cheap check
 // ---------------------------------------------------------------------------
 
+struct PTXSignReq;
+class PTXSignReqVetted;
+
 // Why an enum and not a bool: the DISPOSITION differs per reason (see
 // PTX_SignReq_IsMisbehaviour) and a bool cannot carry that.
 enum class PTXSignReqReject {
@@ -171,8 +189,68 @@ const char* PTX_SignReqRejectString(PTXSignReqReject r);
 //
 // On NONE, commit_out holds the decoded commitment so the caller need not
 // deserialize twice.
-PTXSignReqReject PTX_SignReq_CheapCheck(const PTXSignReq& req,
-                                        CTransactionRef& commit_out);
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★ THE CHEAP-BEFORE-EXPENSIVE ORDER IS ENFORCED BY THE COMPILER, NOT BY
+// REVIEW.
+// ═══════════════════════════════════════════════════════════════════════════
+// PTXSignReqVetted is a capability token: its constructor is private and its
+// only friend is PTX_SignReq_CheapCheck.  Nothing else in the program can make
+// one.  PTX_SignReq_ServeVetted -- the ONLY entry to the expensive path -- takes
+// one by reference, so **it is not possible to reach the mempool, the chain, or
+// a signature without having run the cheap check first**.
+//
+// ★ Why a type rather than a comment.  Component 1 put the guard in a
+// translation unit that cannot reach the lock, which stops the CHEAP path from
+// growing expensive.  It does nothing to stop a future edit calling the
+// EXPENSIVE path directly and skipping the guard -- the BUG-052 shape exactly,
+// which on this codebase is a demonstrated defect and not a hypothetical.  A
+// comment saying "call the cheap check first" is an instruction someone must
+// remember; a token they cannot forge is one the compiler remembers for them.
+//
+// ★ WHAT THIS DOES **NOT** ENFORCE, stated rather than glossed: the compiler
+// cannot make a caller CHECK the return value.  A caller that ignores the reject
+// code holds an EMPTY token -- so ServeVetted refuses terminally on an empty
+// one, which closes the hole behaviourally.  Two mechanisms, and only the first
+// is structural; saying so is the point.
+class PTXSignReqVetted
+{
+public:
+    // Copy/move stay public and that is not a hole: copying a token requires
+    // already having one, and a token you already have was produced by the
+    // cheap check.  Only ORIGINATION is restricted.
+    const CTransactionRef& Commitment() const { return m_commit; }
+    bool IsVetted() const { return m_commit != nullptr; }
+
+private:
+    PTXSignReqVetted() = default;
+    CTransactionRef m_commit;
+    friend PTXSignReqVetted PTX_SignReq_CheapCheck(const PTXSignReq&, PTXSignReqReject&);
+};
+
+// ★ RETURNED BY VALUE, NOT FILLED THROUGH AN OUT-PARAM, AND THE FIRST BUILD IS
+// WHY.  The out-param form was written first and **did not compile** -- an
+// out-param requires the caller to default-construct the token, which is
+// precisely what the private constructor forbids, so no caller could use it,
+// including the production handler.  The compiler rejected the design the moment
+// it was expressed, which is the argument for expressing invariants this way.
+// ★ Return-by-value also DELETES a failure mode rather than defending against
+// one: with no caller-owned token there is no stale token to carry a previous
+// request's commitment into the next check.
+PTXSignReqVetted PTX_SignReq_CheapCheck(const PTXSignReq& req,
+                                        PTXSignReqReject& why_out);
+
+// ---------------------------------------------------------------------------
+// The expensive path
+// ---------------------------------------------------------------------------
+// Runs the checks that need chain state, in the order §9.2 sets out, and fills
+// `resp`.  Never throws.  Unreachable without a vetted token, by construction.
+//
+// Locks: this DOES take cs_main and mempool.cs (through the acceptance path and
+// the BUG-032 gate).  That is correct and intended -- only a request that is
+// already syntactically a plausible paid round earns a lock.
+void PTX_SignReq_ServeVetted(const PTXSignReq& req,
+                             const PTXSignReqVetted& vetted,
+                             PTXSignResp& resp);
 
 // Is this rejection a peer's fault?
 // ★ Every current reason is a pure byte property of the request — none of them

@@ -1060,13 +1060,15 @@ left it on 2026-08-25; this section is the **landing record**, and by this docum
 |---|---|---|
 | Index `PTX_RollCommitmentPresent` | **LANDED**, green on px1 | `bfea163` |
 | `ptxsignreq`/`ptxsignresp` + the **rejection path** | **LANDED**, green on px1 (498/498 `--enable-debug`) | component 1 |
-| Directed request/reply, correlation, stop-at-threshold | not started | — |
+| Directed request/reply, correlation, stop-at-threshold | caller side not started; **responder side LANDED** | component 2 |
 | Mandatory-commitment ordering + token bucket | **LANDED** with component 1 | component 1 |
 | Capability advertisement + mixed-fleet transition | not started | — |
 | Delete `ptx_fanout.cpp`, drop `-ptxfanoutport`, docs | not started | — |
 | Fleet + two-host adversarial test (§9.8) | not started | — |
 
-★ **The signing side is deliberately NOT armed yet.** `PTX_SignNet_ProcessMessage` refuses every
+★ **The signing side is ARMED as of component 2** — the paragraph below described component 1 and is kept for the record of why the guard was built first:
+
+★ **(component 1) The signing side is deliberately NOT armed yet.** `PTX_SignNet_ProcessMessage` refuses every
 request that survives the guard, with one clearly-marked site for component 2 to replace. The guard
 was built first so the expensive path is added *behind* an existing bound rather than guarded
 afterwards — the §9.4 ordering discipline applied to its own construction. The attachment is still
@@ -1166,3 +1168,68 @@ rate-limits an honest peer.
 
 **Suite: 498/498 under `--enable-debug` on px1** (488 baseline + 10 new). Non-debug is not
 separately re-run for this component; per (b), quote the flags with any count taken from it.
+
+**(e) Component 2 — the expensive path, and what the plan did not anticipate.**
+
+The six §9.2 checks, and where each actually runs — recorded because the plan's table lists them as
+a flat set and they are not one:
+
+| § | check | where it runs |
+|---|---|---|
+| 1–5 (cheap) | attached / size / decode / is-a-PTXROLLCOMMIT / names this round | component 1, no lock |
+| **2, 3, 4, 6** | service-fee output · quorum canonical at `nSeedHeight` (BUG-033) · anchor lag ≤ window (ODC-073) · inputs unspent | **all four inside `TryATMP`**, via `PTX_AcceptVettedCommitment` |
+| 1, 5 | funded commitment present · this node holds a CURRENT share | the unchanged BUG-032 gate |
+
+★★ **Four of the six are discharged by one existing call, and that is the answer to "is the
+attachment self-verifying or merely present?"** Up to acceptance the caller has only *asserted*
+payment. `TryATMP` *proves* it against this node's own UTXO set and chainparams — signatures verify,
+inputs exist and are unspent, and `CheckPTXRollCommitTx` runs the fee, canonical-quorum and
+anchor-lag checks. **Nothing in that list reads anything about the requester.** The no-identity claim
+is discharged by an existing code path rather than a new one, which is also why the acceptance tail
+was factored into `PTX_AcceptVettedCommitment` with exactly two callers: a commitment the RPC arm
+would accept is by construction one the P2P arm accepts, and two paths asked to agree about validity
+eventually disagree (the h385 lesson).
+
+★★ **The cheap-before-expensive order is now enforced by the compiler.** `PTXSignReqVetted` has a
+private constructor whose only friend is the cheap check, and `PTX_SignReq_ServeVetted` — the sole
+entry to the expensive path — takes one. Code that skips the guard **does not compile**. Component 1
+put the guard where it could not reach a lock, which stops the cheap path growing expensive; it did
+nothing to stop a later edit calling the expensive path *directly*, which is the BUG-052 shape and a
+demonstrated defect on this codebase rather than a hypothetical.
+
+★ **What that does NOT enforce, stated rather than glossed:** the compiler cannot force a caller to
+read the reject code. An ignored rejection yields an *empty* token, so `ServeVetted` refuses
+terminally on one — a second, behavioural mechanism. Only the first is structural.
+
+★ **The first form of the token did not compile, and the failure was the useful part.** It was
+written as an out-param; an out-param requires the caller to default-construct the token, which is
+exactly what the private constructor forbids, so **no caller could use it — including the production
+handler**. Return-by-value fixes it and *deletes* a failure mode rather than defending against one:
+with no caller-owned token there is no stale token to carry one request's commitment into the next
+check. The invariant was expressed strongly enough that the compiler rejected a wrong design
+immediately.
+
+★ **One field added to the response beyond the signature: `signer_protx`.** The correlation key
+`(round_seed, quorum_hash)` names the *round*, not the *member*, and a partial signature is useless
+without its signer's Lagrange x (the score-order `share_index`, KDD-052). It is **advisory and
+self-checking** — a peer may claim to be anyone, and the partial then either verifies against that
+member's public share or does not — so the caller *verifies* it rather than trusting it. That is the
+KDD-105 discipline one level down: **a hint that public state can check is not a credential.**
+
+★ **The P2P arm is deliberately STRICTER than the RPC arm in exactly one place.** Over RPC an
+unusable attachment falls through to "maybe my mempool has it anyway" and answers RETRYABLE. Here
+there is no mempool fallback by design, so a commitment this node could not accept is **TERMINAL** —
+re-sending identical bytes cannot change our UTXO set, and a retryable verdict would spend the
+caller's retry budget on a certainty. The gate's *own* retryable verdict is carried through
+unchanged, because that one is real propagation delay and charging it to the caller is a forfeited
+fee.
+
+★ **Coverage bound, owed.** The accept-failure branch is asserted **structurally**, not by driving a
+real rejection: reaching it requires `TryATMP` to reject, and `TryATMP` needs a validation
+environment `BasicTestingSetup` does not provide — confirmed by writing the runtime case first and
+watching it **segfault** on a null deref rather than assuming. So what is proven is that the branch
+sets TERMINAL and never RETRYABLE; what is **not** proven is that an unacceptable commitment reaches
+it. **Owed to §9.8's two-host test:** a request carrying a well-formed commitment that spends a
+nonexistent output must draw a TERMINAL response and no signature.
+
+**Suite: 504/504 under `--enable-debug` on px1** (488 baseline + 10 + 6).
