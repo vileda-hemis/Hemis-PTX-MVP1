@@ -1,6 +1,9 @@
 # W4-b cost, and KDD-085 sign-over-P2P scope
 
-**Date:** 2026-08-24 · **Gate:** RECON → PLAN (nothing landed from this document)
+**Date:** 2026-08-24 · §9 recon 2026-08-25 · landing record §9.13, 2026-08-31
+**Gate:** RECON → PLAN. ★ **One increment has since landed from §9** — the
+`PTX_RollCommitmentPresent` index (`bfea163`, built green on px1). Everything else in this
+document remains unbuilt. **§9.13 is the authority on what exists.**
 **Measurement host:** px1, AMD Ryzen 5 2600 (12 threads), `-O2`, blst assembly path
 **Chain data:** live ptx-w2r fleet, read-only, tip 11,747
 
@@ -842,6 +845,10 @@ conservative; it is wrong in the reassuring direction.
    O(1), no `shared_ptr` churn. **Prerequisite; a standalone win** (the happy path pays two scans
    per request, and `ptx_sign_tick` re-dials every pending member every 150 ms up to 200 attempts,
    `ptx_fanout.cpp:516-545`).
+   ★ **LANDED `bfea163` — but NOT in this shape.** What exists is a generation-keyed *derived*
+   cache, not a hook-maintained index. The substitution is deliberate (BUG-036 REGISTER 2) and the
+   defence stated here is unaffected, because it never depended on O(1). **§9.13(a) is the
+   authority; this paragraph is the plan, not the build.**
 3. **Per-peer token bucket.** ★ Do not design one — **copy `m_addr_token_bucket`** (`net.h:737`,
    used at `net_processing.cpp:1645-1649` for ADDR). Score misbehaviour via the existing
    `Misbehaving()` (`net_processing.cpp:643`) and **only after a cheap check fails**, never after a
@@ -959,14 +966,14 @@ node-local transport only.
 
 | component | est | note |
 |---|---|---|
-| Index `PTX_RollCommitmentPresent` | **0.5 d** | ★ prerequisite; standalone win; do now regardless |
+| ~~Index `PTX_RollCommitmentPresent`~~ — **LANDED `bfea163`** | ~~0.5 d~~ **done** | ★ green on px1, 488/488 `--enable-debug`; built as a derived cache, not the planned hooked index — §9.13(a) |
 | `ptxsignreq`/`ptxsignresp` + serialization + protocol bump | 1 d | |
 | Directed request/reply, correlation, stop-at-threshold | 2 d | replaces the libevent dialer |
 | Mandatory-commitment ordering + token bucket (copy `m_addr_token_bucket`) | 0.5 d | cheap: ordering exists, limiter is in-tree |
 | Capability advertisement + mixed-fleet transition | 1 d | |
 | Delete `ptx_fanout.cpp`, move `PTX_ResolveMemberAddr`, drop `-ptxfanoutport`, rewrite `self-check.sh`, ONBOARDING five-values → three | 1 d | ★ the payoff, and real work |
 | Fleet run + the two-host adversarial test (§9.8) | 2 d | |
-| **total** | **~8 d** | availability probe (§9.7) +0.5 d, separate |
+| **total** | **~8 d** — **~7.5 d remaining** | availability probe (§9.7) +0.5 d, separate |
 
 ### 9.10 ★ Timing — recommendation
 
@@ -1040,3 +1047,72 @@ answer any of the questions above. Three were already registered. The fourth was
 reason it was missed is instructive: *"permissionless"* was discussed throughout as an
 **operational** property (who may join, who must be trusted) and never as an **economic** one (how
 much does controlling six seats cost).
+
+### 9.13 ★★ What landed, and where it diverges from this plan
+
+Written 2026-08-31 against `bfea163`. §9.0–§9.12 are the plan as recon left it on 2026-08-25; this
+section is the **landing record**, and by this document's own convention (§9 preamble) it is later
+than all of them and cites source. **One of the seven §9.9 rows has landed; the other six are
+unstarted** — `ptxsignreq`/`ptxsignresp` return zero grep hits anywhere in the tree, the attachment
+is still optional (`rpc/ptx.cpp:592` guards on `params.size() > 2`), `ptx_fanout.cpp` is still 711
+lines, and `-ptxfanoutport` is still at `init.cpp:552`.
+
+**(a) ★★ The index was built in a different shape than §9.4 step 2 specifies — deliberately.**
+
+| | §9.4 step 2, as planned | `bfea163`, as built |
+|---|---|---|
+| structure | `(round_seed, quorum_hash) -> txid` | `std::set<std::pair<uint256,uint256>>` — no txid; the predicate only ever answered *present?* |
+| maintenance | hooks on mempool add / remove | rebuilt when `mempool.GetTransactionsUpdated()` changes |
+| cost per request | O(1) | O(log n) lookup — the O(n) scan is paid **per mempool mutation**, not per request |
+| files touched | would have meant `txmempool.cpp` — this fork has **no** entry add/remove signals to hook | `ptx_mempool.cpp` only |
+
+★ **Why the substitution, which is the more important half of this row.** A hook-maintained index
+is *stored-and-trusted*: correct only while every add/remove/clear site remembers to update it, and
+a single missed site makes this predicate **lie silently** — refusing legitimate rolls, or admitting
+a commitment that is gone. That is **BUG-036 REGISTER 2** (derive-don't-store; stored copies drift)
+landing on a predicate that gates *payment*. The generation-keyed cache is **derived** and
+recomputed whenever `mapTx` changes, so **staleness is unrepresentable rather than merely
+unlikely**, and no future mempool change has a new invariant to violate.
+
+★ **The §9.4 defence survives the shape change intact, because it never depended on O(1).** The
+load-bearing property is that **a flood of requests does not mutate the mempool** — the rebuild is
+gated on *change*, not on *being asked*, and an attacker controls how often they ask, not how often
+`mapTx` turns over. The ~47 kbit/s lock-hold (§9.4) is removed either way.
+
+★ **Correctness rests on the counter being complete, which was checked rather than assumed:**
+`nTransactionsUpdated` is incremented in `addUnchecked` (`txmempool.cpp:471`), `removeUnchecked`
+(`:568`) and `clear()` (`:884`). `GetTransactionsUpdated()` takes `cs`, a `RecursiveMutex`
+(`txmempool.h:471`), so calling it under our own `LOCK(mempool.cs)` is safe. A validity **flag** is
+used rather than a sentinel generation, so unsigned wrap-around cannot alias *"never built"* onto a
+live counter value. Full rationale in-source at `ptx_mempool.cpp:322-365`; the case is
+`Kdd085_CommitmentIndex_TracksMempoolChange`.
+
+**(b) The "UNCOMPILED" caveat on `bfea163` is DISCHARGED — and the count needs its flags.**
+
+`bfea163`'s commit message opens *"★★ UNCOMPILED AND UNTESTED … it must be built on px1 and the
+suite run before this commit is trusted or any tag is cut from it"*, and predicts 488. **It was
+built on px1 on 2026-08-25 and the prediction held: 488/488 under `--enable-debug`, with
+`Kdd085_CommitmentIndex_TracksMempoolChange` passing.** HEAD is safe to tag from. (`v0.1.2-testnet`
+sits at `9ff584a` and does **not** contain this; the released binaries are unaffected either way.)
+
+★★ **Quote the build flags with the count, always.** `src/ptx/test/ptx_lockorder_tests.cpp` declares
+four cases that are **mutually exclusive by build config**: `--enable-debug` compiles the three real
+BUG-048 lockorder cases and drops the announcer → **488**; the canonical non-debug recipe compiles
+the announcer — which prints *"SKIPPED: needs DEBUG_LOCKORDER + ENABLE_WALLET — this suite is
+inert"* — and drops the three real cases → **486**. ★ **So the canonical invocation does not
+exercise the BUG-048 fix at all**, and a bare *"the suite is green"* conceals which of two different
+suites ran. Method note: **diff test-case names, never compare counts.**
+
+★ **Why (b) is recorded here rather than left in the commit message.** That message is the most
+visible statement about HEAD, and it is now stale in the **untrustworthy** direction: a reader
+concludes HEAD is unverified when it is verified. Same family as KDD-104 — *a status written at one
+moment and read as current*. This document's own header had acquired the identical defect (*"nothing
+landed from this document"*) and is corrected in the same pass.
+
+**(c) Unchanged and still owed — the sequencing constraint from §9.4 step 1.** The attachment
+remains optional at `rpc/ptx.cpp:592`, which is correct **only while the credential is still the DoS
+bound**. Mandatory-commitment is load-bearing twice — it is what makes the model *correct* (§9.2:
+the mempool is the one check GMs legitimately disagree on) and what makes it *survivable* (§9.4) —
+so it must flip to mandatory **in the same increment that opens the endpoint**, never in a
+follow-up. ★ Stated as a constraint on build order rather than as a task, because a task can be
+reordered and this cannot.
