@@ -737,6 +737,15 @@ public:
     double m_addr_token_bucket{10.0};
     /** When m_addr_token_bucket was last updated */
     std::chrono::microseconds m_addr_token_timestamp{GetTime<std::chrono::microseconds>()};
+    /** KDD-085 §9.4: number of ptxsignreq messages that can be processed from
+     *  this peer.  Copied from the ADDR limiter directly above rather than
+     *  designed -- with the caller credential removed, the bound on
+     *  work-before-rejection is the entire defence, and an in-tree limiter that
+     *  has run on every ADDR message for years is worth more than a new one.
+     *  Bounds/refill: PTX_SIGNREQ_TOKEN_BUCKET_MAX, PTX_SIGNREQ_RATE_PER_SECOND. */
+    double m_ptx_signreq_token_bucket{10.0};
+    /** When m_ptx_signreq_token_bucket was last updated */
+    std::chrono::microseconds m_ptx_signreq_token_timestamp{GetTime<std::chrono::microseconds>()};
 
     // inventory based relay
     CRollingBloomFilter filterInventoryKnown;

@@ -16,6 +16,7 @@
 #include "llmq/quorums_dkgsessionmgr.h"
 #include "ptx/ptx_dkg_commitments.h" // KDD-058-A landing relay (AlreadyHave/serve seams)
 #include "ptx/ptx_dkg_net.h"
+#include "ptx/ptx_sign_net.h" // KDD-085 sign-over-P2P: the rejection path
 #include "llmq/quorums_signing.h"
 #include "gamemaster-payments.h"
 #include "gamemaster-sync.h"
@@ -2293,6 +2294,23 @@ bool static ProcessMessage(CNode* pfrom, std::string strCommand, CDataStream& vR
     else if (strCommand == NetMsgType::NOTFOUND) {
         // We do not care about the NOTFOUND message (for now), but logging an Unknown Command
         // message is undesirable as we transmit it ourselves.
+        return true;
+    }
+
+    // KDD-085 sign-over-P2P.  ★ Dispatched HERE, in the main chain, and NOT
+    // through the tier-two dispatcher below: a sign request must be served to a
+    // caller that is not a gamemaster, has not GMAUTH-verified, and whose
+    // identity is irrelevant to the answer (KDD-105).  Routing it via tier two
+    // would silently make it GM-only and sync-phase dependent.
+    // The handler takes no lock until the request has passed every check that
+    // can be made from its own bytes -- which, with no credential, is the whole
+    // defence (see ptx_sign_net.h).
+    else if (strCommand == NetMsgType::PTXSIGNREQ) {
+        int score{0};
+        PTX_SignNet_ProcessMessage(pfrom, strCommand, vRecv, *connman, score);
+        if (score > 0) {
+            WITH_LOCK(cs_main, Misbehaving(pfrom->GetId(), score));
+        }
         return true;
     }
 

@@ -71,6 +71,8 @@ const char* PTXQCOMPLAINT = "ptxqcomplaint";
 const char* PTXQJUSTIFICATION = "ptxqjustify";
 const char* PTXQPCOMMITMENT = "ptxqpcommit";
 const char* PTXDKGCOMMIT = "ptxdkgcommit";
+const char* PTXSIGNREQ = "ptxsignreq";
+const char* PTXSIGNRESP = "ptxsignresp";
 }; // namespace NetMsgType
 
 
@@ -101,6 +103,8 @@ const static std::string allNetMessageTypes[] = {
     NetMsgType::FILTERADD,
     NetMsgType::FILTERCLEAR,
     NetMsgType::SENDHEADERS,
+    NetMsgType::PTXSIGNREQ,   // KDD-085 - NOT tier-two: served to unverified peers
+    NetMsgType::PTXSIGNRESP,
     "filtered block",  // Should never occur
     "ix",              // deprecated
     "txlvote",         // deprecated

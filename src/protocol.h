@@ -309,6 +309,14 @@ extern const char* PTXQCOMPLAINT;
 extern const char* PTXQJUSTIFICATION;
 extern const char* PTXQPCOMMITMENT;
 extern const char* PTXDKGCOMMIT;
+/**
+ * KDD-085 sign-over-P2P.  A caller asks one quorum member for its partial
+ * signature over a round it has already funded, and the member answers.
+ * ★ Accepted from UNVERIFIED peers by design — the authorisation is the
+ * BUG-032 payment gate, not the identity of the asker (KDD-105).
+ */
+extern const char* PTXSIGNREQ;
+extern const char* PTXSIGNRESP;
 }; // namespace NetMsgType
 
 /* Get a vector of all valid message types (see above) */

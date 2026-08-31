@@ -302,6 +302,7 @@ BITCOIN_CORE_H = \
   ptx/ptx_formation.h \
   ptx/ptx_lottery_state.h \
   ptx/ptx_mempool.h \
+  ptx/ptx_sign_net.h \
   ptx/ptx_output_mapping.h \
   ptx/ptx_payout.h \
   ptx/ptx_pose.h \
@@ -438,6 +439,7 @@ libbitcoin_server_a_SOURCES = \
   ptx/ptx_quorum.cpp \
   ptx/ptx_fanout.cpp \
   ptx/ptx_mempool.cpp \
+  ptx/ptx_sign_net.cpp \
   ptx/ptx_exclude.cpp \
   ptx/ptx_bls.cpp \
   ptx/ptx_dkg.cpp \

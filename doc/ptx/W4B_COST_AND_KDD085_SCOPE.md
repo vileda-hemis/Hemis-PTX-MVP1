@@ -1050,12 +1050,28 @@ much does controlling six seats cost).
 
 ### 9.13 ★★ What landed, and where it diverges from this plan
 
-Written 2026-08-31 against `bfea163`. §9.0–§9.12 are the plan as recon left it on 2026-08-25; this
-section is the **landing record**, and by this document's own convention (§9 preamble) it is later
-than all of them and cites source. **One of the seven §9.9 rows has landed; the other six are
-unstarted** — `ptxsignreq`/`ptxsignresp` return zero grep hits anywhere in the tree, the attachment
-is still optional (`rpc/ptx.cpp:592` guards on `params.size() > 2`), `ptx_fanout.cpp` is still 711
-lines, and `-ptxfanoutport` is still at `init.cpp:552`.
+Written 2026-08-31 against `bfea163`, extended as the build lands. §9.0–§9.12 are the plan as recon
+left it on 2026-08-25; this section is the **landing record**, and by this document's own convention
+(§9 preamble) it is later than all of them and cites source.
+
+**Status board** (update this table, not the prose, when an increment lands):
+
+| §9.9 row | state | commit |
+|---|---|---|
+| Index `PTX_RollCommitmentPresent` | **LANDED**, green on px1 | `bfea163` |
+| `ptxsignreq`/`ptxsignresp` + the **rejection path** | **LANDED**, green on px1 (498/498 `--enable-debug`) | component 1 |
+| Directed request/reply, correlation, stop-at-threshold | not started | — |
+| Mandatory-commitment ordering + token bucket | **LANDED** with component 1 | component 1 |
+| Capability advertisement + mixed-fleet transition | not started | — |
+| Delete `ptx_fanout.cpp`, drop `-ptxfanoutport`, docs | not started | — |
+| Fleet + two-host adversarial test (§9.8) | not started | — |
+
+★ **The signing side is deliberately NOT armed yet.** `PTX_SignNet_ProcessMessage` refuses every
+request that survives the guard, with one clearly-marked site for component 2 to replace. The guard
+was built first so the expensive path is added *behind* an existing bound rather than guarded
+afterwards — the §9.4 ordering discipline applied to its own construction. The attachment is still
+optional on the **RPC** arm (`rpc/ptx.cpp:592`), which is correct while the credential still bounds
+that arm; it is **mandatory on the P2P arm from its first line** (see (c) and (d)).
 
 **(a) ★★ The index was built in a different shape than §9.4 step 2 specifies — deliberately.**
 
@@ -1116,3 +1132,37 @@ the mempool is the one check GMs legitimately disagree on) and what makes it *su
 so it must flip to mandatory **in the same increment that opens the endpoint**, never in a
 follow-up. ★ Stated as a constraint on build order rather than as a task, because a task can be
 reordered and this cannot.
+
+**(d) Component 1 — the rejection path, as built.** `src/ptx/ptx_sign_net.{h,cpp}`, dispatched from
+`net_processing.cpp`. Built to §9.4's order, with three decisions worth recording because none of
+them is recoverable from the diff:
+
+- ★★ **The guard lives in a translation unit that cannot reach the lock.** `ptx_sign_net.cpp`
+  includes neither `txmempool.h` nor `validation.h`, so "rejected before `mempool.cs`" is a
+  *structural* property rather than a maintained call order. `Kdd085_CheapCheck_TakesNoLocks_Structural`
+  asserts it against the source, with the positive limb (the guard is actually in that file) checked
+  first so the negative limbs cannot pass vacuously against a renamed function. ★ **The first
+  version of that check failed against its own rationale** — the file must *explain* `mempool.cs` at
+  length, since that lock is the whole reason it exists, so the negatives now run against
+  comment-stripped source. A structural check that forbids a file from naming what it defends
+  against is not strict, it is wrong.
+- ★ **Dispatched in `ProcessMessage`'s main chain, NOT the tier-two dispatcher, and listed BEFORE
+  the `SPORK` marker in `protocol.cpp`.** Everything from `SPORK` onward *is* the tier-two set;
+  routing a sign request there would silently make it GM-only and sync-phase gated, re-imposing the
+  identity requirement KDD-085 removes. Both facts are asserted structurally, because either is a
+  one-line edit away from being undone by someone tidying message types.
+- ★ **Rate limit before deserialization; misbehaviour score only after a cheap check fails.** An
+  exhausted bucket is not misbehaviour — it is a peer asking faster than we serve — so it drops
+  silently and does not score, and does not reply either (a reply to a flood is amplification). The
+  score is **10, not 100**: 100 is this codebase's unroutable-command value, an instant ban, and
+  under KDD-085 *every caller is an unauthenticated stranger by design*, so a first-malformed-byte
+  ban partitions honest callers behind NAT or version skew.
+
+The limiter's arithmetic is factored out of the `CNode` path (`PTX_SignReq_RefillBucket` /
+`PTX_SignReq_SpendToken`) so it is testable without a live `CConnman` — a defence reachable only
+through a full network fixture is a defence that gets tested once and trusted forever. Its cases
+include the backwards-clock leg: a negative interval must not *drain* the bucket, or an NTP step
+rate-limits an honest peer.
+
+**Suite: 498/498 under `--enable-debug` on px1** (488 baseline + 10 new). Non-debug is not
+separately re-run for this component; per (b), quote the flags with any count taken from it.

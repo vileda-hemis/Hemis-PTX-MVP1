@@ -30,6 +30,7 @@
 #include "ptx/ptx_accum_script.h"  // W2.4 W4-b: accum output for the roll-tx shape
 #include "core_io.h"              // KDD-088: EncodeHexTx in the attach cases
 #include "ptx/ptx_mempool.h"       // BUG-032: the fund-then-sign gate under test
+#include "ptx/ptx_sign_net.h"      // KDD-085: the sign-over-P2P rejection path
 #include "validation.h"            // BUG-032 2b: the global mempool the signing scan reads
 #include "txmempool.h"             // BUG-032 2b: TestMemPoolEntryHelper / addUnchecked
 #include "consensus/validation.h"
@@ -6005,5 +6006,353 @@ BOOST_AUTO_TEST_CASE(kdd088_compat_guard_is_lt2_not_ne2)
     BOOST_CHECK_MESSAGE(window.find("!= 2") == std::string::npos,
                         "gm_bls_sign guard became '!= 2' — mixed-fleet compatibility lost");
 }
+
+// ===========================================================================
+// KDD-085 §9.4 — THE REJECTION PATH.
+// ===========================================================================
+// Plan: doc/ptx/W4B_COST_AND_KDD085_SCOPE.md §9.  Register: KDD-105.
+//
+// ★★ WHAT THESE CASES ARE ACTUALLY DEFENDING, because it is not obvious from
+// the assertions.  KDD-085 deletes the caller credential — `gm_bls_sign`'s
+// authentication answered a question that was never about identity (KDD-105).
+// With the credential gone there is NOTHING between a stranger's bytes and this
+// node's locks except the order of the checks below.  §9.4 measured the old
+// order at ~47 kbit/s to hold `mempool.cs` continuously at the default
+// maxmempool=300 — a liveness attack on block production.
+//
+// ★ So the property under test is NOT "does the guard accept good requests".
+// It is: EVERY REJECTION IS REACHED FROM THE REQUEST'S OWN BYTES.  A change
+// that made the guard correct but expensive would pass a happy-path test and
+// lose the whole defence.  `Kdd085_CheapCheck_TakesNoLocks_Structural` is
+// therefore the load-bearing case here, and the per-reason cases below exist to
+// stop it passing vacuously.
+// ---------------------------------------------------------------------------
+
+// ★ Strip C/C++ comments before asserting about a file's CONTENT.
+// Found the hard way: the first version of the structural check below matched
+// its own rationale. ptx_sign_net.cpp must EXPLAIN mempool.cs at length -- that
+// lock is the entire reason the file exists -- so a raw text search cannot tell
+// "the guard takes this lock" from "the guard documents why it must not".
+// A structural check that forbids a file from naming the thing it is defending
+// against is not a strict check, it is a wrong one.
+static std::string P5_strip_comments(const std::string& in)
+{
+    std::string out;
+    out.reserve(in.size());
+    for (size_t i = 0; i < in.size();) {
+        if (in[i] == '/' && i + 1 < in.size() && in[i + 1] == '/') {
+            while (i < in.size() && in[i] != '\n') i++;
+        } else if (in[i] == '/' && i + 1 < in.size() && in[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < in.size() && !(in[i] == '*' && in[i + 1] == '/')) i++;
+            i = std::min(i + 2, in.size());
+        } else {
+            out.push_back(in[i++]);
+        }
+    }
+    return out;
+}
+
+// Serialize a tx the way a caller would put it on the wire.
+static std::vector<unsigned char> SignReqRaw(const CMutableTransaction& mtx)
+{
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << mtx;
+    return std::vector<unsigned char>(ss.begin(), ss.end());
+}
+
+// ★ THE MODEL TEST.  KDD-088's direct-attach was OPTIONAL over RPC — omit it and
+// the node fell back to "look in my own mempool".  §9.2 is that the mempool is
+// the ONE check GMs legitimately disagree about (node-local: propagation,
+// policy, eviction — which is why a retryable "commitment not seen" refusal
+// exists at all).  So the fallback is precisely what breaks "eleven strangers
+// reach the same verdict from public data", and under KDD-085 the attachment is
+// MANDATORY.
+// RED: re-introduce the fallback (return NONE, or consult the mempool, on an
+//      empty commit_raw) and this case fails — which is the point: the
+//      softening is a one-line edit and this is what stops it.
+BOOST_AUTO_TEST_CASE(Kdd085_SignReq_CommitmentIsMandatoryNotOptional)
+{
+    PTXSignReq req;
+    req.round_seed  = QHk(0xD1);
+    req.quorum_hash = QHk(0xD2);
+    // commit_raw deliberately left empty — the whole case.
+    CTransactionRef out;
+    BOOST_CHECK_MESSAGE(PTX_SignReq_CheapCheck(req, out) == PTXSignReqReject::MISSING_COMMITMENT,
+        "KDD-085 §9.2: a sign request with NO attached commitment was not refused. "
+        "There must be no 'look in my mempool and hope' path — that fallback is the "
+        "node-local disagreement the no-identity model cannot tolerate, and it re-opens "
+        "the pre-attachment DoS surface at the same time.");
+    BOOST_CHECK(out == nullptr);
+}
+
+// Size before parse: the cap is checked against a vector we already hold, so a
+// 100 MB "commitment" costs a compare, not an allocation.
+BOOST_AUTO_TEST_CASE(Kdd085_SignReq_RejectsOversizeBeforeParsing)
+{
+    PTXSignReq req;
+    req.round_seed  = QHk(0xD3);
+    req.quorum_hash = QHk(0xD4);
+    req.commit_raw.assign(PTX_SIGNREQ_MAX_COMMIT_BYTES + 1, 0xAB);
+    CTransactionRef out;
+    BOOST_CHECK(PTX_SignReq_CheapCheck(req, out) == PTXSignReqReject::TOO_LARGE);
+
+    // ★ The cap is the same 100 kB the KDD-088 RPC attach path applies. If the
+    // two ever disagree, one entry point is abusive by the other's definition.
+    BOOST_CHECK_MESSAGE(PTX_SIGNREQ_MAX_COMMIT_BYTES == 100000,
+        "KDD-085: the P2P size cap drifted from the RPC attach cap (ptx_mempool.cpp) — "
+        "the two entry points must not disagree about what is abusive");
+}
+
+BOOST_AUTO_TEST_CASE(Kdd085_SignReq_RejectsUndecodableAndTrailingBytes)
+{
+    const uint256 qh = QHk(0xD5), seed = QHk(0xD6);
+    CTransactionRef out;
+
+    PTXSignReq garbage;
+    garbage.round_seed = seed; garbage.quorum_hash = qh;
+    garbage.commit_raw = {0xde, 0xad, 0xbe, 0xef};
+    BOOST_CHECK(PTX_SignReq_CheapCheck(garbage, out) == PTXSignReqReject::DECODE_FAILED);
+
+    // ★ Canonical-encoding leg: a valid commitment with junk appended must NOT
+    // be accepted. Without this, the same commitment has unboundedly many wire
+    // forms, and anything downstream that dedupes on the bytes can be evaded.
+    PTXSignReq trailing;
+    trailing.round_seed = seed; trailing.quorum_hash = qh;
+    trailing.commit_raw = SignReqRaw(CommitMakeTx(qh, seed, 10));
+    trailing.commit_raw.push_back(0x00);
+    BOOST_CHECK_MESSAGE(PTX_SignReq_CheapCheck(trailing, out) == PTXSignReqReject::DECODE_FAILED,
+        "KDD-085: a commitment with trailing bytes was accepted — the wire encoding "
+        "is no longer canonical");
+}
+
+BOOST_AUTO_TEST_CASE(Kdd085_SignReq_RejectsNonRollCommitTx)
+{
+    const uint256 qh = QHk(0xD7), seed = QHk(0xD8);
+    CMutableTransaction plain;               // a bare tx: not a special tx at all
+    plain.vin.resize(1);
+    plain.vout.resize(1);
+    PTXSignReq req;
+    req.round_seed = seed; req.quorum_hash = qh;
+    req.commit_raw = SignReqRaw(plain);
+    CTransactionRef out;
+    BOOST_CHECK(PTX_SignReq_CheapCheck(req, out) == PTXSignReqReject::NOT_ROLLCOMMIT);
+}
+
+// ★ The round-binding leg, both fields independently. An attachment for someone
+// else's round is not this node's business, and accepting it would let a caller
+// push unrelated traffic through us — the BUG-033 quorum-shop shape, one layer
+// out.
+BOOST_AUTO_TEST_CASE(Kdd085_SignReq_RejectsCommitmentForAnotherRound)
+{
+    const uint256 qh = QHk(0xD9), seed = QHk(0xDA);
+    const auto raw = SignReqRaw(CommitMakeTx(qh, seed, 10));
+    CTransactionRef out;
+
+    PTXSignReq wrongSeed;
+    wrongSeed.round_seed = QHk(0xDB); wrongSeed.quorum_hash = qh; wrongSeed.commit_raw = raw;
+    BOOST_CHECK_MESSAGE(PTX_SignReq_CheapCheck(wrongSeed, out) == PTXSignReqReject::ROUND_MISMATCH,
+        "a commitment for a DIFFERENT round_seed was accepted for this round");
+
+    PTXSignReq wrongQh;
+    wrongQh.round_seed = seed; wrongQh.quorum_hash = QHk(0xDC); wrongQh.commit_raw = raw;
+    BOOST_CHECK_MESSAGE(PTX_SignReq_CheapCheck(wrongQh, out) == PTXSignReqReject::ROUND_MISMATCH,
+        "a commitment for a DIFFERENT quorum_hash was accepted — the signing-path "
+        "quorum-shop close (BUG-033) does not survive the transport change");
+}
+
+// The anti-vacuous limb: if this fails, every rejection case above could be
+// passing because the guard refuses everything.
+BOOST_AUTO_TEST_CASE(Kdd085_SignReq_AcceptsWellFormedRequest)
+{
+    const uint256 qh = QHk(0xDD), seed = QHk(0xDE);
+    PTXSignReq req;
+    req.round_seed = seed; req.quorum_hash = qh;
+    req.commit_raw = SignReqRaw(CommitMakeTx(qh, seed, 10));
+    CTransactionRef out;
+    BOOST_REQUIRE_MESSAGE(PTX_SignReq_CheapCheck(req, out) == PTXSignReqReject::NONE,
+        "a well-formed request was refused — the rejection cases above would then "
+        "all be passing vacuously");
+    BOOST_REQUIRE(out != nullptr);
+    BOOST_CHECK(out->IsPTXRollCommitTx());
+    // The decoded commitment is handed back so the expensive path (component 2)
+    // never deserializes the same bytes twice.
+    CPTXRollCommitPayload p;
+    BOOST_REQUIRE(GetTxPayload(*out, p));
+    BOOST_CHECK(p.round_seed == seed);
+    BOOST_CHECK(p.quorum_hash == qh);
+}
+
+// Every reason is a pure byte property, so every reason scores. This case is
+// here so that when a reason IS added that an honest caller can hit (a reorg, a
+// policy difference), the decision is made deliberately rather than inherited.
+BOOST_AUTO_TEST_CASE(Kdd085_SignReq_EveryRejectionIsPeerFault)
+{
+    BOOST_CHECK(!PTX_SignReq_IsMisbehaviour(PTXSignReqReject::NONE));
+    for (auto r : {PTXSignReqReject::MISSING_COMMITMENT, PTXSignReqReject::TOO_LARGE,
+                   PTXSignReqReject::DECODE_FAILED, PTXSignReqReject::NOT_ROLLCOMMIT,
+                   PTXSignReqReject::ROUND_MISMATCH}) {
+        BOOST_CHECK_MESSAGE(PTX_SignReq_IsMisbehaviour(r),
+            std::string("rejection '") + PTX_SignReqRejectString(r) +
+            "' stopped scoring — if that is deliberate, say WHY an honest caller can hit it");
+        // ★ And a reason must never be silent: the operator has to be able to
+        // tell a flood from a bug.
+        BOOST_CHECK(std::string(PTX_SignReqRejectString(r)) != "unknown");
+    }
+    // ★ NOT 100. 100 is this codebase's unroutable-command score = instant ban.
+    // A caller is an unauthenticated stranger BY DESIGN under KDD-085; banning
+    // strangers on a first malformed byte partitions honest callers behind NAT
+    // or version skew.
+    BOOST_CHECK_MESSAGE(PTX_SIGNREQ_MISBEHAVIOUR_SCORE > 0 && PTX_SIGNREQ_MISBEHAVIOUR_SCORE < 100,
+        "KDD-085: the signreq misbehaviour score is an instant ban (100) — with no "
+        "credential, every caller is a stranger and this bans honest ones");
+}
+
+// The limiter. Exercised through the factored arithmetic rather than a live
+// CNode, so the defence is actually testable (see ptx_sign_net.h).
+BOOST_AUTO_TEST_CASE(Kdd085_SignReq_TokenBucketLimitsRate)
+{
+    using namespace std::chrono;
+    double bucket = PTX_SIGNREQ_TOKEN_BUCKET_MAX;
+
+    // A burst empties it: 10 requests, then the eleventh is refused.
+    for (int i = 0; i < (int)PTX_SIGNREQ_TOKEN_BUCKET_MAX; i++) {
+        BOOST_CHECK_MESSAGE(PTX_SignReq_SpendToken(bucket),
+                            "burst request " + std::to_string(i) + " was rate-limited early");
+    }
+    BOOST_CHECK_MESSAGE(!PTX_SignReq_SpendToken(bucket),
+        "KDD-085 §9.4: the token bucket never runs out — a flood is unbounded");
+
+    // It refills at the stated rate, and no faster.
+    bucket = PTX_SignReq_RefillBucket(bucket, seconds{2});
+    BOOST_CHECK_CLOSE(bucket, 2.0 * PTX_SIGNREQ_RATE_PER_SECOND, 0.001);
+
+    // It does not refill past the cap — otherwise an idle peer banks an
+    // arbitrarily large burst and the limit means nothing.
+    bucket = PTX_SignReq_RefillBucket(bucket, hours{24});
+    BOOST_CHECK_MESSAGE(bucket <= PTX_SIGNREQ_TOKEN_BUCKET_MAX,
+        "an idle peer banked more than the cap — the burst limit is not a limit");
+
+    // ★ A backwards clock must not DRAIN the bucket: that would lock a peer out
+    // on an NTP step, which is a self-inflicted partition, not a defence.
+    const double before = bucket;
+    bucket = PTX_SignReq_RefillBucket(bucket, microseconds{-5000000});
+    BOOST_CHECK_MESSAGE(bucket >= before,
+        "a negative interval reduced the bucket — a clock step now rate-limits an "
+        "honest peer");
+}
+
+BOOST_AUTO_TEST_CASE(Kdd085_SignReq_WireRoundTrip)
+{
+    PTXSignReq req;
+    req.round_seed  = QHk(0xE1);
+    req.quorum_hash = QHk(0xE2);
+    req.commit_raw  = SignReqRaw(CommitMakeTx(req.quorum_hash, req.round_seed, 10));
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << req;
+    PTXSignReq back;
+    ss >> back;
+    BOOST_CHECK(back.round_seed == req.round_seed);
+    BOOST_CHECK(back.quorum_hash == req.quorum_hash);
+    BOOST_CHECK(back.commit_raw == req.commit_raw);
+
+    PTXSignResp resp;
+    resp.round_seed  = req.round_seed;
+    resp.quorum_hash = req.quorum_hash;
+    resp.status      = (uint8_t)PTXSignStatus::RETRYABLE;
+    resp.reason      = "commitment not seen";
+    CDataStream rs(SER_NETWORK, PROTOCOL_VERSION);
+    rs << resp;
+    PTXSignResp rback;
+    rs >> rback;
+    BOOST_CHECK(rback.status == (uint8_t)PTXSignStatus::RETRYABLE);
+    BOOST_CHECK(rback.reason == "commitment not seen");
+    // ★ The retryable/terminal split must survive the transport change: RPC had
+    // it (RPC_PTX_COMMITMENT_NOT_SEEN vs RPC_MISC_ERROR) and the caller's retry
+    // budget depends on it. Losing it turns ordinary propagation delay into a
+    // forfeited fee.
+    BOOST_CHECK(PTXSignStatus::RETRYABLE != PTXSignStatus::TERMINAL);
+}
+
+// ★★ THE LOAD-BEARING CASE. §9.4's claim is that a bogus request is rejected
+// BEFORE this node takes `mempool.cs`. That is asserted here DIRECTLY — against
+// the source — rather than inferred from timing, because a timing test on a
+// loaded box measures the box.
+//
+// The guard lives in a translation unit that cannot reach the lock: no
+// txmempool.h, no validation.h. A future edit that needs the mempool in the
+// cheap path has to add the include, and this fails when it does.
+//
+// RED (inversion A): add `#include "txmempool.h"` to ptx_sign_net.cpp -> fails.
+// RED (inversion B): rename PTX_SignReq_CheapCheck -> the positive limb fails,
+//                    so the negative limbs cannot pass vacuously against a file
+//                    that no longer contains the guard at all.
+BOOST_AUTO_TEST_CASE(Kdd085_CheapCheck_TakesNoLocks_Structural)
+{
+    const std::string src = PTX_SRCDIR;
+    BOOST_REQUIRE_MESSAGE(!src.empty(),
+        "KDD-085: PTX_SRCDIR was NOT injected by the build — this structural check "
+        "COULD NOT RUN and MUST NOT be treated as passing");
+
+    const std::string guard = P5_slurp(src + "/src/ptx/ptx_sign_net.cpp");
+    BOOST_REQUIRE_MESSAGE(!guard.empty(),
+        "KDD-085: cannot read src/ptx/ptx_sign_net.cpp — the check would be vacuous");
+
+    // Positive limb first: the file really does contain the guard under test.
+    BOOST_REQUIRE_MESSAGE(guard.find("PTX_SignReq_CheapCheck") != std::string::npos,
+        "KDD-085: PTX_SignReq_CheapCheck is not in ptx_sign_net.cpp — renamed or moved; "
+        "the negative limbs below would pass against the wrong file");
+
+    // ★ Negative limbs run against COMMENT-STRIPPED source. The file's own
+    // rationale names mempool.cs repeatedly -- it must, that lock is why the
+    // file exists -- and matching prose would forbid the explanation rather
+    // than the behaviour.
+    const std::string code = P5_strip_comments(guard);
+    BOOST_REQUIRE_MESSAGE(code.find("PTX_SignReq_CheapCheck") != std::string::npos,
+        "KDD-085: comment-stripping removed the guard itself — the helper is broken, "
+        "and every negative limb below would pass vacuously");
+    BOOST_CHECK_MESSAGE(code.find("#include \"txmempool.h\"") == std::string::npos,
+        "KDD-085 §9.4: ptx_sign_net.cpp now includes txmempool.h — the rejection path "
+        "can reach mempool.cs, which is the entire DoS surface this file exists to close "
+        "(and BUG-052 is the live example of getting this order wrong on this codebase)");
+    BOOST_CHECK_MESSAGE(code.find("#include \"validation.h\"") == std::string::npos,
+        "KDD-085 §9.4: ptx_sign_net.cpp now includes validation.h — cs_main is reachable "
+        "from the rejection path");
+    BOOST_CHECK_MESSAGE(code.find("mempool.cs") == std::string::npos,
+        "KDD-085 §9.4: ptx_sign_net.cpp references mempool.cs directly");
+    BOOST_CHECK_MESSAGE(code.find("PTX_RollCommitmentPresent") == std::string::npos,
+        "KDD-085 §9.4: the rejection path calls PTX_RollCommitmentPresent — that takes "
+        "mempool.cs, so an 88-byte bogus request once again buys a lock acquisition");
+
+    // ★ And the dispatch site: a sign request must be served to a peer that has
+    // NOT GMAUTH-verified. GMAUTH is GM-to-GM by construction (ptx_dkg_net.cpp
+    // keys the ceremony relay on verifiedProRegTxHash) and a caller is not a
+    // gamemaster — the identity layer is what KDD-085 removes, not something it
+    // reuses. Routing this through the tier-two dispatcher would silently make
+    // it GM-only and sync-phase dependent.
+    const std::string np = P5_slurp(src + "/src/net_processing.cpp");
+    const std::string t2 = P5_slurp(src + "/src/tiertwo_networksync.cpp");
+    BOOST_REQUIRE(!np.empty() && !t2.empty());
+    const std::string np_code = P5_strip_comments(np);
+    const std::string t2_code = P5_strip_comments(t2);
+    BOOST_CHECK_MESSAGE(np_code.find("NetMsgType::PTXSIGNREQ") != std::string::npos,
+        "KDD-085: PTXSIGNREQ is not dispatched in net_processing.cpp");
+    BOOST_CHECK_MESSAGE(t2_code.find("PTXSIGNREQ") == std::string::npos,
+        "KDD-085: PTXSIGNREQ moved into the tier-two dispatcher — it is now GM-only and "
+        "sync-phase gated, which re-imposes the identity requirement this change removes");
+
+    // The message must NOT sit after the SPORK marker in protocol.cpp either:
+    // everything from SPORK onward IS the tier-two set.
+    const std::string proto = P5_slurp(src + "/src/protocol.cpp");
+    BOOST_REQUIRE(!proto.empty());
+    const size_t spork = proto.find("NetMsgType::SPORK, // --- tiertwoNetMessageTypes start here ---");
+    const size_t sreq  = proto.find("NetMsgType::PTXSIGNREQ,");
+    BOOST_REQUIRE_MESSAGE(spork != std::string::npos && sreq != std::string::npos,
+        "KDD-085: could not locate the tier-two marker or PTXSIGNREQ in protocol.cpp");
+    BOOST_CHECK_MESSAGE(sreq < spork,
+        "KDD-085: PTXSIGNREQ is listed AFTER the tier-two marker, so it is a tier-two "
+        "message type — served only to GMs, gated on sync phase");
+}
+
 
 BOOST_AUTO_TEST_SUITE_END()
