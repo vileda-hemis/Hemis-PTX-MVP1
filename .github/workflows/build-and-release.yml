@@ -111,8 +111,14 @@ jobs:
     steps:
       - name: Get Source
         uses: actions/checkout@v4
-
-      - name: Setup Environment
+        with:
+          # ★★ ODC-092, THIRD LINK. actions/checkout defaults to fetch-depth: 1 --
+          # a shallow fetch that retrieves the commit but NO TAG OBJECTS. genbuild.sh
+          # then has nothing to `git describe` against and falls back to the commit
+          # suffix, so a correctly-created annotated tag STILL produced
+          # "v1.3.1.0-c13a6ef" instead of "v0.2.0-testnet". The lint job already had
+          # fetch-depth: 0; the jobs that actually BUILD did not.
+          fetch-depth: 0
         # ★ Non-interactive apt -- hardening, not a diagnosis. See the same
         # note on build_depends_wallet's Setup Environment step.
         run: |
@@ -312,8 +318,14 @@ jobs:
     steps:
       - name: Get Source
         uses: actions/checkout@v4
-
-      - name: Setup Environment
+        with:
+          # ★★ ODC-092, THIRD LINK. actions/checkout defaults to fetch-depth: 1 --
+          # a shallow fetch that retrieves the commit but NO TAG OBJECTS. genbuild.sh
+          # then has nothing to `git describe` against and falls back to the commit
+          # suffix, so a correctly-created annotated tag STILL produced
+          # "v1.3.1.0-c13a6ef" instead of "v0.2.0-testnet". The lint job already had
+          # fetch-depth: 0; the jobs that actually BUILD did not.
+          fetch-depth: 0
         # ★ Non-interactive apt. HARDENING AGAINST A PLAUSIBLE CAUSE, NOT A
         # DIAGNOSIS -- see the commit message. An apt-get that stops on a
         # prompt would hang exactly as run #1 hung, but run #1's logs were

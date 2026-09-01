@@ -67,6 +67,51 @@ probe() {
 }
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+say "0. Build identity -- are you running what you were told to run?"
+# ---------------------------------------------------------------------------
+# ★★ THIS CHECK DID NOT EXIST, AND ITS ABSENCE IS THE DEFECT IT FIXES.
+# Nothing in install.sh, self-check.sh or the readiness criteria ever compared
+# what the operator is RUNNING against what they were told to install. The
+# readiness bar was `getgamemasterstatus == Ready` and `self-check exits 0` --
+# neither looks at the binary. An operator on the wrong build passes both.
+#
+# ★ Measured cost of not having it (2026-09-01): three hosts were reported at
+# one tag and running another, and reconciling that took two investigations --
+# because `Hemisd -version` and `Hemis-cli -version` are DIFFERENT binaries,
+# /usr/local/bin/* were SYMLINKS into /opt, and a peer's `subver` carries no
+# commit at all. None of that is obvious at a prompt.
+#
+# ★★ COMPARED AGAINST THE REPO, NOT A HARDCODED CONSTANT. There is no value
+# here to update at each cut: the binary's own string is checked against the
+# checked-out source it should have been built from. That also catches the
+# real-world error -- binary and source drifting apart -- which a constant
+# never would.
+#
+# ★ ACCEPTS EITHER FORM, so it survives ODC-092's fix rather than needing to be
+# undone by it. Today a release binary reports "v1.3.1.0-<commit>" because the
+# release workflow's checkout fetched no tags; once that is fixed it will report
+# the tag name directly. Both are correct answers to "am I on the right build",
+# and this accepts whichever it is given.
+SRC="${PTX_SRC:-/opt/hemis-ptx}"
+VER="$(Hemisd -version 2>/dev/null | head -1)"
+if [ -z "$VER" ]; then
+    unk "could not read 'Hemisd -version' -- cannot confirm which build is installed"
+elif [ ! -d "$SRC/.git" ]; then
+    unk "no source checkout at $SRC, so the binary cannot be compared to it (set PTX_SRC=<dir>). Reported: $VER"
+else
+    WANT_C="$(git -c safe.directory="$SRC" -C "$SRC" rev-parse --short HEAD 2>/dev/null)"
+    WANT_T="$(git -c safe.directory="$SRC" -C "$SRC" describe --tags --abbrev=0 2>/dev/null)"
+    if [ -n "$WANT_C" ] && printf '%s' "$VER" | grep -q -- "$WANT_C"; then
+        ok "running $VER -- matches the source at $SRC (commit $WANT_C${WANT_T:+, tag $WANT_T})"
+    elif [ -n "$WANT_T" ] && printf '%s' "$VER" | grep -q -- "$WANT_T"; then
+        ok "running $VER -- matches the source at $SRC (tag $WANT_T)"
+    else
+        bad "BUILD MISMATCH. Binary reports '$VER', but the source at $SRC is ${WANT_T:-<no tag>} / $WANT_C. You are not running what you installed -- rebuild or reinstall before trusting anything below."
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 say "1. Daemon and RPC (local)"
 # ---------------------------------------------------------------------------
 if ! cli getblockcount >/dev/null; then
