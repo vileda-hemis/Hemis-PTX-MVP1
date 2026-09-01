@@ -2,7 +2,7 @@
 #
 # PTX testnet — VPS bootstrap for gamemaster operators.
 #
-#   wget https://raw.githubusercontent.com/vileda-hemis/Hemis-PTX-MVP1/v0.1.3-testnet/vps-install.sh
+#   wget https://raw.githubusercontent.com/vileda-hemis/Hemis-PTX-MVP1/v0.2.0-testnet/vps-install.sh
 #   bash vps-install.sh
 #
 # ★★ BY TAG, NOT BY BRANCH, AND NOT BY `main`. This header used to say `main`.
@@ -34,7 +34,7 @@ set -euo pipefail
 # /releases/latest/download/Hemis-Linux.zip returns 404 on this repository, and
 # the API's /releases/latest says "Not Found". A testnet wants a pinned artefact
 # anyway; "latest" is how two operators end up on different code.
-TAG="${PTX_TAG:-v0.1.3-testnet}"
+TAG="${PTX_TAG:-v0.2.0-testnet}"
 REPO="${PTX_REPO:-https://github.com/vileda-hemis/Hemis-PTX-MVP1.git}"
 
 # ★★ ONE GM PER HOST. Run this bootstrap ONCE ON EACH of your four machines.

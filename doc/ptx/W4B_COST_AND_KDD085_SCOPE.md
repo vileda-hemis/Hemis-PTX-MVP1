@@ -1405,3 +1405,47 @@ order. Capability advertisement is therefore **required before independent opera
 is not merely a nicety deferred for tidiness. Minimum shape: bump `PROTOCOL_VERSION`, have the
 caller check `pnode->nVersion` before sending, and mark a member that cannot speak it `UNREACHABLE`
 immediately — which is an absorbing state the winnability arithmetic already handles correctly.
+
+**(i) §9.13(h) capability advertisement — LANDED, with one bound accepted and scheduled.**
+
+`PROTOCOL_VERSION` 70928 → **70929**; `PTX_SIGNREQ_MIN_PROTO_VERSION` names the P2P-signing
+version; the caller checks the peer's handshake version **before sending**. A peer below it becomes
+**`TOO_OLD`** — a distinct absorbing state, deliberately **not** `UNREACHABLE`, because the operator
+remedies differ completely and the log says so in the imperative (*"OPERATOR ACTION: upgrade that
+gamemaster's binary (this is NOT a network-reachability problem)"*). Folding it into `UNREACHABLE`
+would send an operator to their firewall for a problem that is a binary version.
+
+★ **The version gate makes GMs-first-caller-last self-enforcing**, which is a better outcome than
+the ordering discipline it replaces: a new caller now *declines* to ask an old GM rather than
+hanging on it, so getting the deploy order wrong degrades **legibly** instead of silently. Worth
+saying in the release notes — it changes what operators need to be told.
+
+### ★ THE BOUND, stated with a trigger rather than waived
+
+**Proven** — unit and structural, 518/518 `--enable-debug`:
+version coherence (`MIN_PROTO ≤ PROTOCOL_VERSION`, and the bump actually happened); `TOO_OLD`
+absorbing, never re-timed, never retried; distinct from `UNREACHABLE`; a round whose remainder is
+`TOO_OLD` is `UNWINNABLE` at once; the log names the remedy; and **the `_COUNT` guard fired on a
+real state addition** — adding `TOO_OLD` failed the build until it was classified.
+
+**Not proven:** a live old-binary GM classified `TOO_OLD` inside a real round on the fleet. The
+deploy that would have demonstrated it aborted on the memory floor at 112 GMs (available 8705 Mi
+against a 10006 Mi floor), and churning the fleet to chase it was judged more costly than the gap.
+
+**Why the gap is acceptable now — and this is a different risk class from the component-3 bound
+that later found the `UNSENT` defect:**
+
+1. ★ **The blast radius is bounded by fixes already validated.** Before the state-machine work, an
+   unclassified member hung the round to the wall. Now the worst case of a `TOO_OLD`
+   misclassification is that the member lands as `UNREACHABLE` instead — which **retires at 15 s and
+   fails fast**. Getting this wrong produces a worse *error message*, not a hung caller.
+2. **No mixed-version network exists yet.** The four launch hosts move to the new tag together. The
+   mixed case only becomes real when independent operators upgrade on their own schedules — which
+   is precisely what this mechanism exists to make safe.
+
+★★ **TRIGGER, written down because an acceptance without one is how this fleet arrived at
+`rpcallowip=0.0.0.0/0` (ODC-079):** the mixed-version test runs at **the first fleet run with
+sufficient headroom, or before any operator is asked to upgrade independently — whichever comes
+first.** It is scheduled, not waived. The component-3 bound found a real defect precisely because it
+was written down and then deliberately exercised at the first opportunity; this one inherits that
+obligation.
