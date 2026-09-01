@@ -99,6 +99,36 @@ git push origin v0.1.3-testnet
 `action-gh-release` only creates a tag that does not already exist, so dispatching against an
 existing one reuses it and the artefacts still attach.
 
+★★ **DISPATCHING FROM A TAG VIA THE API — TWO THINGS THAT BOTH LOOK LIKE "THE TAG IS BROKEN".**
+Learned the hard way on the v0.1.3 cut, and neither error message points at its cause:
+
+| symptom | actual cause |
+|---|---|
+| `HTTP 500 — Failed to run workflow dispatch` | `release` is declared `type: boolean`; the API needs a **JSON boolean** `false`, not the string `"false"` |
+| `HTTP 422 — No ref found for: v0.1.3-testnet` | the ref must be **fully qualified**: `refs/tags/v0.1.3-testnet`, not the bare tag name |
+
+★ **The 422 is the dangerous one, because it is a lie in the direction that invites damage.** The
+tag existed and was verified on origin by `git ls-remote` moments earlier; the obvious reading is
+*"the tag did not push properly, delete it and try again"*, and that costs a published tag for
+nothing. **Check `git ls-remote --tags origin` before believing that message** — if the tag is
+there, the ref format is the problem, not the tag.
+
+Working call:
+
+```bash
+TOKEN=...    # never echo it
+curl -X POST -H "Accept: application/vnd.github+json" \
+  -H "Authorization: Bearer $TOKEN" -H "X-GitHub-Api-Version: 2022-11-28" \
+  https://api.github.com/repos/vileda-hemis/Hemis-PTX-MVP1/actions/workflows/build-and-release.yml/dispatches \
+  -d '{"ref":"refs/tags/v0.1.3-testnet",
+       "inputs":{"release":false,"tags":"v0.1.3-testnet","release-name":"Hemis PTX v0.1.3 - testnet"}}'
+# 204 No Content = accepted
+```
+
+★ **`release` is `false` for a testnet cut**, matching every prior one — v0.1.0/0.1.1/0.1.2 are all
+`prerelease=true` on GitHub. `false` still uploads artefacts and still creates the release; it only
+sets the pre-release flag. Confirmed against the releases API rather than assumed.
+
 ★ **Verified empirically, not inferred** (2026-09-01, px1): with an annotated tag at HEAD and a
 clean tree, `src/obj/build.h` gets `#define BUILD_DESC "<tag>"` and `Hemisd -version` prints
 `Hemis Core Daemon version <tag>`. Read genbuild and reason about it and you will get this wrong —
