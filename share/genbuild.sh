@@ -24,7 +24,27 @@ git_check_in_repo() {
 
 DESC=""
 SUFFIX=""
-if [ "${BITCOIN_GENBUILD_NO_GIT}" != "1" ] && [ -e "$(command -v git)" ] && [ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" = "true" ] && git_check_in_repo share/genbuild.sh; then
+# ★★ ODC-092: ACCEPT THE VERSION RATHER THAN REDISCOVERING IT.
+# Four fixes tried to make the git derivation below work in the release runner
+# (annotated tags, tag-created-before-build, fetch-depth: 0). Each was correct
+# and each was insufficient, because every one of them sits UPSTREAM of $DESC:
+# git describe, tag objects, fetch depth, whether .git is even present in the
+# directory this runs from. The release workflow ALREADY KNOWS the tag -- it is
+# a dispatch input -- so it passes it here and none of those links matter.
+#
+# ★ FALLBACK PRESERVED, DELIBERATELY. With PTX_BUILD_DESC unset (every local
+# build, every developer, px1) this is byte-identical to before: the git
+# derivation runs untouched. Input if present, else derive.
+#
+# ★ THE TRADE, recorded because it is real: a derived version is SELF-VERIFYING
+# -- a binary cannot claim a tag it was not built from. An asserted one can, if
+# whoever dispatches mistypes the tag field. What makes that acceptable is
+# self-check.sh section 0, which compares the binary's string against the
+# checked-out source at the operator's node, so a wrong assertion is caught
+# rather than believed.
+if [ -n "${PTX_BUILD_DESC:-}" ]; then
+    DESC="$PTX_BUILD_DESC"
+elif [ "${BITCOIN_GENBUILD_NO_GIT}" != "1" ] && [ -e "$(command -v git)" ] && [ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" = "true" ] && git_check_in_repo share/genbuild.sh; then
     # clean 'dirty' status of touched files that haven't been modified
     git diff >/dev/null 2>/dev/null
 
