@@ -9,6 +9,7 @@
 #include "net.h"
 #include "netmessagemaker.h"
 #include "protocol.h"
+#include "version.h"   // PTX_SIGNREQ_MIN_PROTO_VERSION
 #include "chainparams.h"
 #include "netbase.h"             // LookupNumeric
 #include "utiltime.h"   // GetTimeMillis for the connect window
@@ -38,7 +39,7 @@ const char* PTXSignRoundOutcomeString(PTXSignRoundOutcome o)
 // has to. Both the static_assert and the default-less switch are load-bearing:
 // the assert catches a state added at the end, the switch catches one added in
 // the middle that shifts _COUNT back into agreement.
-static_assert((int)PTXMemberSignState::_COUNT == 6,
+static_assert((int)PTXMemberSignState::_COUNT == 7,
               "PTXMemberSignState gained or lost a state: classify it in "
               "PTX_SignReq_IsAbsorbing and PTX_SignReq_RetireExpired, and say "
               "whether it is absorbing or has a bounded exit. Three separate "
@@ -50,6 +51,8 @@ bool PTX_SignReq_IsAbsorbing(PTXMemberSignState s)
         case PTXMemberSignState::COLLECTED:   return true;
         case PTXMemberSignState::TERMINAL:    return true;
         case PTXMemberSignState::UNREACHABLE: return true;
+        // ★ Absorbing: a peer's protocol version does not change mid-round.
+        case PTXMemberSignState::TOO_OLD:     return true;
         case PTXMemberSignState::UNSENT:      return false;
         case PTXMemberSignState::INFLIGHT:    return false;
         case PTXMemberSignState::RETRYABLE:   return false;
@@ -272,18 +275,27 @@ bool PTX_ResolveMemberP2PAddr(const uint256& proTxHash, CService& addr_out)
 // filled in. Returns the NodeId sent to, or -1 if not connected yet (in which
 // case a connection is opened and the next tick tries again).
 int64_t TrySendSignReq(CConnman& connman, const CService& addr,
-                       const PTXSignReq& req)
+                       const PTXSignReq& req, bool& too_old_out)
 {
     int64_t used = -1;
+    too_old_out = false;
     connman.ForNode(addr,
         [](const CNode*) { return true; },
         [&](CNode* pnode) {
+            // ★★ CAPABILITY CHECK (§9.13(h)). An older node has no handler for
+            // ptxsignreq and IGNORES it silently, so sending would buy nothing
+            // and cost a member slot until its budget expired. Ask the version
+            // instead -- the peer already told us during the handshake.
+            if (pnode->nVersion > 0 && pnode->nVersion < PTX_SIGNREQ_MIN_PROTO_VERSION) {
+                too_old_out = true;
+                return true;
+            }
             CNetMsgMaker msgMaker(pnode->GetSendVersion());
             connman.PushMessage(pnode, msgMaker.Make(NetMsgType::PTXSIGNREQ, req));
             used = pnode->GetId();
             return true;
         });
-    if (used < 0) {
+    if (used < 0 && !too_old_out) {
         // Not connected. Open one; the next tick re-resolves and finds it.
         // ★ Nothing is recorded here that a later read depends on -- that
         // asymmetry was the defect.
@@ -360,9 +372,15 @@ PTXSignRoundResult PTX_SignRound_Run(const uint256& round_seed,
             round->m_member_addr[node_id]      = addr;
             round->m_first_attempt_ms[node_id] = GetTimeMillis();
         }
-        const int64_t peer = TrySendSignReq(connman, addr, req);
+        bool too_old = false;
+        const int64_t peer = TrySendSignReq(connman, addr, req, too_old);
         LOCK(round->m_cs);
-        if (peer < 0) {
+        if (too_old) {
+            round->m_state[node_id] = PTXMemberSignState::TOO_OLD;
+            LogPrintf("PTX signreq: %s speaks protocol < %d -- cannot serve P2P signing; "
+                      "OPERATOR ACTION: upgrade that gamemaster's binary (this is NOT a "
+                      "network-reachability problem)\n", node_id, PTX_SIGNREQ_MIN_PROTO_VERSION);
+        } else if (peer < 0) {
             // Connection opening. UNSENT is a WAITING state now, not a dead end:
             // the tick re-resolves and it has a bounded exit (below).
             round->m_state[node_id] = PTXMemberSignState::UNSENT;
@@ -445,7 +463,15 @@ PTXSignRoundResult PTX_SignRound_Run(const uint256& round_seed,
                 kv.second = retired;
                 continue;
             }
-            const int64_t peer = TrySendSignReq(connman, ait->second, req);
+            bool too_old = false;
+            const int64_t peer = TrySendSignReq(connman, ait->second, req, too_old);
+            if (too_old) {
+                kv.second = PTXMemberSignState::TOO_OLD;
+                LogPrintf("PTX signreq: %s speaks protocol < %d -- cannot serve P2P signing; "
+                          "OPERATOR ACTION: upgrade that gamemaster's binary\n",
+                          kv.first, PTX_SIGNREQ_MIN_PROTO_VERSION);
+                continue;
+            }
             if (peer >= 0) {
                 round->m_peer_to_member[peer] = kv.first;
                 kv.second = PTXMemberSignState::INFLIGHT;
@@ -460,6 +486,7 @@ PTXSignRoundResult PTX_SignRound_Run(const uint256& round_seed,
         out.terminal    = round->CountIn(PTXMemberSignState::TERMINAL);
         out.retryable   = round->CountIn(PTXMemberSignState::RETRYABLE);
         out.unreachable = round->CountIn(PTXMemberSignState::UNREACHABLE);
+        out.too_old     = round->CountIn(PTXMemberSignState::TOO_OLD);
         out.protx_mismatch = round->m_protx_mismatch;
         if (out.partials.empty() && out.unreachable == member_ids.size())
             out.outcome = PTXSignRoundOutcome::NO_QUORUM_CONTACT;
@@ -473,9 +500,9 @@ PTXSignRoundResult PTX_SignRound_Run(const uint256& round_seed,
     // refused finally" are different operator problems and only one of them is
     // worth retrying the whole round for.
     LogPrintf("PTX sign round: %s — %zu partial(s), %zu terminal, %zu retryable, "
-              "%zu unreachable, %zu protx-mismatch (threshold %zu)\n",
+              "%zu unreachable, %zu TOO-OLD, %zu protx-mismatch (threshold %zu)\n",
               PTXSignRoundOutcomeString(out.outcome), out.partials.size(),
-              out.terminal, out.retryable, out.unreachable, out.protx_mismatch,
-              threshold);
+              out.terminal, out.retryable, out.unreachable, out.too_old,
+              out.protx_mismatch, threshold);
     return out;
 }

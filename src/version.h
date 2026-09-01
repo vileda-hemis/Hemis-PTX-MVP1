@@ -11,7 +11,13 @@
  * network protocol versioning
  */
 
-static const int PROTOCOL_VERSION = 70928;
+static const int PROTOCOL_VERSION = 70929;
+
+//! KDD-085 §9.13(h): the version at which a node speaks P2P signing
+//! (ptxsignreq/ptxsignresp). A caller MUST NOT send to a peer below this --
+//! an older node ignores an unknown command silently (net_processing.cpp
+//! "Ignore unknown commands"), giving the caller nothing it can classify.
+static const int PTX_SIGNREQ_MIN_PROTO_VERSION = 70929;
 
 //! initial proto version, to be increased after version/verack negotiation
 static const int INIT_PROTO_VERSION = 209;

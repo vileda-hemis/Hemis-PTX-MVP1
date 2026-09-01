@@ -73,6 +73,14 @@ enum class PTXMemberSignState {
     TERMINAL,     // refused finally — never re-send this member
     COLLECTED,    // partial in hand
     UNREACHABLE,  // gave us nothing within its budget — like TERMINAL, absorbing
+    // ★★ DISTINCT FROM UNREACHABLE ON PURPOSE, AND THE REASON IS OPERATOR-FACING.
+    // A peer below PTX_SIGNREQ_MIN_PROTO_VERSION cannot answer a sign request at
+    // all -- it ignores the unknown command. Folding that into UNREACHABLE would
+    // tell an operator debugging "my GM is never asked to sign" that the node is
+    // unreachable, sending them to firewalls and NAT. The remedy here is
+    // "upgrade the binary", which is a completely different action. Absorbing:
+    // a version does not change mid-round.
+    TOO_OLD,
     _COUNT        // ★ sentinel — see the static_assert in ptx_sign_client.cpp
 };
 
@@ -200,6 +208,7 @@ struct PTXSignRoundResult {
     size_t terminal{0};
     size_t retryable{0};
     size_t unreachable{0};
+    size_t too_old{0};          // peers that cannot speak P2P signing at all
     size_t protx_mismatch{0};   // replies rejected by the cross-check
 };
 

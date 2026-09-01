@@ -539,12 +539,27 @@ struct PTXDKGSigningCtx {
 
 // Select the signing quorum from an ACTIVE set.
 //
-// SELECTION RULE (KDD-066, PROVISIONAL — owed to W2.1): highest formation_height, ties
-// broken by LOWEST quorum_hash lexicographically.  Deterministic, but this is
-// a de facto multi-quorum selection policy and it does NOT implement the
-// registered N>1 design (deterministic shuffle over
-// H(anchor_block_hash || game_id || roll_index), chain-determined and
-// ungrindable).  No consensus surface today — coordinator recovery side only.
+// ★★ SELECTION RULE — §7.4 ROUTING DISTRIBUTION (W2.5a, KDD-079 §7(ii)).
+// Selection DISTRIBUTES across the ACTIVE set keyed on the tip block hash. It
+// is NOT "highest formation_height": the newest quorum is frequently NOT the
+// one chosen, and that is correct behaviour, not a defect.
+//
+// ★ KDD-066's provisional newest-wins rule (highest formation_height, ties by
+// lowest quorum_hash) is SUPERSEDED and no longer describes this function.
+// It used to lead this comment block, with the §7.4 paragraph added below it —
+// two rules in one comment, the stale one first and under the heading
+// "SELECTION RULE", so a reader who stopped after the first paragraph got the
+// wrong answer. That is BUG-053's shape (two passages, each locally true) and
+// it cost a live investigation: three consecutive non-maximal picks on the
+// fleet (21480, 21900, 21960 against an active max of 22020) were treated as a
+// possible selection defect and chased, because the documented rule said the
+// maximum should win. Corrected 2026-09-01 — the CODE was right throughout.
+//
+// Why newest-wins was replaced: it sent EVERY roll to one quorum, which is the
+// structural half of ODC-052 — at L>1 the other L-1 are idle BY CONSTRUCTION,
+// so reform drains them and the fleet churns. Distributing breaks that.
+// No consensus surface: this is ADVISORY, ptx_roll-only (see the implementation
+// note on ODC-073), never validation.
 // The signing threshold is QUORUM-SCOPED: t = majority(formed_size) — a
 // property of the selected quorum, NOT of the coordinator's node registry
 // (ODC-036: deriving it from registry size mis-signs when registered-nodes !=

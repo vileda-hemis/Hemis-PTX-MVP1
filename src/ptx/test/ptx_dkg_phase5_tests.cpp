@@ -6850,7 +6850,8 @@ BOOST_AUTO_TEST_CASE(Kdd085_States_EveryStateIsClassified)
     const std::vector<PTXMemberSignState> all = {
         PTXMemberSignState::UNSENT, PTXMemberSignState::INFLIGHT,
         PTXMemberSignState::RETRYABLE, PTXMemberSignState::TERMINAL,
-        PTXMemberSignState::COLLECTED, PTXMemberSignState::UNREACHABLE};
+        PTXMemberSignState::COLLECTED, PTXMemberSignState::UNREACHABLE,
+        PTXMemberSignState::TOO_OLD};
     BOOST_REQUIRE_MESSAGE((int)PTXMemberSignState::_COUNT == (int)all.size(),
         "a state was added or removed without updating this test — and the "
         "static_assert in ptx_sign_client.cpp should already have refused to compile");
@@ -6869,7 +6870,8 @@ BOOST_AUTO_TEST_CASE(Kdd085_States_EveryNonAbsorbingStateHasABoundedExit)
     const std::vector<PTXMemberSignState> all = {
         PTXMemberSignState::UNSENT, PTXMemberSignState::INFLIGHT,
         PTXMemberSignState::RETRYABLE, PTXMemberSignState::TERMINAL,
-        PTXMemberSignState::COLLECTED, PTXMemberSignState::UNREACHABLE};
+        PTXMemberSignState::COLLECTED, PTXMemberSignState::UNREACHABLE,
+        PTXMemberSignState::TOO_OLD};
     for (auto st : all) {
         const auto before = PTX_SignReq_RetireExpired(st, 0);
         const auto after  = PTX_SignReq_RetireExpired(st, PTX_SIGNREQ_MEMBER_MS);
@@ -6925,6 +6927,59 @@ BOOST_AUTO_TEST_CASE(Kdd085_States_SilentMembersFlipRoundToUnwinnable)
     // Same for permanently-retryable members.
     BOOST_CHECK(PTX_SignRound_StillWinnable(2, 0, 9, 0, t));
     BOOST_CHECK(!PTX_SignRound_StillWinnable(2, 0, 0, 0, t));
+}
+
+
+// ===========================================================================
+// KDD-085 §9.13(h) — CAPABILITY ADVERTISEMENT.
+// ===========================================================================
+// A node below PTX_SIGNREQ_MIN_PROTO_VERSION has no handler for ptxsignreq and
+// IGNORES it silently. Before this, the caller sent anyway and learned nothing:
+// the member sat INFLIGHT until its budget expired. Now the version is checked
+// BEFORE sending -- the peer already told us during the handshake.
+BOOST_AUTO_TEST_CASE(Kdd085_Capability_VersionGateIsCoherent)
+{
+    BOOST_CHECK_MESSAGE(PTX_SIGNREQ_MIN_PROTO_VERSION <= PROTOCOL_VERSION,
+        "KDD-085 §9.13(h): the minimum version for P2P signing is ABOVE this build's own "
+        "PROTOCOL_VERSION — every peer, including our own kind, would be classified TOO_OLD");
+    BOOST_CHECK_MESSAGE(PROTOCOL_VERSION > 70928,
+        "KDD-085 §9.13(h): PROTOCOL_VERSION was not bumped, so a caller still cannot tell "
+        "whether a peer speaks P2P signing -- the whole point of this item");
+}
+
+// ★★ TOO_OLD IS ABSORBING AND DISTINCT FROM UNREACHABLE, AND THE DISTINCTION IS
+// OPERATOR-FACING. Folding it into UNREACHABLE tells someone debugging "my GM is
+// never asked to sign" that their node is unreachable -- sending them to
+// firewalls and NAT, when the remedy is "upgrade the binary".
+BOOST_AUTO_TEST_CASE(Kdd085_Capability_TooOldIsAbsorbingAndDistinct)
+{
+    BOOST_CHECK(PTX_SignReq_IsAbsorbing(PTXMemberSignState::TOO_OLD));
+    BOOST_CHECK_MESSAGE(PTXMemberSignState::TOO_OLD != PTXMemberSignState::UNREACHABLE,
+        "TOO_OLD collapsed into UNREACHABLE — the two have different operator remedies");
+    // Absorbing => never re-timed, and never retried: a version cannot change
+    // mid-round, so re-sending is pure waste.
+    BOOST_CHECK(PTX_SignReq_RetireExpired(PTXMemberSignState::TOO_OLD,
+                    PTX_SIGNREQ_MEMBER_MS * 10) == PTXMemberSignState::TOO_OLD);
+    // ★ And it must drop out of winnability immediately rather than after a
+    // budget: an under-versioned member can NEVER contribute, so a round that
+    // needs it is already lost and should say so now.
+    const size_t t = 6;
+    BOOST_CHECK_MESSAGE(!PTX_SignRound_StillWinnable(2, 0, 0, 0, t),
+        "a round whose remaining members are all TOO_OLD must be UNWINNABLE at once");
+}
+
+// The operator-facing half, asserted structurally: the log must name the remedy.
+BOOST_AUTO_TEST_CASE(Kdd085_Capability_LogNamesTheRemedy_Structural)
+{
+    const std::string src = PTX_SRCDIR;
+    BOOST_REQUIRE_MESSAGE(!src.empty(), "PTX_SRCDIR not injected");
+    const std::string cpp = P5_slurp(src + "/src/ptx/ptx_sign_client.cpp");
+    BOOST_REQUIRE(!cpp.empty());
+    BOOST_CHECK_MESSAGE(cpp.find("OPERATOR ACTION: upgrade") != std::string::npos,
+        "KDD-085 §9.13(h): the too-old log does not name the remedy. An operator seeing "
+        "only a state name will debug the network, which is the wrong thing entirely");
+    BOOST_CHECK_MESSAGE(cpp.find("PTX_SIGNREQ_MIN_PROTO_VERSION") != std::string::npos,
+        "the version gate is not applied in the send path");
 }
 
 
