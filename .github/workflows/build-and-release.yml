@@ -67,6 +67,12 @@ jobs:
     timeout-minutes: 45
     env:
       APT_BASE: ccache
+      # ★★ ODC-092: hand the build the version rather than making it
+      # rediscover one. share/genbuild.sh uses PTX_BUILD_DESC verbatim when
+      # set and falls back to `git describe` when unset, so local builds are
+      # unaffected. Bypasses every link that failed four times: git describe,
+      # tag objects, fetch-depth, and whether .git is present at all.
+      PTX_BUILD_DESC: ${{ github.event.inputs.tags }}
       SDK_URL: https://bitcoincore.org/depends-sources/sdks
     defaults:
       run:
@@ -108,13 +114,6 @@ jobs:
            # XCODE_VERSION: 11.3.1
            # XCODE_BUILD_ID: 11C505
 
-    env:
-      # ★★ ODC-092: hand the build the version instead of making it rediscover
-      # one. share/genbuild.sh uses PTX_BUILD_DESC verbatim when set and falls
-      # back to `git describe` when it is not, so local builds are unaffected.
-      # This bypasses every link that failed four times over: git describe, tag
-      # objects, fetch-depth, and whether .git is present at all.
-      PTX_BUILD_DESC: ${{ github.event.inputs.tags }}
     steps:
       - name: Get Source
         uses: actions/checkout@v4
@@ -181,6 +180,12 @@ jobs:
     needs: [lint, build_depends]
     env:
       APT_BASE: ccache
+      # ★★ ODC-092: hand the build the version rather than making it
+      # rediscover one. share/genbuild.sh uses PTX_BUILD_DESC verbatim when
+      # set and falls back to `git describe` when unset, so local builds are
+      # unaffected. Bypasses every link that failed four times: git describe,
+      # tag objects, fetch-depth, and whether .git is present at all.
+      PTX_BUILD_DESC: ${{ github.event.inputs.tags }}
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_SIZE: 500M
       CCACHE_COMPRESS: 1
@@ -324,13 +329,6 @@ jobs:
             # BITCOIN_CONFIG: "--enable-gui --enable-reduce-exports --enable-werror --disable-online-rust --disable-tests --disable-bench"
 
 
-    env:
-      # ★★ ODC-092: hand the build the version instead of making it rediscover
-      # one. share/genbuild.sh uses PTX_BUILD_DESC verbatim when set and falls
-      # back to `git describe` when it is not, so local builds are unaffected.
-      # This bypasses every link that failed four times over: git describe, tag
-      # objects, fetch-depth, and whether .git is present at all.
-      PTX_BUILD_DESC: ${{ github.event.inputs.tags }}
     steps:
       - name: Get Source
         uses: actions/checkout@v4
