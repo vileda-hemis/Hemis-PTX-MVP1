@@ -308,12 +308,14 @@ line. That is the shortest description of what KDD-085 changed.
 Tag:            v0.2.0-testnet          (use it in BOTH places: git clone -b <tag>, and PTX_REF=<tag>)
 Repository:     https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 
-Gamemasters:    4, on 4 separate hosts, each with its own routable address
+Gamemasters:    <N>, one per host, each host with its own routable address
+                (I have set N for you; it is not a figure from the guide)
 Ports:          29994 P2P -- open to the internet. This is the one that matters.
                 29995 RPC -- LOOPBACK ONLY. Do not open it. Do not forward it.
 Collateral:     100 HMS per gamemaster, EXACTLY. Not 1000.
-Funding:        I will send you 500 HMS once you send me an address (see the guide: install,
-                start, RESTART ONCE, then send the address -- in that order)
+Funding:        I will send you <(N x 100) + 100> HMS once you send me an address (see the
+                guide: install, start, RESTART ONCE, then send the address -- in that
+                order). That is your N collaterals plus 100 of margin.
 
 These are already baked into the installer; you should not need to type them, but if
 install.sh warns that any is missing, these are the values:
@@ -343,4 +345,6 @@ the system working, not a fault.
 6. Run `testnet/operator/install-test.sh` — a non-zero exit blocks the tag (`PTX_TESTNET_RELEASE.md` step 0).
 7. Cut the tag; verify the artefacts against `SHA256SUMS`.
 8. Run `GENESIS_BOOTSTRAP.md` end to end.
-9. Send the message above to each operator, with their 500 HMS.
+9. Send the message above to each operator, with their funding — `(N x 100) + 100` HMS for the
+   N you agreed with them. ★ Fill in `<N>` per operator before sending; the message template
+   deliberately carries a placeholder, not a number.

@@ -37,19 +37,21 @@ set -euo pipefail
 TAG="${PTX_TAG:-v0.2.0-testnet}"
 REPO="${PTX_REPO:-https://github.com/vileda-hemis/Hemis-PTX-MVP1.git}"
 
-# ★★ ONE GM PER HOST. Run this bootstrap ONCE ON EACH of your four machines.
+# ★★ ONE GM PER HOST. Run this bootstrap ONCE ON EACH of your GM machines. How
+# many that is comes from the coordinator; this script does not assume a number.
 #
-# A quorum needs 11 members and there are five operators, so one node each would
-# never form a quorum. 5 x 4 = 20 covers 11 with NINE spare; at 3 each, losing one
-# operator plus any single other GM lands exactly on the floor of 11.
+# A quorum needs 11 members, drawn from the pool of registered, eligible,
+# non-banned GMs not already in an active quorum. Below 11 nothing forms and
+# every boundary is a silent skip; at exactly 11 the next GM lost stops
+# formation. That spare capacity is a NETWORK total, not a per-operator figure.
 #
-# ★ WHY NOT SEVERAL ON ONE HOST, which this script used to do by default. The PTX
-# signing fan-out dials every member on the SAME port number --
-# PTX_FanoutRpcPort() (src/ptx/ptx_fanout.cpp:117-120) takes no per-member
-# argument -- so two GMs sharing a host at different RPC ports cannot both be
-# reached. One of them registers, is selected into quorums, shows ENABLED, and
-# silently never signs. One GM per host, with its own internet-routable address,
-# removes the problem rather than documenting around it.
+# ★ WHY NOT SEVERAL ON ONE HOST, which this script used to do by default. The
+# original reason was mechanical -- the signing fan-out dialled every member on
+# one shared RPC port, so a co-hosted GM could never be reached. KDD-085 DELETED
+# the fan-out; signing now arrives over P2P at each GM's own registered address
+# and port, so that specific blocker is gone. One GM per host is kept anyway:
+# co-hosting is untested -- no fleet run, no ceremony, no PoSe observation under
+# it -- and a launch testnet is the wrong place to find out what breaks.
 #
 # PTX_GM_COUNT is retained for a coordinator-directed exception only. Leave it 1.
 GM_COUNT="${PTX_GM_COUNT:-1}"
@@ -199,7 +201,8 @@ cat <<EOF
       the wallet operator. See OPERATOR_GUIDE.md, "Node side".
 
    3. COLLATERAL, on your OTHER machine. Your collateral and wallet keys never
-      go on this box. See OPERATOR_GUIDE.md, "Wallet side" -- 3x per operator.
+      go on this box. See OPERATOR_GUIDE.md, "Wallet side" -- one exact 100 HMS
+      output per gamemaster.
 
    4. START, then verify:
         Hemisd -datadir=\$HOME/.Hemis -daemon

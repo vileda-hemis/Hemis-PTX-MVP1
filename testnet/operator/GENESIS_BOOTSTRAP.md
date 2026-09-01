@@ -33,6 +33,22 @@ system being broken, which is why it is written here rather than only in the ope
 **Do not treat "no quorums" as a fault until `protx_list` shows 11 or more registered, enabled
 gamemasters.**
 
+**★★ You run the documented configuration, not a privileged variant.** Your three coordinator nodes
+install from the same `install.sh`, on the same ports, with the same loopback-only RPC and the same
+one-gamemaster-per-host rule as every operator. There is no coordinator-only path through
+`OPERATOR_GUIDE.md`, no extra credential, and nothing in the guide assumes a reader who has one —
+KDD-085 removed the last thing that would have made you different. ★ This is worth stating because
+the opposite is the usual shape: a runbook that quietly relies on the coordinator having access the
+guide does not describe is a runbook whose instructions have never actually been tested by the
+people who have to follow them.
+
+**★★ The per-operator gamemaster count is YOURS to set, and it is deliberately not in the operator
+guide.** The guide states a shape — one wallet machine, one gamemaster per host, `100 HMS` per
+gamemaster — and says the count comes from you. Set it per operator in §10, and **check the
+network total, not any one operator's share**: 11 is the floor for a single quorum, and
+`floor(total / 11)` is how many can be active at once (ODC-093). Under 22 total the network runs on
+one quorum with nothing to carry it through a reform (ODC-094).
+
 **★★ A SOLO NODE DOES NOT STAKE, SO ONE MACHINE CANNOT RUN THIS CHAIN.** The staking loop is
 gated twice, and both gates need peers (`src/miner.cpp:144-146`):
 
@@ -447,17 +463,26 @@ So each operator must:
 
 **How much each operator gets.**
 
+★ **The per-operator gamemaster count is yours to set, per operator, and it is not in the operator
+guide** — see ODC-094. Write **N** for what you agreed with a given operator.
+
 | item | amount |
 |---|---|
-| collateral, 4 GMs × 100 HMS | 400 |
+| collateral, N GMs × 100 HMS | N × 100 |
 | registration fees and change | ~5 |
 | margin for a fumbled registration, a re-send, a mistyped address | ~95 |
-| **recommended per operator** | **500 HMS** |
+| **recommended per operator** | **(N × 100) + 100 HMS** |
 
-Five operators × 500 = **2500 HMS**, against a float of ~193,800. The margin costs nothing and the
-alternative is a second round of transfers during the week you least want one. Send it as a single
-payment per operator and let them split it — they need **four separate exact 100 HMS outputs**, and
-`protx_register_fund` can create those for them.
+Against a float of ~193,800 the margin costs nothing, and the alternative is a second round of
+transfers during the week you least want one. Send it as a single payment per operator and let them
+split it — they need **N separate exact 100 HMS outputs**, and `protx_register_fund` can create
+those for them.
+
+★★ **Sum the N you actually assigned, and check it against 11 before you send anything.** The
+network total is what has to clear a quorum, with spare: at exactly 11 the next GM lost stops
+formation silently. ODC-094 has what a given total buys — briefly, `floor(total / 11)` is the
+active-quorum ceiling, so a total under 22 means the network runs on one quorum with no successor
+pool during a reform.
 
 ★ **The collateral is 100 HMS per GM, exactly.** `nGMCollateralAmt = 100 * COIN`
 (`chainparams.cpp`, ptxtestnet block). 1000 is mainnet and the old Hemis testnet, and it is the

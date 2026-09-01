@@ -53,10 +53,11 @@
 #
 # ★★ THE THREE-GMs-ON-ONE-HOST SHAPE BELOW IS A TEST FIXTURE, NOT THE DEPLOYMENT
 # MODEL. As of 2026-08-21 the deployment model is ONE GM PER HOST with one
-# routable address each (see OPERATOR_GUIDE.md "One GM per host"), because the
-# signing fan-out dials one port number for every member
-# (ptx/ptx_fanout.cpp:117-120) and two GMs on one host at different RPC ports
-# cannot both be reached.
+# routable address each (see OPERATOR_GUIDE.md "One GM per host"). ★ The reason
+# has CHANGED: it used to be that the signing fan-out dialled one shared RPC port
+# so co-hosted GMs could not both be reached. KDD-085 deleted the fan-out. One GM
+# per host now stands on co-hosting being untested, not on it being impossible --
+# which does not weaken the note below: this fixture is still not the model.
 #
 # ★ The fixture is kept deliberately, and it still tests what it claims. What it
 # exercises is INSTALL.SH under repeated invocation on one machine -- that each

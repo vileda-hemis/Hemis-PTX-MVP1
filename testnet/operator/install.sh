@@ -1229,11 +1229,12 @@ cat <<EOF
   Params:  $PARAMS_DST
   P2P:     $P2P_PORT      RPC: $RPC_PORT
 
-  ★ ONE GM PER HOST. Do not run a second gamemaster on this machine. The signing
-  fan-out dials every member on the SAME port number (ptx/ptx_fanout.cpp:117-120),
-  so a second GM here on a different RPC port would register, be selected, and
-  silently never receive a signing request. Four GMs means four hosts, each with
-  its own internet-routable address and this same port pair.
+  ★ ONE GM PER HOST. Do not run a second gamemaster on this machine. The old
+  reason -- a signing fan-out that dialled one shared RPC port -- was deleted by
+  KDD-085; signing now arrives over P2P at each GM's own registered address and
+  port. One per host is kept because co-hosting is UNTESTED, not impossible.
+  Each gamemaster means one host, one internet-routable address, this same port
+  pair. How many you run comes from the coordinator.
   The 32000-33000 kernel reservation is host-wide and is set once; re-running is safe.
 
   ★ A BARE \`Hemisd\` IS NOW SAFE ON THIS HOST, and that is deliberate. The config

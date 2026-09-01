@@ -20,16 +20,20 @@ whole point:
 **Your collateral never goes on the node machine.** If the node is compromised, the attacker gets the
 node — not your coins.
 
-★ **You will run FOUR gamemasters.** A quorum needs **11 members** and there are five operators, so
-five nodes would never form a quorum at all — 5 × 4 = 20 covers 11 with nine spare. You repeat the
-**node side four times**; the **wallet side is done once**, from one wallet, registering all four.
-That is also the realistic pattern: nobody runs a separate wallet per GM.
+★ **How many gamemasters you run is agreed with the coordinator before you start. This guide does
+not prescribe a number.** What it does fix is the **shape**: **one wallet machine**, used once, from
+which you register *all* of your gamemasters; and **one or more GM hosts**, one gamemaster each, the
+node side repeated unchanged per host. Nobody runs a separate wallet per GM.
 
-★ **Why four and not three.** At three each, losing one operator entirely plus any single other
-gamemaster puts the pool at exactly 11 — `ptx_formation.cpp:92-93`'s floor, where the next one lost
-stops quorum formation silently and every boundary after it is a deterministic skip.
+★ **What the network needs — which is why the coordinator asks for a count at all.** A quorum is
+**11 members** (`ptx_formation.cpp:92-93`), drawn from the pool of registered, eligible, non-banned
+gamemasters not already sitting in an active quorum. Below 11 the pool cannot form one and every
+boundary is a deterministic skip — silently, with no error anywhere. At exactly 11 the *next* GM
+lost stops formation, so a pool with no spare is one PoSe ban away from stopping. Spare capacity is
+the whole point of the count, and it is a property of the **network total**, not of any one
+operator's share of it — see ODC-094 for what a given total actually buys.
 
-**Collateral: 4× per operator** — one per GM, one GM per host. See "Funding the collateral" below — there are two routes and they
+**Collateral: 100 HMS per gamemaster** — one exact output each, one GM per host. See "Funding the collateral" below — there are two routes and they
 differ in how much back-and-forth they cost you.
 
 ---
@@ -73,17 +77,18 @@ or cloud security group. Opening only one is the most common setup failure. ★ 
 
 ## ★★ One GM per host, one routable address per GM
 
-**Four gamemasters means four hosts and four internet-routable addresses.** Not four datadirs on
-one machine, and not one address with four port pairs. This changes what you provision, so it is
+**Each gamemaster means one host and one internet-routable address.** Not several datadirs on one
+machine, and not one address with several port pairs. This changes what you provision, so it is
 here rather than at registration.
 
-| per operator | |
+| per operator, for **N** gamemasters | |
 |---|---|
-| gamemasters | **4** |
-| hosts | **4** — one GM each, no sharing |
-| routable addresses | **4** — one per GM, reachable from the public internet |
+| gamemasters | **N** — agreed with the coordinator; not fixed by this guide |
+| hosts | **N** — one GM each, no sharing |
+| routable addresses | **N** — one per GM, reachable from the public internet |
 | ports per host | **29994 P2P — open.** 29995 RPC exists but is **loopback-only**, never opened |
-| collateral | **4 × 100 HMS**, one exact unspent output each |
+| collateral | **N × 100 HMS**, one exact unspent output each |
+| wallet machines | **1** — whatever N is |
 
 ★ **Why one address per GM — and the reason CHANGED, so read this rather than skimming it.**
 It used to be mechanical: the signing fan-out dialled every member on **one RPC port shared by all
@@ -92,7 +97,7 @@ RPC ports could not both be reached — one would register, be selected, show `E
 never sign. **KDD-085 deleted the fan-out.** Signing arrives over P2P at each GM's own registered
 address *and* port, so that blocker no longer exists.
 
-★ **Keep one GM per host regardless.** Four hosts, four routable addresses. Co-hosting is now
+★ **Keep one GM per host regardless.** One host and one routable address per gamemaster. Co-hosting is now
 *mechanically* possible and has never been tested — no fleet run, no ceremony, no PoSe observation
 under it — and a launch testnet is the wrong place to discover what breaks. Treat this as a
 supported-configuration boundary, not a technical impossibility, which is what it used to be.
@@ -100,7 +105,7 @@ supported-configuration boundary, not a technical impossibility, which is what i
 ★ **Both ports are the same on every host** — 29994 and 29995 — because the hosts differ, not the
 ports. Only 29994 is ever opened.
 
-★ **Do NOT reuse one BLS key across your four.** Each GM generates its own in step A4. A shared
+★ **Do NOT reuse one BLS key across your gamemasters.** Each GM generates its own in step A4. A shared
 key means the chain cannot tell your nodes apart.
 
 ★ **The port reservation 32000–33000 is host-wide** and `install.sh` sets it once per host. With
@@ -131,12 +136,14 @@ cd Hemis-PTX-MVP1/testnet/operator
 ./install.sh
 ```
 
-★ **No datadir or port overrides, and repeat this unchanged on each of your four hosts.** One GM
+★ **No datadir or port overrides, and repeat this unchanged on each of your GM hosts.** One GM
 per host means the defaults are already right: datadir `~/.Hemis`, P2P 29994, RPC 29995.
 `PTX_DATADIR` / `PTX_P2P_PORT` / `PTX_RPC_PORT` still exist for unusual deployments but are no
-longer the documented path — and **the RPC port in particular must not be changed**, because the
-signing fan-out dials one port number for every member (`src/ptx/ptx_fanout.cpp:117-120`), so a GM
-on a non-standard RPC port is never contacted.
+longer the documented path. ★ **The reason to leave the P2P port alone is now the only reason that
+exists.** Signing requests arrive over **P2P at the address and port you registered on chain**, so
+a mismatch between the registered port and the listening one makes a GM unreachable for signing
+while it still syncs and still shows `ENABLED`. The RPC port no longer participates in signing at
+all — the earlier text here said it did, citing a fan-out that **KDD-085 deleted**.
 
 ★★ **`-b <the release tag>` is required, and a BRANCH NAME HERE DEFEATS THE ENTIRE POINT.**
 This line used to read `-b feature/ptx-dkg`. A branch moves: two operators running that command a
@@ -337,7 +344,7 @@ exactly why and how.)
    start is the one that proves the file opens;
 3. **only then** give the coordinator an address.
 
-★ **Your four gamemaster hosts also create a `wallet.dat`**, because the shipped config leaves the
+★ **Your gamemaster hosts each also create a `wallet.dat`**, because the shipped config leaves the
 wallet on. Those wallets hold nothing and you do not need to back them up — but keep **a few HMS**
 in one of them if you want the on-node PoSe recovery route to work without moving your BLS secret.
 See "If your GM is PoSe-banned".
@@ -355,13 +362,14 @@ away.
 
 ### B1. Funding the collateral
 
-You need **one collateral output per GM**, so **four**. ★ You do **not** have to create them by
+You need **one collateral output per GM**. ★ You do **not** have to create them by
 hand — see the procedure below, which creates each one as part of registering.
 
 ★★ **The amount is 100 HMS per GM, and it is EXACT.** Source, not folklore:
 `CPTXTestNetParams` sets `consensus.nGMCollateralAmt = 100 * COIN`
 (`src/chainparams.cpp:757`; the class starts at `:733` and its `strNetworkID` is `"ptxtestnet"` at
-`:738`). So four GMs need **400 HMS**, and five operators need **2000 HMS** across the network.
+`:738`). So **N gamemasters need N × 100 HMS**, and the network total is the sum over all
+operators — the coordinator tracks that, you do not.
 
 ★★ **1000 HMS IS THE WRONG NUMBER AND IT WILL BE OFFERED TO YOU.** 1000 is what mainnet
 (`src/chainparams.cpp:254`) and the *old* Hemis testnet (`:426`) use, so it is what anyone with
@@ -384,10 +392,11 @@ there is nothing for you to split and no `listunspent` check to pass first.
 involvement. They do not hold your coins, do not receive your BLS public key, and do not register
 your gamemasters. **Nothing secret leaves your machines at any point in this guide.**
 
-**How much:** ask for **500 HMS**. 400 is the four collaterals; the rest covers fees, a re-send and
-a mistyped address.
+**How much:** for **N** gamemasters, ask for **(N × 100) + 100 HMS** — the collaterals, plus a
+round 100 of margin that covers fees, a re-send and a mistyped address. Two GMs is 300, four is 500.
+★ Ask once, for the whole amount: each top-up is a round trip through a human.
 
-### B2. Register — `protx_register_fund`, four times
+### B2. Register — `protx_register_fund`, once per gamemaster
 
 ★★ **This is the procedure. There is nothing to pre-split.** `protx_register_fund` creates the
 exact 100 HMS collateral output itself as part of the registration transaction —
@@ -420,7 +429,7 @@ Hemis-cli protx_register_fund \
 | 7 | `operatorReward` | **`0`** |
 | 8 | `operatorPayoutAddress` | **`""`** |
 | 9 | `ptxPaymentAddress` | yours — see below, this one is not optional |
-| 10 | `ptxNodeId` | `yourname-1` … `yourname-4` |
+| 10 | `ptxNodeId` | `yourname-1` … `yourname-N` |
 
 ★★ **Arguments 7 and 8 look optional and are not.** They are positional, so you cannot reach
 `ptxPaymentAddress` (9) or `ptxNodeId` (10) without passing them. `0` and `""` is the accepted
@@ -451,7 +460,7 @@ They are easy to leave off because they are in the optional group. Do not.
   no leading/trailing `-`/`_`, not all-numeric, not a reserved word. The full `label:suffix` is echoed
   back in the RPC response — **record it**, it is how your node is identified in quorum output.
 
-Use a distinct `ptxNodeId` per GM (`yourname-1` … `yourname-4`).
+Use a distinct `ptxNodeId` per GM (`yourname-1` … `yourname-N`).
 
 Record the returned **protx transaction id** for each GM.
 
@@ -467,7 +476,7 @@ machines.
 
 ```bash
 cd Hemis-PTX-MVP1/testnet/operator
-./self-check.sh          # on each of your four hosts
+./self-check.sh          # on each of your GM hosts
 ```
 
 Work top to bottom and fix every `[FAIL]`. ★ **There are three outcomes, not two.** Besides `[ok]`

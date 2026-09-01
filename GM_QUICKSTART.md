@@ -33,18 +33,20 @@ must be the same one that appears in the URL above.
 | **Two machines** | a **node** (public IP, 24/7) and a **wallet** machine (offline/local). Your collateral never goes on the node. |
 | **Node OS** | any Linux with **glibc ≥ 2.31** and x86_64 or aarch64. Ubuntu 20.04+, Debian 11+, and most others. The installer checks glibc and CPU, **not** the distro name. |
 | **Node resources** | 2 GB RAM, 10 GB disk. |
-| **Collateral** | **4 × 100 HMS**, one exact unspent output per GM, on the **wallet** machine. ★ **100, not 1000** — 1000 is mainnet and the old Hemis testnet; ptxtestnet is `nGMCollateralAmt = 100 * COIN` (`src/chainparams.cpp:757`). The check is exact equality, and neither the RPC nor the consensus rejection tells you the number you should have used. See `OPERATOR_GUIDE.md` B1. |
+| **Collateral** | **100 HMS per gamemaster**, one exact unspent output each, on the **wallet** machine. ★ **100, not 1000** — 1000 is mainnet and the old Hemis testnet; ptxtestnet is `nGMCollateralAmt = 100 * COIN` (`src/chainparams.cpp:757`). The check is exact equality, and neither the RPC nor the consensus rejection tells you the number you should have used. See `OPERATOR_GUIDE.md` B1. |
 
-★★ **You will run FOUR gamemasters, on FOUR separate hosts, each with its own routable address.**
-A quorum needs **11 members** and there are five operators, so five nodes would never form one at
-all. 5 × 4 = **20** covers 11 with **nine** spare — at 3 each, losing one operator plus any single
-other GM lands exactly on the floor of 11.
+★★ **One gamemaster per host, each with its own routable address. How many you run is agreed
+with the coordinator before you start — this guide does not prescribe a number.**
+A quorum needs **11 members**, drawn from the pool of registered, eligible, non-banned GMs not
+already in an active quorum. Below 11 no quorum forms and every boundary is a silent skip; at
+exactly 11, the next GM lost stops formation. The spare capacity that avoids that is a property of
+the **network total**, not of your share — which is why the coordinator sets the count.
 
 ★ **One GM per host — keep doing this, but the old reason no longer applies.** The reason given
 here used to be that the signing fan-out dialled every member on the *same* RPC port, so two GMs
 sharing a host could not both be reached. **KDD-085 deleted the fan-out**; signing arrives over P2P
 at each GM's own registered address *and port*, so that specific blocker is gone.
-★ **Run one GM per host anyway** — four hosts, four routable addresses, as the guide describes.
+★ **Run one GM per host anyway** — one host and one routable address each, as the guide describes.
 Whether co-hosting is now supportable is an open question nobody has tested, and a testnet is not
 where to find out. Run the bootstrap once on each host.
 
@@ -57,8 +59,8 @@ where to find out. Run the bootstrap once on each host.
 | **P2P** | **29994** | **everyone** — it is how you sync, relay, *and receive signing requests* |
 | **RPC** | **29995** | **nobody. Loopback only.** Do not open it, do not forward it |
 
-**Every host uses the same pair.** There is no per-GM port table any more: your four GMs are on
-four hosts, so the ports never collide and never change.
+**Every host uses the same pair.** There is no per-GM port table any more: one GM per host means
+the ports never collide and never change.
 
 Open **29994** in the host firewall (`ufw`/`firewalld`/`iptables`) **and** in the NAT router or
 cloud security group. Opening only one of the two places is the most common setup failure.

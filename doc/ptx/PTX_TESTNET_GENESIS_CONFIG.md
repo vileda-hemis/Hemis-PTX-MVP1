@@ -29,6 +29,33 @@ Three ways out, and the choice changes the operator documents:
 | **B — parameterise quorum size** | consensus change to 11 and t | ★ see 0.2 — this is the exact un-gated class |
 | **C — recruit operators** | ≥11 GMs total by any split | schedule, not code |
 
+> ## ★★ SUPERSEDED AGAIN 2026-09-02 — the NUMBER leaves the OPERATOR GUIDE entirely (ODC-094)
+>
+> **Both banners below record a per-operator number. The operator-facing documents no longer carry
+> one at all.** `OPERATOR_GUIDE.md`, `GM_QUICKSTART.md`, `ONBOARDING.md`, `vps-install.sh` and
+> `install.sh`'s completion output now state a **shape** — one wallet machine, one gamemaster per
+> host, `100 HMS` collateral *per gamemaster*, `(N × 100) + 100 HMS` funding — and say that **N is
+> agreed with the coordinator**. `GENESIS_BOOTSTRAP.md` is where a number is now chosen, per
+> operator, by the coordinator.
+>
+> ★ **Why this is not merely tidying.** "4 per operator, 20 total" is the exact configuration
+> ODC-094 identifies as fragile: `floor(20/11) = 1`, so the network runs on **one** active quorum,
+> and during an idle-reform window — retirement is *not* atomic, unlike rotation, which supersedes
+> its predecessor in the same block — there is no second quorum to carry it. A guide that hard-codes
+> 20 prescribes that case to every reader who follows it literally. The floor to fix it is a
+> **network total**, not a per-operator share, so a per-operator constant is the wrong place to
+> express it: five operators at 4 and four operators at 5 are the same network, and only one of
+> those numbers survives an operator joining or leaving.
+>
+> ★ **What is NOT superseded:** Option A over B and C; one GM per host; `nGMCollateralAmt = 100`;
+> and `nSupportedQuorums = 1` (see §4 — it is a *declared provisioning* value read only by
+> `PTX_Formation_CheckParams`, not the active-quorum ceiling, which is `floor(pool/11)` — ODC-093).
+>
+> ★ **The fan-out rationale in the 2026-08-21 banner below is now FALSE as stated.**
+> `src/ptx/ptx_fanout.cpp` was **deleted** by KDD-085; signing arrives over P2P at each GM's own
+> registered address and port. One GM per host is retained because co-hosting is **untested**, not
+> because it is impossible. Kept below unedited, as a record of what was believed on that date.
+
 > ## ★★ SUPERSEDED 2026-08-21 — Option A stands, the NUMBER is now **4 per operator, 20 total**
 >
 > **≥3 / 15 as written below is superseded. The decision is 4 GMs per operator on 4 separate
