@@ -119,6 +119,8 @@ jobs:
           # "v1.3.1.0-c13a6ef" instead of "v0.2.0-testnet". The lint job already had
           # fetch-depth: 0; the jobs that actually BUILD did not.
           fetch-depth: 0
+
+      - name: Setup Environment
         # ★ Non-interactive apt -- hardening, not a diagnosis. See the same
         # note on build_depends_wallet's Setup Environment step.
         run: |
@@ -326,6 +328,8 @@ jobs:
           # "v1.3.1.0-c13a6ef" instead of "v0.2.0-testnet". The lint job already had
           # fetch-depth: 0; the jobs that actually BUILD did not.
           fetch-depth: 0
+
+      - name: Setup Environment
         # ★ Non-interactive apt. HARDENING AGAINST A PLAUSIBLE CAUSE, NOT A
         # DIAGNOSIS -- see the commit message. An apt-get that stops on a
         # prompt would hang exactly as run #1 hung, but run #1's logs were
