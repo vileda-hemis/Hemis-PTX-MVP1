@@ -72,7 +72,21 @@ enum class PTXQuorumState : uint8_t {
     // exist (retirement subsumes it).  Producer: MarkReformed — LIVE since
     // W4-f (MaybeReformAtBoundary, block-driven, drill-proven).
     REFORMED = 4,
+    // ★ SENTINEL — NEVER PERSISTED, never a case in a serialized record.  Its
+    // only job is to make `PTXQuorumState` growth a COMPILE ERROR, via the
+    // static_assert in ptx_quorum_store.cpp.  ODC-095: REFORMED was added and
+    // reached production reporting itself as `unknown(4)` to operators, because
+    // every switch over this enum had a `default:` arm and -Wswitch is only a
+    // WARNING in this build (-Werror is opt-in, --enable-werror, and adds only
+    // vla + thread-safety-analysis).  Copy the KDD-085 `PTXMemberSignState`
+    // shape, not this comment: sentinel + static_assert + no `default:`.
+    _COUNT
 };
+
+// ★ The ONE rendering of this enum.  Two independent renderers disagreed
+// (`unknown(4)` and `state(4)`) while the log said REFORMED — ODC-095.  A
+// second renderer is a second place to forget; call this instead.
+const char* PTXQuorumStateName(PTXQuorumState s);
 
 // Formation provenance — RESERVED, always UNSET at W2.1 (Confirmation 2).
 // Provenance is NOT chain-derivable: a debug-injected and a ceremony-formed

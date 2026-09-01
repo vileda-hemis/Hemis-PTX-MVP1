@@ -70,6 +70,14 @@ enum class PTXDKGPhase {
     FINALIZE,
     DONE,
     ABORTED,
+    // ★ SENTINEL — never a phase, never serialized, never compared against.
+    // Its only job is to make PTXDKGPhase growth a COMPILE ERROR (ODC-096),
+    // via the static_assert in ptx_ceremony_driver.cpp.  Read that assert
+    // before adding a phase: THREE switches over this enum carry a `default:`
+    // arm and will accept a new phase silently, and one of them
+    // (PTXCeremonyDeadlines::OffsetEnd) answers a new phase with a ZERO-WIDTH
+    // window, which closes it on its first step.
+    _COUNT
 };
 
 // ---------------------------------------------------------------------------

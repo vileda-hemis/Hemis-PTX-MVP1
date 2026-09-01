@@ -46,6 +46,39 @@ static std::pair<std::string, uint32_t> BuildPTXInversedHeightKey(int nMinedHeig
 
 const std::string& PTX_QuorumRecordDBPrefix() { return DB_PTXDKG_QUORUM; }
 
+// ODC-095.  The tripwire is the static_assert, NOT the missing `default:`:
+// measured on this toolchain, a default-less switch with an unhandled
+// enumerator compiles with `-Wall` and exits 0 (warning [-Wswitch] only), while
+// a moved sentinel exits 1.  The switch still earns its keep — it catches a
+// state inserted in the MIDDLE, which leaves _COUNT unchanged.  The pair is the
+// guard; neither half is sufficient.  Same shape as KDD-085's
+// PTXMemberSignState, which is the one enum in this tree that was ever proven
+// to fire (on TOO_OLD).
+static_assert((int)PTXQuorumState::_COUNT == 5,
+              "PTXQuorumState gained or lost a state. TWO things to do, and the "
+              "second one is CONSENSUS-VISIBLE: (1) name it in "
+              "PTXQuorumStateName. (2) ADD AN EXPLICIT CASE for it in "
+              "PTX_QuorumRecordActiveAt. That function is the as-of predicate "
+              "every consumer reads, validator V12 included; its `default:` arm "
+              "answers NOT-ACTIVE, so a new state left to the default is "
+              "silently excluded from the active set -- and nodes running mixed "
+              "code will then disagree about which quorums are active, which is "
+              "a chain split. Decide the answer deliberately; do not let the "
+              "default decide it for you.");
+
+const char* PTXQuorumStateName(PTXQuorumState s)
+{
+    switch (s) {                                   // no default, on purpose
+        case PTXQuorumState::FORMING:    return "forming";
+        case PTXQuorumState::ACTIVE:     return "active";
+        case PTXQuorumState::SUPERSEDED: return "superseded";
+        case PTXQuorumState::DISBANDED:  return "disbanded";
+        case PTXQuorumState::REFORMED:   return "reformed";
+        case PTXQuorumState::_COUNT:     break;    // sentinel, never a value
+    }
+    return "invalid";   // only reachable via a cast of an out-of-range byte
+}
+
 // KDD-072 P-b4 (ODC-042) — the as-of-height predicate.  See the header contract
 // (semantics, the STRICT-> boundary, and why >= is a chain split).
 bool PTX_QuorumRecordActiveAt(const CPTXQuorumRecord& rec, int nHeight)

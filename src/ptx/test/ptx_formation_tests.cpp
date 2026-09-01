@@ -1040,4 +1040,35 @@ BOOST_AUTO_TEST_CASE(bug038_bestheader_leaves_invalidated_branch)
     for (const uint256& h : hashStore) mapBlockIndex.erase(h);
 }
 
+// ---------------------------------------------------------------------------
+// ODC-095 — every PTXQuorumState must have a NAME, and the loop is the half of
+// the guard the compiler cannot supply.
+//
+// The static_assert on _COUNT catches a state APPENDED.  It does NOT catch one
+// inserted in the middle (which leaves _COUNT unchanged), and -Wswitch is only
+// a WARNING in this build (-Werror is opt-in and adds just vla +
+// thread-safety-analysis), so an unhandled enumerator COMPILES.  This loop is
+// what turns that warning into a red test.
+//
+// REFORMED reached production reporting itself to operators as "unknown(4)"
+// from one RPC and "state(4)" from another, while debug.log said REFORMED.
+BOOST_AUTO_TEST_CASE(odc095_every_quorum_state_has_a_name)
+{
+    for (int i = 0; i < (int)PTXQuorumState::_COUNT; ++i) {
+        const char* n = PTXQuorumStateName((PTXQuorumState)i);
+        BOOST_CHECK_MESSAGE(std::string(n) != "invalid",
+            "PTXQuorumState value " << i << " has no name in PTXQuorumStateName "
+            "-- add a case there (do NOT add a default: arm, which is what let "
+            "REFORMED ship as unknown(4)).");
+        // A name that merely echoes the number is the ODC-095 defect itself.
+        BOOST_CHECK_MESSAGE(std::string(n).find("unknown") == std::string::npos &&
+                            std::string(n).find("state(") == std::string::npos,
+            "PTXQuorumState value " << i << " renders as a placeholder: " << n);
+    }
+    // The specific regression: the state that shipped unnamed.
+    BOOST_CHECK_EQUAL(std::string(PTXQuorumStateName(PTXQuorumState::REFORMED)), "reformed");
+    // And the sentinel is not a value anyone may render as one.
+    BOOST_CHECK_EQUAL((int)PTXQuorumState::_COUNT, 5);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

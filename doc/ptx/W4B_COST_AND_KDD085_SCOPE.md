@@ -1446,6 +1446,47 @@ that later found the `UNSENT` defect:**
 ★★ **TRIGGER, written down because an acceptance without one is how this fleet arrived at
 `rpcallowip=0.0.0.0/0` (ODC-079):** the mixed-version test runs at **the first fleet run with
 sufficient headroom, or before any operator is asked to upgrade independently — whichever comes
-first.** It is scheduled, not waived. The component-3 bound found a real defect precisely because it
+first.** It is scheduled, not waived.
+
+### ★★ BOUND DISCHARGED 2026-09-01 — the trigger fired and the test ran
+
+**13-GM fleet, gm11/12/13 on the pre-bump image (`protocolversion` 70928), gm01-10 and the caller
+on 70929.** The reform at h480 (see ODC-094) dissolved the old quorum and the follow-on ceremony
+formed `3b47e258…` at h480, mined h507, **11 members, `completed_size` 11 — and the deterministic
+selection put all three old-binary GMs inside it**, all qualified, so they held real shares. That
+is the configuration the bound needed and it was not arranged: selection produced it.
+
+`ptx_roll` at h508 returned a valid `quorum_sig` in **0.44 s wall**, and the caller logged:
+
+```
+PTX signreq: gm13:32f4348b speaks protocol < 70929 -- cannot serve P2P signing;
+  OPERATOR ACTION: upgrade that gamemaster's binary (this is NOT a network-reachability problem)
+PTX sign round: threshold met — 6 partial(s), 0 terminal, 0 retryable, 0 unreachable,
+  1 TOO-OLD, 0 protx-mismatch (threshold 6)
+```
+
+★ **What this proves:** `TOO_OLD` is produced on a live round against a real old-binary member;
+it is counted separately from `unreachable` in the tally; and the imperative operator line reaches
+the log verbatim. The §9.13(h) mechanism is no longer unit-only.
+
+★★ **ONE `TOO-OLD`, NOT THREE — and the reason is correct behaviour, so do not read the count as a
+partial result.** The round returns at the **threshold-th** partial: six partials satisfied `t=6`
+and the remaining members were never asked. gm13 was contacted before the threshold closed; gm11
+and gm12 were not contacted at all. **The classification is proven; the count reflects early
+return.** A tally of 3 would have meant the round kept dialling after it had already won.
+
+★ **Timing, which is the second half of the claim.** 0.44 s, against a 30 s wall and a 15 s
+per-member timeout. The old member cost **nothing**: the version gate reads the peer's handshake
+version and declines to send, so `TOO_OLD` is assigned at send time rather than by timing out. This
+is the self-enforcing property claimed above, observed: a new caller *declines to ask* an old GM
+rather than hanging on it.
+
+★ **STILL NOT PROVEN, and it is a different limb:** `UNWINNABLE` arriving **promptly** on a round
+that cannot win. This round was winnable (8 current-binary members against `t=6`), so the
+winnability predicate was never driven to false. That limb remains **unit- and structural-proven
+only** (a round whose remainder is `TOO_OLD` is `UNWINNABLE` at once). Demonstrating it live needs
+**more than five** members unavailable simultaneously — reachable with `ptx_debug_setnodefailmode`,
+deliberately not done here because it was outside the authorised scope of this run. Recorded as an
+open limb rather than folded into the discharge above. The component-3 bound found a real defect precisely because it
 was written down and then deliberately exercised at the first opportunity; this one inherits that
 obligation.

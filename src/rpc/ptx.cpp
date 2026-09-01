@@ -1095,13 +1095,9 @@ static UniValue QuorumRecordToJson(const CPTXQuorumRecord& rec)
     ret.pushKV("vvec_hash",         rec.vvec_hash.ToString());
     ret.pushKV("formed_size",       (int)rec.formed_size);
     ret.pushKV("completed_size",    (int)rec.completed_size);
-    switch (static_cast<PTXQuorumState>(rec.state)) {
-        case PTXQuorumState::FORMING:   ret.pushKV("state", "forming");   break;
-        case PTXQuorumState::ACTIVE:    ret.pushKV("state", "active");    break;
-        case PTXQuorumState::SUPERSEDED: ret.pushKV("state", "superseded"); break; // KDD-063 repurpose (P-b4)
-        case PTXQuorumState::DISBANDED: ret.pushKV("state", "disbanded"); break;
-        default:                        ret.pushKV("state", strprintf("unknown(%d)", rec.state));
-    }
+    // ODC-095: was a switch with a `default:` that reported REFORMED as
+    // "unknown(4)" — a designed state, described to operators as unrecognised.
+    ret.pushKV("state", PTXQuorumStateName(static_cast<PTXQuorumState>(rec.state)));
     ret.pushKV("provenance",        (int)rec.provenance);
     ret.pushKV("accepted_txid",     rec.accepted_txid.ToString());
     ret.pushKV("mined_block_hash",  rec.mined_block_hash.ToString());
@@ -1166,8 +1162,9 @@ UniValue ptx_quorum_list(const JSONRPCRequest& request)
         q.pushKV("mined_height",     rec.mined_height);
         q.pushKV("formed_size",      (int)rec.formed_size);
         q.pushKV("completed_size",   (int)rec.completed_size);
-        q.pushKV("state",            rec.state == (uint8_t)PTXQuorumState::ACTIVE
-                                         ? "active" : strprintf("state(%d)", rec.state));
+        // ODC-095: was a ternary, not a switch — no enum discipline could
+        // ever have caught it, which is why the fix is one shared renderer.
+        q.pushKV("state",            PTXQuorumStateName(static_cast<PTXQuorumState>(rec.state)));
         arr.push_back(q);
     }
     ret.pushKV("quorums", arr);

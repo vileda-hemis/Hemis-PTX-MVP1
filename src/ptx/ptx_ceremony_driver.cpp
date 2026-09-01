@@ -22,10 +22,36 @@ PTXCeremonyOutbound MakeOutbound(const std::string& command, const Msg& msg)
     return PTXCeremonyOutbound{command, std::vector<unsigned char>(ss.begin(), ss.end())};
 }
 
+// ODC-096.  The tripwire is this assert, NOT the default-less switch below:
+// measured on this toolchain, a default-less switch with an unhandled
+// enumerator compiles under -Wall and exits 0 (warning [-Wswitch] only) --
+// -Werror is opt-in here (configure.ac:348) and adds only vla +
+// thread-safety-analysis.  The switch still earns its keep: it catches a phase
+// inserted in the MIDDLE, which leaves _COUNT unchanged.  The pair is the
+// guard.  Copied from KDD-085's PTXMemberSignState, the one enum in this tree
+// ever proven to fire (on TOO_OLD).
+//
+// ★★ IF THIS ASSERT JUST FIRED, YOU ARE ADDING A PHASE. Three switches over
+// PTXDKGPhase have a `default:` arm and will NOT tell you they need you:
+//   * PTXCeremonyDeadlines::OffsetEnd  -- `default: return 0`, so your phase
+//     gets a ZERO-WIDTH window: `current_height >= formation_height + 0` is
+//     true immediately and the phase closes on its first step, silently. This
+//     is ODC-050's class (a width-derived budget failing exactly when a width
+//     is the bug). GIVE IT A REAL WIDTH -- this is the one that will waste
+//     your day.
+//   * the own-emission switch  -- your phase broadcasts nothing.
+//   * the windowed-advance switch -- your phase never advances.
+static_assert((int)PTXDKGPhase::_COUNT == 9,
+              "PTXDKGPhase gained or lost a phase: give it a width in "
+              "PTXCeremonyDeadlines::OffsetEnd (its `default:` returns 0 = a "
+              "zero-width window that closes on the first step), an emission "
+              "arm, an advance arm, and a name below.");
+
 // Short phase name for the CP-4 transition log (fleet-grep timeline).
 const char* PhaseName(PTXDKGPhase p)
 {
     switch (p) {
+        case PTXDKGPhase::_COUNT:      break;   // sentinel, never a value
         case PTXDKGPhase::IDLE:        return "IDLE";
         case PTXDKGPhase::HASH_COMMIT: return "HASH_COMMIT";
         case PTXDKGPhase::CONTRIB:     return "CONTRIB";
