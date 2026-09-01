@@ -264,3 +264,81 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# ---------------------------------------------------------------------------
+# ★★ THE THREE-STATE RENDERING. "not performed" must never read as "failed".
+#
+# Check D (quorum_sig verifies under the group public key) is deliberately
+# ok=None: the page has no node by design, so it cannot do that check and says
+# so. A two-state renderer collapses None to falsey and prints FAIL.
+#
+# ★ On a PUBLIC page that reads as the beacon failing verification -- the exact
+# opposite of what the artefact exists to demonstrate, on the one surface whose
+# whole purpose is demonstrating it. This is not a cosmetic test.
+#
+# ★ Caught in a console script, not here: an ad-hoc printout used a truthiness
+# test and rendered D as FAIL. app.py was already correct; this test exists so
+# it STAYS correct, and so the next person writing a renderer sees the case.
+def test_render_check_distinguishes_not_performed_from_failed():
+    import app
+
+    base = {"id": "D", "claim": "c", "source": "s", "derivation": "d",
+            "computed": None, "claimed": "abc"}
+
+    not_performed = app.render_check(dict(base, ok=None))
+    failed        = app.render_check(dict(base, ok=False))
+    passed        = app.render_check(dict(base, ok=True))
+
+    # The three states must be textually distinct...
+    assert "NOT PERFORMED" in not_performed
+    assert "FAIL" in failed
+    assert "PASS" in passed
+
+    # ...and "not performed" must NOT claim failure, in any casing.
+    assert "FAIL" not in not_performed, (
+        "check D rendered as FAIL when it was merely not performed -- on a public "
+        "page this reads as the beacon failing verification")
+    assert "PASS" not in not_performed
+
+    # ...and visually distinct, or the badge text is the only signal.
+    assert 'class="chk n"' in not_performed
+    assert 'class="chk f"' in failed
+    assert 'class="chk p"' in passed
+
+    # A not-performed check must not show a computed-vs-claimed comparison:
+    # there is no computed value, and printing one invites reading it as a
+    # mismatch.
+    assert "computed" not in not_performed
+
+
+def test_check_D_is_none_not_false_end_to_end():
+    """On a REAL recorded payload, check D must be ok=None and RENDER as
+    not-performed.
+
+    ★ Uses app.sniff() rather than a hand-built fields dict or a guessed nType:
+    the first attempt built the dict by hand and was rejected by the hash
+    helpers, which proved nothing about D at all."""
+    import json, os, app, ptx_verify
+    here = os.path.dirname(os.path.abspath(__file__))
+    fx = json.load(open(os.path.join(here, "fixtures.json")))
+    found = None
+    for e in fx:
+        try:
+            dec, _tried = app.sniff(e["payload"])
+        except Exception:
+            continue
+        if not dec:
+            continue
+        fields = app.ptx_decode.as_dict(dec) if hasattr(app, "ptx_decode") \
+                 else __import__("ptx_decode").as_dict(dec)
+        d = [c for c in ptx_verify.verify(fields, dec["struct"]) if c["id"] == "D"]
+        if d:
+            found = d[0]; break
+    assert found is not None, "no fixture produced a check D"
+    assert found["ok"] is None, "check D must be None (not performed), never False"
+    html = app.render_check(found)
+    assert "NOT PERFORMED" in html
+    assert "FAIL" not in html, (
+        "check D rendered as FAIL when merely not performed -- on a public page "
+        "that reads as the beacon failing verification")
