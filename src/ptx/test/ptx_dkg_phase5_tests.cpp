@@ -1910,34 +1910,39 @@ size_t P5_count(const std::string& hay, const std::string& needle)
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(ODC064_FailureBranchesLogTheirCause)
 {
-    // --- site 1: the fan-out non-200 arm must log the BODY, not just the status
-    const std::string fanout = P5_slurp(std::string(PTX_SRCDIR) + "/src/ptx/ptx_fanout.cpp");
-    BOOST_REQUIRE(!fanout.empty());
-    // ★ Target the FanOutSign arm specifically — the braced one. There is a second
-    // non-200 arm at the generic RPC helper (`... != 200) return result;`) which is
-    // BENIGN: it sets `result.body = response.body` one line earlier, so the body is
-    // PROPAGATED to the caller rather than discarded. Matching the first occurrence
-    // pointed the check at that helper and made it unfixable-by-construction.
-    const size_t nz = fanout.find("response.status != 200) {");
-    BOOST_REQUIRE_MESSAGE(nz != std::string::npos, "FanOutSign non-200 branch not found");
-    // ★ ANTI-VACUITY: bound the window to the ARM ITSELF. The arm lives in the
-    // parallel dialer's completion callback (since the fanpar change) and ends
-    // with `return;` — previously it was a loop arm ending with `continue;`.
-    // A loose window passes on the success path's own `res.read(response.body)`
-    // further down — i.e. it would go green without the fix. Caught by observing
-    // which sub-checks passed in the RED run.
-    const size_t armEnd = fanout.find("return;", nz);
-    BOOST_REQUIRE_MESSAGE(armEnd != std::string::npos, "non-200 arm has no return");
-    const std::string arm = fanout.substr(nz, armEnd - nz);
-    BOOST_CHECK_MESSAGE(arm.find("LogPrintf") != std::string::npos,
-                        "ODC-064: non-200 arm does not log at all");
-    BOOST_CHECK_MESSAGE(arm.find("response.body") != std::string::npos,
-                        "ODC-064: non-200 arm still discards response.body");
-    BOOST_CHECK_MESSAGE(arm.find("ODC-064") != std::string::npos,
-                        "ODC-064: the branch is not marked with its rationale");
-    // bounded — a broken or hostile peer must not be able to flood the log
+    // --- site 1: RETARGETED BY KDD-085 COMPONENT 4.
+    // ★ The original site was ptx_fanout.cpp's HTTP non-200 arm, which logged the
+    // status and DISCARDED the server's error text — the branch that made BUG-028
+    // undiagnosable from four days of fleet logs. That file no longer exists: the
+    // fan-out is deleted and signing is delivered over P2P.
+    // ★★ THE CONCERN IS NOT DELETED WITH IT, WHICH IS WHY THIS IS RETARGETED
+    // RATHER THAN DROPPED. The same failure is available in the new shape: a
+    // member refuses, the caller records the refusal, and if it does not log the
+    // REASON the member sent, a node that will not sign is again
+    // indistinguishable from one that was never asked.
+    const std::string cl = P5_slurp(std::string(PTX_SRCDIR) + "/src/ptx/ptx_sign_client.cpp");
+    BOOST_REQUIRE_MESSAGE(!cl.empty(), "ODC-064: cannot read ptx_sign_client.cpp");
+    const size_t nz = cl.find("case PTXSignStatus::TERMINAL:");
+    BOOST_REQUIRE_MESSAGE(nz != std::string::npos,
+                          "ODC-064: the terminal-refusal arm was not found");
+    const size_t armEnd = cl.find("break;", nz);
+    BOOST_REQUIRE_MESSAGE(armEnd != std::string::npos, "ODC-064: terminal arm has no break");
+    const std::string arm = cl.substr(nz, armEnd - nz);
+    BOOST_CHECK_MESSAGE(arm.find("LogPrint") != std::string::npos,
+                        "ODC-064: the terminal-refusal arm does not log at all — a member "
+                        "that refuses finally is again indistinguishable from one never asked");
+    BOOST_CHECK_MESSAGE(arm.find("resp.reason") != std::string::npos,
+                        "ODC-064: the terminal arm discards the reason the member sent, which "
+                        "is the only text naming the actual condition");
+    // ★ Bounded — and note the cap must be applied HERE, on receipt. The
+    // responder caps `reason` when it produces one, but a hostile peer sends
+    // whatever it likes: a producer-side limit bounds nothing that is received.
     BOOST_CHECK_MESSAGE(arm.find("substr") != std::string::npos,
-                        "ODC-064: response.body is logged UNTRIMMED (flood risk)");
+                        "ODC-064: the member-supplied reason is logged UNTRIMMED (flood risk) "
+                        "— the responder's own cap does not bind a hostile peer");
+    // The round-level outcome must also be voiced, not just per-member refusals.
+    BOOST_CHECK_MESSAGE(cl.find("PTXSignRoundOutcomeString") != std::string::npos,
+                        "ODC-064: the round's outcome is never named in a log");
 
     // --- site 2: gm_bls_sign's failure arms must log quorum_hash + reason
     const std::string rpc = P5_slurp(std::string(PTX_SRCDIR) + "/src/rpc/ptx.cpp");

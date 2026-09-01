@@ -1062,9 +1062,9 @@ left it on 2026-08-25; this section is the **landing record**, and by this docum
 | `ptxsignreq`/`ptxsignresp` + the **rejection path** | **LANDED**, green on px1 (498/498 `--enable-debug`) | component 1 |
 | Directed request/reply, correlation, stop-at-threshold | **LANDED** (dormant — `rpc/ptx.cpp` still calls the HTTP fan-out; the swap is component 4's "replace") | component 3 |
 | Mandatory-commitment ordering + token bucket | **LANDED** with component 1 | component 1 |
-| Capability advertisement + mixed-fleet transition | not started | — |
-| Delete `ptx_fanout.cpp`, drop `-ptxfanoutport`, docs | not started | — |
-| Fleet + two-host adversarial test (§9.8) | not started | — |
+| Capability advertisement + mixed-fleet transition | **NOT NEEDED** — see §9.13(g) | — |
+| Delete `ptx_fanout.cpp`, drop `-ptxfanoutport`, docs | **LANDED** | component 4 |
+| Fleet + two-host adversarial test (§9.8) | RED leg **RUN AND CAPTURED**; GREEN leg blocked — §9.13(g) | — |
 
 ★ **The signing side is ARMED as of component 2** — the paragraph below described component 1 and is kept for the record of why the guard was built first:
 
@@ -1306,3 +1306,59 @@ structural enforcement of the member binding. The round runner itself is **owed 
 it belongs — beside the deletion rather than ahead of it.
 
 **Suite: 508/508 under `--enable-debug` on px1.**
+
+**(g) Component 4 — the deletion pass, the RED leg, and a §9.8 error.**
+
+`ptx_fanout.cpp` and its header are **deleted** — 711 lines, not refactored. `rpc/ptx.cpp` now calls
+`PTX_SignRound_Run`. `-ptxfanoutport` is gone from `init.cpp`, and `chainparamsbase.cpp`'s long
+rationale for why the RPC-port default was consensus-adjacent is rewritten as history: nothing pairs
+a DGM host with that value any more, so getting it wrong now inconveniences an operator at a prompt
+instead of stopping a quorum signing. Grep confirms no code reference to the fan-out survives.
+
+★ **One thing nearly went out with the file.** `cs_ptx_failmodes` / `g_ptx_node_failmodes` looked
+like fan-out internals. They are not: `PTX_FanOutSign` applied them live, and
+`ptx_debug_setnodefailmode` is how `validate_fleet`'s abandon-gate drives a round *below* threshold
+on purpose — the fund-then-sign forfeiture path the h510-class halt was first found by. They moved
+to the client and are applied at send time, which is the honest analogue now that a member answers
+for itself. Deleting them would have silently retired a tested failure case.
+
+★ **`self-check.sh` section 5 was repurposed, not just trimmed.** Its RPC probe tested a property
+that has ceased to exist, and *a check that still returns a result after its property was retired is
+worse than no check, because it is read as evidence* — an operator whose RPC probe went green would
+conclude something about their ability to sign and be wrong. It now probes P2P only, and gains the
+**inverse** check: RPC reachable from outside is a **failure**, because it means an old-model config
+is still binding a global address and publishing the credentials in it for no benefit.
+
+★ **ONBOARDING now says the thing plainly rather than leaving it to be inferred:** *"There is no
+secret to distribute, and no operator has to be trusted to keep one."* Three values, all public. The
+old §4 "The caller credential" section is kept as a struck-through record of what was deleted and
+why — narrowing it was never the fix (KDD-105).
+
+### ★★ The §9.8 error: "two nodes" cannot prove the positive half
+
+The RED leg was run on 2026-09-01, before any deletion, and **both halves discriminate**:
+
+| property | RED result on `v0.1.2-testnet` |
+|---|---|
+| a GM refuses a caller it has no credential relationship with | **HTTP 403** from ptx001, with no credentials *and* with a guessed `ptxcaller` credential |
+| the node has no P2P signing path at all | `ptxsignreq` / `ptxsignresp` **absent** from the shipped binary (controls `getblockcount`, `ptxdkgcommit` both present) |
+
+★ **403, not the 401 §9.8 predicted** — the refusal happens at the `rpcallowip` allow-list, *before*
+authentication is attempted. The RED leg is therefore **stronger** than the plan assumed: today a
+stranger cannot reach the auth layer at all.
+
+★★ **But §9.8's "Two nodes, and it is the only experiment that proves the point" is wrong, and this
+is the correction that matters.** The positive half — *a GM signs for a stranger* — requires the GM
+to hold a CURRENT share, which requires a completed DKG ceremony, which requires **eleven registered
+gamemasters and a live chain**. Two hosts can prove the *refusal* and cannot prove the *signature*.
+The two halves have completely different prerequisites and §9.8 conflated them.
+
+**Consequence for sequencing, stated plainly:** the RED leg is now permanently captured and no
+longer gates anything. The GREEN leg is **not** blocked on component 4 — it is blocked on the chain
+and the eleven-GM quorum, i.e. it belongs to the launch sequence, not to this arc. The four hosts
+did not need to exist before component 4 for the reason given; they needed to exist before the
+*binary was replaced on them*, which has not happened and is Vileda's call.
+
+**Suite: 508/508 under `--enable-debug` on px1**, rebuilt from a cleaned tree — an intermediate
+build hit the known stale-object flag-mix trap (`DeleteLock` / `AssertLockHeldInternal` undefined at
+link) after a broad rsync carried foreign `.o` files onto the build host; purged and rebuilt.

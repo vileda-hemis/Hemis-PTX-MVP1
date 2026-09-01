@@ -38,32 +38,36 @@ differ in how much back-and-forth they cost you.
 
 | port | purpose | must be reachable from |
 |---|---|---|
-| **29994** | P2P | the internet |
-| **29995** | **RPC** | **the coordinator's caller node — one address, and only that one** |
+| **29994** | P2P | **the internet** — this is the one that matters |
+| **29995** | RPC | **nothing. Loopback only.** Do not open it, do not forward it |
 
-★ **RPC being closed is the silent killer.** The PTX signing fan-out dials each member's **RPC**
-directly to request a signature. A node with 29994 open and 29995 closed syncs perfectly, shows as
-registered and enabled, and **never signs anything** — it is selected and then never successfully
-contacted. Nothing in the ordinary status output tells you this. `self-check.sh` section 5 is the
-check for it.
+★★ **29994 being closed is the silent killer, and 29995 no longer is.** Signing requests arrive
+over **P2P**, at the address you register on chain. A node with 29994 closed syncs perfectly (it
+makes outbound connections), shows as registered and enabled, and **never signs anything** — it is
+selected and then never contacted. Nothing in the ordinary status output tells you this.
+`self-check.sh` section 5 is the check for it.
 
-★★ **It is ONE address, not "your quorum peers", and this matters at twenty gamemasters.**
-Gamemasters never dial each other's RPC. The DKG ceremony runs over P2P
-(`src/ptx/ptx_dkg_net.cpp:419-427`), and the only node-to-node RPC in the daemon is the signing
-fan-out, whose single caller is `ptx_roll` on the coordinator's caller node
-(`src/rpc/ptx.cpp:325`). So your `rpcallowip` needs **one entry**, it is the same entry every
-operator gets, and **it does not change when another operator joins**. If you were told to add a
-line per peer, that was this guide being wrong.
+★ **This used to be the other way round, and it is worth knowing why it changed.** The signing
+fan-out dialled each member's **RPC** directly, so 29995 had to be open to the caller, matched to a
+shared credential, and bound on the right address family — four ways to end up registered, enabled
+and silently unable to sign. KDD-085 deleted that path. **If you are following an older guide that
+tells you to open 29995, stop: it is now a local admin interface, and exposing it publishes the
+credentials in your config for no benefit at all.**
 
-★ **Two lines, not one — and the second is the one people forget.** The address check and the
-credential check are separate: `rpcallowip` is enforced before authentication
-(`src/httpserver.cpp:236`, HTTP 403) and the credential after it (`src/httprpc.cpp:157`, HTTP 401).
-`install.sh` generates a *different* random `rpcpassword` on every host, so the coordinator's
-credential does not match yours by default — you need the `rpcauth=` line as well. Both come from
-the coordinator, and `install.sh` writes both when `PTX_CALLER` and `PTX_RPCAUTH` are set.
+★★ **NO NODE DIALS ANOTHER NODE'S RPC ANY MORE.** The DKG ceremony has always run over P2P
+(`src/ptx/ptx_dkg_net.cpp`), and the one remaining node-to-node RPC — the signing fan-out — was
+deleted by KDD-085. Signing requests are now ordinary P2P messages to the address you register on
+chain. So your config needs **no `rpcallowip` entry for anyone**, and there is **no credential**.
 
-**Open both ports in TWO places** — the host firewall (`ufw`/`firewalld`/`iptables`) *and* the NAT
-router or cloud security group. Opening only one is the most common setup failure.
+★ **What this replaced, because a lot of setup advice still assumes it.** The old model needed two
+lines, and the second was the one people forgot: `rpcallowip` is enforced *before* authentication
+(HTTP 403) and the credential *after* it (HTTP 401), and since `install.sh` generates a different
+random `rpcpassword` on every host, the caller's credential never matched yours by default. Two
+lines, both from the coordinator, both identical on every gamemaster, and four distinct ways to end
+up registered, enabled and silently unable to sign. All of it is gone — not narrowed, **gone**.
+
+**Open 29994 in TWO places** — the host firewall (`ufw`/`firewalld`/`iptables`) *and* the NAT router
+or cloud security group. Opening only one is the most common setup failure. ★ Do **not** open 29995.
 
 ---
 
@@ -209,7 +213,8 @@ wrong, but the address you *register* must match one your machine actually answe
 IPv4 address. The warning above matters only when you have both and could pick the wrong one.
 
 If you are behind NAT, the address here is your **router's public address**, and the router must
-forward 29994 and 29995 to this machine.
+forward **29994 only** to this machine. ★ 29995 (RPC) is loopback-only since KDD-085 —
+forwarding it exposes the credentials in your config and buys nothing.
 
 ★★ **PUT THAT ADDRESS IN `externalip=` BEFORE YOU ARM, OR THE GM NEVER STARTS SIGNING.**
 `install.sh` writes it for you when this host has exactly one global address, and leaves a
@@ -609,8 +614,10 @@ grep -a "PTX" ~/.Hemis/debug.log      # -a = treat as text. ALWAYS use this.
 Use `grep -a` by default on any `debug.log` from a daemon that did not shut down cleanly.
 
 **Node shows ENABLED but never signs**
-→ Almost always RPC 29995 unreachable at the registered address. Re-run `self-check.sh` sections 5
-and 6. Check the NAT/security group as well as the host firewall.
+→ Almost always **P2P 29994** unreachable at the registered address. Re-run `self-check.sh` sections
+5 and 6. Check the NAT/security group as well as the host firewall.
+★ Note this answer CHANGED: it used to be "RPC 29995 unreachable". Signing no longer arrives over
+RPC, so a closed 29995 cannot cause this and an open one cannot fix it.
 
 **Zero peers**
 → This network has **no peer discovery at all** — no DNS seeds, no fixed seeds

@@ -4,58 +4,63 @@
 cut**, and the message each operator receives.
 
 **Why this document exists:** a competent operator — someone who has run mainnet nodes for years —
-still cannot guess an `addnode` address or an `rpcauth` line. Five values on this network are
-minted once, by the coordinator, and are simply unavailable to anyone else. Without them an
-operator installs cleanly, starts a healthy-looking daemon, and sits at height 0 with zero peers.
-That is the whole failure this page prevents.
+still cannot guess an `addnode` address. Three values on this network are minted once, by the
+coordinator, and are simply unavailable to anyone else. Without them an operator installs cleanly,
+starts a healthy-looking daemon, and sits at height 0 with zero peers. That is the whole failure
+this page prevents.
 
 ---
 
-## The five values
+## The three values — and all three are public
+
+★★ **There is no secret to distribute, and no operator has to be trusted to keep one.** That is the
+plainest statement of what KDD-085 achieved, and it is worth reading before the table rather than
+inferring it from one.
 
 | value | minted by | when | consumed by |
 |---|---|---|---|
 | `addnode=` × 3 | coordinator, after standing up the three coordinator nodes | **before the tag** | `install.sh` `emit_conf`, via `PTX_SEEDS` |
-| `rpcallowip=<caller>` | coordinator — the caller node's public address | **before the tag** | GM config, via `PTX_CALLER` |
-| `rpcauth=ptxcaller:<salt>$<hmac>` | coordinator | **before the tag** | GM config, via `PTX_RPCAUTH` |
 | spork **public** key (hex) | coordinator, see below | ★ **DONE** — `03612ded…a4e1ff` landed `34e96e1` | `src/chainparams.cpp:828` |
 | genesis `nTime` / nonce | a standalone miner, not `findGenesisPTXBea()` | ★ **DONE** — `1787443200` / `10954950` landed `34e96e1` | `src/chainparams.cpp:751-755` |
 
-**The first three ship as documented placeholders.** `install.sh` writes commented placeholder
-lines and warns loudly when `PTX_SEEDS`, `PTX_CALLER` or `PTX_RPCAUTH` is empty, so an operator who
-installs before you have finalised them gets a working node and a named gap rather than a silent
-one. Set them at cut time and they are baked into the script the operators clone.
+**The first ships as a documented placeholder.** `install.sh` writes commented placeholder lines and
+warns loudly when `PTX_SEEDS` is empty, so an operator who installs before you have finalised the
+seeds gets a working node and a named gap rather than a silent one.
 
 **The last two are compiled in and gate the tag.** They cannot be changed after operators are
 running without a new genesis or a new binary.
 
-### ★★ Two of these five are secrets, and that is temporary — ODC-083
+### ★★ There used to be five, and two of them were secrets — KDD-085 deleted both
 
-`rpcallowip=<caller>` and `rpcauth=ptxcaller:<salt>$<hmac>` are the **only two values here that
-require confidentiality**, and they are the same on every gamemaster — `install.sh:866` says so:
-"unchanged when another operator joins". The caller sends that password in plaintext to all eleven
-members of every roll (HTTP Basic, `ptx/ptx_fanout.cpp:612-616`), so **any member can read it off
-its own wire** and present it to the other ten. `rpcallowip` is a real second factor — a harvester
-must connect from the caller's address — but it is one config line away from not being one.
+This section is kept rather than removed, because *what changed* is the point.
 
-**The acceptance, recorded deliberately rather than drifted into:**
+`rpcallowip=<caller>` and `rpcauth=ptxcaller:<salt>$<hmac>` used to sit in the table above. They
+were the **only two values requiring confidentiality**, they were **identical on every gamemaster**
+(`install.sh` said so in as many words: "unchanged when another operator joins"), and the caller
+transmitted that password in plaintext to all eleven members of every roll as HTTP Basic — so **any
+member could read it off its own wire and present it to the other ten**.
 
-> **The shared `ptxcaller` credential does not leave Vileda's own hosts. KDD-085 lands before
-> operator #2 is invited.**
+★ **They were not replaced by better-scoped credentials. They were deleted, because the mechanism
+was answering the wrong question (KDD-105).** A gamemaster's real authorisation is the on-chain
+payment gate — *"is there a funded commitment for this exact round?"* — which every GM answers
+independently, from data it already holds, about a caller it has never heard of. A secret standing
+in for a check the network can already perform is strictly weaker than that check: it can be stolen,
+must be distributed, must be rotated, and forces mutual trust between operators who otherwise need
+none.
 
-★ **Why this sentence is written down — do not delete it as boilerplate.** *An acceptance without
-an expiry is how the fleet arrived at `rpcallowip=0.0.0.0/0` and ODC-079*, which records that
-exposure as "accepted implicitly, not decided". This row exists so that does not happen twice in
-the operator-facing configuration, where it would matter.
+★ **What you no longer have to do**, all of it gone rather than documented better:
 
-★ **The boundary is not "distribution".** It is **the moment the credential reaches a host its
-holder did not choose.** Cloning onto ptx001–003 does not cross it; inviting operator #2 does.
+- no caller credential to request from the coordinator, hold, or rotate;
+- no `rpcallowip` entry for the caller — **RPC is loopback-only now**, a local admin interface;
+- no inbound RPC port to open, forward, or get the address family right on;
+- no `-ptxfanoutport` to match;
+- and the four failure modes those produced — 401, 403, wrong fan-out port, RPC unreachable — which
+  all shared one signature: **the gamemaster registers, syncs, shows ENABLED, and silently refuses
+  every signing request.**
 
-★ **KDD-085 discharges this by deleting both lines** — the sign request moves to P2P, where
-authorisation is the on-chain payment gate rather than a shared secret. **After it lands, all five
-values above are public and there is no secret to distribute at all.** See
-`doc/ptx/W4B_COST_AND_KDD085_SCOPE.md` §9, and KDD-105 for why per-operator credentials were
-rejected rather than adopted as a mitigation.
+Signing requests now arrive over P2P at the address you already register on chain, on the port you
+already advertise. See `doc/ptx/W4B_COST_AND_KDD085_SCOPE.md` §9, and KDD-105 for why per-operator
+credentials were rejected rather than adopted as a mitigation.
 
 ---
 
@@ -262,56 +267,50 @@ are the only bootstrap peers this network has.
 
 ---
 
-## 4. The caller credential
+## 4. The caller credential — DELETED, nothing to mint
 
-One credential, shared with every operator, and the **only** secret that crosses between the
-coordinator and anyone else.
+★★ **This section used to tell you how to generate a shared secret. There is no longer one to
+generate, and that is KDD-085's whole result.**
 
-Use the canonical generator, which is in this repository:
+It described minting `rpcauth=ptxcaller:<salt>$<hmac>` with `share/rpcauth/rpcauth.py`, shipping the
+hash to every operator and the password to the caller node — *"one credential, shared with every
+operator, and the only secret that crosses between the coordinator and anyone else."*
 
-```bash
-python3 share/rpcauth/rpcauth.py ptxcaller
-```
+★ **What was wrong with it was not its scope, it was its existence.** The section itself recorded
+the damage plainly: this daemon has **no per-method restriction** — `jreq.authUser` is never read
+and there is no `-rpcwhitelist` — so the credential could call **any** RPC on any gamemaster that
+accepted it, `stop` and the wallet included. It also noted that a dedicated fan-out credential
+*"would remove this trade"*, recorded as an item and not built.
 
-```
-String to be appended to bitcoin.conf:
-rpcauth=ptxcaller:566bdb5e...f52$d4054cb7...43f8
-Your password:
-v-PxXJClW_7SyS_2oyHifHDhLRgHLZzRXtFwzhzFPsM=
-```
+★★ **It was not built, because narrowing it was never the fix (KDD-105).** The credential answered
+*"do you know a secret?"* when the question a gamemaster actually needs answered is *"is there a
+funded commitment for this exact round?"* — and that one every GM answers **independently, from
+chain data it already holds, about a caller it has never heard of.** A secret standing in for a
+check the network can already perform is strictly weaker than the check: it can be stolen, must be
+distributed, must be rotated, and forces mutual trust between operators who otherwise need none.
+Issuing five credentials instead of one would have narrowed the blast radius and left the model
+intact — *a mitigation that scales the damage without changing the question is a delay, not a
+remedy.*
 
-★ It lives at `share/rpcauth/rpcauth.py`. The `-rpcauth` help text says `share/rpcuser`
-(`src/init.cpp:562`), which is not a directory that exists — ignore the help, use the path above.
-The hash it produces is `HMAC-SHA256(key=salt, msg=password)`, which is exactly what the daemon
-recomputes at `src/httprpc.cpp:112-117`.
-
-* the **`rpcauth` line** goes to every operator (`PTX_RPCAUTH`) — it contains only a hash;
-* the **password** goes in the caller node's own `Hemis.conf` as `rpcuser`/`rpcpassword`, because
-  the fan-out sends the dialling node's own credentials (`src/ptx/ptx_fanout.cpp:612-616`).
-
-★ **What it grants, stated plainly.** There is no per-method restriction in this daemon —
-`jreq.authUser` (`src/httprpc.cpp:157`) is never read and there is no `-rpcwhitelist` — so this
-credential can call **any** RPC on any gamemaster that accepts it, including `stop` and the wallet.
-It is paired with `rpcallowip=<caller>` so only the caller's address can present it. Treat it as a
-network-wide secret: rotating it means every operator edits one line and restarts.
-
-★ **A dedicated `-ptxfanoutuser` / `-ptxfanoutpassword` pair would remove this trade** by letting
-the fan-out authenticate as something other than the caller's own RPC identity. It does not exist;
-recorded as an item, not built.
+**So: nothing to mint here, nothing to send, nothing to rotate, and nothing an operator can leak.**
+Signing requests arrive over P2P at the address each gamemaster already registers on chain, and the
+on-chain payment gate decides. Section 3's three values are all public.
 
 ---
 
 ## The message each operator gets
 
-Everything below is public. Nothing here is secret except in the sense that the `rpcauth` line
-should not be posted where strangers can find it.
+★★ **Everything below is public, without qualification.** There is no longer a sentence here about
+one line that should not be posted where strangers can find it, because there is no longer such a
+line. That is the shortest description of what KDD-085 changed.
 
 ```
 Tag:            v0.1.2-testnet          (use it in BOTH places: git clone -b <tag>, and PTX_REF=<tag>)
 Repository:     https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 
 Gamemasters:    4, on 4 separate hosts, each with its own routable address
-Ports:          29994 P2P (open to the internet), 29995 RPC (open to the caller address below only)
+Ports:          29994 P2P -- open to the internet. This is the one that matters.
+                29995 RPC -- LOOPBACK ONLY. Do not open it. Do not forward it.
 Collateral:     100 HMS per gamemaster, EXACTLY. Not 1000.
 Funding:        I will send you 500 HMS once you send me an address (see the guide: install,
                 start, RESTART ONCE, then send the address -- in that order)
@@ -320,8 +319,6 @@ These are already baked into the installer; you should not need to type them, bu
 install.sh warns that any is missing, these are the values:
 
   PTX_SEEDS      = <addr1> <addr2> <addr3>
-  PTX_CALLER     = <caller address>
-  PTX_RPCAUTH    = ptxcaller:<salt>$<hmac>
   PTX_EXTERNALIP = <your own host's public address -- one per host, you set this>
 
 Read testnet/operator/OPERATOR_GUIDE.md and follow it literally.
@@ -339,8 +336,10 @@ the system working, not a fault.
 1. Regenerate genesis; update the asserts. *(gates the tag)*
 2. Generate the spork keypair; put the public half in chainparams; prove it starts a daemon. *(gates the tag)*
 3. Stand up the three coordinator nodes; record their addresses.
-4. Mint the caller credential.
-5. Set `PTX_SEEDS`, `PTX_CALLER`, `PTX_RPCAUTH` in `install.sh` and commit.
+4. ~~Mint the caller credential.~~ ★ **Step removed by KDD-085 — there is no credential to mint.**
+   Kept struck through rather than deleted so anyone working from an older copy of this list can
+   see that the step is gone deliberately, not overlooked.
+5. Set `PTX_SEEDS` in `install.sh` and commit.
 6. Run `testnet/operator/install-test.sh` — a non-zero exit blocks the tag (`PTX_TESTNET_RELEASE.md` step 0).
 7. Cut the tag; verify the artefacts against `SHA256SUMS`.
 8. Run `GENESIS_BOOTSTRAP.md` end to end.

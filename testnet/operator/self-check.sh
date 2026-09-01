@@ -3,13 +3,23 @@
 #
 # The check that matters is NOT "is my daemon running". It is:
 #
-#   ★ IS MY RPC REACHABLE AT THE ADDRESS I REGISTERED ON CHAIN?
+#   ★ IS MY P2P PORT REACHABLE AT THE ADDRESS I REGISTERED ON CHAIN?
 #
 # A node can be fully synced, correctly registered, showing ENABLED, and still
-# NEVER SIGN, because PTX fan-out dials each member's RPC directly at the
-# registered address. If that address is unreachable -- firewalled, NATted, or
-# the wrong IP FAMILY -- you are selected, never contacted, and you fail
-# silently. Nothing in the normal status output says so.
+# NEVER SIGN, because signing requests arrive at the registered address. If that
+# address is unreachable -- firewalled, NATted, or the wrong IP FAMILY -- you are
+# selected, never contacted, and you fail silently. Nothing in the normal status
+# output says so.
+#
+# ★★ THE RPC HALF OF THIS QUESTION NO LONGER EXISTS (KDD-085). It used to, and
+# the difference matters: the PTX fan-out dialled each member's RPC directly, so
+# RPC reachability was a signing requirement. Signing now arrives over P2P, RPC
+# is loopback-only, and probing it would report on a property that has stopped
+# meaning anything.
+# ★ WHICH IS WHY THE RPC PROBE WAS REMOVED RATHER THAN LEFT PASSING. A check
+# that still produces a result after the property it tested was retired is worse
+# than no check: it is read as evidence. An operator whose RPC probe went green
+# would conclude something about their ability to sign, and be wrong.
 set -uo pipefail
 
 # ★ Matches install.sh's default, which is now the daemon's OWN default,
@@ -210,7 +220,7 @@ if [ -n "${REGADDR:-}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-say "5. ★ EXTERNAL reachability at the REGISTERED address"
+say "5. ★ EXTERNAL reachability at the REGISTERED address (P2P)"
 # ---------------------------------------------------------------------------
 if [ -z "${REGADDR:-}" ]; then
     # ★ Not a pass. This is THE check the guide calls the silent killer, and it did
@@ -218,14 +228,22 @@ if [ -z "${REGADDR:-}" ]; then
     # as healthy.
     unk "no registered address -- section 5 DID NOT RUN. This is not a pass. Re-run after protx_register, and fix section 3 first if it reported a problem."
 else
-    for spec in "P2P:$P2P_PORT" "RPC:$RPC_PORT"; do
-        NAME="${spec%%:*}"; PORT="${spec##*:}"
-        if probe "$REGHOST" "$PORT"; then
-            ok "$NAME port $PORT accepted a connection at $REGHOST"
-        else
-            bad "$NAME port $PORT is NOT reachable at $REGHOST -- open it in your firewall AND your NAT / cloud security group"
-        fi
-    done
+    # ★ P2P ONLY. The RPC probe that used to sit beside this was deleted by
+    # KDD-085 -- RPC is loopback-only now and has no remote caller, so a green
+    # RPC probe would have been a true statement about an irrelevant port,
+    # presented next to the one check the guide calls the silent killer.
+    if probe "$REGHOST" "$P2P_PORT"; then
+        ok "P2P port $P2P_PORT accepted a connection at $REGHOST"
+    else
+        bad "P2P port $P2P_PORT is NOT reachable at $REGHOST -- open it in your firewall AND your NAT / cloud security group. This is the port signing requests arrive on."
+    fi
+    # ★ And the inverse check, which is new and is the one that would catch a
+    # config left over from the old model: RPC must NOT be reachable remotely.
+    if probe "$REGHOST" "$RPC_PORT"; then
+        bad "RPC port $RPC_PORT is REACHABLE at $REGHOST. It should be loopback-only (KDD-085). Your rpcbind lines still name a global address -- your credentials are exposed to anything that can route to you, for no benefit, since nothing dials RPC any more."
+    else
+        ok "RPC port $RPC_PORT is not reachable remotely -- correct, it is a local admin interface"
+    fi
     cat <<'NOTE'
 
   ★ WHAT THIS TEST DOES AND DOES NOT PROVE.

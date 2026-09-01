@@ -8,7 +8,8 @@
 #include "ptx/ptx_dkg_commitments.h"
 #include "ptx/ptx_formation.h"
 #include "core_io.h" // EncodeHexTx (C6 build_only mode)
-#include "ptx/ptx_fanout.h"
+#include "net.h"  // KDD-085 component 4: g_connman, for the P2P sign round
+#include "ptx/ptx_sign_client.h"
 #include "ptx/ptx_lottery_state.h"
 #include "ptx/ptx_mempool.h"
 #include "ptx/ptx_output_mapping.h"
@@ -322,10 +323,33 @@ UniValue ptx_roll(const JSONRPCRequest& request)
     // stop-at-threshold: FanOutSign returns as soon as `signing_threshold` partials
     // are collected — recovery needs only t, and waiting for the rest is latency
     // (gating on the slowest members under staggered commitment propagation).
-    auto partial_sigs_raw = PTX_FanOutSign(round_id, round_seed, dkg_ctx.quorum_hash,
-                                           member_ids, (size_t)signing_threshold,
-                                           dkg_ctx.member_protx, // A: live-DGM addr resolution
-                                           commit_raw_hex);      // KDD-088: direct-attach
+    // ── KDD-085 component 4: THE SWAP ───────────────────────────────────────
+    // Was PTX_FanOutSign — an HTTP dial to each member's RPC port, authenticated
+    // with a shared `ptxcaller` credential that answered a question never about
+    // identity (KDD-105). Now a directed P2P request to each member's ON-CHAIN
+    // advertised address, with no credential anywhere.
+    // ★ The commitment rides the request as RAW BYTES, not hex: the P2P arm's
+    // attachment is MANDATORY (§9.2), so there is no gossip-only fallback to
+    // encode for.
+    std::vector<unsigned char> commit_raw =
+        ParseHex(commit_raw_hex);
+    PTXSignRoundResult sign_round =
+        PTX_SignRound_Run(round_seed, dkg_ctx.quorum_hash, member_ids,
+                          dkg_ctx.member_protx, commit_raw,
+                          (size_t)signing_threshold, *g_connman);
+    // ★ THE FAILURE SHAPE IS NOW PART OF THE ERROR, not just the count. Over RPC
+    // every failure looked like a timeout; the typed refusals make "six members
+    // refused finally" distinguishable from "the network was slow", and only one
+    // of those is worth the caller retrying the whole round for.
+    if (sign_round.outcome != PTXSignRoundOutcome::THRESHOLD_MET) {
+        LogPrintf("PTX roll: sign round ended %s — %zu partial(s), %zu terminal, "
+                  "%zu retryable, %zu unreachable, %zu protx-mismatch\n",
+                  PTXSignRoundOutcomeString(sign_round.outcome),
+                  sign_round.partials.size(), sign_round.terminal,
+                  sign_round.retryable, sign_round.unreachable,
+                  sign_round.protx_mismatch);
+    }
+    auto partial_sigs_raw = sign_round.partials;
 
     // Collect blst partial signatures and 1-indexed polynomial positions.
     std::vector<std::vector<uint8_t>> bls_sigs;

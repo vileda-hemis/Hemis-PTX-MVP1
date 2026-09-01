@@ -18,6 +18,9 @@
 #include <condition_variable>
 #include <memory>
 
+RecursiveMutex cs_ptx_failmodes;
+std::map<std::string, std::string> g_ptx_node_failmodes;
+
 const char* PTXSignRoundOutcomeString(PTXSignRoundOutcome o)
 {
     switch (o) {
@@ -168,8 +171,12 @@ bool PTX_SignClient_OnResponse(int64_t from_node, const PTXSignResp& resp)
             // request is fully determined by the round, so there is no other
             // framing to try. Stop asking this member.
             round->m_state[who.NodeId()] = PTXMemberSignState::TERMINAL;
+            // ★ ODC-064 flood bound. The responder caps `reason` when it
+            // PRODUCES one, but a hostile peer sends whatever it likes, so the
+            // cap has to be applied again where the bytes are CONSUMED. A
+            // producer-side limit is not a limit on anything received.
             LogPrint(BCLog::NET, "PTX signresp: %s TERMINAL (%s)\n",
-                     who.NodeId(), resp.reason);
+                     who.NodeId(), resp.reason.substr(0, PTX_SIGNRESP_MAX_REASON));
             break;
     }
 
@@ -260,6 +267,23 @@ PTXSignRoundResult PTX_SignRound_Run(const uint256& round_seed,
     // UNREACHABLE — absorbing, like TERMINAL, because there is nothing to retry
     // against.
     for (const auto& node_id : member_ids) {
+        // Test hook, carried over from PTX_FanOutSign verbatim in meaning: a
+        // 'withhold' or 'abstain' fail-mode makes the caller never collect this
+        // member's partial. Never set in production. UNREACHABLE rather than a
+        // new state, so the winnability arithmetic treats it as absorbing --
+        // which is what driving a round below threshold on purpose requires.
+        {
+            LOCK(cs_ptx_failmodes);
+            auto fit = g_ptx_node_failmodes.find(node_id);
+            if (fit != g_ptx_node_failmodes.end() &&
+                (fit->second == "withhold" || fit->second == "abstain")) {
+                LOCK(round->m_cs);
+                round->m_state[node_id] = PTXMemberSignState::UNREACHABLE;
+                LogPrintf("PTX signreq: %s %s (failmode) — not collecting\n",
+                          node_id, fit->second);
+                continue;
+            }
+        }
         auto pit = member_protx.find(node_id);
         const uint256 mprotx = (pit != member_protx.end()) ? pit->second : uint256();
         CService addr;

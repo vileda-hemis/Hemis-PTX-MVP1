@@ -74,8 +74,8 @@ RPC_PORT="${PTX_RPC_PORT:-29995}"
 # missing. Refusing to install because the coordinator has not filled these in
 # yet is worse than installing a node whose one missing line is named.
 PTX_SEEDS="${PTX_SEEDS:-}"      # space/comma separated host or host:port, 3 recommended
-PTX_CALLER="${PTX_CALLER:-}"    # the coordinator's caller address -> rpcallowip
-PTX_RPCAUTH="${PTX_RPCAUTH:-}"  # ptxcaller:<salt>$<hmac> -> rpcauth
+# ★ PTX_CALLER / PTX_RPCAUTH removed by KDD-085: there is no caller credential
+# and no caller allow-list entry any more. See the caller-access block below.
 PTX_EXTERNALIP="${PTX_EXTERNALIP:-}"  # this host's registered address (B3)
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -692,13 +692,19 @@ done
 # ---------------------------------------------------------------------------
 # 5. Configuration.
 #
-# ★ rpcbind is DUAL-STACK on purpose: 0.0.0.0 covers IPv4, :: covers IPv6.
-# Binding only one family is the exact seam that makes a node look healthy
-# on-chain while never receiving a sign request -- see self-check.sh.
+# ★★ RPC IS LOOPBACK-ONLY. KDD-085 MADE IT A LOCAL ADMIN INTERFACE AGAIN.
+# It used to be a NETWORK SERVICE, because the PTX fan-out dialled each member's
+# RPC directly: the port had to be reachable by peers, dual-stack, firewalled
+# open, and matched to a shared credential. That produced the failure mode this
+# script warned about at length -- a node that syncs, registers, shows ENABLED
+# and silently refuses every signing request -- in four different ways (wrong
+# family bound, port closed, missing rpcauth, missing rpcallowip).
 #
-# ★ RPC MUST be reachable by your quorum peers. PTX fan-out dials each member's
-# RPC directly; a firewalled RPC port means you are selected, never contacted,
-# and silently never sign. This is why rpcallowip is not localhost-only.
+# ★ Signing now arrives over P2P, at the address this node already registers on
+# chain, on the port it already advertises. So RPC has no remote caller at all,
+# and the whole class of "reachable but not signing" faults is gone with it:
+# there is nothing to open, nothing to forward, and no inbound requirement to
+# get wrong. Bind loopback, and only loopback.
 # ---------------------------------------------------------------------------
 say "5. Configuration"
 mkdir -p "$DATADIR"
@@ -788,7 +794,14 @@ if ! command -v ip >/dev/null 2>&1; then
     echo "         Or set PTX_EXTERNALIP=<this host's address> and replace the"
     echo "         rpcbind lines in the config by hand."
 fi
-RPCBIND_LINES="$(printf '%s' "$GLOBAL_ADDRS" | grep -v '^$' | sed 's/^/rpcbind=/' || true)"
+# ★★ KDD-085: LOOPBACK ONLY, UNCONDITIONALLY. The per-address probe above is
+# retained because PTX_EXTERNALIP still needs the host's global address for the
+# P2P side and for what this node REGISTERS -- but RPC no longer binds it. The
+# previous behaviour (one rpcbind line per global address) existed solely so the
+# fan-out could dial in; with the fan-out deleted, binding a global address only
+# exposes credentials that live in this file.
+RPCBIND_LINES="rpcbind=127.0.0.1
+rpcbind=::1"
 # ★★ LOOPBACK GOES IN THE BIND LIST, AND LEAVING IT OUT BROKE EVERY LOCAL COMMAND.
 # The wildcard pair this per-address list replaced (ODC-076) covered loopback for
 # free; an explicit list does not, and rpcallowip stayed loopback-only. The two
@@ -863,38 +876,30 @@ else
     echo "         coordinator, add them under [ptxtestnet] in $CONF, and restart."
 fi
 
-# ★★ THE CALLER'S ACCESS. Two lines, both from the coordinator, both unchanged
-# when another operator joins -- see ONBOARDING.md.
+# ══════════════════════════════════════════════════════════════════════════
+# ★★ THERE IS NO CALLER ACCESS TO CONFIGURE. KDD-085 DELETED IT.
+# ══════════════════════════════════════════════════════════════════════════
+# This block used to write TWO coordinator-supplied lines into every GM config
+# -- `rpcallowip=<caller>` and `rpcauth=ptxcaller:<salt>$<hmac>` -- both
+# "unchanged when another operator joins", i.e. a SHARED SECRET every operator
+# had to hold identically and any holder could replay against any other.
 #
-# WHY rpcauth AND NOT JUST rpcallowip: the fan-out authenticates with the DIALLING
-# node's own credentials (ptx/ptx_fanout.cpp:612-616 reads -rpcuser/-rpcpassword
-# and sends them as Basic auth). This script generates a RANDOM rpcpassword per
-# host, so the coordinator's credential does not match any GM's and every
-# gm_bls_sign would answer 401 -- with the roll failing at threshold AFTER the
-# commitment tx is broadcast and its 1 HMS service fee forfeited. Opening
-# rpcallowip alone does not fix that; the GM has to accept the caller's USER too.
+# ★ KDD-105 is why they are gone rather than merely rotated: the credential
+# answered a question that was never about identity. A GM's real authorisation
+# is the BUG-032 payment gate -- "is there a funded commitment for this exact
+# round?" -- which every GM answers independently, from data it already holds,
+# about a caller it has never heard of. A secret standing in for a check the
+# network can already perform is strictly weaker than that check: it can be
+# stolen, must be distributed, must be rotated, and forces mutual trust between
+# parties who otherwise need none.
+#
+# ★★ SO THE COORDINATOR NOW MINTS ONLY PUBLIC VALUES. There is no secret to
+# distribute and no operator has to be trusted to keep one. Signing requests
+# arrive over P2P at the address this node already registers on chain, and the
+# gate decides. Nothing here to set, nothing to ask the coordinator for, and
+# four operator failure modes (401, 403, wrong fan-out port, RPC unreachable)
+# that no longer exist because the thing that produced them is gone.
 CALLER_LINES=""
-if [ -n "$PTX_CALLER" ]; then
-    CALLER_LINES="rpcallowip=$PTX_CALLER"
-    ok "caller permitted at $PTX_CALLER"
-else
-    CALLER_LINES="# rpcallowip=<caller-address>    <-- REQUIRED to sign, ask the coordinator"
-fi
-if [ -n "$PTX_RPCAUTH" ]; then
-    CALLER_LINES="$CALLER_LINES
-rpcauth=$PTX_RPCAUTH"
-    ok "caller credential (rpcauth) installed"
-else
-    CALLER_LINES="$CALLER_LINES
-# rpcauth=ptxcaller:<salt>\$<hmac>    <-- REQUIRED to sign, ask the coordinator"
-fi
-if [ -z "$PTX_CALLER" ] || [ -z "$PTX_RPCAUTH" ]; then
-    warn "CALLER ACCESS NOT CONFIGURED -- this gamemaster cannot sign."
-    echo "         It will register, show as enabled, sync and look perfect, and every"
-    echo "         signing request will be refused (403 without rpcallowip, 401 without"
-    echo "         rpcauth). Both lines come from the coordinator; add them under"
-    echo "         [ptxtestnet] in $CONF and restart."
-fi
 
 # ★★ THE ADDRESS THIS NODE ADVERTISES, AND IT MUST EQUAL THE ONE YOU REGISTER.
 # CActiveDeterministicGamemasterManager::Init refuses to arm without it:

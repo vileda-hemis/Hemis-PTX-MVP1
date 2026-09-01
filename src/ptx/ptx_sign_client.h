@@ -15,6 +15,21 @@
 
 class CConnman;
 
+// ---------------------------------------------------------------------------
+// Coordinator-side fail-mode map — MOVED here from ptx_fanout.h (component 4)
+// ---------------------------------------------------------------------------
+// ★ This is NOT dead weight carried along with the deletion: `PTX_FanOutSign`
+// applied these live (its lines 683-694), and `ptx_debug_setnodefailmode` is how
+// `validate_fleet`'s abandon-gate drives a round BELOW threshold on purpose, to
+// exercise the fund-then-sign FORFEITURE path that the h510-class halt was first
+// found by. Losing it would silently retire a tested failure case.
+// ★ "abstain" and "withhold" both mean the same thing here as they did there:
+// the caller never collects this member's partial. Applied at SEND time -- the
+// member is simply never asked -- which is the honest analogue now that the
+// member answers for itself rather than being dialled.
+extern RecursiveMutex cs_ptx_failmodes;
+extern std::map<std::string, std::string> g_ptx_node_failmodes;
+
 // ===========================================================================
 // KDD-085 component 3 — the CALLER side of sign-over-P2P.
 // ===========================================================================
