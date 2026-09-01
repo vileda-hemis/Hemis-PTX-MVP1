@@ -147,6 +147,24 @@ static const uint64_t PTX_SIGNRESP_MAX_REASON = 256;
 // Sizing: a legitimate caller sends ONE request per member per round, and
 // retries only a refusal it was told is retryable.  A burst of 10 with a 1/s
 // refill is generous for that and ruinous for a flood.
+// ── Caller-side timing (component 3) ────────────────────────────────────────
+// ★ The 30 s wall is CARRIED OVER UNCHANGED from the HTTP fan-out
+// (FANOUT_WALL_MS) and remains the single authority, exactly as §9.5 asked.
+// What DISAPPEARS is the per-dial 3 s/5 s connect timeouts: those were
+// `evhttp_connection` setup, and there is no connection to set up.
+// ★★ A BLOCK-DENOMINATED DEADLINE IS NOT AVAILABLE, and §9.5's reason for
+// saying so has since gone stale: it assumed the consensus same-block mandate
+// `nExpiryHeight == nSeedHeight` was the one height bound to denominate
+// against. BUG-034 Phase 2 RETIRED that equality -- only the structural floor
+// `nExpiryHeight >= nSeedHeight` remains (`ptxcommit-window-negative`,
+// specialtx_validation.cpp) and a settle may be mined at any depth. So there is
+// no consensus height bound at all, which makes the wall clock the only honest
+// deadline rather than merely the convenient one.
+static const int PTX_SIGNREQ_WALL_MS = 30000;
+// The re-send tick. Same cadence as the fan-out's, for the same reason: it is
+// the propagation-retry interval, not a connection retry.
+static const int PTX_SIGNREQ_TICK_MS = 150;
+
 static const double PTX_SIGNREQ_TOKEN_BUCKET_MAX = 10.0;
 static const double PTX_SIGNREQ_RATE_PER_SECOND  = 1.0;
 

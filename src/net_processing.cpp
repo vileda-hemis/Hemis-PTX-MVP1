@@ -17,6 +17,7 @@
 #include "ptx/ptx_dkg_commitments.h" // KDD-058-A landing relay (AlreadyHave/serve seams)
 #include "ptx/ptx_dkg_net.h"
 #include "ptx/ptx_sign_net.h" // KDD-085 sign-over-P2P: the rejection path
+#include "ptx/ptx_sign_client.h" // KDD-085 component 3: the caller side
 #include "llmq/quorums_signing.h"
 #include "gamemaster-payments.h"
 #include "gamemaster-sync.h"
@@ -2311,6 +2312,22 @@ bool static ProcessMessage(CNode* pfrom, std::string strCommand, CDataStream& vR
         if (score > 0) {
             WITH_LOCK(cs_main, Misbehaving(pfrom->GetId(), score));
         }
+        return true;
+    }
+
+    // KDD-085 component 3: a member's answer, delivered back to the round that
+    // asked. ★ An unmatched response is NOT misbehaviour -- a round can finish
+    // at threshold while stragglers are still answering, and scoring an honest
+    // member for being slow would be a self-inflicted partition.
+    else if (strCommand == NetMsgType::PTXSIGNRESP) {
+        PTXSignResp resp;
+        try {
+            vRecv >> resp;
+        } catch (const std::exception&) {
+            WITH_LOCK(cs_main, Misbehaving(pfrom->GetId(), PTX_SIGNREQ_MISBEHAVIOUR_SCORE));
+            return true;
+        }
+        PTX_SignClient_OnResponse(pfrom->GetId(), resp);
         return true;
     }
 

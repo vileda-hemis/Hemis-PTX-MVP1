@@ -31,6 +31,7 @@
 #include "core_io.h"              // KDD-088: EncodeHexTx in the attach cases
 #include "ptx/ptx_mempool.h"       // BUG-032: the fund-then-sign gate under test
 #include "ptx/ptx_sign_net.h"      // KDD-085: the sign-over-P2P rejection path
+#include "ptx/ptx_sign_client.h"   // KDD-085 component 3: the caller side
 #include "validation.h"            // BUG-032 2b: the global mempool the signing scan reads
 #include "txmempool.h"             // BUG-032 2b: TestMemPoolEntryHelper / addUnchecked
 #include "consensus/validation.h"
@@ -6569,6 +6570,148 @@ BOOST_AUTO_TEST_CASE(Kdd085_VettedToken_EnforcementIsStructural)
         "gate, it can sign under conditions the RPC arm refuses");
     BOOST_CHECK_MESSAGE(guard.find("PTX_BLS_PartialSign") == std::string::npos,
         "KDD-085: the P2P arm signs directly instead of through the BUG-032 gate");
+}
+
+
+// ===========================================================================
+// KDD-085 component 3 — the caller side.
+// ===========================================================================
+
+// ★★ THE FAILURE-SHAPE QUESTION, WHICH IS THE ONE THAT MATTERS OPERATIONALLY.
+// At t = 6 of 11, "five refused finally" and "six refused finally" are the same
+// sentence to an operator and opposite facts to the caller: the first round can
+// still be won, the second cannot. Over RPC every failure looked alike and the
+// caller burned the full 30 s wall regardless. Component 2's typed refusals make
+// the shape legible, and this is where that becomes a decision.
+//
+// ★ HONEST ABOUT WHAT IT BUYS: not the fee. The commitment is broadcast before
+// any signing (BUG-032 fund-then-sign), so it is already forfeit when the round
+// fails. It buys 28 seconds of not spinning against members that have given
+// final answers, and a failure that is legible when it becomes certain instead
+// of at the wall, where everything looks like a timeout.
+BOOST_AUTO_TEST_CASE(Kdd085_Client_WinnabilityDistinguishesFailureShapes)
+{
+    const size_t t = 6;   // majority(11)
+
+    // 5 TERMINAL + 6 still-possible -> exactly at threshold -> KEEP GOING.
+    BOOST_CHECK_MESSAGE(PTX_SignRound_StillWinnable(0, 0, 6, 0, t),
+        "KDD-085: a round with exactly threshold members still answering was abandoned — "
+        "five members may refuse finally and the round still completes");
+
+    // 6 TERMINAL + 5 still-possible -> UNWINNABLE -> stop now.
+    BOOST_CHECK_MESSAGE(!PTX_SignRound_StillWinnable(0, 0, 5, 0, t),
+        "KDD-085: a round that can no longer reach threshold was still being waited on — "
+        "the caller spins against members that have given final answers");
+
+    // Partials already in hand count toward it, from every state that can still
+    // become one. A member mid-flight is not a failure.
+    BOOST_CHECK(PTX_SignRound_StillWinnable(3, 1, 1, 1, t));
+    BOOST_CHECK(!PTX_SignRound_StillWinnable(3, 1, 1, 0, t));
+    // Threshold already met is trivially winnable (the caller checks collected
+    // >= threshold first, but the predicate must not disagree with that).
+    BOOST_CHECK(PTX_SignRound_StillWinnable(t, 0, 0, 0, t));
+    // ★ The empty round: no members at all cannot be winnable at any positive
+    // threshold. A predicate that said otherwise would wait out the full wall on
+    // a quorum it never contacted.
+    BOOST_CHECK(!PTX_SignRound_StillWinnable(0, 0, 0, 0, t));
+}
+
+// Every outcome must have a distinct voice: "the roll failed" and "six members
+// refused finally" are different operator problems, and only one is worth
+// retrying the whole round for.
+BOOST_AUTO_TEST_CASE(Kdd085_Client_EveryOutcomeIsNamed)
+{
+    const std::vector<PTXSignRoundOutcome> all = {
+        PTXSignRoundOutcome::THRESHOLD_MET, PTXSignRoundOutcome::UNWINNABLE,
+        PTXSignRoundOutcome::DEADLINE,      PTXSignRoundOutcome::NO_QUORUM_CONTACT};
+    std::set<std::string> names;
+    for (auto o : all) {
+        const std::string n = PTXSignRoundOutcomeString(o);
+        BOOST_CHECK_MESSAGE(n != "unknown", "an outcome has no name");
+        names.insert(n);
+    }
+    BOOST_CHECK_MESSAGE(names.size() == all.size(),
+        "two outcomes share a name — UNWINNABLE and DEADLINE in particular must be "
+        "distinguishable in a log, or the operator cannot tell a quorum that refused "
+        "from a network that was slow");
+}
+
+// ★★ THE LAGRANGE x MUST NEVER COME OFF THE WIRE, AND THAT IS COMPILER-ENFORCED.
+// A partial is meaningless without the x it was evaluated at (KDD-052). The
+// response carries signer_protx, which the RESPONDER supplies. If the caller
+// resolved x from that field, a hostile peer could claim another member's seat
+// and have its partial inserted at someone else's index — poisoning recovery,
+// with the round failing later and elsewhere.
+// PTXSignRoundMember has a private constructor whose only friend is
+// PTXSignRound, and RecordPartial takes one, so a partial cannot be recorded
+// under an identity that came off the wire.
+//
+// ★ AND THE LIMIT, ASSERTED HERE SO IT CANNOT QUIETLY BE OVERSTATED LATER: this
+// catches MISROUTING and MISLABELLING. It does NOT catch a validly-labelled BAD
+// partial — per-member public shares are not persisted (the record holds
+// group_pk and vvec_hash only), so pk_i is not derivable and a partial cannot be
+// verified individually. A bad partial still fails the round at recovery with no
+// attribution, exactly as it does over RPC today.
+BOOST_AUTO_TEST_CASE(Kdd085_Client_MemberBindingIsStructural)
+{
+    const std::string src = PTX_SRCDIR;
+    BOOST_REQUIRE_MESSAGE(!src.empty(), "KDD-085: PTX_SRCDIR not injected — check could not run");
+    const std::string hdr = P5_strip_comments(P5_slurp(src + "/src/ptx/ptx_sign_client.h"));
+    const std::string cpp = P5_strip_comments(P5_slurp(src + "/src/ptx/ptx_sign_client.cpp"));
+    BOOST_REQUIRE_MESSAGE(!hdr.empty() && !cpp.empty(),
+        "KDD-085: cannot read the component-3 sources — the check would be vacuous");
+
+    const size_t cls = hdr.find("class PTXSignRoundMember");
+    BOOST_REQUIRE_MESSAGE(cls != std::string::npos,
+        "KDD-085: PTXSignRoundMember is gone — the binding is no longer type-enforced and "
+        "the limbs below would pass vacuously");
+    const size_t priv = hdr.find("private:", cls);
+    const size_t ctor = hdr.find("PTXSignRoundMember() = default;", cls);
+    BOOST_CHECK_MESSAGE(priv != std::string::npos && ctor != std::string::npos && ctor > priv,
+        "KDD-085: PTXSignRoundMember's constructor is no longer private — a member identity "
+        "can be forged, so a partial can be recorded at another member's Lagrange index");
+    BOOST_CHECK_MESSAGE(hdr.find("friend class PTXSignRound;", cls) != std::string::npos,
+        "KDD-085: PTXSignRound is no longer the sole producer of a member binding");
+
+    // ★ The negative that matters: the wire field must never select the index.
+    // RecordPartial takes the resolved member; signer_protx appears only in the
+    // cross-check. If these two ever met, the design would be inverted.
+    const size_t record = cpp.find("RecordPartial");
+    BOOST_REQUIRE(record != std::string::npos);
+    BOOST_CHECK_MESSAGE(cpp.find("RecordPartial(who") != std::string::npos,
+        "KDD-085: RecordPartial is no longer called with the RESOLVED member — check what "
+        "now supplies the identity a partial is filed under");
+    BOOST_CHECK_MESSAGE(cpp.find("ResolvePeer") != std::string::npos,
+        "KDD-085: the peer->member resolution is gone from the response path");
+
+    // ★ ptx_sign_client.cpp must NOT reach for the fan-out's RPC-port
+    // convention. That convention is the fleet expedient KDD-085 deletes; using
+    // it here would mean the P2P arm inherited the address assumption the whole
+    // change exists to remove.
+    BOOST_CHECK_MESSAGE(cpp.find("PTX_FanoutRpcPort") == std::string::npos &&
+                        cpp.find("ptxfanoutport") == std::string::npos,
+                        "KDD-085: the P2P caller uses the RPC port convention — the DGM address "
+                        "already carries the P2P port, and grafting a port back on re-imposes "
+                        "the operator requirement this change removes");
+    BOOST_CHECK_MESSAGE(cpp.find("PTX_FindNode") == std::string::npos,
+        "KDD-085: the P2P caller fell back to the static -ptxnode address book — the "
+        "stale-snapshot class fix A removed (~39% of a grown quorum unaddressable)");
+}
+
+// The responder's no-lock guarantee lives in ptx_sign_net.cpp, and component 3
+// must not have quietly moved into that file to reach the quorum store or
+// connman. Two files, one guarantee each.
+BOOST_AUTO_TEST_CASE(Kdd085_Client_DoesNotWeakenResponderGuarantee)
+{
+    const std::string src = PTX_SRCDIR;
+    BOOST_REQUIRE_MESSAGE(!src.empty(), "KDD-085: PTX_SRCDIR not injected");
+    const std::string guard = P5_strip_comments(P5_slurp(src + "/src/ptx/ptx_sign_net.cpp"));
+    BOOST_REQUIRE(!guard.empty());
+    BOOST_CHECK_MESSAGE(guard.find("PTX_SignRound_Run") == std::string::npos &&
+                        guard.find("CConnman& connman, const uint256") == std::string::npos,
+        "KDD-085: the caller-side round runner moved into ptx_sign_net.cpp — that file "
+        "carries the responder's structural no-lock guarantee, and the caller needs the "
+        "quorum store and connman");
 }
 
 

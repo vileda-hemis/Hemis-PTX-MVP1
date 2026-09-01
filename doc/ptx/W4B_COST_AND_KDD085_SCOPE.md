@@ -1060,7 +1060,7 @@ left it on 2026-08-25; this section is the **landing record**, and by this docum
 |---|---|---|
 | Index `PTX_RollCommitmentPresent` | **LANDED**, green on px1 | `bfea163` |
 | `ptxsignreq`/`ptxsignresp` + the **rejection path** | **LANDED**, green on px1 (498/498 `--enable-debug`) | component 1 |
-| Directed request/reply, correlation, stop-at-threshold | caller side not started; **responder side LANDED** | component 2 |
+| Directed request/reply, correlation, stop-at-threshold | **LANDED** (dormant — `rpc/ptx.cpp` still calls the HTTP fan-out; the swap is component 4's "replace") | component 3 |
 | Mandatory-commitment ordering + token bucket | **LANDED** with component 1 | component 1 |
 | Capability advertisement + mixed-fleet transition | not started | — |
 | Delete `ptx_fanout.cpp`, drop `-ptxfanoutport`, docs | not started | — |
@@ -1233,3 +1233,76 @@ it. **Owed to §9.8's two-host test:** a request carrying a well-formed commitme
 nonexistent output must draw a TERMINAL response and no signature.
 
 **Suite: 504/504 under `--enable-debug` on px1** (488 baseline + 10 + 6).
+
+**(f) Component 3 — the caller side, and three places the plan was wrong.**
+
+★★ **The caller is not a dialer any more, and that is the shape change.** `ptx_fanout.cpp`'s 711
+lines are overwhelmingly HTTP connection management: an `event_base` dispatched on the calling
+thread, a `PTXSignDialCtx` per dial held in a deque because *"libevent callbacks hold a raw pointer
+… never a vector, whose reallocation would move live callback targets"*, `raii_evhttp_connection`
+objects that must be destroyed before the base, and completion callbacks classifying replies inside
+the loop. **None of it has an analogue over P2P.** Sending is `PushMessage`; replies arrive later on
+the message-processing thread. The caller collapses to **a round registry the net thread writes and
+the RPC thread reads, plus a wait** — a condition variable and a re-send tick. The synchronous
+request/reply architecture does not transfer and nothing needs to replace it.
+
+**Three corrections to the plan, all found by building it:**
+
+1. ★★ **§9.6 is wrong that `PTX_ResolveMemberAddr` "moves".** Its whole job is grafting an *RPC
+   port* onto a *DGM host*, because the PTX-RPC endpoint is not on chain — its own comment calls the
+   port half *"a fleet expedient, not the mainnet delivery"*. Over P2P there is no port to graft:
+   the DGM address **is** the address, host and port as advertised. The permanent half of fix A was
+   never the function, it was the *idea* of reading the address from the live DGM list every round,
+   and here that is two lines with no convention in it. **So nothing is salvaged — the whole file
+   dies in component 4, `PTX_FanoutRpcPort` and `-ptxfanoutport` with it.** ★ And deliberately **no
+   static `-ptxnode` fallback**: reinstating one would restore the config-derived address book whose
+   staleness fix A removed (~39 % of a grown quorum unaddressable). A member absent from the live
+   DGM list is not a registered gamemaster and holds no share worth asking for.
+
+2. ★★ **§9.5's reason for rejecting a block-denominated deadline is stale, and the conclusion is now
+   stronger.** It assumed the consensus same-block mandate `nExpiryHeight == nSeedHeight` was the one
+   height bound available. **BUG-034 Phase 2 retired that equality** — only the structural floor
+   `nExpiryHeight >= nSeedHeight` survives, and a settle may be mined at any depth. There is
+   therefore **no** consensus height bound to denominate against, which makes the 30 s wall the only
+   *honest* deadline rather than merely the convenient one. The per-dial 3 s/5 s timeouts disappear
+   exactly as §9.5 predicted, for exactly the reason it gave.
+
+3. ★ **§9.5's "most members are already connected for block relay" — "most" was load-bearing.**
+   Block relay supplies ~8 outbound peers, not necessarily *these eleven*. Opening a connection to a
+   member we do not have is the one genuinely new thing the caller must do, and a member it cannot
+   reach is **UNREACHABLE**: absorbing, like TERMINAL, because there is nothing to retry against.
+
+★★ **The Lagrange x never comes off the wire, and the compiler enforces it.** `signer_protx` is
+supplied by the *responder*; if the caller resolved x from it, a hostile peer could claim another
+member's seat and have its partial inserted at someone else's index, poisoning recovery so the round
+fails later and elsewhere. The authoritative binding is **"I sent to peer P, and I chose P because it
+is member M"** — caller-side state. `PTXSignRoundMember` can only be produced by resolving a NodeId
+against the round's own send table, and `RecordPartial` takes one, so a partial **cannot** be filed
+under an identity that came off the wire. `signer_protx` is used only as a **cross-check**; a
+mismatch is a hard reject and is counted.
+
+★★ **And the limit, stated because overstating it would be the KDD-105 error.** The cross-check
+catches **misrouting and mislabelling**. It does **not** catch a validly-labelled *bad partial*.
+Per-partial verification needs each member's public share, and the quorum record persists only
+`group_pk` and `vvec_hash` (`ptx_quorum_store.h:137-138`) — the vvec is not stored, so `pk_i` is not
+derivable. A bad partial still fails the round at recovery **with no attribution**, exactly as over
+RPC today. Unchanged, not fixed. **Registered as ODC-090.**
+
+★ **TERMINAL is absorbing, and winnability falls out of it.** A TERMINAL member is never re-sent and
+never re-framed — the request is fully determined by `(round_seed, quorum_hash, commitment)`, all
+three fixed, so "try something else" is not an option the caller has. `max_reachable = collected +
+inflight + retryable + unsent`; when that drops below threshold the round is **provably** lost and
+the caller stops **at that moment** rather than at the wall. At t = 6 of 11: five TERMINAL plus six
+still answering is still winnable; six TERMINAL is not. ★ This does **not** save the fee — the
+commitment is broadcast before signing (BUG-032), so it is already forfeit. It saves 28 seconds of
+spinning against final answers, and makes the failure legible when it becomes certain instead of at
+the wall where every failure looks like a timeout.
+
+★ **Coverage bound.** `PTX_SignRound_Run` needs a live `CConnman` and is not unit-testable under
+`BasicTestingSetup`; what is tested is the winnability predicate, the outcome taxonomy, and the
+structural enforcement of the member binding. The round runner itself is **owed to the fleet run**.
+
+**Dormant:** `rpc/ptx.cpp` still calls `PTX_FanOutSign`. The swap is component 4's "replace", where
+it belongs — beside the deletion rather than ahead of it.
+
+**Suite: 508/508 under `--enable-debug` on px1.**
