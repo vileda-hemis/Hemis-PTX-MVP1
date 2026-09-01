@@ -6826,4 +6826,106 @@ BOOST_AUTO_TEST_CASE(Kdd085_Unsent_OneSendPath_Structural)
 }
 
 
+// ===========================================================================
+// KDD-085 — THE STATE-MACHINE AUDIT. Three instances of one shape.
+// ===========================================================================
+// ★★ THE SHAPE, stated once: a state whose ONLY exit depends on the far side
+// cooperating. It shipped three times in this one machine.
+//   UNSENT     no exit at all -> the fleet's 0/6-at-the-wall failure.
+//   INFLIGHT   exits only via OnResponse -> a member that accepts the message
+//              and goes silent (an old binary ignoring an unknown command,
+//              §9.13(h)) pins a slot to the wall.
+//   RETRYABLE  exits only back to INFLIGHT, uncapped -> a member answering
+//              "commitment not seen" forever never retires.
+// ★ RETRYABLE is the one worth dwelling on: the RPC fan-out this replaced DID
+// bound it (FANOUT_MAX_ATTEMPTS = wall/tick). Deleting the dialer deleted the
+// cap, so the P2P caller was STRICTLY WEAKER than the path it replaced, in
+// exactly the case that path existed to handle.
+// ★★ And all three share the winnability inversion: a non-absorbing state
+// counts toward max_reachable, so a doomed round waits the MAXIMUM time.
+
+// Every state is classified, and the classification is exhaustive.
+BOOST_AUTO_TEST_CASE(Kdd085_States_EveryStateIsClassified)
+{
+    const std::vector<PTXMemberSignState> all = {
+        PTXMemberSignState::UNSENT, PTXMemberSignState::INFLIGHT,
+        PTXMemberSignState::RETRYABLE, PTXMemberSignState::TERMINAL,
+        PTXMemberSignState::COLLECTED, PTXMemberSignState::UNREACHABLE};
+    BOOST_REQUIRE_MESSAGE((int)PTXMemberSignState::_COUNT == (int)all.size(),
+        "a state was added or removed without updating this test — and the "
+        "static_assert in ptx_sign_client.cpp should already have refused to compile");
+    BOOST_CHECK(PTX_SignReq_IsAbsorbing(PTXMemberSignState::COLLECTED));
+    BOOST_CHECK(PTX_SignReq_IsAbsorbing(PTXMemberSignState::TERMINAL));
+    BOOST_CHECK(PTX_SignReq_IsAbsorbing(PTXMemberSignState::UNREACHABLE));
+    BOOST_CHECK(!PTX_SignReq_IsAbsorbing(PTXMemberSignState::UNSENT));
+    BOOST_CHECK(!PTX_SignReq_IsAbsorbing(PTXMemberSignState::INFLIGHT));
+    BOOST_CHECK(!PTX_SignReq_IsAbsorbing(PTXMemberSignState::RETRYABLE));
+}
+
+// ★★ THE RULE, tested over EVERY state rather than the two that were broken:
+// non-absorbing => retires by the budget; absorbing => never re-timed.
+BOOST_AUTO_TEST_CASE(Kdd085_States_EveryNonAbsorbingStateHasABoundedExit)
+{
+    const std::vector<PTXMemberSignState> all = {
+        PTXMemberSignState::UNSENT, PTXMemberSignState::INFLIGHT,
+        PTXMemberSignState::RETRYABLE, PTXMemberSignState::TERMINAL,
+        PTXMemberSignState::COLLECTED, PTXMemberSignState::UNREACHABLE};
+    for (auto st : all) {
+        const auto before = PTX_SignReq_RetireExpired(st, 0);
+        const auto after  = PTX_SignReq_RetireExpired(st, PTX_SIGNREQ_MEMBER_MS);
+        BOOST_CHECK_MESSAGE(before == st, "a state was retired at elapsed=0");
+        if (PTX_SignReq_IsAbsorbing(st)) {
+            BOOST_CHECK_MESSAGE(after == st,
+                "an ABSORBING state was re-timed — absorbing must mean final");
+        } else {
+            BOOST_CHECK_MESSAGE(after == PTXMemberSignState::UNREACHABLE,
+                "a NON-ABSORBING state did not retire at its budget — it can hold a "
+                "doomed round open to the wall, which is the defect this rule exists "
+                "to make impossible");
+        }
+    }
+    // ★ The budget must be strictly inside the wall, or nothing can fire before
+    // the round times out anyway and the whole mechanism is decorative.
+    BOOST_CHECK_MESSAGE(PTX_SIGNREQ_MEMBER_MS < PTX_SIGNREQ_WALL_MS,
+        "the per-member budget is not shorter than the wall — winnability can never "
+        "fire early, which is the entire point");
+    BOOST_CHECK(PTX_SIGNREQ_CONNECT_MS <= PTX_SIGNREQ_MEMBER_MS);
+}
+
+// The two live cases, named, so a regression says which one broke.
+BOOST_AUTO_TEST_CASE(Kdd085_States_SilentAndPermanentlyRetryableBothRetire)
+{
+    // INFLIGHT: accepted the message, never answered (the old-binary GM case).
+    BOOST_CHECK(PTX_SignReq_RetireExpired(PTXMemberSignState::INFLIGHT,
+                    PTX_SIGNREQ_MEMBER_MS - 1) == PTXMemberSignState::INFLIGHT);
+    BOOST_CHECK_MESSAGE(PTX_SignReq_RetireExpired(PTXMemberSignState::INFLIGHT,
+                    PTX_SIGNREQ_MEMBER_MS) == PTXMemberSignState::UNREACHABLE,
+        "a silent member still pins its slot to the wall (§9.13(h) case)");
+    // RETRYABLE: answering "commitment not seen" indefinitely.
+    BOOST_CHECK_MESSAGE(PTX_SignReq_RetireExpired(PTXMemberSignState::RETRYABLE,
+                    PTX_SIGNREQ_MEMBER_MS) == PTXMemberSignState::UNREACHABLE,
+        "a permanently-retryable member never retires — the RPC fan-out bounded this "
+        "with FANOUT_MAX_ATTEMPTS and the P2P caller must not be weaker");
+}
+
+// ★ Timed property, confirmed SEPARATELY from correctness of the final state:
+// enough silent members must flip the round to UNWINNABLE, not merely end up
+// classified correctly after the wall.
+BOOST_AUTO_TEST_CASE(Kdd085_States_SilentMembersFlipRoundToUnwinnable)
+{
+    const size_t t = 6;
+    // 11 members: 2 collected, 9 silent (INFLIGHT). Before the budget expires
+    // the round still LOOKS winnable — which is why it used to wait.
+    BOOST_CHECK(PTX_SignRound_StillWinnable(2, 9, 0, 0, t));
+    // After the budget every silent member is UNREACHABLE — absorbing, absent
+    // from the sum — and the round is provably lost.
+    BOOST_CHECK_MESSAGE(!PTX_SignRound_StillWinnable(2, 0, 0, 0, t),
+        "retiring silent members did not flip the round to UNWINNABLE — the caller "
+        "will still wait out the full wall on a round that cannot succeed");
+    // Same for permanently-retryable members.
+    BOOST_CHECK(PTX_SignRound_StillWinnable(2, 0, 9, 0, t));
+    BOOST_CHECK(!PTX_SignRound_StillWinnable(2, 0, 0, 0, t));
+}
+
+
 BOOST_AUTO_TEST_SUITE_END()

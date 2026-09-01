@@ -32,6 +32,44 @@ const char* PTXSignRoundOutcomeString(PTXSignRoundOutcome o)
     return "unknown";
 }
 
+// ★★ THE COMPLETENESS GUARD. Adding a state to PTXMemberSignState without
+// classifying it here FAILS TO COMPILE -- the same standard component 1 set for
+// the cheap-check ordering: a rule the compiler remembers, not one a reviewer
+// has to. Both the static_assert and the default-less switch are load-bearing:
+// the assert catches a state added at the end, the switch catches one added in
+// the middle that shifts _COUNT back into agreement.
+static_assert((int)PTXMemberSignState::_COUNT == 6,
+              "PTXMemberSignState gained or lost a state: classify it in "
+              "PTX_SignReq_IsAbsorbing and PTX_SignReq_RetireExpired, and say "
+              "whether it is absorbing or has a bounded exit. Three separate "
+              "defects in this machine were states with no exit.");
+
+bool PTX_SignReq_IsAbsorbing(PTXMemberSignState s)
+{
+    switch (s) {                                   // no default, on purpose
+        case PTXMemberSignState::COLLECTED:   return true;
+        case PTXMemberSignState::TERMINAL:    return true;
+        case PTXMemberSignState::UNREACHABLE: return true;
+        case PTXMemberSignState::UNSENT:      return false;
+        case PTXMemberSignState::INFLIGHT:    return false;
+        case PTXMemberSignState::RETRYABLE:   return false;
+        case PTXMemberSignState::_COUNT:      break;
+    }
+    return false;   // unreachable for a classified enum
+}
+
+PTXMemberSignState PTX_SignReq_RetireExpired(PTXMemberSignState s, int64_t elapsed_ms)
+{
+    // Absorbing states are final -- never revisited, never re-timed.
+    if (PTX_SignReq_IsAbsorbing(s)) return s;
+    // ★ ONE budget for every non-absorbing state. Not three bounds bolted on:
+    // the property is "a member that has produced no partial within its budget
+    // stops holding the round open", and that is true regardless of WHICH way
+    // it is failing to produce one.
+    if (elapsed_ms >= PTX_SIGNREQ_MEMBER_MS) return PTXMemberSignState::UNREACHABLE;
+    return s;
+}
+
 bool PTX_SignRound_StillWinnable(size_t collected, size_t inflight,
                                  size_t retryable, size_t unsent,
                                  size_t threshold)
@@ -385,11 +423,26 @@ PTXSignRoundResult PTX_SignRound_Run(const uint256& round_seed,
             // is absorbing, so the round can go UNWINNABLE promptly instead.
             const int64_t first = round->m_first_attempt_ms.count(kv.first)
                                       ? round->m_first_attempt_ms[kv.first] : GetTimeMillis();
+            const int64_t elapsed = GetTimeMillis() - first;
+            // Tighter, connect-specific bound: a member we could not even reach
+            // retires sooner than one that is answering but unhelpfully.
             if (kv.second == PTXMemberSignState::UNSENT &&
-                PTX_SignReq_ConnectWindowExpired(GetTimeMillis() - first)) {
+                PTX_SignReq_ConnectWindowExpired(elapsed)) {
                 kv.second = PTXMemberSignState::UNREACHABLE;
                 LogPrintf("PTX signreq: %s never connected within %dms -- UNREACHABLE\n",
                           kv.first, PTX_SIGNREQ_CONNECT_MS);
+                continue;
+            }
+            // ★★ THE GENERAL BUDGET -- covers INFLIGHT (accepted the message,
+            // went silent: an old binary ignoring an unknown command) and
+            // RETRYABLE (answering "commitment not seen" forever). Both used to
+            // hold the round to the wall AND keep winnability from ever firing.
+            const PTXMemberSignState retired = PTX_SignReq_RetireExpired(kv.second, elapsed);
+            if (retired != kv.second) {
+                LogPrintf("PTX signreq: %s no partial within %dms (was %s) -- UNREACHABLE\n",
+                          kv.first, PTX_SIGNREQ_MEMBER_MS,
+                          kv.second == PTXMemberSignState::INFLIGHT ? "INFLIGHT" : "RETRYABLE");
+                kv.second = retired;
                 continue;
             }
             const int64_t peer = TrySendSignReq(connman, ait->second, req);

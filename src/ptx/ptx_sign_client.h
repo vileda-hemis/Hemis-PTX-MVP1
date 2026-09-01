@@ -72,8 +72,40 @@ enum class PTXMemberSignState {
     RETRYABLE,    // refused, but the refusal was about propagation — re-send
     TERMINAL,     // refused finally — never re-send this member
     COLLECTED,    // partial in hand
-    UNREACHABLE,  // no connection could be established — like TERMINAL, absorbing
+    UNREACHABLE,  // gave us nothing within its budget — like TERMINAL, absorbing
+    _COUNT        // ★ sentinel — see the static_assert in ptx_sign_client.cpp
 };
+
+// ★★ EVERY NON-ABSORBING STATE MUST HAVE A BOUNDED EXIT, AND THE COMPILER
+// CHECKS THAT A NEW STATE DECLARES WHICH IT IS.
+// This rule exists because the same defect shipped THREE times in this one
+// state machine:
+//   UNSENT     — entered on "connection opening", no exit at all. Found by the
+//                fleet: 0 partials, every counter zero, full 30s wall burned.
+//   INFLIGHT   — entered on a successful send, exits only via OnResponse. A
+//                member that accepts the message and goes silent (an old binary
+//                ignoring an unknown command -- §9.13(h)) sits here forever.
+//   RETRYABLE  — entered on a retryable refusal, exits only back to INFLIGHT,
+//                with NO CAP on the cycle. A member that answers "commitment
+//                not seen" indefinitely never retires. ★ The RPC fan-out this
+//                replaced DID bound exactly this (FANOUT_MAX_ATTEMPTS, derived
+//                as wall/tick); dropping the dialer dropped the cap with it, so
+//                the P2P caller was STRICTLY WEAKER than the path it replaced,
+//                in precisely the case that path was designed around.
+// ★ All three share one shape: a state whose only exit depends on the far side
+// cooperating. The fix is not three bounds bolted on -- it is that a member has
+// a BUDGET, and anything still non-absorbing when the budget runs out retires.
+bool PTX_SignReq_IsAbsorbing(PTXMemberSignState s);
+
+// Overall per-member budget. A member that has produced no partial within this
+// retires to UNREACHABLE regardless of which non-absorbing state it is in.
+// ★ Strictly inside the wall, or the whole mechanism is decorative: the point
+// is that winnability can fire EARLY, and it cannot if the budget outlives the
+// round. Asserted by test.
+static const int PTX_SIGNREQ_MEMBER_MS = 15000;
+
+// Should this member be retired now? `elapsed_ms` is since its first attempt.
+PTXMemberSignState PTX_SignReq_RetireExpired(PTXMemberSignState s, int64_t elapsed_ms);
 
 // ---------------------------------------------------------------------------
 // The authoritative member binding
