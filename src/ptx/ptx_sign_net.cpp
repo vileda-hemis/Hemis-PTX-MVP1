@@ -110,6 +110,11 @@ double PTX_SignReq_RefillBucket(double bucket, std::chrono::microseconds since_l
     return std::min<double>(bucket + increment, PTX_SIGNREQ_TOKEN_BUCKET_MAX);
 }
 
+bool PTX_SignReq_ConnectWindowExpired(int64_t elapsed_ms)
+{
+    return elapsed_ms >= PTX_SIGNREQ_CONNECT_MS;
+}
+
 bool PTX_SignReq_SpendToken(double& bucket)
 {
     if (bucket < 1.0) return false;

@@ -11,7 +11,7 @@
 #include "protocol.h"
 #include "chainparams.h"
 #include "netbase.h"             // LookupNumeric
-#include "utiltime.h"
+#include "utiltime.h"   // GetTimeMillis for the connect window
 
 #include <algorithm>
 #include <chrono>
@@ -80,7 +80,18 @@ public:
     const size_t  m_threshold;
 
     std::map<int64_t, std::string>                       m_peer_to_member;
-    std::map<std::string, int64_t>                       m_member_to_peer;
+    // ★★ ADDRESS, NOT PEER-ID. The defect this replaces: `m_member_to_peer` was
+    // written ONLY on the already-connected send path, and the re-send tick
+    // LOOKED IT UP -- so a member that needed OpenNetworkConnection was marked
+    // UNSENT, never gained an entry, and the tick's lookup missed it forever.
+    // The connection it had just opened was never used, the member never left
+    // UNSENT, and the round burned the full wall for nothing (0 partials,
+    // 0 terminal, 0 retryable, 0 unreachable -- observed on the fleet).
+    // ★ The fix is not to also-write the table on the other path. It is to
+    // DELETE THE DEPENDENCY: every send re-resolves address -> peer at send
+    // time, so no path reads state that only another path writes.
+    std::map<std::string, CService>                      m_member_addr;
+    std::map<std::string, int64_t>                       m_first_attempt_ms;
     std::map<std::string, uint256>                       m_member_protx;
     std::map<std::string, PTXMemberSignState>            m_state;
     std::map<std::string, std::vector<unsigned char>>    m_partials;
@@ -217,9 +228,13 @@ bool PTX_ResolveMemberP2PAddr(const uint256& proTxHash, CService& addr_out)
     return true;
 }
 
-// Send one request to one member. Returns the NodeId used, or -1.
-int64_t SendSignReq(CConnman& connman, const CService& addr,
-                    const PTXSignReq& req)
+// ★★ THE ONE SEND PATH. Called by the initial pass AND by every re-send tick,
+// with no difference between them. Resolves address -> connected peer EVERY
+// time rather than consulting a table some other path was supposed to have
+// filled in. Returns the NodeId sent to, or -1 if not connected yet (in which
+// case a connection is opened and the next tick tries again).
+int64_t TrySendSignReq(CConnman& connman, const CService& addr,
+                       const PTXSignReq& req)
 {
     int64_t used = -1;
     connman.ForNode(addr,
@@ -230,6 +245,14 @@ int64_t SendSignReq(CConnman& connman, const CService& addr,
             used = pnode->GetId();
             return true;
         });
+    if (used < 0) {
+        // Not connected. Open one; the next tick re-resolves and finds it.
+        // ★ Nothing is recorded here that a later read depends on -- that
+        // asymmetry was the defect.
+        CAddress caddr(addr, NODE_NETWORK);
+        connman.OpenNetworkConnection(caddr, false, nullptr, nullptr,
+                                      false, false, false, /*gamemaster_connection=*/true);
+    }
     return used;
 }
 
@@ -294,21 +317,21 @@ PTXSignRoundResult PTX_SignRound_Run(const uint256& round_seed,
             continue;
         }
 
-        int64_t peer = SendSignReq(connman, addr, req);
-        if (peer < 0) {
-            // Not connected yet — open one and try on the next tick rather than
-            // blocking here. A connection attempt is not an answer.
-            CAddress caddr(addr, NODE_NETWORK);
-            connman.OpenNetworkConnection(caddr, false, nullptr, nullptr,
-                                          false, false, false, /*gamemaster_connection=*/true);
+        {
             LOCK(round->m_cs);
-            round->m_state[node_id] = PTXMemberSignState::UNSENT;
-            continue;
+            round->m_member_addr[node_id]      = addr;
+            round->m_first_attempt_ms[node_id] = GetTimeMillis();
         }
+        const int64_t peer = TrySendSignReq(connman, addr, req);
         LOCK(round->m_cs);
-        round->m_peer_to_member[peer]     = node_id;
-        round->m_member_to_peer[node_id]  = peer;
-        round->m_state[node_id]           = PTXMemberSignState::INFLIGHT;
+        if (peer < 0) {
+            // Connection opening. UNSENT is a WAITING state now, not a dead end:
+            // the tick re-resolves and it has a bounded exit (below).
+            round->m_state[node_id] = PTXMemberSignState::UNSENT;
+        } else {
+            round->m_peer_to_member[peer] = node_id;
+            round->m_state[node_id]       = PTXMemberSignState::INFLIGHT;
+        }
     }
 
     // ── Wait ────────────────────────────────────────────────────────────────
@@ -342,22 +365,38 @@ PTXSignRoundResult PTX_SignRound_Run(const uint256& round_seed,
 
         round->m_cv.wait_for(round->m_cs, std::chrono::milliseconds(PTX_SIGNREQ_TICK_MS));
 
-        // Re-send RETRYABLE and UNSENT members. TERMINAL and UNREACHABLE are
-        // never revisited — that is what "absorbing" means, and it is why a
-        // caller cannot spin against a member that has given a final answer.
+        // Re-send RETRYABLE and UNSENT members through the SAME send path the
+        // initial pass used. TERMINAL and UNREACHABLE are never revisited --
+        // that is what "absorbing" means.
         for (auto& kv : round->m_state) {
             if (kv.second != PTXMemberSignState::RETRYABLE &&
                 kv.second != PTXMemberSignState::UNSENT) continue;
-            auto mit = round->m_member_to_peer.find(kv.first);
-            if (mit == round->m_member_to_peer.end()) continue;
-            bool sent = false;
-            connman.ForNode(mit->second, [&](CNode* pnode) {
-                CNetMsgMaker msgMaker(pnode->GetSendVersion());
-                connman.PushMessage(pnode, msgMaker.Make(NetMsgType::PTXSIGNREQ, req));
-                sent = true;
-                return true;
-            });
-            if (sent) kv.second = PTXMemberSignState::INFLIGHT;
+            auto ait = round->m_member_addr.find(kv.first);
+            if (ait == round->m_member_addr.end()) {
+                // No address at all -- cannot ever be sent to. Absorbing.
+                kv.second = PTXMemberSignState::UNREACHABLE;
+                continue;
+            }
+            // ★★ THE BOUNDED EXIT. Without this the fix above only helps the
+            // member that WOULD have connected; a member that never connects
+            // would still sit UNSENT, still count toward max_reachable, and
+            // still hold a doomed round open to the full wall -- the winnability
+            // inversion, unfixed. Past the window it becomes UNREACHABLE, which
+            // is absorbing, so the round can go UNWINNABLE promptly instead.
+            const int64_t first = round->m_first_attempt_ms.count(kv.first)
+                                      ? round->m_first_attempt_ms[kv.first] : GetTimeMillis();
+            if (kv.second == PTXMemberSignState::UNSENT &&
+                PTX_SignReq_ConnectWindowExpired(GetTimeMillis() - first)) {
+                kv.second = PTXMemberSignState::UNREACHABLE;
+                LogPrintf("PTX signreq: %s never connected within %dms -- UNREACHABLE\n",
+                          kv.first, PTX_SIGNREQ_CONNECT_MS);
+                continue;
+            }
+            const int64_t peer = TrySendSignReq(connman, ait->second, req);
+            if (peer >= 0) {
+                round->m_peer_to_member[peer] = kv.first;
+                kv.second = PTXMemberSignState::INFLIGHT;
+            }
         }
     }
 

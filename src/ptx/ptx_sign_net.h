@@ -165,6 +165,24 @@ static const int PTX_SIGNREQ_WALL_MS = 30000;
 // the propagation-retry interval, not a connection retry.
 static const int PTX_SIGNREQ_TICK_MS = 150;
 
+// ★★ THE CONNECT WINDOW -- UNSENT MUST HAVE A BOUNDED EXIT.
+// A member we are not yet connected to is UNSENT while a connection is being
+// opened. That state MUST expire, or a member that can never be connected (bad
+// address, host down, firewalled) holds the round open to the full wall.
+// ★ And it holds it open in the WORST possible way: UNSENT counts as
+// still-possible for winnability, so a round that CANNOT succeed waits the
+// MAXIMUM time instead of the minimum -- backwards from the design intent.
+// Past this bound the member becomes UNREACHABLE, which is absorbing, drops out
+// of max_reachable, and lets the round go UNWINNABLE promptly.
+// 10s against a 30s wall: generous for a TCP+version handshake on any real
+// network, and still leaves two thirds of the wall for members that do connect.
+static const int PTX_SIGNREQ_CONNECT_MS = 10000;
+
+// Pure predicate, factored out so the bound is testable without a CConnman --
+// the component-3 coverage bound applies to everything that touches connman,
+// and this is the part that does not have to.
+bool PTX_SignReq_ConnectWindowExpired(int64_t elapsed_ms);
+
 static const double PTX_SIGNREQ_TOKEN_BUCKET_MAX = 10.0;
 static const double PTX_SIGNREQ_RATE_PER_SECOND  = 1.0;
 

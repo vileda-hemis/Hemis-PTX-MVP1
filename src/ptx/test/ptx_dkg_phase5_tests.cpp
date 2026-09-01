@@ -6720,4 +6720,110 @@ BOOST_AUTO_TEST_CASE(Kdd085_Client_DoesNotWeakenResponderGuarantee)
 }
 
 
+// ===========================================================================
+// KDD-085 — THE UNSENT DEFECT, found by the fleet on the first real roll.
+// ===========================================================================
+// ★★ WHAT HAPPENED, because the fix is only legible against it. The first roll
+// ever attempted over sign-over-P2P returned "BLS threshold not met: got 0/6"
+// after exactly the full 30s wall, and the round summary read:
+//     0 partial(s), 0 terminal, 0 retryable, 0 unreachable, 0 protx-mismatch
+// EVERY counter zero -- eleven members, not one of them in any terminal state,
+// and no GM logged a signreq. Requests were never delivered.
+//
+// ★ MECHANISM: `m_member_to_peer` was written ONLY on the already-connected
+// send path. A member that needed OpenNetworkConnection was marked UNSENT and
+// never gained an entry; the re-send tick LOOKED UP that table, missed, and
+// `continue`d past it forever. The connection it had just opened was never
+// used. UNSENT was a state with no exit.
+//
+// ★★ AND THE WINNABILITY INVERSION, which is the sharper half: UNSENT counts as
+// still-possible, so a round that COULD NOT SUCCEED waited the MAXIMUM time
+// instead of the minimum -- exactly backwards from what the fail-fast logic was
+// built for.
+//
+// ★ THE FIX IS NOT "also write the table on the other path". It is to delete
+// the dependency: one send path, re-resolving address -> peer every time, so no
+// path reads state only another path writes. Plus a bounded exit from UNSENT.
+
+// The bound itself -- pure, so it is testable without a CConnman.
+BOOST_AUTO_TEST_CASE(Kdd085_Unsent_ConnectWindowIsBounded)
+{
+    BOOST_CHECK(!PTX_SignReq_ConnectWindowExpired(0));
+    BOOST_CHECK(!PTX_SignReq_ConnectWindowExpired(PTX_SIGNREQ_CONNECT_MS - 1));
+    BOOST_CHECK(PTX_SignReq_ConnectWindowExpired(PTX_SIGNREQ_CONNECT_MS));
+    BOOST_CHECK(PTX_SignReq_ConnectWindowExpired(PTX_SIGNREQ_CONNECT_MS + 5000));
+    // ★ The window must be STRICTLY INSIDE the wall, or it can never fire and
+    // the bounded exit is decorative -- the defect would survive its own fix.
+    BOOST_CHECK_MESSAGE(PTX_SIGNREQ_CONNECT_MS < PTX_SIGNREQ_WALL_MS,
+        "KDD-085: the connect window is not shorter than the wall, so a member that "
+        "never connects can never be retired before the round times out anyway");
+}
+
+// ★★ THE WINNABILITY INVERSION, expressed as the arithmetic that drives it.
+// This is the property that actually matters for a caller under load: a doomed
+// round must fail at the moment it becomes doomed, not at the wall.
+BOOST_AUTO_TEST_CASE(Kdd085_Unsent_RetiringToUnreachableFlipsWinnability)
+{
+    const size_t t = 6;   // majority(11)
+    // BEFORE the bounded exit: 8 members stuck UNSENT + 3 collected. UNSENT
+    // counts as still-possible, so the round looks winnable and waits the wall.
+    BOOST_CHECK_MESSAGE(PTX_SignRound_StillWinnable(3, 0, 0, 8, t),
+        "precondition: while members sit UNSENT the round still LOOKS winnable — "
+        "this is exactly why the old code waited the full 30s");
+    // AFTER: the same 8 are retired to UNREACHABLE, which is absorbing and does
+    // not appear in the sum at all. The round is now provably lost and the
+    // caller stops immediately.
+    BOOST_CHECK_MESSAGE(!PTX_SignRound_StillWinnable(3, 0, 0, 0, t),
+        "KDD-085: retiring stuck members to UNREACHABLE did not flip the round to "
+        "UNWINNABLE — the fail-fast path is still inverted and a doomed round will "
+        "still wait out the wall");
+    // And the boundary: retiring members must not abandon a round that can
+    // still reach threshold.
+    BOOST_CHECK(PTX_SignRound_StillWinnable(3, 0, 3, 0, t));
+    BOOST_CHECK(!PTX_SignRound_StillWinnable(3, 0, 2, 0, t));
+}
+
+// ★★ THE RED LEG, structural: the defect was a SHAPE -- one path reading state
+// only another path writes. This asserts the shape is gone, not merely that
+// this instance was patched.
+// RED against the pre-fix source: `m_member_to_peer` present and the tick
+// looking it up => both limbs below fail.
+BOOST_AUTO_TEST_CASE(Kdd085_Unsent_OneSendPath_Structural)
+{
+    const std::string src = PTX_SRCDIR;
+    BOOST_REQUIRE_MESSAGE(!src.empty(), "KDD-085: PTX_SRCDIR not injected");
+    const std::string cpp = P5_strip_comments(P5_slurp(src + "/src/ptx/ptx_sign_client.cpp"));
+    BOOST_REQUIRE_MESSAGE(!cpp.empty(), "cannot read ptx_sign_client.cpp");
+
+    // Positive limb first, so the negatives cannot pass against the wrong file.
+    BOOST_REQUIRE_MESSAGE(cpp.find("TrySendSignReq") != std::string::npos,
+        "KDD-085: the single send path is gone — the limbs below would be vacuous");
+
+    // ★ The dependency itself must not exist: no member->peer table that only
+    // the success path writes and only the tick reads.
+    BOOST_CHECK_MESSAGE(cpp.find("m_member_to_peer") == std::string::npos,
+        "KDD-085: m_member_to_peer is back. That table was written ONLY on the "
+        "already-connected path and READ by the re-send tick, so a member that needed "
+        "a new connection never got a request and the round burned the full wall.");
+
+    // ★ BOTH the initial pass and the tick must go through the one path. Two
+    // call sites, no second send implementation.
+    BOOST_CHECK_MESSAGE(P5_count(cpp, "TrySendSignReq(") >= 3,
+        "KDD-085: TrySendSignReq is not called from BOTH the initial pass and the "
+        "re-send tick — if one of them sends by another route, the two can diverge "
+        "again and only one will be exercised without a live fleet");
+    // Only ONE place may actually push the message.
+    BOOST_CHECK_MESSAGE(P5_count(cpp, "NetMsgType::PTXSIGNREQ") == 1,
+        "KDD-085: more than one site pushes PTXSIGNREQ — there must be exactly one "
+        "send implementation");
+
+    // ★ UNSENT must have an exit, and it must be the absorbing one.
+    BOOST_CHECK_MESSAGE(cpp.find("PTX_SignReq_ConnectWindowExpired") != std::string::npos,
+        "KDD-085: the UNSENT bounded exit is gone — a member that can never connect "
+        "will hold a doomed round open to the full wall again");
+    BOOST_CHECK_MESSAGE(cpp.find("PTXMemberSignState::UNREACHABLE") != std::string::npos,
+        "KDD-085: nothing retires a stuck member to UNREACHABLE");
+}
+
+
 BOOST_AUTO_TEST_SUITE_END()
