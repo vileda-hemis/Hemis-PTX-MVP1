@@ -82,18 +82,23 @@ here rather than at registration.
 | gamemasters | **4** |
 | hosts | **4** — one GM each, no sharing |
 | routable addresses | **4** — one per GM, reachable from the public internet |
-| ports per host | **29994 P2P** and **29995 RPC**, the same pair on every host |
+| ports per host | **29994 P2P — open.** 29995 RPC exists but is **loopback-only**, never opened |
 | collateral | **4 × 100 HMS**, one exact unspent output each |
 
-★ **Why one address per GM, and it is not a preference.** The PTX signing fan-out dials each
-member at the address it registered on-chain, paired with **one port number that is the same for
-every member** — `PTX_FanoutRpcPort()` (`src/ptx/ptx_fanout.cpp:117-120`) takes no per-member
-argument. So two GMs sharing a host at different RPC ports cannot both be reached by any single
-configuration: whichever port the fan-out uses, the other GM never receives a signing request. It
-registers, is selected into quorums, shows `ENABLED`, and silently never signs.
+★ **Why one address per GM — and the reason CHANGED, so read this rather than skimming it.**
+It used to be mechanical: the signing fan-out dialled every member on **one RPC port shared by all
+of them** (`PTX_FanoutRpcPort()` took no per-member argument), so two GMs on one host at different
+RPC ports could not both be reached — one would register, be selected, show `ENABLED`, and silently
+never sign. **KDD-085 deleted the fan-out.** Signing arrives over P2P at each GM's own registered
+address *and* port, so that blocker no longer exists.
+
+★ **Keep one GM per host regardless.** Four hosts, four routable addresses. Co-hosting is now
+*mechanically* possible and has never been tested — no fleet run, no ceremony, no PoSe observation
+under it — and a launch testnet is the wrong place to discover what breaks. Treat this as a
+supported-configuration boundary, not a technical impossibility, which is what it used to be.
 
 ★ **Both ports are the same on every host** — 29994 and 29995 — because the hosts differ, not the
-ports. There is no port table to keep straight any more.
+ports. Only 29994 is ever opened.
 
 ★ **Do NOT reuse one BLS key across your four.** Each GM generates its own in step A4. A shared
 key means the chain cannot tell your nodes apart.
@@ -121,7 +126,7 @@ apt-get update && apt-get install -y --no-install-recommends git curl ca-certifi
 ```
 
 ```bash
-git clone -b v0.1.2-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
+git clone -b v0.1.3-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 cd Hemis-PTX-MVP1/testnet/operator
 ./install.sh
 ```

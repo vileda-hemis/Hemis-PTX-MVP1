@@ -95,6 +95,47 @@ while IFS=$'\t' read -r hf hre; do
     fi
 done <<< "$HISTORICAL"
 
+# ---------------------------------------------------------------------------
+# ★★ THE TAG ITSELF MUST BE ANNOTATED, AND IT MUST EXIST BEFORE THE BUILD.
+# ---------------------------------------------------------------------------
+# ODC-092. `share/genbuild.sh` overrides the numeric client version with the tag
+# NAME -- but only via `git describe --abbrev=0`, WITHOUT `--tags`, which sees
+# annotated tags only. A lightweight tag is invisible to it, `describe` falls
+# through to the nearest annotated tag (`first-quorum`), the HEAD comparison
+# fails, and every build reports `v1.3.1.0-<commit>` instead of the release name.
+#
+# ★ That is not cosmetic: the operator instruction is "verify you are on
+# <tag>", and a binary that can only print a commit hash cannot answer it. Two
+# separate investigations this week were spent reconciling a version string with
+# a tag name because of exactly this.
+#
+# ★★ AND ANNOTATED IS NOT SUFFICIENT ON ITS OWN -- ORDER IS THE OTHER HALF.
+# The release workflow BUILDS (build-and-release.yml:401-446) and only then
+# creates the tag (:490, action-gh-release). At build time no tag exists at HEAD,
+# so genbuild cannot see one however it is created. The tag must be pushed FIRST
+# and the workflow dispatched from it. This check catches the annotated half; the
+# ordering half is a procedure, written down in PTX_TESTNET_RELEASE.md §3.
+check_tag_object() {
+    local t="$1" kind=""
+    if git rev-parse -q --verify "refs/tags/$t" >/dev/null 2>&1; then
+        kind="$(git cat-file -t "$t" 2>/dev/null)"
+        if [ "$kind" = "tag" ]; then
+            echo "pin-check: tag $t is ANNOTATED -- genbuild will print the tag name"
+            return 0
+        fi
+        printf 'LIGHTWEIGHT TAG  %s is a lightweight tag (cat-file -t = %s).\n' "$t" "$kind"
+        printf '                 genbuild.sh cannot see it, so binaries built from it report\n'
+        printf '                 v1.3.1.0-<commit> and NOT %s. Re-create it with: git tag -a %s\n' "$t" "$t"
+        return 1
+    fi
+    echo "pin-check: tag $t does not exist yet (normal before a cut)."
+    echo "           When you create it: git tag -a $t -m '...' && git push origin $t"
+    echo "           ANNOTATED, and pushed BEFORE dispatching the release workflow --"
+    echo "           the workflow builds before it would create the tag (ODC-092)."
+    return 0
+}
+check_tag_object "$EXPECTED" || rc=1
+
 if [ "$rc" -eq 0 ]; then
     echo "pin-check: OK -- every pin names $EXPECTED, every exemption still matches"
 fi

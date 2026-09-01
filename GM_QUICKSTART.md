@@ -5,7 +5,7 @@ and every failure mode named, is `testnet/operator/OPERATOR_GUIDE.md` — the bo
 it onto your machine.
 
 ```bash
-wget https://raw.githubusercontent.com/vileda-hemis/Hemis-PTX-MVP1/v0.1.2-testnet/vps-install.sh
+wget https://raw.githubusercontent.com/vileda-hemis/Hemis-PTX-MVP1/v0.1.3-testnet/vps-install.sh
 bash vps-install.sh
 ```
 
@@ -40,10 +40,13 @@ A quorum needs **11 members** and there are five operators, so five nodes would 
 all. 5 × 4 = **20** covers 11 with **nine** spare — at 3 each, losing one operator plus any single
 other GM lands exactly on the floor of 11.
 
-★ **One GM per host is a requirement, not a preference.** The signing fan-out dials every member on
-the *same* port number (`src/ptx/ptx_fanout.cpp:117-120`), so two GMs sharing a host at different
-RPC ports cannot both be reached — one of them registers, is selected, and silently never signs.
-Run the bootstrap once on each host.
+★ **One GM per host — keep doing this, but the old reason no longer applies.** The reason given
+here used to be that the signing fan-out dialled every member on the *same* RPC port, so two GMs
+sharing a host could not both be reached. **KDD-085 deleted the fan-out**; signing arrives over P2P
+at each GM's own registered address *and port*, so that specific blocker is gone.
+★ **Run one GM per host anyway** — four hosts, four routable addresses, as the guide describes.
+Whether co-hosting is now supportable is an open question nobody has tested, and a testnet is not
+where to find out. Run the bootstrap once on each host.
 
 ---
 
@@ -51,25 +54,26 @@ Run the bootstrap once on each host.
 
 | | port | who must reach it |
 |---|---|---|
-| **P2P** | **29994** | everyone — it is how you sync and relay |
-| **RPC** | **29995** | **the other gamemasters**, at the address you register. NOT the world |
+| **P2P** | **29994** | **everyone** — it is how you sync, relay, *and receive signing requests* |
+| **RPC** | **29995** | **nobody. Loopback only.** Do not open it, do not forward it |
 
 **Every host uses the same pair.** There is no per-GM port table any more: your four GMs are on
 four hosts, so the ports never collide and never change.
 
-Open both in the host firewall (`ufw`/`firewalld`/`iptables`) **and** in the NAT router or cloud
-security group. Opening only one of the two places is the most common setup failure.
+Open **29994** in the host firewall (`ufw`/`firewalld`/`iptables`) **and** in the NAT router or
+cloud security group. Opening only one of the two places is the most common setup failure.
 
-★★ **RPC is not simply "closed".** It must be reachable **by the other gamemasters** and blocked
-from everyone else. The mechanism is `rpcallowip` in `Hemis.conf`, and the coordinator gives you
-the peer addresses at onboarding — see `OPERATOR_GUIDE.md`. As installed it allows localhost only,
-which is a safe firewall posture and **cannot sign**.
+★★ **29994 being closed is the silent killer.** Signing requests arrive over **P2P**, at the
+address you register on chain. A node with 29994 closed still syncs (it dials out), shows as
+registered and enabled, and **never signs anything** — it is selected and then never contacted.
+Nothing in the ordinary status output tells you this. `self-check.sh` section 5 is the check for it.
 
-★★ **RPC being closed is the silent killer.** PTX fan-out dials each member's **RPC** directly to
-request a signature. A node with 29994 open and 29995 closed syncs perfectly, shows as registered
-and enabled, and **never signs anything** — because it is selected and then never successfully
-contacted. Nothing in the ordinary status output tells you this. `self-check.sh` section 5 is the
-check for it.
+★★ **RPC is closed, full stop — and this REVERSED.** Earlier versions of this page said 29995 had
+to be reachable by the other gamemasters, configured with `rpcallowip`, and that a closed RPC port
+was the thing that stopped you signing. **All of that is now wrong.** KDD-085 deleted the RPC
+signing path: there is no credential, no caller allow-list entry, and nothing dials your RPC. It is
+a local admin interface. **If you are following an older copy of this page, opening 29995 does not
+help you sign and exposes the credentials in your config.**
 
 ---
 

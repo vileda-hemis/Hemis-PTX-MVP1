@@ -2,7 +2,7 @@
 #
 # PTX testnet — VPS bootstrap for gamemaster operators.
 #
-#   wget https://raw.githubusercontent.com/vileda-hemis/Hemis-PTX-MVP1/v0.1.2-testnet/vps-install.sh
+#   wget https://raw.githubusercontent.com/vileda-hemis/Hemis-PTX-MVP1/v0.1.3-testnet/vps-install.sh
 #   bash vps-install.sh
 #
 # ★★ BY TAG, NOT BY BRANCH, AND NOT BY `main`. This header used to say `main`.
@@ -34,7 +34,7 @@ set -euo pipefail
 # /releases/latest/download/Hemis-Linux.zip returns 404 on this repository, and
 # the API's /releases/latest says "Not Found". A testnet wants a pinned artefact
 # anyway; "latest" is how two operators end up on different code.
-TAG="${PTX_TAG:-v0.1.2-testnet}"
+TAG="${PTX_TAG:-v0.1.3-testnet}"
 REPO="${PTX_REPO:-https://github.com/vileda-hemis/Hemis-PTX-MVP1.git}"
 
 # ★★ ONE GM PER HOST. Run this bootstrap ONCE ON EACH of your four machines.
@@ -185,11 +185,14 @@ cat <<EOF
   NEXT, in order — the full text for each step is in
   $CLONE_DIR/testnet/operator/OPERATOR_GUIDE.md:
 
-   1. FIREWALL. Open each GM's two ports in BOTH the host firewall and any
-      NAT router or cloud security group. For GM 1 that is 29994 and 29995.
-      ★ RPC closed is the silent killer: the node syncs, shows as registered
-        and enabled, and never signs anything, because fan-out dials RPC
-        directly. Nothing in the ordinary status output tells you.
+   1. FIREWALL. Open each GM's P2P port in BOTH the host firewall and any
+      NAT router or cloud security group. For GM 1 that is 29994 ONLY.
+      ★ Do NOT open 29995 (RPC). It is loopback-only: nothing dials it, and
+        exposing it publishes the credentials in your config for no benefit.
+      ★ P2P closed is the silent killer: the node still syncs (it dials out),
+        shows as registered and enabled, and never signs anything, because
+        signing requests arrive over P2P at the address you registered.
+        Nothing in the ordinary status output tells you.
 
    2. BLS KEY, per GM. Generate it on THIS machine, put the SECRET half in that
       GM's Hemis.conf as gamemasterblsprivkey=, and send only the PUBLIC half to

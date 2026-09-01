@@ -19,7 +19,7 @@ REPO="${PTX_REPO:-https://github.com/vileda-hemis/Hemis-PTX-MVP1.git}"
 #
 # To build a later fix before it is tagged, pass the branch explicitly:
 #   PTX_REF=feature/ptx-dkg PTX_BUILD_FROM_SOURCE=1 ./install.sh
-REF="${PTX_REF:-v0.1.2-testnet}"
+REF="${PTX_REF:-v0.1.3-testnet}"
 PREFIX="${PTX_PREFIX:-/opt/hemis-ptx}"
 # ★★ THE DEFAULT DATADIR, AND THIS IS BUG-047's FIX -- NOT A TIDY-UP.
 # The daemon's own default is $HOME/.Hemis (util/system.cpp GetDefaultDataDir),
@@ -48,11 +48,12 @@ PREFIX="${PTX_PREFIX:-/opt/hemis-ptx}"
 DATADIR="${PTX_DATADIR:-$HOME/.Hemis}"
 # ★ Overridable, but the DOCUMENTED DEPLOYMENT IS ONE GM PER HOST, so the defaults
 # are what an operator should use. These remain for unusual deployments and for
-# install-test.sh's fixture. ★ RPC_PORT in particular must stay 29995: the signing
-# fan-out dials ONE port number for EVERY member (ptx/ptx_fanout.cpp:117-120 --
-# PTX_FanoutRpcPort() takes no per-member argument), so a GM on a non-standard RPC
-# port is never contacted and silently never signs. See OPERATOR_GUIDE.md
-# "One GM per host, one routable address per GM".
+# install-test.sh's fixture. ★ RPC_PORT no longer has to match anything on the
+# network: the signing fan-out that dialled ONE shared RPC port for every member
+# was deleted by KDD-085, and signing now arrives over P2P. Keeping 29995 is
+# convention and consistency with the chain default, not a requirement -- a GM on
+# a non-standard RPC port signs perfectly well now. P2P_PORT is the one that must
+# match what you register.
 P2P_PORT="${PTX_P2P_PORT:-29994}"
 RPC_PORT="${PTX_RPC_PORT:-29995}"
 
@@ -899,7 +900,6 @@ fi
 # gate decides. Nothing here to set, nothing to ask the coordinator for, and
 # four operator failure modes (401, 403, wrong fan-out port, RPC unreachable)
 # that no longer exist because the thing that produced them is gone.
-CALLER_LINES=""
 
 # ★★ THE ADDRESS THIS NODE ADVERTISES, AND IT MUST EQUAL THE ONE YOU REGISTER.
 # CActiveDeterministicGamemasterManager::Init refuses to arm without it:
@@ -988,14 +988,18 @@ $RPCBIND_LINES
 # reject) and the credential AFTER it (httprpc.cpp:157, HTTP 401) -- you need both
 # lines below or the roll comes back short with nothing in YOUR log: an ACL
 # rejection is logged only under -debug=http.
-# ★ Do NOT open this to 0.0.0.0/0 or ::/0. There is no per-method restriction in
-# this daemon -- jreq.authUser (httprpc.cpp:157) is never read and there is no
-# -rpcwhitelist -- so anything that authenticates gets the WHOLE RPC surface of
-# this node, including stop and the wallet. Keep it to the one caller address.
+# ★★ LOOPBACK ONLY, AND THERE IS NO LONGER A CALLER ENTRY TO ADD. KDD-085
+# deleted the RPC signing path, so nothing off this host ever calls this node's
+# RPC. Do NOT widen this, and do not uncomment a caller line from an older
+# config: there is no per-method restriction in this daemon -- jreq.authUser
+# (httprpc.cpp:157) is never read and there is no -rpcwhitelist -- so anything
+# that authenticates gets the WHOLE RPC surface, stop and the wallet included.
+# Widening it now buys nothing at all, because nothing needs to reach it.
 rpcallowip=127.0.0.1
 rpcallowip=::1
-$CALLER_LINES
-# ★★ RPC SERVER CAPACITY -- SIZED FOR THE FAN-OUT, NOT FOR A HUMAN AT A PROMPT.
+# ★ RPC SERVER CAPACITY. (Historical note: this was sized for the signing
+# fan-out's concurrent dials. KDD-085 deleted that; the values are harmless
+# and left alone rather than re-tuned on a launch-eve change.)
 # The stock values are DEFAULT_HTTP_WORKQUEUE=16 and DEFAULT_HTTP_THREADS=4
 # (httpserver.h:13-14, read at httpserver.cpp:404 and :435). Those are sized for
 # an operator typing one command at a time. This node is not that: it is a
@@ -1241,7 +1245,9 @@ cat <<EOF
   -datadir pointing somewhere else. Correct for a PTX gamemaster host.
 
   NEXT, in order:
-    1. Open $P2P_PORT and $RPC_PORT in your firewall AND any NAT/cloud security group.
+    1. Open $P2P_PORT (P2P) in your firewall AND any NAT/cloud security group.
+       ★ Do NOT open $RPC_PORT. RPC is loopback-only: nothing dials it, and
+         exposing it publishes this file's credentials for no benefit.
     2. Follow OPERATOR_GUIDE.md section "Node side" to generate your BLS key and
        send the PUBLIC half to the wallet operator.
     3. Start the daemon, then run:  ./self-check.sh

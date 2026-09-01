@@ -68,9 +68,47 @@ actual name, and are fixed in the same commit as this document.
 
 ## 3. How the release is cut
 
-The workflow is `workflow_dispatch` and **creates the tag itself** via `softprops/action-gh-release`
-(`tag_name` input), at the commit of whatever ref you dispatch it from. That resolves the ordering
-problem cleanly: there is no window where a tag exists without artefacts.
+The workflow is `workflow_dispatch` and **can create the tag itself** via
+`softprops/action-gh-release` (`tag_name` input), at the commit of whatever ref you dispatch it
+from. That resolves one ordering problem — there is no window where a tag exists without artefacts.
+
+### ★★ 0a. CREATE THE TAG FIRST, ANNOTATED, AND DISPATCH FROM IT — ODC-092
+
+**Do not let the workflow create the tag.** Two independent defects meet here, and each on its own
+is enough to break the operator's verification step:
+
+1. **`action-gh-release` creates LIGHTWEIGHT tags.** `share/genbuild.sh` overrides the numeric
+   client version with the tag *name*, but only via `git describe --abbrev=0` — **without
+   `--tags`**, which sees annotated tags only. A lightweight tag is invisible to it: `describe`
+   falls through to the nearest annotated tag (`first-quorum`), the HEAD comparison fails, and the
+   binary reports `v1.3.1.0-<commit>`.
+2. ★★ **The workflow BUILDS BEFORE IT TAGS.** `build-and-release.yml` compiles at `:401-446` and
+   only calls `action-gh-release` at `:490`. **At build time no tag exists at HEAD at all**, so
+   genbuild cannot see one however it is created. *Annotated-ness alone does not fix this — order
+   is the other half, and it is the half that is easy to miss.*
+
+**So the procedure is:**
+
+```bash
+testnet/operator/pin-check.sh v0.1.3-testnet     # must exit 0 (it checks annotated-ness too)
+git tag -a v0.1.3-testnet -m "PTX testnet v0.1.3 — <summary>"
+git push origin v0.1.3-testnet
+# THEN dispatch build-and-release.yml FROM THE TAG REF, with tags=v0.1.3-testnet
+```
+
+`action-gh-release` only creates a tag that does not already exist, so dispatching against an
+existing one reuses it and the artefacts still attach.
+
+★ **Verified empirically, not inferred** (2026-09-01, px1): with an annotated tag at HEAD and a
+clean tree, `src/obj/build.h` gets `#define BUILD_DESC "<tag>"` and `Hemisd -version` prints
+`Hemis Core Daemon version <tag>`. Read genbuild and reason about it and you will get this wrong —
+it was got wrong once already this week.
+
+★ **One trade to know about:** `BUILD_DESC` **replaces** the version string, it does not append. A
+tagged build prints the tag name and **no commit hash**. That is better for an operator answering
+*"am I on the release?"* and worse for diagnosing a stale binary, which is what the commit hash was
+used for during the `4d558e6` retraction. The commit is still recoverable from the tag; just do not
+expect `-version` to show it.
 
 0. ★★ **Run the installer end-to-end test and require exit 0. This is a gate, not a nicety.**
 
