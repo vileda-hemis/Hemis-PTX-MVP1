@@ -1062,7 +1062,7 @@ left it on 2026-08-25; this section is the **landing record**, and by this docum
 | `ptxsignreq`/`ptxsignresp` + the **rejection path** | **LANDED**, green on px1 (498/498 `--enable-debug`) | component 1 |
 | Directed request/reply, correlation, stop-at-threshold | **LANDED** (dormant — `rpc/ptx.cpp` still calls the HTTP fan-out; the swap is component 4's "replace") | component 3 |
 | Mandatory-commitment ordering + token bucket | **LANDED** with component 1 | component 1 |
-| Capability advertisement + mixed-fleet transition | **NOT NEEDED** — see §9.13(g) | — |
+| Capability advertisement + mixed-fleet transition | ★★ **STILL OWED — the earlier "NOT NEEDED" was wrong and cited a section that never justified it.** See §9.13(h) | — |
 | Delete `ptx_fanout.cpp`, drop `-ptxfanoutport`, docs | **LANDED** | component 4 |
 | Fleet + two-host adversarial test (§9.8) | RED leg **RUN AND CAPTURED**; GREEN leg blocked — §9.13(g) | — |
 
@@ -1362,3 +1362,46 @@ did not need to exist before component 4 for the reason given; they needed to ex
 **Suite: 508/508 under `--enable-debug` on px1**, rebuilt from a cleaned tree — an intermediate
 build hit the known stale-object flag-mix trap (`DeleteLock` / `AssertLockHeldInternal` undefined at
 link) after a broad rsync carried foreign `.o` files onto the build host; purged and rebuilt.
+
+**(h) ★★ A correction to this document's own status board — capability advertisement is NOT done.**
+
+The board previously read *"Capability advertisement + mixed-fleet transition — **NOT NEEDED**, see
+§9.13(g)"*. **§9.13(g) says nothing about it.** The row was marked closed against a citation that
+does not support it, which is the KDD-104 / ODC-091 shape reproduced inside the very document that
+registers them. Found by an unrelated question — "can the fleet be upgraded in place?" — not by
+re-reading the board.
+
+**What is actually missing:** `PROTOCOL_VERSION` is still `70928` (`version.h:14`). The plan's row
+said *"`ptxsignreq`/`ptxsignresp` + serialization + **protocol bump**"*; the messages landed, the
+bump did not. So **there is no way for a caller to tell whether a peer speaks the new messages.**
+
+**Why that matters, precisely.** An old node handles an unknown command by ignoring it
+(`net_processing.cpp:2372` — a `LogPrint` under `BCLog::NET` and nothing else). So a new caller
+sending `ptxsignreq` to an old GM gets **no answer at all** — not a refusal it could classify.
+Component 3's state machine leaves that member `INFLIGHT` forever: never `RETRYABLE`, never
+`TERMINAL`, so it keeps counting toward `max_reachable` and the round **waits out the full 30 s
+wall** instead of failing fast. The winnability logic cannot help, because silence is
+indistinguishable from a slow honest member.
+
+★★ **BUT THE FLEET CAN STILL BE UPGRADED IN PLACE, BECAUSE THE NEW BINARY IS A SUPERSET
+RESPONDER.** Component 4 deleted the *caller* (`ptx_fanout.cpp`), not the responder: `gm_bls_sign`
+is still registered (`rpc/ptx.cpp:1806`) with its attachment still optional. So:
+
+| caller | GM | works? |
+|---|---|---|
+| old (RPC fan-out) | old | yes — unchanged |
+| old (RPC fan-out) | **new** | **yes** — the new GM still serves `gm_bls_sign` |
+| **new** (P2P) | old | **NO** — the old GM silently ignores `ptxsignreq` |
+| **new** (P2P) | new | yes |
+
+★ **Therefore the upgrade order is: every GM first, the caller LAST.** Under that order there is
+never a moment when a caller speaks a protocol its members do not, and no flag day is required.
+Upgrading the caller early — or upgrading GMs after it — breaks every roll whose quorum contains an
+un-upgraded member, silently and at the wall.
+
+★ **This ordering works because the fleet has ONE caller under one operator's control. It does not
+generalise to the real testnet**, where operators upgrade independently and nobody controls the
+order. Capability advertisement is therefore **required before independent operators upgrade**, and
+is not merely a nicety deferred for tidiness. Minimum shape: bump `PROTOCOL_VERSION`, have the
+caller check `pnode->nVersion` before sending, and mark a member that cannot speak it `UNREACHABLE`
+immediately — which is an absorbing state the winnability arithmetic already handles correctly.
