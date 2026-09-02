@@ -310,8 +310,16 @@ Repository:     https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 
 Gamemasters:    <N>, one per host, each host with its own routable address
                 (I have set N for you; it is not a figure from the guide)
-Ports:          29994 P2P -- open to the internet. This is the one that matters.
-                29995 RPC -- LOOPBACK ONLY. Do not open it. Do not forward it.
+Machines:       your GM hosts install with   ./install.sh            (role: gamemaster)
+                your ONE wallet machine with PTX_ROLE=wallet ./install.sh
+                install.sh PRINTS the role it built -- check that line. A GM
+                built as a wallet registers, looks healthy, and never signs.
+Ports:          29994 P2P -- open to the internet, ON EVERY MACHINE INCLUDING THE
+                WALLET ONE. The wallet host listens too, so that it returns peers
+                to a network that has no DNS seed; it still advertises no address
+                and registers nothing.
+                29995 RPC -- LOOPBACK ONLY, both roles. Do not open it. Do not
+                forward it.
 Collateral:     100 HMS per gamemaster, EXACTLY. Not 1000.
 Funding:        I will send you <(N x 100) + 100> HMS once you send me an address (see the
                 guide: install, start, RESTART ONCE, then send the address -- in that

@@ -1070,10 +1070,14 @@ role_run() {
     # nothing -- one config for both machines also installs cleanly, which is
     # exactly the state this replaced. The claim is that they DIFFER.
     local gm="$BASE/role-gamemaster/.Hemis/Hemis.conf" wa="$BASE/role-wallet/.Hemis/Hemis.conf"
-    if grep -qE '^listen=1' "$gm" && grep -qE '^listen=0' "$wa"; then
-        ok "the two roles differ on listen (gamemaster 1, wallet 0)"
+    # listen is deliberately the SAME in both roles and is pinned here as such:
+    # a wallet host listens so it returns peers to a network with no DNS seed.
+    # It was briefly listen=0 on a symmetry argument with externalip that did not
+    # hold -- externalip advertises for REGISTRATION, listen merely accepts.
+    if grep -qE '^listen=1' "$gm" && grep -qE '^listen=1' "$wa"; then
+        ok "both roles listen (listen=1) -- a wallet host contributes peers, by decision"
     else
-        bad "listen is the same in both roles -- the toggle is not doing anything."; rc=1
+        bad "a role is not listening. Both roles must set listen=1."; rc=1
     fi
     if grep -qE '^externalip=' "$gm" && ! grep -qE '^externalip=' "$wa"; then
         ok "the two roles differ on externalip (gamemaster sets it, wallet does not)"

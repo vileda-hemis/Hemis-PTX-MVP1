@@ -931,10 +931,15 @@ fi
 # ★★ ROLE FORK. Exactly three things differ; everything else in the config is
 # byte-identical between the two roles.
 if [ "$PTX_ROLE" = "wallet" ]; then
-    # (a) A wallet host needs OUTBOUND peers to sync and to broadcast its ProTx.
-    #     It does not need to be dialled by anyone, and it is the box holding
-    #     collateral, so it does not listen.
-    LISTEN_LINE="listen=0"
+    # (a) ★ A wallet host LISTENS, exactly as a gamemaster does. Pairing this
+    #     with externalip and turning both off was a FALSE PAIRING: externalip
+    #     advertises an address for REGISTRATION, and a wallet host registers
+    #     nothing -- while listen merely accepts inbound peers, which is a
+    #     different thing and one a wallet host has no reason to refuse.
+    #     The deciding cost is the network's, not this host's: ptxtestnet has no
+    #     DNS seed and a small peer count, so a wallet node that takes
+    #     connectivity and returns none is a real cost once there are twenty.
+    LISTEN_LINE="listen=1"
     # (b) externalip is the address you REGISTER. A wallet host registers
     #     nothing, so advertising an address for a machine the guide tells you
     #     to keep local is pointless and leaks it.
@@ -945,9 +950,16 @@ if [ "$PTX_ROLE" = "wallet" ]; then
 # not here. If you meant to build a gamemaster, re-run with PTX_ROLE=gamemaster
 # -- a wallet-role node registers, syncs and looks healthy while never being
 # reachable for signing."
-    ROLE_TRAILER="# ROLE: wallet. Wallet ON (it holds your collateral), listen=0, no externalip."
-    ROLE_BANNER="WALLET   (listen=0, no externalip -- holds collateral, is not dialled)"
-    ok "role: WALLET host -- listen=0, no externalip, wallet enabled"
+    ROLE_TRAILER="# ROLE: wallet. Wallet ON (it holds your collateral), listen=1, no externalip. Open P2P inbound."
+    ROLE_BANNER="WALLET   (listen=1, no externalip -- holds collateral, registers nothing)"
+    ROLE_NEXT='    2. This is the WALLET machine: do NOT generate a BLS key here, and do not
+       follow a gamemaster section. Follow OPERATOR_GUIDE.md Part B -- create the
+       wallet, restart once to prove it opens, then send the coordinator an
+       address.
+    * Yes, a wallet host opens P2P too. It listens like any other node so that it
+       returns peers to a network that has no DNS seed. It still advertises NO
+       address and registers NOTHING.'
+    ok "role: WALLET host -- listen=1, no externalip, wallet enabled"
     EXTERNALIP_DONE=1
 else
     LISTEN_LINE="listen=1"
@@ -955,6 +967,8 @@ else
 # gmoperatorprivatekey=<the BLS key you generate in the OPERATOR_GUIDE>"
     ROLE_TRAILER="# ROLE: gamemaster. Wallet ON (see the trade above), listen=1, externalip set."
     ROLE_BANNER="GAMEMASTER   (listen=1, externalip set -- must be reachable on P2P $P2P_PORT)"
+    ROLE_NEXT='    2. Follow OPERATOR_GUIDE.md section "Node side" to generate your BLS key and
+       send the PUBLIC half to the wallet operator.'
     ok "role: GAMEMASTER host -- listen=1, externalip required, wallet enabled"
     EXTERNALIP_DONE=0
 fi
@@ -1311,7 +1325,6 @@ cat <<EOF
     1. Open $P2P_PORT (P2P) in your firewall AND any NAT/cloud security group.
        ★ Do NOT open $RPC_PORT. RPC is loopback-only: nothing dials it, and
          exposing it publishes this file's credentials for no benefit.
-    2. Follow OPERATOR_GUIDE.md section "Node side" to generate your BLS key and
-       send the PUBLIC half to the wallet operator.
+$ROLE_NEXT
     3. Start the daemon, then run:  ./self-check.sh
 EOF

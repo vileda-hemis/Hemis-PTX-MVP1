@@ -135,10 +135,14 @@ else
             bad "role says GAMEMASTER but listen=1 is $( [ "$_listen" -ge 1 ] && echo present || echo MISSING ) and externalip is $( [ "$_extip" -ge 1 ] && echo set || echo MISSING ). A gamemaster without both registers, shows ENABLED and never receives a signing request."
         fi
     elif [ "$_declared" = "wallet" ]; then
-        if [ "$_listen" = "0" ] && [ "$_extip" = "0" ]; then
-            ok "role wallet, and the config matches it (no listen=1, no externalip)"
+        # listen is NOT a discriminator: BOTH roles listen, deliberately, so that
+        # a wallet host returns connectivity to a network with no DNS seed.
+        # externalip is the discriminator -- it advertises an address for
+        # REGISTRATION, and a wallet host registers nothing.
+        if [ "$_extip" = "0" ]; then
+            ok "role wallet, and the config matches it (no externalip; listen=1 is correct for both roles)"
         else
-            bad "role says WALLET but this config has $( [ "$_listen" -ge 1 ] && echo 'listen=1' ) $( [ "$_extip" -ge 1 ] && echo 'externalip=' ) -- a collateral machine should not be advertising or accepting inbound. Re-run install.sh with PTX_ROLE=wallet."
+            bad "role says WALLET but this config sets externalip= -- that advertises an address for a machine that registers nothing. Re-run install.sh with PTX_ROLE=wallet."
         fi
     else
         bad "unrecognised role '\''$_declared'\'' in $ROLE_CONF"

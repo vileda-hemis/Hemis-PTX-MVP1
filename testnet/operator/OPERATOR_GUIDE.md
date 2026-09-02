@@ -15,7 +15,13 @@ whole point:
 |---|---|---|
 | holds | your collateral coins, your wallet keys | the running daemon, your BLS **secret** key, `ptx_shares.dat` |
 | runs | briefly, to register | 24/7, publicly reachable |
-| exposure | keep it OFFLINE / local | public IP, two open ports |
+| exposure | local, but **P2P 29994 open inbound** | public IP, **P2P 29994 open inbound** |
+
+★ **The wallet machine needs P2P 29994 open too, and this CHANGED — earlier drafts said it needed
+nothing open.** It runs `PTX_ROLE=wallet`, which sets `listen=1` like any other node, so that it
+returns peers to a network that has **no DNS seed** and a small peer count. What it still does *not*
+do is advertise an address: it sets no `externalip` and registers nothing. ★ **Only 29994. RPC
+29995 stays loopback-only on both roles** — do not open it on either machine.
 
 **Your collateral never goes on the node machine.** If the node is compromised, the attacker gets the
 node — not your coins.
@@ -360,11 +366,12 @@ exactly why and how.)
    PTX_ROLE=wallet ./install.sh
    ```
 
-   ★ **This is not the same config as a gamemaster.** A wallet host gets `listen=0` and **no**
-   `externalip`: it needs outbound peers to sync and to broadcast your registration, and nothing
-   needs to dial it. Staking is unaffected — staking needs peers, not inbound. Leaving it on the
-   gamemaster default would have the machine holding your collateral advertising an address and
-   accepting connections for no reason;
+   ★ **This is not the same config as a gamemaster, and the difference is exactly one line.**
+   A wallet host sets **no `externalip`** — that field advertises an address for *registration*, and
+   this machine registers nothing. It **does** set `listen=1`, the same as a gamemaster, so **open
+   P2P 29994 inbound here too**. That is not an oversight: ptxtestnet has no DNS seed and a small
+   peer count, so a node that takes connectivity and returns none is a real cost. ★ **RPC 29995
+   stays loopback-only on both roles** — never open that one;
 2. **start it once and let it create `wallet.dat`, then stop it and start it again** — the second
    start is the one that proves the file opens;
 3. **only then** give the coordinator an address.
