@@ -131,7 +131,7 @@ Hemis-cli generateblskeypair
 * the **`secret`** goes into *this* machine's config, **together with `gamemaster=1`**:
 
   ```bash
-  echo "gamemasterblsprivkey=<BLS SECRET>" >> $HOME/.Hemis/Hemis.conf
+  echo "gmoperatorprivatekey=<BLS SECRET>" >> $HOME/.Hemis/Hemis.conf
   echo "gamemaster=1"                      >> $HOME/.Hemis/Hemis.conf
   Hemis-cli stop
   Hemisd    -daemon

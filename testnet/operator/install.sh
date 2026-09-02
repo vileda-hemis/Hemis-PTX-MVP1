@@ -1339,7 +1339,7 @@ UNITEOF
         fi
     else
         ok "wrote $UNIT (not started -- a gamemaster needs its BLS key in the config first)"
-        echo "  ★ AFTER you add gamemasterblsprivkey, run BOTH words:"
+        echo "  ★ AFTER you add gmoperatorprivatekey, run BOTH words:"
         echo "        sudo systemctl enable --now hemis-ptx"
         echo "    'enable' is the half people skip. Without it the daemon runs until"
         echo "    the next reboot and then silently does not come back -- the node"

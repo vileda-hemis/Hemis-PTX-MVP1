@@ -197,7 +197,7 @@ cat <<EOF
         Nothing in the ordinary status output tells you.
 
    2. BLS KEY, per GM. Generate it on THIS machine, put the SECRET half in that
-      GM's Hemis.conf as gamemasterblsprivkey=, and send only the PUBLIC half to
+      GM's Hemis.conf as gmoperatorprivatekey=, and send only the PUBLIC half to
       the wallet operator. See OPERATOR_GUIDE.md, "Node side".
 
    3. COLLATERAL, on your OTHER machine. Your collateral and wallet keys never

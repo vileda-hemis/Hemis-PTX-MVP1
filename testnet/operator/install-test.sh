@@ -1148,6 +1148,55 @@ role_run() {
         fi
     fi
 
+    # ★★ BUG-057 CLASS: EVERY CONFIG KEY WE TELL AN OPERATOR TO WRITE MUST BE ONE
+    # THE DAEMON READS. The template shipped `gmoperatorprivatekey` (correct) while
+    # three instruction lines said `gamemasterblsprivkey` -- a name that exists
+    # NOWHERE in src/. An operator following those got a daemon that starts,
+    # reports healthy, and silently is not a gamemaster.
+    #
+    # ★ It fails silently because the daemon ACCEPTS unknown options: measured,
+    # `Hemisd -notarealoption=1` exits 0. Nothing rejects a typo, so nothing but
+    # this check will ever catch one.
+    #
+    # The authoritative list is built from source -- HelpMessageOpt registrations
+    # plus every gArgs read -- rather than from `-help`, because `-help` omits
+    # debug-category options (rpcworkqueue is real and absent from it, which made
+    # a first pass of this sweep report a false positive).
+    say "CONFIG KEYS — every key we tell an operator to write must be one the daemon reads"
+    local reg="$BASE/argnames.txt"
+    { grep -rhoE 'HelpMessageOpt\("-[a-zA-Z0-9._-]+' "$TEST_REPO/src" 2>/dev/null | sed 's/.*"-//'
+      grep -rhoE 'gArgs\.(GetArg|GetBoolArg|IsArgSet|GetArgs)\("-[a-zA-Z0-9._-]+' "$TEST_REPO/src" 2>/dev/null | sed 's/.*"-//'
+    } | sort -u > "$reg"
+    if [ ! -s "$reg" ]; then
+        unk "could not build the daemon argument table from $TEST_REPO/src -- key sweep NOT PERFORMED"
+    else
+        note "daemon argument table: $(grep -c . "$reg") names"
+        local badkeys=0 checked=0
+        # (a) every key the generated configs emit, live AND commented
+        for cfg in "$BASE/role-gamemaster/.Hemis/Hemis.conf" "$BASE/role-wallet/.Hemis/Hemis.conf"; do
+            [ -f "$cfg" ] || continue
+            while read -r k; do
+                [ -z "$k" ] && continue
+                checked=$((checked+1))
+                grep -qx "$k" "$reg" || { bad "config key '$k' in $cfg is NOT an option the daemon reads"; badkeys=1; }
+            done < <(grep -oE '^#? *[a-zA-Z][a-zA-Z0-9._-]*=' "$cfg" | tr -d '# =' | sort -u)
+        done
+        # (b) ★ the half that would have caught BUG-057: keys our DOCS and SCRIPTS
+        #     tell an operator to put in Hemis.conf. The template was right; the
+        #     instructions were not.
+        for f in "$TEST_REPO/GM_QUICKSTART.md" "$TEST_REPO/vps-install.sh" \
+                 "$TEST_REPO/testnet/operator/install.sh" \
+                 "$TEST_REPO/testnet/operator/OPERATOR_GUIDE.md"; do
+            [ -f "$f" ] || continue
+            while read -r k; do
+                [ -z "$k" ] && continue
+                checked=$((checked+1))
+                grep -qx "$k" "$reg" || { bad "$(basename "$f") names config key '$k', which the daemon does not read"; badkeys=1; }
+            done < <(grep -oE '\b(gmoperatorprivatekey|gamemasterblsprivkey|gamemaster|externalip|addnode|disablewallet|listen|rpcbind|rpcallowip|rpcuser|rpcpassword|rpcport|rpcworkqueue|rpcthreads|ptxtestnet|port)=' "$f" | tr -d '=' | sort -u)
+        done
+        [ "$badkeys" = "0" ] && ok "all $checked config-key mentions name real daemon options" || rc=1
+    fi
+
     # RED: an unknown role must ABORT, never fall back to a default.
     if ( cd "$HERE" && HOME="$BASE/role-bad" PTX_ROLE=nonsense bash ./install.sh ) >"$BASE/role-bad.log" 2>&1; then
         printf '  \033[31m[RED BROKEN]\033[0m PTX_ROLE=nonsense was ACCEPTED. An unrecognised role must abort, not silently pick one.\n'
