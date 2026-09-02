@@ -257,13 +257,47 @@ def main():
     test_oracle(fx)
     test_replay(fx)
     test_falsification(fx)
+
+    # ★★ ZERO-ARG TESTS ARE DISCOVERED, NOT LISTED -- and the list was the bug.
+    # main() named its tests explicitly, so three test functions defined BELOW it
+    # were never called: the two added to pin the NOT-PERFORMED-vs-FAIL rendering
+    # and the footer-reachability one. The suite reported "17 passed" before and
+    # after they were added, and that number was read as covering them. A test
+    # that is never invoked is indistinguishable from a test that passes.
+    #
+    # Discovery removes the mechanism rather than repairing this instance: a new
+    # zero-arg test_* is picked up by existing, and the assertion below fails the
+    # run if anything is left behind.
+    import inspect
+    g = dict(globals())
+    ran = {"test_divergence", "test_oracle", "test_replay", "test_falsification"}
+    for name in sorted(g):
+        if not name.startswith("test_") or name in ran:
+            continue
+        fn = g[name]
+        if not callable(fn):
+            continue
+        if inspect.signature(fn).parameters:
+            print("  [FAIL] %s takes arguments and is not wired into main()" % name)
+            globals()["FAIL"] = FAIL + 1
+            continue
+        try:
+            fn()
+            ok("%s" % name)
+        except AssertionError as e:
+            bad("%s -- %s" % (name, e))
+        ran.add(name)
+
+    missed = sorted(n for n in g
+                    if n.startswith("test_") and callable(g[n]) and n not in ran)
+    if missed:
+        bad("test functions defined but never run: %s" % ", ".join(missed))
+
     print("\n=== Verdict ===")
     print("  %d passed, %d failed" % (PASS, FAIL))
     return 0 if FAIL == 0 else 1
 
 
-if __name__ == "__main__":
-    sys.exit(main())
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +314,42 @@ if __name__ == "__main__":
 # ★ Caught in a console script, not here: an ad-hoc printout used a truthiness
 # test and rendered D as FAIL. app.py was already correct; this test exists so
 # it STAYS correct, and so the next person writing a renderer sees the case.
+def test_footer_reports_reachability_not_configuration():
+    """The footer must describe what the node IS DOING, not what was configured.
+
+    ★ The regression this pins is a PUBLIC one. The footer used to say "Txid
+    lookup is enabled against <node>" whenever PTX_NODE_RPC was set -- a static
+    claim that a reboot silently falsified. A visitor pasting a txid then got an
+    error from a page that had just promised it would work. Every other
+    false-green in this project misreported to US; this one misreported to a
+    stranger, on the page whose entire subject is that claims can be checked.
+
+    Three states, and the middle one is the one that was missing."""
+    import os, importlib, app
+
+    os.environ.pop("PTX_NODE_RPC", None)
+    importlib.reload(app)
+    off = app.footer()
+    assert "off" in off, "with no node configured the footer must say lookup is off"
+
+    # Port 1 is not listening; this is 'configured but unreachable'.
+    os.environ["PTX_NODE_RPC"] = "http://127.0.0.1:1/"
+    os.environ["PTX_NODE_USER"] = "x"
+    os.environ["PTX_NODE_PASS"] = "y"
+    importlib.reload(app)
+    down = app.footer()
+    assert "unavailable" in down, "an unreachable node must NOT be described as enabled"
+    assert "enabled" not in down, "the word 'enabled' must not survive when the node is down"
+    # ...and it must say the checks still work, because they do.
+    assert "extraPayload" in down and "checks still run" in down
+
+    # The three states must be textually distinct, or the distinction is cosmetic.
+    assert off != down
+
+    os.environ.pop("PTX_NODE_RPC", None)
+    importlib.reload(app)
+
+
 def test_render_check_distinguishes_not_performed_from_failed():
     import app
 
@@ -342,3 +412,14 @@ def test_check_D_is_none_not_false_end_to_end():
     assert "FAIL" not in html, (
         "check D rendered as FAIL when merely not performed -- on a public page "
         "that reads as the beacon failing verification")
+
+
+# ★★ THE ENTRY POINT LIVES AT THE BOTTOM, AND THAT IS LOAD-BEARING.
+# It used to sit ABOVE these test definitions, so when main() ran, the module
+# body had only executed as far as that line and the functions below did not
+# exist yet. Discovery over globals() therefore found nothing, and the explicit
+# list in main() could not name them either. IMPORTING the module ran the whole
+# file and made them appear -- so a probe that imported disagreed with the real
+# run, which is how this survived being looked at.
+if __name__ == "__main__":
+    sys.exit(main())

@@ -19,6 +19,7 @@ import os
 import sys
 import json
 import html
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -87,14 +88,14 @@ def esc(x):
     return html.escape(str(x))
 
 
-def rpc(method, params):
+def rpc(method, params, timeout=12):
     import urllib.request, base64
     body = json.dumps({"jsonrpc": "1.0", "id": "ptxv", "method": method, "params": params}).encode()
     req = urllib.request.Request(NODE_RPC, data=body,
                                  headers={"Content-Type": "application/json",
                                           "Authorization": "Basic " + base64.b64encode(
                                               ("%s:%s" % (NODE_USER, NODE_PASS)).encode()).decode()})
-    with urllib.request.urlopen(req, timeout=12) as r:
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         d = json.loads(r.read())
     if d.get("error"):
         raise RuntimeError(d["error"].get("message", "rpc error"))
@@ -179,10 +180,48 @@ def page(body, q=""):
             % (CSS, FORM.format(q=esc(q)), body, footer()))
 
 
+# ★★ REACHABILITY, NOT CONFIGURATION.  This footer used to say "Txid lookup is
+# enabled against <node>" whenever PTX_NODE_RPC was SET -- a static assertion
+# about a capability that a reboot silently removed.  With the node down the
+# sentence was simply false, and a visitor who pasted a txid got an error from a
+# page that had just told them it would work.
+#
+# ★ That is the false-green shape aimed at a STRANGER rather than at us, on the
+# one artefact whose whole purpose is demonstrating that claims can be checked.
+# A page about verifiability must not assert its own capabilities unverified.
+#
+# Probed, not assumed; cached briefly so a reload does not hammer the node, and
+# short-timeout so a hung node degrades the sentence rather than the page.
+_node_cache = {"t": 0.0, "up": None, "height": None}
+
+def node_status():
+    """-> (up, height).  up is None when no node is configured at all."""
+    if not NODE_RPC:
+        return None, None
+    now = time.time()
+    if now - _node_cache["t"] < 15:
+        return _node_cache["up"], _node_cache["height"]
+    up, height = False, None
+    try:
+        height = rpc("getblockcount", [], timeout=4)
+        up = True
+    except Exception:
+        up = False
+    _node_cache.update(t=now, up=up, height=height)
+    return up, height
+
+
 def footer():
-    if NODE_RPC:
-        node = ("Txid lookup is enabled against <code>%s</code> — a node this page's operator owns. "
-                "It is never used for the checks themselves." % esc(NODE_RPC))
+    up, height = node_status()
+    if up is True:
+        node = ("Txid lookup is <b>available</b> against <code>%s</code> — a node this page's "
+                "operator owns, currently at height %s. It is never used for the checks "
+                "themselves." % (esc(NODE_RPC), esc(height)))
+    elif up is False:
+        node = ("Txid lookup is <b>unavailable</b> right now: the node at <code>%s</code> is not "
+                "answering. <b>Paste raw <code>extraPayload</code> hex and the checks still run</b> "
+                "— they need no node, no index and no chain, which is the point. Only the "
+                "convenience of looking a payload up by txid is affected." % esc(NODE_RPC))
     else:
         node = ("Txid lookup is <b>off</b>: no node is configured (<code>PTX_NODE_RPC</code>). "
                 "Paste raw payload hex — the checks need nothing else. This page deliberately does "
@@ -217,6 +256,13 @@ def handle(q):
             return page('<div class="card err">That looks like a txid, but txid lookup is off — '
                         'no node is configured. Paste the raw <code>extraPayload</code> hex instead; '
                         'the checks do not need a node.</div>', q)
+        # ★ Same correction as the footer: say the node is down BEFORE trying, so
+        # the message names the cause rather than surfacing a transport error.
+        if node_status()[0] is False:
+            return page('<div class="card err">That looks like a txid, but the node this page '
+                        'uses for lookups is <b>not answering</b>, so it cannot be resolved right '
+                        'now. Paste the raw <code>extraPayload</code> hex instead — the A/B/C '
+                        'checks do not use the node and are unaffected.</div>', q)
         try:
             tx = rpc("getrawtransaction", [compact, 1])
             payload_hex = tx.get("extraPayload") or ""
