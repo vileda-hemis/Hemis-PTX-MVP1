@@ -116,6 +116,17 @@ fi
 [ -x "$HEMISCLI" ] || die "no Hemis-cli. Set PTX_TEST_BINDIR=<dir> or put it on PATH."
 
 BASE="${PTX_TEST_BASE:-$(mktemp -d -t ptx-install-test.XXXXXX)}"
+# ★★ ONE params dir, shared by install.sh (which WRITES it) and start_daemon
+# (which must be TOLD it). This was a live defect: green_run passed
+# PTX_PARAMS_DIR outside the daemon's HOME, and start_daemon then launched with
+# neither -paramsdir nor a redirected HOME, so the daemon looked in the real
+# $HOME/.Hemis-params, found nothing, and exited during init with
+# "Cannot find the Sapling parameters". ★ The comment above bare_invocation_run
+# diagnoses EXACTLY this and says "AND NO PTX_PARAMS_DIR HERE, DELIBERATELY" --
+# the fix was applied to that leg and not to its sibling, so the lesson was
+# written down next to one instance while the other kept the bug. It only stayed
+# hidden because a tester whose own $HOME already had .Hemis-params never saw it.
+PARAMS_DIR="$BASE/params"
 mkdir -p "$BASE"
 PIDS=""
 # ★★ BUG-047 TRIPWIRE. A daemon started with no -datadir reads $HOME/.Hemis and
@@ -233,9 +244,47 @@ alive() {
 # daemon that started perfectly. $! is network-independent.
 #
 # ★ NO -ptxtestnet, NO -port, NO -rpcport. The config file is the only input.
+# ★★ ANTI-VACUITY. A leg that judges by "the daemon died" is only meaningful if
+# the daemon died of the thing under test. An environment failure -- missing
+# sapling params, a busy port, a missing binary -- kills it too, and then a GREEN
+# leg reports a defect it did not find and, far worse, a RED leg reports
+# [RED ok] for a defect it never actually detected. That is not hypothetical:
+# with the params bug above, all four RED legs passed while every daemon was
+# dying of LoadSaplingParams, and RED 3 printed the sapling error as its evidence
+# that the injected role-defect had been caught. cold-sync-test.sh guards this
+# explicitly; this file did not.
+ENVIRONMENTAL_DEATH='Cannot find the Sapling parameters|Cannot obtain a lock on data directory|Unable to bind to|No such file or directory'
+died_of_environment() {   # $1 = datadir; 0 = yes, it died of the harness
+    local dd="$1"
+    [ -f "$dd/test-stdout.log" ] || return 1
+    grep -qE "$ENVIRONMENTAL_DEATH" "$dd/test-stdout.log" 2>/dev/null
+}
+
+# ★ The verdict for any RED leg that judges by "the daemon died". Credit the
+# leg ONLY if it died of its own injected defect; if the harness killed it,
+# score it VACUOUS -- which is the same word this file's verdict already uses,
+# and the honest one: the leg ran and proved nothing.
+red_death_verdict() {   # $1 = datadir, $2 = the sentence to print when genuine
+    local dd="$1" msg="$2"
+    if died_of_environment "$dd"; then
+        printf '  \033[31m[RED VACUOUS]\033[0m %s\n' "$msg"
+        note "BUT IT DID NOT DIE OF THE INJECTED DEFECT -- the harness killed it:"
+        grep -m1 -E "$ENVIRONMENTAL_DEATH" "$dd/test-stdout.log" 2>/dev/null | sed 's/^/           /'
+        note "this leg proved NOTHING. Fix the environment and re-run."
+        RED_FAIL=$((RED_FAIL + 1))
+        return 1
+    fi
+    printf '  \033[32m[RED ok]\033[0m %s\n' "$msg"
+    RED_PASS=$((RED_PASS + 1))
+    return 0
+}
+
 start_daemon() {   # $1 = datadir; echoes pid
     local dd="$1"
-    "$HEMISD" -datadir="$dd" >"$dd/test-stdout.log" 2>&1 &
+    # ★ -paramsdir is NOT optional here. Without it the daemon resolves
+    # $HOME/.Hemis-params while install.sh wrote $PARAMS_DIR, and dies in init
+    # for a reason that has nothing to do with what any leg is testing.
+    "$HEMISD" -datadir="$dd" -paramsdir="$PARAMS_DIR" >"$dd/test-stdout.log" 2>&1 &
     local pid=$!
     PIDS="$PIDS $pid"
     printf '%s' "$pid"
@@ -703,7 +752,7 @@ green_run() {
     say "GREEN — install.sh x3, then start all three"
     local n dd p2p rpc pid specs=""
     local prefix="$BASE/green-prefix"
-    local params="$BASE/green-params"
+    local params="$PARAMS_DIR"
 
     for n in 1 2 3; do
         dd="$BASE/green-dd-$n"
@@ -835,9 +884,8 @@ red_run() {
         red_expect_fail "C1 (config) vs lowercase config" check_config_read "$dd/hemis.conf" 29995 "red1" "$dd"
         stop_daemon "$pid"
     else
-        printf '  \033[32m[RED ok]\033[0m RED 1 -- the daemon did not survive; C1-C3 could not be evaluated, which is itself a fail\n'
-        RED_PASS=$((RED_PASS + 1))
-        explain_exit "$dd" "49165 51473"
+        red_death_verdict "$dd" "RED 1 -- the daemon did not survive; C1-C3 could not be evaluated, which is itself a fail" \
+            && explain_exit "$dd" "49165 51473"
     fi
 
     # ---- RED 2: defect 2, settings above the section header (e414e77) ------
@@ -860,9 +908,8 @@ red_run() {
         fi
         stop_daemon "$pid"
     else
-        printf '  \033[32m[RED ok]\033[0m RED 2 -- the daemon did not survive; C3 could not be evaluated, which is itself a fail\n'
-        RED_PASS=$((RED_PASS + 1))
-        explain_exit "$dd" "29993 29902"
+        red_death_verdict "$dd" "RED 2 -- the daemon did not survive; C3 could not be evaluated, which is itself a fail" \
+            && explain_exit "$dd" "29993 29902"
     fi
 
     # ---- RED 3: defect 3, gamemaster=1 with no key (e414e77) ---------------
@@ -883,9 +930,12 @@ red_run() {
         RED_FAIL=$((RED_FAIL + 1))
         stop_daemon "$pid"
     else
-        printf '  \033[32m[RED ok]\033[0m RED 3 -- the daemon refused to start, as install.sh section 5 says it does\n'
-        note "it said: $(grep -m1 -i 'priv key cannot be empty\|^Error' "$dd/test-stdout.log" 2>/dev/null || echo '(no matching line)')"
-        RED_PASS=$((RED_PASS + 1))
+        # ★ RED 3 is the sharpest instance: its evidence line greps for /^Error/,
+        # so a sapling failure printed "Error: Cannot find the Sapling parameters"
+        # AS PROOF that the missing-key defect had been caught.
+        if red_death_verdict "$dd" "RED 3 -- the daemon refused to start, as install.sh section 5 says it does"; then
+            note "it said: $(grep -m1 -i 'priv key cannot be empty' "$dd/test-stdout.log" 2>/dev/null || echo '(no key-specific line -- suspicious)')"
+        fi
     fi
 
     # ---- RED 4: defect 4, three GMs colliding (f37bf34) --------------------
