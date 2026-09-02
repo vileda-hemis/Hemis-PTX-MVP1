@@ -89,6 +89,8 @@ PTX_EXTERNALIP="${PTX_EXTERNALIP:-}"  # this host's registered address (B3)
 # box holding collateral, and a gamemaster host built as a wallet registers,
 # shows ENABLED and SILENTLY NEVER SIGNS -- so the role is announced in the
 # output and asserted by self-check.sh rather than being left to inference.
+PTX_ROLE_WAS_SET=1
+[ -n "${PTX_ROLE:-}" ] || PTX_ROLE_WAS_SET=0
 PTX_ROLE="${PTX_ROLE:-gamemaster}"
 case "$PTX_ROLE" in
     gamemaster|wallet) ;;
@@ -122,6 +124,24 @@ die()  { printf '\n  [FAIL] %s\n\n' "$*" >&2; exit 1; }
 # Refused HERE, before any work: no packages, no clone, no binaries, no unit.
 # Compared against the config's own "# ROLE:" stamp, which is the state, rather
 # than against anything this run was told.
+# ★★ AN UNSET ROLE DEFAULTS SILENTLY, SO SAY SO LOUDLY. This is the branch a
+# prompt would have covered, and it is deliberately NOT a prompt: the harness
+# runs install.sh with stdin inherited, so a prompt hangs the release gate when a
+# developer runs it from a terminal, and the gate would then have to set PTX_ROLE
+# on every leg -- which stops it exercising this very path. A notice teaches the
+# same thing, costs nothing to test, and cannot hang anything.
+if [ "$PTX_ROLE_WAS_SET" = "0" ]; then
+    printf '\n  ============================================================\n'
+    printf '   NO PTX_ROLE GIVEN -- building a GAMEMASTER host (the default).\n'
+    printf '  ============================================================\n'
+    printf '   There are TWO kinds of machine and they are not interchangeable:\n'
+    printf '     PTX_ROLE=gamemaster ./install.sh   holds a BLS key, is dialled for signing\n'
+    printf '     PTX_ROLE=wallet     ./install.sh   holds your COLLATERAL, registers your GMs\n\n'
+    printf '   If this box is meant to hold your collateral, stop now (Ctrl-C) and\n'
+    printf '   re-run with PTX_ROLE=wallet. Carrying on in 5 seconds...\n\n'
+    sleep 5
+fi
+
 _role_conf="${PTX_DATADIR:-$HOME/.Hemis}/Hemis.conf"
 if [ -f "$_role_conf" ]; then
     _role_found="$(grep -oE '^# ROLE: [a-z]+' "$_role_conf" 2>/dev/null | awk '{print $3}')"
