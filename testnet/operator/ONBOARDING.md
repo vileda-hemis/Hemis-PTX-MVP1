@@ -305,7 +305,7 @@ one line that should not be posted where strangers can find it, because there is
 line. That is the shortest description of what KDD-085 changed.
 
 ```
-Tag:            v0.2.0-testnet          (use it in BOTH places: git clone -b <tag>, and PTX_REF=<tag>)
+Tag:            v0.3.0-testnet          (use it in BOTH places: git clone -b <tag>, and PTX_REF=<tag>)
 Repository:     https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 
 Gamemasters:    <N>, one per host, each host with its own routable address

@@ -19,7 +19,7 @@ REPO="${PTX_REPO:-https://github.com/vileda-hemis/Hemis-PTX-MVP1.git}"
 #
 # To build a later fix before it is tagged, pass the branch explicitly:
 #   PTX_REF=feature/ptx-dkg PTX_BUILD_FROM_SOURCE=1 ./install.sh
-REF="${PTX_REF:-v0.2.0-testnet}"
+REF="${PTX_REF:-v0.3.0-testnet}"
 PREFIX="${PTX_PREFIX:-/opt/hemis-ptx}"
 # ★★ THE DEFAULT DATADIR, AND THIS IS BUG-047's FIX -- NOT A TIDY-UP.
 # The daemon's own default is $HOME/.Hemis (util/system.cpp GetDefaultDataDir),
