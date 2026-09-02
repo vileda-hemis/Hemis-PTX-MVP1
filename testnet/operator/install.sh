@@ -107,6 +107,45 @@ ok()   { printf '  [ok]   %s\n' "$*"; }
 warn() { printf '  [WARN] %s\n' "$*"; }
 die()  { printf '\n  [FAIL] %s\n\n' "$*" >&2; exit 1; }
 
+# ★★ ROLE COLLISION GUARD. Running this twice with different roles used to be
+# SILENT in the dangerous direction and MISLEADING in the other.
+#
+# The config is never overwritten once it exists (see section 5: "already exists
+# -- leaving it alone"), and the completion banner reports $PTX_ROLE -- THE
+# ARGUMENT -- not the config on disk. So `PTX_ROLE=gamemaster ./install.sh` on a
+# host already installed as a wallet printed "ROLE: GAMEMASTER" over a wallet
+# config: a machine that is neither role, reported as the role it is not.
+# ★ The reverse at least fails, but it fails LATER and with the wrong message --
+# the daemon refuses on a missing BLS key, so the operator debugs the key and
+# never learns the roles collided.
+#
+# Refused HERE, before any work: no packages, no clone, no binaries, no unit.
+# Compared against the config's own "# ROLE:" stamp, which is the state, rather
+# than against anything this run was told.
+_role_conf="${PTX_DATADIR:-$HOME/.Hemis}/Hemis.conf"
+if [ -f "$_role_conf" ]; then
+    _role_found="$(grep -oE '^# ROLE: [a-z]+' "$_role_conf" 2>/dev/null | awk '{print $3}')"
+    if [ -n "$_role_found" ] && [ "$_role_found" != "$PTX_ROLE" ]; then
+        printf '\n  [FAIL] ROLE COLLISION -- refusing before changing anything.\n\n' >&2
+        printf '    already installed here : %s\n' "$_role_found" >&2
+        printf '    you asked for         : %s\n' "$PTX_ROLE" >&2
+        printf '    config                : %s\n\n' "$_role_conf" >&2
+        printf '  This host is already a %s. Re-running as a %s would NOT convert it:\n' "$_role_found" "$PTX_ROLE" >&2
+        printf '  the config is never overwritten once it exists, so you would end up with a\n' >&2
+        printf '  %s config while everything else was set up for a %s.\n\n' "$_role_found" "$PTX_ROLE" >&2
+        printf '  Pick one:\n' >&2
+        printf '    * keep this host as a %s  -- re-run with PTX_ROLE=%s (or just stop here)\n' "$_role_found" "$_role_found" >&2
+        printf '    * make it a %s instead    -- move the old config out of the way FIRST:\n' "$PTX_ROLE" >&2
+        printf '        sudo systemctl disable --now hemis-ptx\n' >&2
+        printf '        mv %s %s.was-%s\n' "$_role_conf" "$_role_conf" "$_role_found" >&2
+        printf '        PTX_ROLE=%s ./install.sh\n\n' "$PTX_ROLE" >&2
+        printf '  ★ A wallet host holds collateral and a gamemaster host holds a BLS key.\n' >&2
+        printf '    They are different machines on purpose -- if you meant to build the other\n' >&2
+        printf '    one, do it on the other box.\n\n' >&2
+        exit 3
+    fi
+fi
+
 # ---------------------------------------------------------------------------
 # ★ RETRY THE NETWORK REACH -- STEP ONE IS THE MOST LIKELY THING TO FAIL, AND
 # THE WORST PLACE TO FAIL WITHOUT EXPLANATION.

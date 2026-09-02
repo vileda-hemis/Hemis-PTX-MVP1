@@ -1113,6 +1113,41 @@ role_run() {
         bad "both roles report the same unit posture. A wallet host has no key to wait for and must not be told to defer."; rc=1
     fi
 
+    # ★★ RED: the ROLE COLLISION, driven as a real sequence rather than asserted.
+    # Install as a wallet, then re-run the SAME datadir as a gamemaster. Before
+    # the guard this was silent: the config stayed a wallet's, and the banner
+    # said GAMEMASTER. The leg fails if the second run succeeds, and it also
+    # fails if it exits for the WRONG reason -- a refusal that does not name the
+    # collision sends the operator to debug something else.
+    local cfh="$BASE/role-collide"; rm -rf "$cfh"; mkdir -p "$cfh"
+    ( cd "$HERE" && HOME="$cfh" PATH="$(dirname "$HEMISD"):$PATH" \
+        PTX_ROLE=wallet PTX_REPO="$TEST_REPO" PTX_REF="$TEST_REF" \
+        PTX_PREFIX="$BASE/collide-prefix" PTX_PARAMS_DIR="$PARAMS_DIR" \
+        bash ./install.sh ) >"$BASE/collide-1.log" 2>&1
+    if ! grep -qE '^# ROLE: wallet' "$cfh/.Hemis/Hemis.conf" 2>/dev/null; then
+        bad "RED collision: the wallet install did not stamp '# ROLE: wallet'; the leg cannot run."
+        rc=1
+    else
+        ( cd "$HERE" && HOME="$cfh" PATH="$(dirname "$HEMISD"):$PATH" \
+            PTX_ROLE=gamemaster PTX_REPO="$TEST_REPO" PTX_REF="$TEST_REF" \
+            PTX_PREFIX="$BASE/collide-prefix" PTX_PARAMS_DIR="$PARAMS_DIR" \
+            bash ./install.sh ) >"$BASE/collide-2.log" 2>&1
+        local crc=$?
+        if [ "$crc" = "0" ]; then
+            printf '  \033[31m[RED BROKEN]\033[0m gamemaster-after-wallet SUCCEEDED. The config is still a wallet'"'"'s and the banner will claim otherwise.\n'
+            RED_FAIL=$((RED_FAIL + 1)); rc=1
+        elif grep -qi "ROLE COLLISION" "$BASE/collide-2.log"; then
+            printf '  \033[32m[RED ok]\033[0m gamemaster-after-wallet refused, and named the collision (exit %s)\n' "$crc"
+            RED_PASS=$((RED_PASS + 1))
+            grep -qE '^# ROLE: wallet' "$cfh/.Hemis/Hemis.conf" \
+                && ok "the refused run left the existing wallet config untouched" \
+                || { bad "the refused run modified the config it refused to convert."; rc=1; }
+        else
+            printf '  \033[31m[RED BROKEN]\033[0m it exited %s but never named the collision -- the operator debugs the wrong thing.\n' "$crc"
+            RED_FAIL=$((RED_FAIL + 1)); rc=1
+        fi
+    fi
+
     # RED: an unknown role must ABORT, never fall back to a default.
     if ( cd "$HERE" && HOME="$BASE/role-bad" PTX_ROLE=nonsense bash ./install.sh ) >"$BASE/role-bad.log" 2>&1; then
         printf '  \033[31m[RED BROKEN]\033[0m PTX_ROLE=nonsense was ACCEPTED. An unrecognised role must abort, not silently pick one.\n'
