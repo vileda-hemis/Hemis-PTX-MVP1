@@ -314,6 +314,76 @@ def main():
 # ★ Caught in a console script, not here: an ad-hoc printout used a truthiness
 # test and rendered D as FAIL. app.py was already correct; this test exists so
 # it STAYS correct, and so the next person writing a renderer sees the case.
+def test_api_always_returns_the_raw_payload():
+    """★ The anti-oracle guarantee, pinned as a test rather than a comment.
+
+    Every API response must carry payload_hex beside the decoded values. Without
+    it a caller cannot re-derive our answer and has to trust it -- which is the
+    privileged-oracle surface this whole architecture exists to avoid. A future
+    "simplification" that drops the field must fail here."""
+    import json, os, app
+    here = os.path.dirname(os.path.abspath(__file__))
+    fx = json.load(open(os.path.join(here, "fixtures.json")))
+    ph = next(e["payload"] for e in fx if isinstance(e.get("payload"), str))
+    body, code = app.api_verify(ph)
+    assert code == 200, body
+    assert body["payload_hex"] == ph, "payload_hex must echo the exact bytes verified"
+    assert body["checks"], "a verify response with no checks proves nothing"
+
+
+def test_api_not_performed_is_null_never_false():
+    """★ The machine-readable half of the None-vs-FAIL distinction.
+
+    Check D is not performed -- the group public key is not in the transaction.
+    It must serialise as null with a reason, NEVER as false. A JSON false here
+    would tell an integrator the signature FAILED verification, when the truth is
+    that we did not attempt it."""
+    import json, os, app
+    here = os.path.dirname(os.path.abspath(__file__))
+    fx = json.load(open(os.path.join(here, "fixtures.json")))
+    settle = None
+    for e in fx:
+        ph = e.get("payload")
+        if not isinstance(ph, str):
+            continue
+        d, _ = app.sniff(ph)
+        if d and d["struct"] != "CPTXRollCommitPayload":
+            settle = ph
+            break
+    assert settle, "no settle payload in fixtures to exercise check D"
+    body, code = app.api_verify(settle)
+    assert code == 200
+    d_checks = [c for c in body["checks"] if c["id"] == "D"]
+    assert d_checks, "check D must be present on a settle"
+    assert d_checks[0]["ok"] is None, "check D must be null, not %r" % d_checks[0]["ok"]
+    assert d_checks[0]["ok"] is not False
+    # and it must say why, or null is just as opaque as false
+    assert "NOT PERFORMED" in (d_checks[0]["derivation"] or "")
+
+
+def test_api_malformed_input_is_400_not_a_verdict():
+    """Malformed bytes must be an error, not a failing check.
+
+    Rendering garbage as "checks failed" would tell a caller the ROLL was bad
+    when the truth is that we could not read their input."""
+    import app
+    for bad in ("", "zzzz", "abc"):
+        body, code = app.api_verify(bad)
+        assert code == 400, "%r should be 400, got %s" % (bad, code)
+        assert body["error"] == "malformed"
+        assert "checks" not in body, "a malformed input must not produce check results"
+
+    # ★ Well-formed hex of a struct we do not decode is NOT malformed. An LLMQ
+    # commitment or a PTXDKG payload is valid data of another type; calling it
+    # malformed tells an integrator their bytes are broken when they are not.
+    import binascii
+    not_ours = "01002e04" + "00" * 60
+    body, code = app.api_verify(not_ours)
+    assert code == 422, "unknown-but-valid struct should be 422, got %s" % code
+    assert body["error"] == "unsupported_payload"
+    assert body["payload_hex"] == not_ours, "the anti-oracle guarantee holds on errors too"
+
+
 def test_footer_reports_reachability_not_configuration():
     """The footer must describe what the node IS DOING, not what was configured.
 

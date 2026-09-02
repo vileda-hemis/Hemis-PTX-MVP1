@@ -315,6 +315,185 @@ def handle(q):
     return page("".join(body), q)
 
 
+# ===========================================================================
+# JSON API — the VERIFICATION half (ODC-099). Discovery endpoints are
+# deliberately absent; see the register.
+#
+# ★★ EVERY RESPONSE CARRIES payload_hex, AND THAT IS NOT REDUNDANT.
+# Returning decoded values without the bytes they came from would make this an
+# ORACLE: a caller would have to trust our answer because they could not
+# reproduce it. With the payload present, any caller can re-derive every check
+# independently -- which is the entire architecture, and the reason proxy.py was
+# retired. DO NOT REMOVE IT TO "SIMPLIFY" THE RESPONSE.
+#
+# ★ Three-state honesty, same as the HTML: a check that was not performed is
+# "ok": null with a reason, NEVER false. A JSON false where the answer is "we
+# did not check" is the machine-readable version of rendering None as FAIL.
+# ===========================================================================
+API_PREFIX = "/api/v1"
+
+
+def _api_checks(fields, struct_name):
+    out = []
+    for c in V.verify(fields, struct_name):
+        out.append({
+            "id": c["id"],
+            "ok": c["ok"],                      # true / false / null(not performed)
+            "claim": c.get("claim"),
+            "source": c.get("source"),
+            "derivation": c.get("derivation"),
+            "computed": c.get("computed"),
+            "claimed": c.get("claimed"),
+        })
+    return out
+
+
+def _api_decode(payload_hex):
+    """-> (body, status). Raises nothing; malformed input is a 400 with a locus."""
+    d, tried = sniff(payload_hex)
+    if d is None:
+        # ★ THREE STATES HERE TOO, and the distinction is not cosmetic.
+        # "malformed" means YOUR BYTES ARE BROKEN. A PTXDKG or an LLMQ
+        # commitment is neither broken nor ours: it is a valid special tx whose
+        # payload this decoder does not model. Calling that malformed tells an
+        # integrator their input is bad when the truth is that we do not decode
+        # this type -- the same error as rendering "not performed" as FAIL.
+        return ({"error": "unsupported_payload",
+                 "message": "these bytes are not a PTX roll payload this service decodes; "
+                            "they may belong to another special-transaction type",
+                 "decodes": ["CProbabilisticTxPayload", "CPTXRollCommitPayload"],
+                 "tried": [{"struct": n, "why": w} for n, w in tried],
+                 "payload_hex": payload_hex}, 422)
+    fields = {f["name"]: f["value"] for f in d["fields"]}
+    return ({
+        "struct": d["struct"],
+        "payload_hex": payload_hex,            # ★ see the block comment above
+        "size": d["size"],
+        "fields": [{"name": f["name"], "type": f.get("type"), "value": f["value"],
+                    "byte_start": f.get("start"), "byte_end": f.get("end")}
+                   for f in d["fields"]],
+        "checks": _api_checks(fields, d["struct"]),
+    }, 200)
+
+
+def api_verify(payload_hex):
+    h = "".join((payload_hex or "").split())
+    if not h:
+        return ({"error": "malformed", "message": "empty payload"}, 400)
+    if len(h) % 2 or any(c not in "0123456789abcdefABCDEF" for c in h):
+        return ({"error": "malformed", "message": "not hex"}, 400)
+    return _api_decode(h)
+
+
+def api_tx(txid):
+    if not NODE_RPC:
+        return ({"error": "not_performed",
+                 "message": "txid lookup is not configured on this instance; "
+                            "POST the raw payload to /api/v1/verify instead"}, 501)
+    try:
+        tx = rpc("getrawtransaction", [txid, 1], timeout=8)
+    except Exception as e:
+        return ({"error": "not_found", "message": str(e), "txid": txid}, 404)
+    ph = tx.get("extraPayload") or ""
+    if not ph:
+        return ({"error": "not_found",
+                 "message": "transaction carries no extraPayload; it is not a PTX special tx",
+                 "txid": txid, "tx_type": tx.get("type")}, 404)
+    body, code = _api_decode(ph)
+    body["txid"] = txid
+    body["tx_type"] = tx.get("type")
+    body["confirmations"] = tx.get("confirmations")
+    return (body, code)
+
+
+def api_commitment(txid):
+    """Settled, or not. ★ The chain records exactly ONE failure mode.
+
+    rpc/ptx.cpp:292 broadcasts the commitment BEFORE the fan-out, so a quorum
+    that misses threshold leaves a PTXROLLCOMMIT with no settle and the fee
+    forfeit. Funding failures (-32050, ptx_mempool.cpp:98) and no-quorum errors
+    never reach the chain at all, so no API can show them.
+
+    ★★ AND "past its window" IS NOT A CONSENSUS FACT. specialtx_validation.cpp
+    :950 enforces only nExpiryHeight >= nSeedHeight; BUG-034 retired the
+    same-block mandate and the comment is explicit that no upper bound is
+    enforced. nExpiryHeight is declared by the COMMITTER. So this endpoint
+    reports settled-or-not (a hard fact, from the UTXO set) and the arithmetic
+    against the declared expiry, LABELLED as declared -- it never returns a
+    verdict of "failed", which the chain does not reach.
+    """
+    if not NODE_RPC:
+        return ({"error": "not_performed",
+                 "message": "commitment status needs a node; not configured here"}, 501)
+    try:
+        tx = rpc("getrawtransaction", [txid, 1], timeout=8)
+    except Exception as e:
+        return ({"error": "not_found", "message": str(e), "txid": txid}, 404)
+    ph = tx.get("extraPayload") or ""
+    d, _ = sniff(ph) if ph else (None, None)
+    if d is None or d["struct"] != "CPTXRollCommitPayload":
+        return ({"error": "not_found",
+                 "message": "not a PTXROLLCOMMIT",
+                 "txid": txid, "struct": (d or {}).get("struct")}, 404)
+    fields = {f["name"]: f["value"] for f in d["fields"]}
+
+    # ★ The settle SPENDS an output of the commitment (BUG-032 2c coin-chain),
+    # so an UNSPENT output means no settle exists. O(1) against the UTXO set --
+    # no scanning, no index beyond what the node already keeps.
+    unspent = []
+    for n in range(len(tx.get("vout") or [])):
+        try:
+            if rpc("gettxout", [txid, n, True], timeout=8) is not None:
+                unspent.append(n)
+        except Exception:
+            pass
+    settled = (len(unspent) == 0)
+
+    try:
+        height = rpc("getblockcount", [], timeout=6)
+    except Exception:
+        height = None
+    expiry = fields.get("nExpiryHeight")
+    past = None
+    if height is not None and isinstance(expiry, int):
+        past = height > expiry
+
+    return ({
+        "txid": txid,
+        "struct": d["struct"],
+        "payload_hex": ph,                      # ★ see the block comment above
+        "settled": settled,
+        "unspent_vouts": unspent,
+        "declared_expiry_height": expiry,
+        "nSeedHeight": fields.get("nSeedHeight"),
+        "chain_height": height,
+        "past_declared_expiry": past,
+        "note": ("nExpiryHeight is declared by the committer. Consensus enforces no upper "
+                 "bound (specialtx_validation.cpp:950, BUG-034), so an unsettled commitment "
+                 "past it is NOT a consensus-confirmed failure -- it is the caller's own "
+                 "declared window having elapsed. settled=false is a hard fact from the UTXO "
+                 "set; past_declared_expiry is arithmetic on a self-declared value."),
+        "checks": _api_checks(fields, d["struct"]),
+    }, 200)
+
+
+def api_route(method, path, body_hex):
+    """-> (obj, status) or None when the path is not an API path."""
+    if not path.startswith(API_PREFIX):
+        return None
+    rest = path[len(API_PREFIX):]
+    if method == "POST" and rest == "/verify":
+        return api_verify(body_hex)
+    if method == "GET" and rest.startswith("/tx/"):
+        return api_tx(rest[4:].strip("/"))
+    if method == "GET" and rest.startswith("/commitment/"):
+        return api_commitment(rest[len("/commitment/"):].strip("/"))
+    return ({"error": "not_found", "message": "no such endpoint",
+             "endpoints": ["POST %s/verify" % API_PREFIX,
+                           "GET %s/tx/<txid>" % API_PREFIX,
+                           "GET %s/commitment/<txid>" % API_PREFIX]}, 404)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ptx-verifier"
 
@@ -329,7 +508,19 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b)
 
+    def _send_json(self, obj, code=200):
+        b = json.dumps(obj, indent=1, sort_keys=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(b)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(b)
+
     def do_GET(self):
+        r = api_route("GET", self.path.split("?")[0], None)
+        if r is not None:
+            return self._send_json(r[0], r[1])
         self._send(handle(""))
 
     def do_POST(self):
@@ -341,6 +532,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(page('<div class="card err">input too large</div>'), 413)
             return
         raw = self.rfile.read(n).decode("utf-8", "replace")
+        apath = self.path.split("?")[0]
+        if apath.startswith(API_PREFIX):
+            # accept either a bare hex body or q=<hex>
+            hx = (parse_qs(raw).get("q") or [raw])[0]
+            r = api_route("POST", apath, hx)
+            return self._send_json(r[0], r[1])
         q = (parse_qs(raw).get("q") or [""])[0]
         self._send(handle(q))
 
