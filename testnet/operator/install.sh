@@ -1280,8 +1280,32 @@ TimeoutStopSec=300
 WantedBy=multi-user.target
 UNITEOF
     $SUDO systemctl daemon-reload 2>/dev/null || true
-    ok "wrote $UNIT (not started -- you need your BLS key in the config first)"
-    echo "  start it with:  sudo systemctl enable --now hemis-ptx"
+    # ★★ WHETHER TO ENABLE IS A ROLE QUESTION, and treating it as one closes a
+    # gap that cost four hosts. This script has always written the unit and
+    # deliberately NOT started it, because a GAMEMASTER cannot come up until its
+    # BLS key is in the config -- gamemaster=1 with an empty key REFUSES to start.
+    # That reasoning is correct for a GM and does not apply to a wallet host,
+    # which has no key to wait for. Left undecided, every operator discovers the
+    # difference after their first reboot, when a hand-started daemon does not
+    # come back. Measured 2026-09-02: all four coordinator hosts were running
+    # hand-started daemons with this unit present and disabled -- including the
+    # one holding the entire float and producing blocks.
+    if [ "$PTX_ROLE" = "wallet" ]; then
+        if $SUDO systemctl enable --now hemis-ptx >/dev/null 2>&1; then
+            ok "wrote $UNIT, and ENABLED it -- a wallet host has no key to wait for, so it starts now and survives reboot"
+        else
+            warn "wrote $UNIT but could not enable it. Start it by hand and investigate:"
+            echo "           sudo systemctl enable --now hemis-ptx"
+            echo "           sudo systemctl status hemis-ptx"
+        fi
+    else
+        ok "wrote $UNIT (not started -- a gamemaster needs its BLS key in the config first)"
+        echo "  ★ AFTER you add gamemasterblsprivkey, run BOTH words:"
+        echo "        sudo systemctl enable --now hemis-ptx"
+        echo "    'enable' is the half people skip. Without it the daemon runs until"
+        echo "    the next reboot and then silently does not come back -- the node"
+        echo "    looks fine right up to the moment nobody is looking."
+    fi
 else
     warn "no systemd here -- no unit written."
     echo "         ★ START THE DAEMON WITH -datadir OR IT SYNCS MAINNET:"

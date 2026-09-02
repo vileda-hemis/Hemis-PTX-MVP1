@@ -98,10 +98,18 @@ KEEP="${PTX_TEST_KEEP:-0}"
 SETTLE_MAX=120
 
 PASS=0; FAIL=0
+# ★★ A THIRD OUTCOME, because two are not enough and this file just proved it.
+# The role/unit assertion cannot run without systemd, and a container has none.
+# Scored as a pass it would be a lie; scored as a fail it would block a tag on a
+# property that is fine. It is NOT PERFORMED -- the same three-state discipline
+# self-check.sh uses, and the same one the explorer's check D needs, arrived at
+# here by writing a check that genuinely could not run.
+UNKNOWN=0
 ok()   { printf '  \033[32m[ok]\033[0m   %s\n' "$*"; PASS=$((PASS+1)); }
 bad()  { printf '  \033[31m[FAIL]\033[0m %s\n' "$*"; FAIL=$((FAIL+1)); }
 note() { printf '         %s\n' "$*"; }
 say()  { printf '\n=== %s ===\n' "$*"; }
+unk()  { printf '  \033[33m[????]\033[0m %s\n' "$*"; UNKNOWN=$((UNKNOWN + 1)); }
 die()  { printf '\n  [ABORT] %s\n\n' "$*" >&2; exit 3; }
 
 # ---------------------------------------------------------------------------
@@ -1085,6 +1093,26 @@ role_run() {
         bad "externalip does not distinguish the roles -- a wallet host is advertising, or a gamemaster is not."; rc=1
     fi
 
+    # ★ The unit decision is role-shaped, and this asserts the DIFFERENCE rather
+    # than either message. In a container systemctl is absent, so the wallet arm
+    # takes its warn path; what must hold in BOTH environments is that only the
+    # gamemaster arm says "not started" -- that sentence is the GM's key
+    # dependency, and a wallet host has no key to wait for.
+    # ★ install.sh writes the unit only when /run/systemd/system exists. Without
+    # it NEITHER role reaches the role-conditional, so this is unrunnable rather
+    # than failing -- say so instead of scoring it.
+    if grep -q "no systemd here" "$BASE/role-gamemaster.log"; then
+        unk "unit/role posture NOT CHECKED -- no systemd in this environment, so install.sh wrote no unit and neither role reached the decision. Re-run on a systemd host before trusting it."
+    elif grep -q "not started" "$BASE/role-gamemaster.log" \
+         && ! grep -q "not started" "$BASE/role-wallet.log"; then
+        ok "the unit decision follows the role (gamemaster defers to the BLS key; wallet does not)"
+        grep -qE "enable --now hemis-ptx" "$BASE/role-gamemaster.log" \
+            && ok "the gamemaster arm names BOTH words (enable --now), not just start" \
+            || { bad "the gamemaster arm does not tell the operator to ENABLE the unit -- the half people skip, and it costs them the next reboot."; rc=1; }
+    else
+        bad "both roles report the same unit posture. A wallet host has no key to wait for and must not be told to defer."; rc=1
+    fi
+
     # RED: an unknown role must ABORT, never fall back to a default.
     if ( cd "$HERE" && HOME="$BASE/role-bad" PTX_ROLE=nonsense bash ./install.sh ) >"$BASE/role-bad.log" 2>&1; then
         printf '  \033[31m[RED BROKEN]\033[0m PTX_ROLE=nonsense was ACCEPTED. An unrecognised role must abort, not silently pick one.\n'
@@ -1109,10 +1137,19 @@ esac
 say "Verdict"
 printf '  green checks: %s passed, %s failed\n' "$PASS" "$FAIL"
 printf '  red   legs:   %s falsified, %s vacuous\n' "$RED_PASS" "$RED_FAIL"
+[ "$UNKNOWN" -gt 0 ] && printf '  not performed: %s  <- NOT passes. Re-run where they can run.\n' "$UNKNOWN"
 if [ "$FAIL" -gt 0 ] || [ "$RED_FAIL" -gt 0 ]; then
     printf '\n  NOT SHIPPABLE.\n'
     [ "$RED_FAIL" -gt 0 ] && printf '  A vacuous RED leg means the matching green check proves nothing.\n'
     exit 1
+fi
+# ★ "Nothing failed" and "everything was checked" are different sentences, and
+# only one of them is earned when a check could not run. Do not print the
+# stronger one on the strength of the weaker.
+if [ "$UNKNOWN" -gt 0 ]; then
+    printf '\n  No failures -- but %s check(s) COULD NOT RUN and are not passes.\n' "$UNKNOWN"
+    printf '  Shippable on this evidence only if those are known-unrunnable here.\n'
+    exit 0
 fi
 printf '\n  All checks pass and every check has been seen to fail against the defect it names.\n'
 exit 0
