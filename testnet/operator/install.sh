@@ -839,30 +839,26 @@ rpcbind=::1"
 # specific addresses and cannot overlap. Verified by outcome the same day: all
 # three of 127.0.0.1, ::1 and the global address bound, and ZERO
 # "Binding RPC on address ... failed" lines in debug.log.
-if [ -n "$RPCBIND_LINES" ]; then
-    RPCBIND_LINES="rpcbind=127.0.0.1
-rpcbind=::1
-$RPCBIND_LINES"
-fi
-if [ -z "$RPCBIND_LINES" ]; then
-    RPCBIND_LINES="rpcbind=0.0.0.0
-rpcbind=::"
-    warn "no global address found on this host -- RPC is bound to the WILDCARD."
-    echo "         That listens on every interface; only your firewall stops the"
-    echo "         internet reaching it, and the rpcpassword is in $CONF."
-    echo "         Once this host has its public address, replace the two rpcbind"
-    echo "         lines with that address and restart."
-else
-    ok "RPC will bind loopback plus this host's own address(es): $(printf '%s' "$RPCBIND_LINES" | sed 's/^rpcbind=//' | tr '\n' ' ')"
-    # ★ -gt 4, not -gt 2: the list now carries two loopback lines that are always
-    # present, so "more than one global address" starts at four.
-    if [ "$(printf '%s\n' "$RPCBIND_LINES" | grep -c .)" -gt 4 ]; then
-        warn "this host has several global addresses, so several rpcbind lines were written."
-        echo "         That is safe but wider than needed. A gamemaster should bind the"
-        echo "         address it REGISTERS; delete the other rpcbind lines from $CONF"
-        echo "         once you know which one that is, then restart."
-    fi
-fi
+# ★★ THE PREPEND AND THE WILDCARD FALLBACK THAT USED TO LIVE HERE ARE GONE, and
+# both were KDD-085 leftovers rather than choices:
+#
+#   * the prepend added the loopback pair to a list that ALREADY BEGINS with it
+#     (above), so every fresh install wrote FOUR rpcbind lines where two were
+#     meant. Harmless -- the daemon binds each address once -- but it is in the
+#     file operators read, and a config that looks like it was generated twice
+#     invites someone to "tidy" the wrong pair. It made sense when this variable
+#     held the per-global-address list and loopback had to be added to it; that
+#     list is gone.
+#   * the `-z` wildcard branch was UNREACHABLE: RPCBIND_LINES is assigned a
+#     non-empty literal above and nothing between can clear it. Its warning
+#     described binding 0.0.0.0 and exposing the rpcpassword -- an outcome this
+#     script can no longer produce, and a reader who found that text would
+#     reasonably believe it could.
+#
+# ★ The ODC-076 note above is unaffected and still load-bearing: loopback must be
+# IN the bind list because rpcallowip is loopback-only, and the two lists being
+# disjoint is what broke every local command.
+ok "RPC binds loopback only: $(printf '%s' "$RPCBIND_LINES" | sed 's/^rpcbind=//' | tr '\n' ' ')"
 
 # ★ PEER DISCOVERY. Built from PTX_SEEDS, and if it is empty the node has no way
 # to find a single peer -- see the variable's comment at the top. Emitted as
