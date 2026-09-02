@@ -144,7 +144,7 @@ apt-get update && apt-get install -y --no-install-recommends git curl ca-certifi
 ```
 
 ```bash
-git clone -b v0.3.0-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
+git clone -b v0.3.1-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 cd Hemis-PTX-MVP1/testnet/operator
 ./install.sh
 ```
