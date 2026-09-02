@@ -122,6 +122,13 @@ You do the node first because Part B needs two values that only exist after this
 
 ### A1. Install
 
+★★ **On the distro question, which every operator asks and this guide used to answer wrongly by
+omission: Debian 12 is what we test; Ubuntu 24.04 is what we run, and it works.** `install.sh` gates
+on **glibc ≥ 2.31 and x86_64/aarch64**, not on a distro name — it never reads `/etc/os-release` to
+decide whether to proceed. Anything meeting the glibc and architecture bar is fine; Ubuntu 20.04+
+and Debian 11+ both clear it comfortably. The Debian 12 references further down are describing the
+box the figures were measured on (BDB 5.3, build timings), not a requirement.
+
 ★ **First, the three tools the installer needs and does not install.** On a minimal image you have
 none of them, and `install.sh` stops at its first check with `missing required tool: git` — which is
 correct but is a poor first thing to meet. On Debian/Ubuntu:
