@@ -112,6 +112,39 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+say "0b. Role -- is this machine configured as the thing you meant to build?"
+# ★★ THE GAP THIS CLOSES is the same one section 0 closes for the binary: a
+# config CONTAINING a line is not the same as the daemon BEHAVING that way, and
+# a wrong role installs perfectly cleanly. A gamemaster host built as a wallet
+# registers, syncs, reports ENABLED and SILENTLY NEVER SIGNS -- there is no
+# error anywhere, which is precisely why it needs an assertion rather than a
+# reader's attention.
+ROLE_CONF="$DATADIR/Hemis.conf"
+if [ ! -f "$ROLE_CONF" ]; then
+    unk "no $ROLE_CONF, so the role cannot be checked"
+else
+    _listen="$(grep -cE '^listen=1' "$ROLE_CONF" 2>/dev/null)"
+    _extip="$(grep -cE '^externalip=' "$ROLE_CONF" 2>/dev/null)"
+    _declared="$(grep -oE '^# ROLE: [a-z]+' "$ROLE_CONF" 2>/dev/null | awk '{print $3}')"
+    if [ -z "$_declared" ]; then
+        unk "this config predates the PTX_ROLE toggle (no '# ROLE:' line) -- re-run install.sh to stamp it, or check listen/externalip by hand"
+    elif [ "$_declared" = "gamemaster" ]; then
+        if [ "$_listen" -ge 1 ] && [ "$_extip" -ge 1 ]; then
+            ok "role gamemaster, and the config matches it (listen=1, externalip set)"
+        else
+            bad "role says GAMEMASTER but listen=1 is $( [ "$_listen" -ge 1 ] && echo present || echo MISSING ) and externalip is $( [ "$_extip" -ge 1 ] && echo set || echo MISSING ). A gamemaster without both registers, shows ENABLED and never receives a signing request."
+        fi
+    elif [ "$_declared" = "wallet" ]; then
+        if [ "$_listen" = "0" ] && [ "$_extip" = "0" ]; then
+            ok "role wallet, and the config matches it (no listen=1, no externalip)"
+        else
+            bad "role says WALLET but this config has $( [ "$_listen" -ge 1 ] && echo 'listen=1' ) $( [ "$_extip" -ge 1 ] && echo 'externalip=' ) -- a collateral machine should not be advertising or accepting inbound. Re-run install.sh with PTX_ROLE=wallet."
+        fi
+    else
+        bad "unrecognised role '\''$_declared'\'' in $ROLE_CONF"
+    fi
+fi
+
 say "1. Daemon and RPC (local)"
 # ---------------------------------------------------------------------------
 if ! cli getblockcount >/dev/null; then

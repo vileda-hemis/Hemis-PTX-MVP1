@@ -143,6 +143,14 @@ cd Hemis-PTX-MVP1/testnet/operator
 ./install.sh
 ```
 
+★★ **`install.sh` builds a ROLE, and it prints which one.** The default is
+**gamemaster**, which is what you want here — `PTX_ROLE=gamemaster ./install.sh` is the same
+command. The wallet machine in Part B needs `PTX_ROLE=wallet`, and that one is **not** the default,
+so it is the one you have to type. ★ The completion output names the role it built; if it says the
+wrong one, **re-run with the other rather than editing the config by hand** — the roles differ in
+three lines and hand-patching one of them is how you end up with a node that looks right and is
+not.
+
 ★ **No datadir or port overrides, and repeat this unchanged on each of your GM hosts.** One GM
 per host means the defaults are already right: datadir `~/.Hemis`, P2P 29994, RPC 29995.
 `PTX_DATADIR` / `PTX_P2P_PORT` / `PTX_RPC_PORT` still exist for unusual deployments but are no
@@ -346,7 +354,17 @@ exactly why and how.)
 
 ★★ **Do not get coins sent to a wallet you have not yet proved you can open.** The order is:
 
-1. install the wallet-machine binaries the same way as the node (Part A, A1);
+1. install the wallet-machine binaries as in Part A, A1 — but **with the wallet role**:
+
+   ```bash
+   PTX_ROLE=wallet ./install.sh
+   ```
+
+   ★ **This is not the same config as a gamemaster.** A wallet host gets `listen=0` and **no**
+   `externalip`: it needs outbound peers to sync and to broadcast your registration, and nothing
+   needs to dial it. Staking is unaffected — staking needs peers, not inbound. Leaving it on the
+   gamemaster default would have the machine holding your collateral advertising an address and
+   accepting connections for no reason;
 2. **start it once and let it create `wallet.dat`, then stop it and start it again** — the second
    start is the one that proves the file opens;
 3. **only then** give the coordinator an address.

@@ -78,6 +78,22 @@ PTX_SEEDS="${PTX_SEEDS:-}"      # space/comma separated host or host:port, 3 rec
 # ★ PTX_CALLER / PTX_RPCAUTH removed by KDD-085: there is no caller credential
 # and no caller allow-list entry any more. See the caller-access block below.
 PTX_EXTERNALIP="${PTX_EXTERNALIP:-}"  # this host's registered address (B3)
+# ★★ THE ROLE. The guide describes TWO machines -- one wallet host holding
+# collateral, and one-or-more gamemaster hosts -- and until now this script
+# wrote ONE config for both. Three lines actually differ (listen, externalip,
+# and the gamemaster role block); everything else is identical, which is why
+# this is a toggle and not a second script.
+# ★ Default is gamemaster: an operator runs N of those and exactly one wallet,
+# so the singular case is the one worth typing. There is no SAFE silent default
+# either way -- a wallet host built as a gamemaster listens for no reason on the
+# box holding collateral, and a gamemaster host built as a wallet registers,
+# shows ENABLED and SILENTLY NEVER SIGNS -- so the role is announced in the
+# output and asserted by self-check.sh rather than being left to inference.
+PTX_ROLE="${PTX_ROLE:-gamemaster}"
+case "$PTX_ROLE" in
+    gamemaster|wallet) ;;
+    *) printf '\n  [ABORT] PTX_ROLE="%s" is not a role. Use PTX_ROLE=gamemaster (default) or PTX_ROLE=wallet.\n\n' "$PTX_ROLE" >&2; exit 2 ;;
+esac
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ★ Root does not need sudo, and plenty of boxes (Debian minimal, container images,
@@ -912,7 +928,40 @@ fi
 # behind NAT, or one addressed only after boot, does NOT -- and then registers
 # fine, syncs fine, and never reaches "Ready". Every gamemaster on the reference
 # fleet sets -externalip explicitly.
-if [ -n "$PTX_EXTERNALIP" ]; then
+# ★★ ROLE FORK. Exactly three things differ; everything else in the config is
+# byte-identical between the two roles.
+if [ "$PTX_ROLE" = "wallet" ]; then
+    # (a) A wallet host needs OUTBOUND peers to sync and to broadcast its ProTx.
+    #     It does not need to be dialled by anyone, and it is the box holding
+    #     collateral, so it does not listen.
+    LISTEN_LINE="listen=0"
+    # (b) externalip is the address you REGISTER. A wallet host registers
+    #     nothing, so advertising an address for a machine the guide tells you
+    #     to keep local is pointless and leaks it.
+    EXTERNALIP_LINE="# (wallet host: no externalip -- this machine advertises nothing)"
+    ROLE_LINES="# THIS IS A WALLET HOST (PTX_ROLE=wallet). The gamemaster lines are
+# deliberately ABSENT, not forgotten: gamemaster=1 belongs on the node that holds
+# the BLS key, and OPERATOR_GUIDE.md A4 generates that key on the NODE machine,
+# not here. If you meant to build a gamemaster, re-run with PTX_ROLE=gamemaster
+# -- a wallet-role node registers, syncs and looks healthy while never being
+# reachable for signing."
+    ROLE_TRAILER="# ROLE: wallet. Wallet ON (it holds your collateral), listen=0, no externalip."
+    ROLE_BANNER="WALLET   (listen=0, no externalip -- holds collateral, is not dialled)"
+    ok "role: WALLET host -- listen=0, no externalip, wallet enabled"
+    EXTERNALIP_DONE=1
+else
+    LISTEN_LINE="listen=1"
+    ROLE_LINES="# gamemaster=1
+# gmoperatorprivatekey=<the BLS key you generate in the OPERATOR_GUIDE>"
+    ROLE_TRAILER="# ROLE: gamemaster. Wallet ON (see the trade above), listen=1, externalip set."
+    ROLE_BANNER="GAMEMASTER   (listen=1, externalip set -- must be reachable on P2P $P2P_PORT)"
+    ok "role: GAMEMASTER host -- listen=1, externalip required, wallet enabled"
+    EXTERNALIP_DONE=0
+fi
+
+if [ "${EXTERNALIP_DONE:-0}" = "1" ]; then
+    :
+elif [ -n "$PTX_EXTERNALIP" ]; then
     EXTERNALIP_LINE="externalip=$PTX_EXTERNALIP"
     ok "advertising external address $PTX_EXTERNALIP"
 elif [ "$(printf '%s\n' "$GLOBAL_ADDRS" | grep -c .)" = "1" ] && [ -n "$GLOBAL_ADDRS" ]; then
@@ -977,17 +1026,21 @@ rpcport=$RPC_PORT
 # collided with the first and failed ("Binding RPC on address :: port N failed"),
 # leaving one family unbound. Explicit per-address binds cannot collide.
 $RPCBIND_LINES
-# ★★ WHO MAY CALL THIS RPC -- THE COORDINATOR'S CALLER, AND NOTHING ELSE.
-# ★ NOT "your quorum peers". Gamemasters never dial each other's RPC: the DKG
-# ceremony runs over P2P (ptx/ptx_dkg_net.cpp:419-427) and the ONLY node-to-node
-# RPC in the daemon is the signing fan-out, whose single caller is ptx_roll
-# (src/rpc/ptx.cpp:325) on the coordinator's caller node. So this list needs ONE
-# address, it is the same address for every operator, and it does not change when
-# another operator joins.
-# ★ The ACL is checked BEFORE any authentication (httpserver.cpp:236, HTTP 403 on
-# reject) and the credential AFTER it (httprpc.cpp:157, HTTP 401) -- you need both
-# lines below or the roll comes back short with nothing in YOUR log: an ACL
-# rejection is logged only under -debug=http.
+# ★★ WHO MAY CALL THIS RPC -- NOBODY BUT THIS MACHINE.
+# ★ NOT "your quorum peers", and no longer the coordinator either. Gamemasters
+# never dial each other's RPC: the DKG ceremony runs over P2P
+# (ptx/ptx_dkg_net.cpp:419-427), and the one node-to-node RPC that used to exist
+# -- the signing fan-out -- was DELETED by KDD-085. Signing requests are now
+# ordinary P2P messages to the address you register on chain. So this list is
+# loopback and stays loopback.
+# ★ Earlier revisions of this block named "the coordinator's caller" here and
+# told you to add its address. That instruction is GONE, not narrowed; if you are
+# working from an older config or an older copy of the guide, delete that line.
+# ★ The ACL is still checked BEFORE any authentication (httpserver.cpp:236,
+# HTTP 403 on reject) and the credential AFTER it (httprpc.cpp:157, HTTP 401).
+# That ordering is why a remote probe of this port answers 403 and never 401 --
+# useful to know when reading a scan, and the reason an exposed rpcbind is an
+# unnecessary listener rather than an authentication problem.
 # ★★ LOOPBACK ONLY, AND THERE IS NO LONGER A CALLER ENTRY TO ADD. KDD-085
 # deleted the RPC signing path, so nothing off this host ever calls this node's
 # RPC. Do NOT widen this, and do not uncomment a caller line from an older
@@ -1028,7 +1081,7 @@ rpcthreads=16
 
 # --- P2P -------------------------------------------------------------------
 port=$P2P_PORT
-listen=1
+$LISTEN_LINE
 # ★★ THE ADDRESS PEERS DIAL, AND IT MUST MATCH YOUR ProTx EXACTLY.
 # Without a discoverable external address in the family you registered, the
 # gamemaster never arms: activegamemaster.cpp:152-157 (cannot detect) and :161-167
@@ -1067,18 +1120,20 @@ $ADDNODE_LINES
 #
 # So: start the daemon as it is, generate the key (OPERATOR_GUIDE.md A4), then
 # uncomment BOTH of these and restart.
-# gamemaster=1
-# gmoperatorprivatekey=<the BLS key you generate in the OPERATOR_GUIDE>
+$ROLE_LINES
 
 # --- Wallet posture on a gamemaster host -----------------------------------
 # ★ THE WALLET IS LEFT ON DELIBERATELY, and here is the trade, because the
 # alternative is one line and you should be able to make the choice yourself.
 #
-# The caller credential above can call ANY rpc on this node (no -rpcwhitelist in
-# this daemon; httprpc.cpp:157's authUser is never read), so if it leaks, an
-# attacker gets \`stop\`, \`setban\`, and this node's wallet. Your COLLATERAL is not
-# here -- it lives on your wallet machine -- so what is at risk is a few HMS of
-# fee money and the node's availability.
+# ★ THE TRADE CHANGED, AND IT NOW POINTS ONE WAY. This block used to weigh the
+# wallet against a leaked CALLER CREDENTIAL that could call any rpc here. KDD-085
+# DELETED that credential (see the top of this file: there is no caller
+# credential and no caller allow-list entry any more) and RPC is bound to
+# loopback only. So the risk half of the trade is gone while the benefit half
+# below is unchanged -- which is why the wallet stays on by default rather than
+# by inertia. What remains at risk is a few HMS of fee money; your COLLATERAL is
+# not here, it lives on your wallet machine.
 #
 # Uncommenting this shrinks that to availability only:
 # disablewallet=1
@@ -1092,6 +1147,7 @@ $ADDNODE_LINES
 # With the wallet on, that machine is this one and the BLS secret never moves.
 # With disablewallet=1, you must copy the BLS secret to your wallet machine.
 # See OPERATOR_GUIDE.md "If your GM is PoSe-banned".
+$ROLE_TRAILER
 EOF
 }
 
@@ -1224,10 +1280,16 @@ fi
 
 say "Done"
 cat <<EOF
+  ROLE:    $ROLE_BANNER
   Config:  $CONF
   Datadir: $DATADIR
   Params:  $PARAMS_DST
   P2P:     $P2P_PORT      RPC: $RPC_PORT
+
+  ★ IF THAT ROLE IS WRONG, STOP AND RE-RUN with the other one -- do not patch the
+  config by hand. A gamemaster built as a wallet registers, syncs, reports
+  ENABLED and SILENTLY NEVER SIGNS; that is the failure this line exists to
+  prevent. Re-run as:  PTX_ROLE=gamemaster ./install.sh   (or PTX_ROLE=wallet)
 
   ★ ONE GM PER HOST. Do not run a second gamemaster on this machine. The old
   reason -- a signing fan-out that dialled one shared RPC port -- was deleted by

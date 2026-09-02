@@ -1038,13 +1038,67 @@ bare_invocation_run() {
     return $rc
 }
 
+# ---------------------------------------------------------------------------
+# ROLE leg. install.sh builds a ROLE (PTX_ROLE=gamemaster|wallet) and the two
+# configs differ in exactly three things. ★ This exists because a wrong role is
+# the silent failure: a gamemaster built as a wallet registers, syncs, reports
+# ENABLED and NEVER RECEIVES A SIGNING REQUEST -- no error, anywhere. A check
+# that only ever sees the right answer would not catch that, so the RED half
+# below asserts the two roles actually DIFFER rather than that either one parses.
+role_run() {
+    say "ROLE — PTX_ROLE builds two different configs, and says which"
+    local r c fh out rc=0
+    for r in gamemaster wallet; do
+        fh="$BASE/role-$r"; rm -rf "$fh"; mkdir -p "$fh"
+        out="$BASE/role-$r.log"
+        ( cd "$HERE" && HOME="$fh" PATH="$(dirname "$HEMISD"):$PATH" \
+            PTX_ROLE="$r" PTX_EXTERNALIP=203.0.113.9 \
+            PTX_REPO="$TEST_REPO" PTX_REF="$TEST_REF" \
+            PTX_PREFIX="$BASE/role-prefix-$r" PTX_PARAMS_DIR="$PARAMS_DIR" \
+            bash ./install.sh ) >"$out" 2>&1 \
+            || { bad "install.sh failed for PTX_ROLE=$r -- see $out"; return 1; }
+        c="$fh/.Hemis/Hemis.conf"
+        grep -qE "^# ROLE: $r" "$c" \
+            && ok "PTX_ROLE=$r stamped the config (# ROLE: $r) -- self-check can read it back" \
+            || { bad "PTX_ROLE=$r wrote no '# ROLE: $r' line; self-check.sh 0b cannot verify the role."; rc=1; }
+        grep -qiE "ROLE: +${r}" "$out" \
+            && ok "PTX_ROLE=$r announced the role in the output an operator reads" \
+            || { bad "PTX_ROLE=$r did not print its role. Silent role selection is the defect this leg exists for."; rc=1; }
+    done
+
+    # ★ THE DISCRIMINATING ASSERTION. Both roles installing cleanly proves
+    # nothing -- one config for both machines also installs cleanly, which is
+    # exactly the state this replaced. The claim is that they DIFFER.
+    local gm="$BASE/role-gamemaster/.Hemis/Hemis.conf" wa="$BASE/role-wallet/.Hemis/Hemis.conf"
+    if grep -qE '^listen=1' "$gm" && grep -qE '^listen=0' "$wa"; then
+        ok "the two roles differ on listen (gamemaster 1, wallet 0)"
+    else
+        bad "listen is the same in both roles -- the toggle is not doing anything."; rc=1
+    fi
+    if grep -qE '^externalip=' "$gm" && ! grep -qE '^externalip=' "$wa"; then
+        ok "the two roles differ on externalip (gamemaster sets it, wallet does not)"
+    else
+        bad "externalip does not distinguish the roles -- a wallet host is advertising, or a gamemaster is not."; rc=1
+    fi
+
+    # RED: an unknown role must ABORT, never fall back to a default.
+    if ( cd "$HERE" && HOME="$BASE/role-bad" PTX_ROLE=nonsense bash ./install.sh ) >"$BASE/role-bad.log" 2>&1; then
+        printf '  \033[31m[RED BROKEN]\033[0m PTX_ROLE=nonsense was ACCEPTED. An unrecognised role must abort, not silently pick one.\n'
+        RED_FAIL=$((RED_FAIL + 1)); rc=1
+    else
+        printf '  \033[32m[RED ok]\033[0m PTX_ROLE=nonsense aborted instead of defaulting\n'
+        RED_PASS=$((RED_PASS + 1))
+    fi
+    return $rc
+}
+
 preflight
 
 MODE="${1:-all}"
 case "$MODE" in
     --green-only) green_run ;;
     --red-only)   green_run >/dev/null 2>&1; red_run ;;
-    all|"")       green_run; bare_invocation_run || true; red_run ;;
+    all|"")       green_run; bare_invocation_run || true; role_run || true; red_run ;;
     *) die "unknown argument '$MODE' (expected --green-only, --red-only, or nothing)" ;;
 esac
 

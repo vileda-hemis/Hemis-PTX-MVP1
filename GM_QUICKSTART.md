@@ -30,7 +30,7 @@ must be the same one that appears in the URL above.
 
 | | |
 |---|---|
-| **Two machines** | a **node** (public IP, 24/7) and a **wallet** machine (offline/local). Your collateral never goes on the node. |
+| **Two machines** | a **node** (public IP, 24/7, install with the default `PTX_ROLE=gamemaster`) and a **wallet** machine (offline/local, install with **`PTX_ROLE=wallet`**). Your collateral never goes on the node. ★ The roles write different configs and `install.sh` prints which one it built — check that line. |
 | **Node OS** | any Linux with **glibc ≥ 2.31** and x86_64 or aarch64. Ubuntu 20.04+, Debian 11+, and most others. The installer checks glibc and CPU, **not** the distro name. ★ **Debian 12 is what we test; Ubuntu 24.04 is what we run, and works.** |
 | **Node resources** | 2 GB RAM, 10 GB disk. |
 | **Collateral** | **100 HMS per gamemaster**, one exact unspent output each, on the **wallet** machine. ★ **100, not 1000** — 1000 is mainnet and the old Hemis testnet; ptxtestnet is `nGMCollateralAmt = 100 * COIN` (`src/chainparams.cpp:757`). The check is exact equality, and neither the RPC nor the consensus rejection tells you the number you should have used. See `OPERATOR_GUIDE.md` B1. |
