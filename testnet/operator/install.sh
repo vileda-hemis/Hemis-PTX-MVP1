@@ -1168,66 +1168,15 @@ ptxtestnet=1
 rpcuser=${RPCUSER:-ptxop}
 rpcpassword=$1
 rpcport=$RPC_PORT
-# ★★ BOUND TO THIS HOST'S OWN GLOBAL ADDRESSES, NOT THE WILDCARD.
-# The wildcard pair (0.0.0.0 + ::) leaves RPC listening on every interface with
-# only the firewall between it and the internet, and the credentials above are in
-# this file -- one rule away from exposure. With one GM per host there is no
-# reason to bind anything but this host's own address.
-# ★ It also sidesteps ODC-076: on Linux with the default net.ipv6.bindv6only=0 a
-# "::" wildcard already covers IPv4, so the second of the two wildcard binds
-# collided with the first and failed ("Binding RPC on address :: port N failed"),
-# leaving one family unbound. Explicit per-address binds cannot collide.
+# Loopback only -- RPC is a local admin interface, not a network service.
+# Do not widen it: the credentials are in this file and nothing off this host
+# needs to call it.
 $RPCBIND_LINES
-# ★★ WHO MAY CALL THIS RPC -- NOBODY BUT THIS MACHINE.
-# ★ NOT "your quorum peers", and no longer the coordinator either. Gamemasters
-# never dial each other's RPC: the DKG ceremony runs over P2P
-# (ptx/ptx_dkg_net.cpp:419-427), and the one node-to-node RPC that used to exist
-# -- the signing fan-out -- was DELETED by KDD-085. Signing requests are now
-# ordinary P2P messages to the address you register on chain. So this list is
-# loopback and stays loopback.
-# ★ Earlier revisions of this block named "the coordinator's caller" here and
-# told you to add its address. That instruction is GONE, not narrowed; if you are
-# working from an older config or an older copy of the guide, delete that line.
-# ★ The ACL is still checked BEFORE any authentication (httpserver.cpp:236,
-# HTTP 403 on reject) and the credential AFTER it (httprpc.cpp:157, HTTP 401).
-# That ordering is why a remote probe of this port answers 403 and never 401 --
-# useful to know when reading a scan, and the reason an exposed rpcbind is an
-# unnecessary listener rather than an authentication problem.
-# ★★ LOOPBACK ONLY, AND THERE IS NO LONGER A CALLER ENTRY TO ADD. KDD-085
-# deleted the RPC signing path, so nothing off this host ever calls this node's
-# RPC. Do NOT widen this, and do not uncomment a caller line from an older
-# config: there is no per-method restriction in this daemon -- jreq.authUser
-# (httprpc.cpp:157) is never read and there is no -rpcwhitelist -- so anything
-# that authenticates gets the WHOLE RPC surface, stop and the wallet included.
-# Widening it now buys nothing at all, because nothing needs to reach it.
+# Loopback only. Nothing off this host calls this RPC, so there is no entry to
+# add here -- widening it grants the whole RPC surface, wallet included.
 rpcallowip=127.0.0.1
 rpcallowip=::1
-# ★ RPC SERVER CAPACITY. (Historical note: this was sized for the signing
-# fan-out's concurrent dials. KDD-085 deleted that; the values are harmless
-# and left alone rather than re-tuned on a launch-eve change.)
-# The stock values are DEFAULT_HTTP_WORKQUEUE=16 and DEFAULT_HTTP_THREADS=4
-# (httpserver.h:13-14, read at httpserver.cpp:404 and :435). Those are sized for
-# an operator typing one command at a time. This node is not that: it is a
-# signing member, and the whole quorum is asked at once.
-# ★ WHY THE LOAD LANDS ON ELEVEN NODES AND NOT ON THE WHOLE FLEET: roll routing
-# keys on the TIP HASH, so every roll in a given block resolves to the SAME
-# quorum. Measured 2026-08-23 over 178 blocks of fleet traffic: 161 of them used
-# exactly ONE quorum (the rest were tip-change races mid-batch). So N concurrent
-# rolls in a block arrive as N concurrent signing requests at each of the 11
-# members -- fleet size does not divide that load, it concentrates it.
-# ★★ AND THE OVERFLOW IS INVISIBLE FROM THE GM SIDE. Past the queue depth the
-# daemon returns HTTP 500 "Work queue depth exceeded" (httpserver.cpp:271) and
-# then stops accepting entirely. The roll comes back short at the CALLER while
-# this node looks perfectly healthy to its operator -- same shape as the ACL
-# rejection noted above, a failure whose evidence is on the other machine.
-# ★ WHAT THIS DOES AND DOES NOT BUY, because the first version of this comment
-# overstated it. A concurrency sweep the same day (1,6,12,16,20,24,30,45,60
-# simultaneous rolls) put the first work-queue refusals at N=30, NOT at the
-# stock depth of 16 -- so the queue is not the first thing to give way, and
-# these two lines are BURST TOLERANCE, not a throughput fix. The limit that
-# binds first is on the CALLER side and no GM setting affects it. Raising these
-# is still worth doing -- the refusals above N=30 were real, and the cost is a
-# few idle threads -- but do not expect them to raise the roll ceiling.
+# Raised from the stock 16/4. See ODC-107 for why, if you need it.
 rpcworkqueue=128
 rpcthreads=16
 
@@ -1274,49 +1223,11 @@ $ADDNODE_LINES
 # uncomment BOTH of these and restart.
 $ROLE_LINES
 
-# --- Wallet posture -------------------------------------------------------
-# ★ ON A GAMEMASTER THIS IS OFF, and here is the reasoning, because it is one
-# line and you should be able to check it yourself. On a wallet host the line
-# below is absent and the wallet is on -- that host holds your collateral.
-#
-# ★ A GAMEMASTER NEVER HOLDS FUNDS, and that is what decides this. It signs with
-# its BLS key; the key is read from this file (tiertwo/init.cpp:290), never from
-# a wallet. Measured: DKG, share storage and the P2P signing path touch no wallet
-# code; self-check.sh calls no wallet RPC; generateblskeypair works with the
-# wallet off; and a gamemaster starts, syncs and reports status normally without
-# one.
-#
-# ★★ WHAT THIS DOES NOT COST YOU, stated because the old text here weighed it
-# the other way. Un-banning a gamemaster needs protx_update_service, which funds
-# a transaction through FundSpecialTx (rpc/rpcevo.cpp:282) -- and an UNFUNDED
-# wallet cannot fund one: measured on a live zero-balance node, the call fails
-# "Insufficient funds." So on-node recovery was ALREADY unavailable on a host
-# that holds no coins. Turning the wallet off removes a wallet you could not
-# have used, not a recovery route you had.
-#
-# ★ WHAT IT DOES COST, honestly: you cannot fund this host in an emergency
-# without re-enabling the wallet and restarting. If you would rather keep that
-# option, delete the line below -- an empty wallet is still an attack surface
-# and still a wallet.dat to lose, which is why it is off by default.
-#
-# ★ SO RECOVERY RUNS FROM YOUR WALLET MACHINE, and it needs the BLS SECRET
-# passed explicitly as argument 4 -- a banned gamemaster cannot supply its own
-# (GetValidGM returns nullptr while banned, evo/deterministicgms.cpp:115-121).
-# KEEP A COPY OF THAT SECRET SOMEWHERE YOU CAN REACH. You generate it in
-# OPERATOR_GUIDE.md step 8; if it exists only on a banned node you cannot log
-# into, you cannot recover. See OPERATOR_GUIDE.md "If your GM is PoSe-banned".
+# A gamemaster holds no funds and needs no wallet. Removing this line gives you
+# one to lose and buys nothing -- it cannot pay a fee, so it cannot recover
+# itself either. See OPERATOR_GUIDE.md if you want the reasoning.
 $WALLET_LINE
-# ★★ THE STAMP DECLARES THE ROLE AND NOTHING ELSE, DELIBERATELY.
-# It used to describe the configuration too -- "Wallet ON ..., externalip set" --
-# and that prose was a CACHED COPY of facts written a few lines above it. The
-# copy cannot survive the operator edits this guide asks for (uncommenting
-# gamemaster=1, adding the BLS key), so a host was found in the field whose stamp
-# read "externalip set" while externalip was commented out and the wallet was
-# off. Nothing consumed the prose -- self-check.sh section 0b reads only the role
-# NAME and then verifies listen/externalip against the config itself -- so the
-# prose was a claim with no reader except a human being misled by it.
-# ★ Duplicate facts drift; the config below is the single source of truth for
-# what this host is configured to do. See ODC-107.
+# The role, and nothing else. The settings above are what this host actually does.
 $ROLE_TRAILER
 EOF
 }

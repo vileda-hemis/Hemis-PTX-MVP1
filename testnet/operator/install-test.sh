@@ -1318,7 +1318,7 @@ role_run() {
         # Deliberate non-matching mentions, named individually so a blanket skip
         # cannot hide a real one. file <TAB> text that must appear on the line.
         local FACT_EXEMPT
-        FACT_EXEMPT="$(printf '%s\n' 'install.sh	Bound to [::]:29993')"
+        FACT_EXEMPT="$(printf '%s\n' 'install.sh	Bound to [::]:29993' 'self-check.sh	an explicit port that disagrees')"
         local opfiles ff badfact=0 nfact=0
         opfiles="GM_QUICKSTART.md vps-install.sh testnet/operator/OPERATOR_GUIDE.md"
         opfiles="$opfiles testnet/operator/OPERATOR_ONEPAGER.md testnet/operator/install.sh"

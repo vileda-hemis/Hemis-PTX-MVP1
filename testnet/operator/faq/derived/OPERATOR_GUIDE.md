@@ -1,6 +1,6 @@
 <!-- CORPUS-SOURCE: testnet/operator/OPERATOR_GUIDE.md -->
 <!-- CORPUS-TAG: v0.3.4-testnet -->
-<!-- CORPUS-SHA256: c1db3d2ac309746ed781ae76c6299c5ac0d6f602e5334dad61966f986b97f8d7 -->
+<!-- CORPUS-SHA256: 64a270c2111f20b68b626610fa6a1e656bc7a0b23e96ff78d166467695fc7179 -->
 
 > **This document is a verbatim copy of `testnet/operator/OPERATOR_GUIDE.md` at `v0.3.4-testnet`.** It is not
 > edited for the FAQ bot. If it disagrees with anything else in this corpus, it wins.
@@ -293,7 +293,7 @@ you leave it** — the daemon would advertise the private address.
 ```bash
 grep externalip $HOME/.Hemis/Hemis.conf
 # if it is commented out, set it to the SAME address you will register, under [ptxtestnet]:
-echo "externalip=2001:db8::10" >> $HOME/.Hemis/Hemis.conf   # ← YOUR global IPv6, no brackets here
+echo "externalip=2001:db8::10" >> $HOME/.Hemis/Hemis.conf   # ← YOUR global IPv6
 ```
 
 Why it is not optional: `CActiveDeterministicGamemasterManager::Init` refuses to arm without a
@@ -392,8 +392,18 @@ Copy to your wallet machine, per gamemaster:
 2. that host's **external address and P2P port**, e.g. `[2001:db8::10]:29994`
    ★ **Brackets around the address, then the port.** `protx_register` takes `ipAndPort` as one
    string, and without brackets the colon before `29994` is ambiguous with the address's own
-   colons. In `externalip=` (no port) you write the address bare, with no brackets — the two
-   places genuinely differ.
+   colons.
+
+   ★ **`externalip=` accepts all three forms and stores them identically** — `2a07:…::1`,
+   `[2a07:…::1]`, or `[2a07:…::1]:29994`. The port defaults to your `port=` setting
+   (`init.cpp:1418` looks the address up with `GetListenPort()` as the default), so on this network
+   all three resolve to the same address on 29994. **`install.sh` writes the bare form; if yours has
+   brackets, that is fine and not a fault.**
+
+   ★★ **The one thing that matters is the port.** If you write an explicit port it must match
+   `port=` and the address you registered. A mismatch is caught at startup — the gamemaster refuses
+   to arm with *"Local address … does not match the address from ProTx"* (`activegamemaster.cpp:159`
+   compares address **and** port) — so it fails loudly rather than silently.
 
 **Do not send the BLS secret — to anywhere, including your own wallet machine.** It belongs on the
 node that uses it and nowhere else. Anyone asking you for it is either mistaken or attacking you.

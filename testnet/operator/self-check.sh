@@ -300,6 +300,35 @@ if [ -n "${REGADDR:-}" ]; then
         ok "registered family matches a bound family"
     fi
 
+    # ★★ THE ADVERTISED PORT MUST MATCH THE REGISTERED ONE, and this is the only
+    # way externalip's FORM can be wrong. All three forms parse and store
+    # identically -- bare, [bracketed], and [bracketed]:PORT -- because the port
+    # defaults to `port=` (init.cpp:1418 looks it up with GetListenPort()). So a
+    # check on the form would enforce a rule that does not exist. What CAN be
+    # wrong is an explicit port that disagrees: [addr]:29996 advertises 29996.
+    # ★ The daemon does catch that, at arming, comparing CService address AND
+    # port (activegamemaster.cpp:159). This catches it BEFORE arming -- which
+    # matters, because a node that has not registered yet never reaches that gate.
+    if command -v python3 >/dev/null 2>&1; then
+        ADV_PORT="$(cli getnetworkinfo | python3 -c "
+import json,sys
+try:
+    d=json.load(sys.stdin)
+    la=[a for a in d.get('localaddresses',[]) if ':' in str(a.get('address',''))]
+    print(la[0]['port'] if la else '')
+except Exception:
+    print('')
+" 2>/dev/null)"
+        REG_PORT="${REGADDR##*:}"
+        if [ -z "${ADV_PORT:-}" ]; then
+            unk "the daemon advertises no IPv6 local address yet, so the advertised port could NOT be compared with the registered one. This is not a pass."
+        elif [ "$ADV_PORT" = "$REG_PORT" ]; then
+            ok "advertised port $ADV_PORT matches the registered address's port"
+        else
+            bad "★ you advertise port $ADV_PORT but registered port $REG_PORT. The gamemaster will refuse to arm (\"Local address ... does not match the address from ProTx\"). Check for an explicit port in externalip= that disagrees with port=."
+        fi
+    fi
+
     # ★★ THE GAP NEITHER SECTION 4 NOR 5 COULD SEE: "reachable, but only by half
     # the network". Both of those probe the LOCAL socket or this host's own view
     # of itself, so a node that binds correctly and answers its own probe still
