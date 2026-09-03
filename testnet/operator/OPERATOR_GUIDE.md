@@ -172,7 +172,7 @@ apt-get update && apt-get install -y --no-install-recommends git curl ca-certifi
 ```
 
 ```bash
-git clone -b v0.3.3-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
+git clone -b v0.3.4-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 cd Hemis-PTX-MVP1/testnet/operator
 ./install.sh
 ```
@@ -556,7 +556,7 @@ Hemis-cli protx_register \
 | 10 | `ptxPaymentAddress` | yours — see below |
 | 11 | `ptxNodeId` | `yourname-1` … `yourname-N` |
 
-★ **BUG-059 — fixed in `v0.3.3-testnet`. If you are on that tag or later, the command above works
+★ **BUG-059 — fixed in `v0.3.4-testnet`. If you are on that tag or later, the command above works
 and you can skip to the next section.** On **v0.3.1-testnet and earlier** it fails from `Hemis-cli`,
 and the failure looks like your mistake rather than ours. Check with `Hemisd -version`. You get:
 

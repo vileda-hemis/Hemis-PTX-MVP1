@@ -44,13 +44,43 @@ testnet/operator/install-test.sh	measured start-to-first-listening-socket
 testnet/operator/install.sh	release binary on 2026-08-21
 testnet/operator/ONBOARDING.md	ptx01 runs
 vps-install.sh	CANNOT work here
+testnet/operator/pin-check.sh	git clone -b v0.3.2-testnet
+testnet/operator/pin-check.sh	v0.3.3-testnet went out with
 testnet/operator/OPERATOR_GUIDE.md	and earlier** it fails from
 EOF
 )"
 
-mapfile -t FILES < <(git ls-files GM_QUICKSTART.md vps-install.sh 'testnet/operator/*')
+PIN_GLOBS=(GM_QUICKSTART.md vps-install.sh 'testnet/operator/*')
+mapfile -t FILES < <(git ls-files "${PIN_GLOBS[@]}")
 if [ "${#FILES[@]}" -eq 0 ]; then
     echo "pin-check: no files matched -- run me from inside the repository" >&2
+    exit 2
+fi
+
+# ★★ UNTRACKED FILES IN PIN SCOPE ARE A HARD FAILURE, AND THIS IS NOT PEDANTRY --
+# IT SHIPPED A DEFECT.  `git ls-files` lists TRACKED files only, so a document
+# that has just been created is invisible to this script AND to the sed that
+# bumps the pins.  v0.3.3-testnet went out with
+# `testnet/operator/OPERATOR_ONEPAGER.md` telling operators to
+# `git clone -b v0.3.2-testnet`: the file was created and pinned in the same
+# commit, so at bump time and at gate time it did not exist to either, and
+# pin-check reported "OK across 7 files" -- true, and meaningless, because 7 was
+# the count precisely BECAUSE the new file was not counted.
+#
+# ★ The failure shape is KDD-112's: a check that is never reached is
+# indistinguishable from a check that passes.  Here the check narrowed its own
+# scope silently, which is worse than being wrong -- it was CORRECT about a
+# smaller set than the reader believed it covered.
+#
+# ★ So the count is only meaningful if the scope is complete.  Refuse to answer
+# rather than answer for part of it.
+mapfile -t UNTRACKED < <(git ls-files --others --exclude-standard "${PIN_GLOBS[@]}")
+if [ "${#UNTRACKED[@]}" -gt 0 ]; then
+    printf 'pin-check: %d UNTRACKED file(s) inside pin scope -- this check does NOT cover them:\n' "${#UNTRACKED[@]}" >&2
+    printf '  %s\n' "${UNTRACKED[@]}" >&2
+    printf '\n  git ls-files sees tracked files only, so an untracked file is invisible to\n' >&2
+    printf '  this gate AND to whatever bumps the pins. Commit them (or remove them) and\n' >&2
+    printf '  re-run. Reporting OK now would report OK for a smaller set than you think.\n\n' >&2
     exit 2
 fi
 
