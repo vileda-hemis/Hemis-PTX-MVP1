@@ -1,6 +1,6 @@
 <!-- CORPUS-SOURCE: GM_QUICKSTART.md -->
 <!-- CORPUS-TAG: v0.3.4-testnet -->
-<!-- CORPUS-SHA256: 875d143e2ec3c1b5f6b463ede9a01c28db4a9c017070e6c4579d2e76a22201e5 -->
+<!-- CORPUS-SHA256: c6d1140639bceda27cbca537c4301d273a5569bed6aa6584e52b20e1b48e80a8 -->
 
 > **This document is a verbatim copy of `GM_QUICKSTART.md` at `v0.3.4-testnet`.** It is not
 > edited for the FAQ bot. If it disagrees with anything else in this corpus, it wins.
@@ -46,7 +46,7 @@ must be the same one that appears in the URL above.
 |---|---|
 | **Two machines** | a **node** (public IP, 24/7, install with the default `PTX_ROLE=gamemaster`) and a **wallet** machine (local, install with **`PTX_ROLE=wallet`** — it also needs **P2P 29994 open inbound**, so that it returns peers to a network with no DNS seed; it advertises no address and registers nothing). Your collateral never goes on the node. ★ The roles write different configs and `install.sh` prints which one it built — check that line. |
 | **Node OS** | any Linux with **glibc ≥ 2.31** and x86_64 or aarch64. Ubuntu 20.04+, Debian 11+, and most others. The installer checks glibc and CPU, **not** the distro name. ★ **Debian 12 is what we test; Ubuntu 24.04 is what we run, and works.** |
-| **Node resources** | 2 GB RAM, 10 GB disk. |
+| **Node resources** | 2 GB RAM, 20 GB disk. ★ The chain itself is tiny (~30 MB today); the space is for the OS, the Sapling parameters and headroom. |
 | **Collateral** | **100 HMS per gamemaster**, one exact unspent output each, on the **wallet** machine. ★ **100, not 1000** — 1000 is mainnet and the old Hemis testnet; ptxtestnet is `nGMCollateralAmt = 100 * COIN` (`src/chainparams.cpp:757`). The check is exact equality, and neither the RPC nor the consensus rejection tells you the number you should have used. See `OPERATOR_GUIDE.md` B1. |
 
 ★★ **One gamemaster per host, each with its own routable address. How many you run is agreed
@@ -103,8 +103,11 @@ It is a wrapper, not a second installer. In order:
 3. **Runs `testnet/operator/install.sh` once per GM**, with that GM's datadir and port pair. That
    script is the real installer: it checks glibc and architecture, downloads the release tarball and
    **verifies its sha256 against the published `SHA256SUMS`**, installs the binaries, installs the
-   Sapling parameters, reserves the fan-out ports, and writes each `Hemis.conf` with a generated RPC
-   password at mode 600.
+   Sapling parameters, and writes each `Hemis.conf` with a generated RPC password at mode 600.
+   ★ **You do not pass `PTX_ROLE` here and do not need to.** `install.sh` defaults to
+   `gamemaster`, which is what this document is building; it prints a five-second notice saying
+   so, which is informational, not an error. The wallet machine is the one that needs
+   `PTX_ROLE=wallet` typed explicitly — see `OPERATOR_ONEPAGER.md`.
 
 **Binaries** land in `/opt/hemis-ptx/bin`; `Hemisd` and `Hemis-cli` are symlinked into
 `/usr/local/bin` so they are on your PATH (`Hemis-tx` is not — call it by full path if you need it).
@@ -134,22 +137,32 @@ Open each GM's two ports, in both places. See the table above.
 
 ### 2. Start the daemon and generate the BLS key — **per GM**
 
-The BLS key is an **RPC call**, so the daemon has to be running first.
+The BLS key is an **RPC call**, so the daemon has to be running first. `install.sh` has already
+started it under systemd, so you do not start it yourself.
 
 ```bash
-Hemisd -daemon
 Hemis-cli getblockcount      # answers within a few seconds
 Hemis-cli generateblskeypair
 ```
 
-* the **`secret`** goes into *this* machine's config, **together with `gamemaster=1`**:
+* the **`secret`** goes into *this* machine's config, **together with `gamemaster=1`**. `install.sh`
+  ships both lines already present and **commented out** — uncomment them and fill in the key:
 
   ```bash
-  echo "gmoperatorprivatekey=<BLS SECRET>" >> $HOME/.Hemis/Hemis.conf
-  echo "gamemaster=1"                      >> $HOME/.Hemis/Hemis.conf
-  Hemis-cli stop
-  Hemisd    -daemon
+  # in ~/.Hemis/Hemis.conf, under the [ptxtestnet] header, change:
+  #     # gamemaster=1
+  #     # gmoperatorprivatekey=<the BLS key you generate in the OPERATOR_GUIDE>
+  # to:
+  #       gamemaster=1
+  #       gmoperatorprivatekey=<BLS SECRET>
+  sudo systemctl restart hemis-ptx
   ```
+
+  ★ **Uncomment rather than append.** Appending works — `[ptxtestnet]` is the only section header
+  and it is near the top, so a line added at the end is still inside it — but it leaves the
+  commented originals sitting beside your real ones, which is confusing to read later and to
+  support. `OPERATOR_GUIDE.md` and `OPERATOR_ONEPAGER.md` both describe uncommenting; this now
+  matches them.
 
 * the **`public`** half goes to the wallet operator. **Send the public half only.**
 
@@ -163,8 +176,8 @@ deliberately: with the role enabled and no key the daemon **refuses to start** �
 Gamemaster priv key cannot be empty.` — and `generateblskeypair` is an RPC call, so you would be
 locked out of the daemon you need to produce the key.
 
-★ **`-daemon` survives your shell but not a reboot.** Arrange start-at-boot — a systemd unit or
-`@reboot` in cron — *before* you report the node as ready. A GM that is down after a reboot accrues
+★ **Start-at-boot is already handled — `install.sh` writes a systemd unit and enables it.** You do
+not need to add one. Confirm with `systemctl is-enabled hemis-ptx`; it should say `enabled`. A GM that is down after a reboot accrues
 PoSe penalties exactly as if it were firewalled.
 
 ### 3. Register — on the **wallet** machine
@@ -180,8 +193,10 @@ cd ~/Hemis-PTX-MVP1/testnet/operator && ./self-check.sh
 
 Ten sections: build identity, role, local RPC, chain sync, registration, IPv6 bind coverage,
 **external reachability at the registered address**, PoSe, `ptx_shares.dat` custody, quorum
-membership. Section 5 is the one
-that catches the closed-RPC failure above.
+membership. ★ The **external reachability** section — section 5 in the script's own numbering —
+is the one that catches the closed-**P2P** failure above. (RPC is loopback-only on both roles and is
+not meant to be reachable.) Count carefully: the script numbers its sections `0`, `0b`, then `1`-`8`,
+so the fifth item in this list is not section 5.
 
 ---
 
@@ -196,9 +211,10 @@ use a newer OS, or build from source on the box:
 of disk, and it installs build dependencies).
 
 **`COULD NOT RESERVE PORTS 32000-33000`** — you are in an unprivileged container, and this is not a
-permission you can grant yourself from inside it. **The node still works**; it is a latent fault
-where the kernel may hand out a PTX fan-out port as an ephemeral source port. Fix it on the
-**host**, not in the guest — the installer prints the exact two commands.
+permission you can grant yourself from inside it. **The node still works, and on this network the reservation buys nothing** — it was for the
+signing fan-out, which KDD-085 deleted; nothing binds 32000-33000 any more. You can ignore this
+message. If you want it gone, the installer prints the exact two commands to run on the **host**,
+not in the guest.
 
 **The daemon exits immediately with no obvious error** — check for the Sapling parameters:
 `ls -la ~/.Hemis-params` should show `sapling-spend.params` (~46 MB) and `sapling-output.params`
@@ -217,10 +233,10 @@ All optional; the defaults are what the coordinator expects.
 
 | variable | default | why you would change it |
 |---|---|---|
-| `PTX_GM_COUNT` | `3` | the coordinator told you to run fewer |
+| `PTX_GM_COUNT` | `1` | ★ **leave it.** One gamemaster per host is the documented deployment, stated twice above. This exists for a coordinator-directed exception only |
 | `PTX_TAG` | the release tag | testing an untagged fix, on instruction |
 | `PTX_CLONE_DIR` | `~/Hemis-PTX-MVP1` | you keep sources elsewhere |
-| `PTX_DATADIR` / `PTX_P2P_PORT` / `PTX_RPC_PORT` | the defaults | still accepted, but **not the documented path** — one GM per host means the defaults are correct. ★ Do not change the RPC port: the fan-out dials one port for every member |
+| `PTX_DATADIR` / `PTX_P2P_PORT` / `PTX_RPC_PORT` | the defaults | still accepted, but **not the documented path** — one GM per host means the defaults are correct. ★ The RPC port is free to change now — the fan-out that dialled one shared port for every member was deleted by KDD-085, and signing arrives over P2P at the address you register. Keeping 29995 is convention, not a requirement |
 
 ★ **Do not point `PTX_TAG` at `main`.** The operator tooling is not on the default branch; a clone of
 `main` has no `testnet/operator/` directory in it. The bootstrap checks for this and stops with that

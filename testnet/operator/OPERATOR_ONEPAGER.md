@@ -16,7 +16,8 @@ and **one host per gamemaster**, each with its own internet-routable address.
 
 ## Every machine
 
-**1. Provision** — Ubuntu 24.04 or Debian 12, 2 vCPU, 2 GB RAM, 40 GB disk.
+**1. Provision** — Ubuntu 24.04 or Debian 12, 2 vCPU, 2 GB RAM, 20 GB disk. ★ The chain is tiny
+(~30 MB today); the space is for the OS, the Sapling parameters and headroom.
 
 ★★ **AND A GLOBAL IPv6 ADDRESS. Check this before you buy the machine.** IPv4 as well is fine —
 it is IPv6 that must be there, on **both** roles. `install.sh` refuses a host without one, and
@@ -119,14 +120,19 @@ wallet, so it cannot pay a fee and cannot recover itself. Un-banning it later ru
 wallet machine** and needs this secret passed to it. If the only copy lives on a node you cannot log
 into, the gamemaster cannot be recovered. A password manager or an offline note is enough.
 
-**9. Edit** `~/.Hemis/Hemis.conf` under `[ptxtestnet]` — the first line is already there,
-commented:
+**9. Edit** `~/.Hemis/Hemis.conf` under `[ptxtestnet]`. ★ **Two of these three lines are already
+in the file and only need uncommenting; the third is already correct and you do not touch it.**
 
 ```
-gmoperatorprivatekey=<secret from step 8>
-gamemaster=1
-externalip=<this host's global IPv6 address, bare, no brackets>
+gmoperatorprivatekey=<secret from step 8>   # present, COMMENTED -- uncomment and fill in
+gamemaster=1                                # present, COMMENTED -- uncomment
+externalip=<already written by install.sh>  # ★ DO NOT ADD -- see below
 ```
+
+★★ **`externalip` is not yours to set.** `install.sh` selects this host's global IPv6 address and
+writes the line for you; a second copy you add by hand is either a duplicate or a contradiction, and
+the duplicate is the one that is hard to spot later. If it is missing, the install did not complete
+— re-run it rather than patching around it.
 
 ```bash
 sudo systemctl enable --now hemis-ptx
