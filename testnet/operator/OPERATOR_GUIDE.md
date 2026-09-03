@@ -278,16 +278,24 @@ If you are behind NAT, the address here is your **router's public address**, and
 forward **29994 only** to this machine. ★ 29995 (RPC) is loopback-only since KDD-085 —
 forwarding it exposes the credentials in your config and buys nothing.
 
-★★ **PUT THAT ADDRESS IN `externalip=` BEFORE YOU ARM, OR THE GM NEVER STARTS SIGNING.**
-`install.sh` writes it for you when this host has exactly one global address, and leaves a
-commented placeholder when it cannot choose. **Behind NAT it cannot choose, and it will be wrong if
-you leave it** — the daemon would advertise the private address.
+★★ **`externalip=` MUST BE SET BEFORE YOU ARM, OR THE GM NEVER STARTS SIGNING — AND `install.sh`
+HAS ALREADY SET IT.** It selects this host's **routable global IPv6 address** and writes the line
+for you. It leaves a commented placeholder only when it cannot choose — behind NAT, where the
+address you register is the router's and not one this host can see.
+
+★★ **CHECK IT; DO NOT ADD A SECOND ONE.** `externalip` accepts multiple lines, and two of them
+advertise **two local addresses at equal score** — measured. The daemon then picks one, and if it
+picks the one you did not register, arming fails with *"Local address … does not match the address
+from ProTx"*. **A duplicate is a coin-flip, not a no-op.**
 
 ```bash
-grep externalip $HOME/.Hemis/Hemis.conf
-# if it is commented out, set it to the SAME address you will register, under [ptxtestnet]:
-echo "externalip=2001:db8::10" >> $HOME/.Hemis/Hemis.conf   # ← YOUR global IPv6
+grep -n '^externalip' $HOME/.Hemis/Hemis.conf
 ```
+
+* **One uncommented line, and it is the address you will register** → nothing to do.
+* **Commented out** (NAT, or several routable addresses) → **edit that line in place** under
+  `[ptxtestnet]`, setting it to the address you will register. Do not append a new one.
+* **More than one uncommented line** → delete all but the correct one.
 
 Why it is not optional: `CActiveDeterministicGamemasterManager::Init` refuses to arm without a
 discoverable external address in the family you registered
