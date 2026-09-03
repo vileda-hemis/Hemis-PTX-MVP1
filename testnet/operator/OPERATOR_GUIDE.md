@@ -547,7 +547,7 @@ Use a distinct `ptxNodeId` per GM (`yourname-1` … `yourname-N`).
 Record the returned **protx transaction id** and **`ptxNodeId`** for each GM.
 
 ★ **There is a guided version of this section** that composes the commands for you and checks the
-label rules before you run anything: **https://explorer.hemis.tech/v2/register**. It is the same
+label rules before you run anything: **https://ptx-explorer.lnky.uk/v2/register**. It is the same
 sequence in the same order; it runs entirely in your browser and sends nothing anywhere.
 
 ### ★ HANDOFF 2 — Wallet ➜ Node

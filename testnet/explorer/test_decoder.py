@@ -506,6 +506,40 @@ def test_register_page():
     assert r.returncode == 0, "register walkthrough failed:\n" + r.stdout + r.stderr
 
 
+def test_head_is_not_501():
+    """HEAD must answer like GET, minus the body.
+
+    ★ Checked by making a REAL request against a real server on a real socket,
+    not by inspecting the class for a do_HEAD attribute -- ODC-098: an attribute
+    check passes the moment the method exists, whether or not it works.
+
+    Why it matters: BaseHTTPRequestHandler's default answer to HEAD is 501, and
+    uptime monitors default to HEAD. The verifier was reporting itself DOWN on
+    /v2 and /v2/register while serving both correctly, and eIquidus at / answered
+    HEAD normally -- so a monitor checking the same host disagreed with itself.
+    """
+    import threading, http.client, socketserver
+    import app
+    srv = socketserver.TCPServer(("127.0.0.1", 0), app.Handler)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True); t.start()
+    try:
+        for path in ("/", "/register"):
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            c.request("HEAD", path); h = c.getresponse(); hbody = h.read(); c.close()
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            c.request("GET", path); g = c.getresponse(); gbody = g.read(); c.close()
+            assert h.status == g.status, (
+                "HEAD %s returned %d but GET returned %d" % (path, h.status, g.status))
+            assert h.status == 200, "HEAD %s returned %d" % (path, h.status)
+            assert hbody == b"", "HEAD %s returned a body of %d bytes" % (path, len(hbody))
+            assert len(gbody) > 0, "GET %s returned nothing" % path
+            assert h.getheader("Content-Length") == g.getheader("Content-Length"), (
+                "HEAD %s advertised a different Content-Length than GET" % path)
+    finally:
+        srv.shutdown(); srv.server_close()
+
+
 # ★★ THE ENTRY POINT LIVES AT THE BOTTOM, AND THAT IS LOAD-BEARING.
 # It used to sit ABOVE these test definitions, so when main() ran, the module
 # body had only executed as far as that line and the functions below did not

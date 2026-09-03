@@ -772,7 +772,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
-        self.wfile.write(b)
+        self._body(b)
 
     def _send_json(self, obj, code=200):
         b = json.dumps(obj, indent=1, sort_keys=False).encode("utf-8")
@@ -781,7 +781,31 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(b)))
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
-        self.wfile.write(b)
+        self._body(b)
+
+    def do_HEAD(self):
+        """HEAD is GET without a body.
+
+        ★ Without this, BaseHTTPRequestHandler answers 501, and an uptime monitor
+        -- which defaults to HEAD -- reports the verifier as DOWN while it is
+        serving perfectly. eIquidus at / answers HEAD, so a split check would
+        disagree with itself about the same host.
+        """
+        self._head_only = True
+        try:
+            self.do_GET()
+        finally:
+            self._head_only = False
+
+    def _body(self, b):
+        """Write a body unless this is a HEAD request.
+
+        ★ This is the ONE place that may touch self.wfile directly -- everything
+        else goes through here, which is what makes HEAD correct everywhere at
+        once rather than route by route.
+        """
+        if not getattr(self, "_head_only", False):
+            self.wfile.write(b)
 
     def do_GET(self):
         path = self.path.split("?")[0]
@@ -798,7 +822,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Security-Policy", REGISTER_CSP)
             self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
-            self.wfile.write(b)
+            self._body(b)
             return
         self._send(handle(""))
 
