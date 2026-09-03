@@ -730,12 +730,16 @@ function render(){
     "  --data-binary '"+J+"' \\\n"+
     "  -H 'content-type: text/plain;' http://127.0.0.1:29995/";
   $("cmd5").innerHTML=cmdBlock("wal",c)+
-    '<div class=warn><b>BUG-059: the command above fails on the binaries currently deployed.</b> '+
+    '<div class=info><b>BUG-059 — fixed in v0.3.2-testnet.</b> '+
     '<code>Hemis-cli</code> sends every argument as a string, and <code>protx_register</code> is '+
     'missing from the table that converts them back, so the collateral index arrives as '+
     '<code>"0"</code> and the node answers <b>“JSON value is not an integer as expected”</b>. '+
-    'The command itself is correct — the CLI is not. Fixed in source; until that ships, use the '+
-    'equivalent below, which sends real JSON types and bypasses the CLI entirely.</div>'+
+    'On <b>v0.3.1-testnet and earlier</b> the command above fails with '+
+    '<b>“JSON value is not an integer as expected”</b>: <code>Hemis-cli</code> sent every argument '+
+    'as a string and <code>protx_register</code> was missing from the table that converts them back, '+
+    'so the collateral index arrived as <code>"0"</code>. <b>Check your version with '+
+    '<code>Hemisd -version</code>.</b> If you are on v0.3.2 or later, ignore the command below. '+
+    'If you are on an older build, it does the same job by sending real JSON types.</div>'+
     cmdBlock("wal",curl)+
     '<p class=note>Substitute the <code>rpcuser</code> and <code>rpcpassword</code> from your '+
     'wallet host’s <code>Hemis.conf</code>. This page never sees them — it composes text and has '+

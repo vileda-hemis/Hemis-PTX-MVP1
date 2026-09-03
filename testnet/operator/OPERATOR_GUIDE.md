@@ -512,8 +512,9 @@ Hemis-cli protx_register \
 | 10 | `ptxPaymentAddress` | yours — see below |
 | 11 | `ptxNodeId` | `yourname-1` … `yourname-N` |
 
-★★ **BUG-059 — that command does not work from `Hemis-cli` on the currently deployed binaries,
-and the failure looks like your mistake rather than ours.** You get:
+★ **BUG-059 — fixed in `v0.3.2-testnet`. If you are on that tag or later, the command above works
+and you can skip to the next section.** On **v0.3.1-testnet and earlier** it fails from `Hemis-cli`,
+and the failure looks like your mistake rather than ours. Check with `Hemisd -version`. You get:
 
 ```
 error code: -1
@@ -529,7 +530,7 @@ handler and the same eleven arguments, *was* listed and worked fine — that dif
 isolated. It went unnoticed because the 153-gamemaster fleet was registered over Python RPC, which
 sends native integers; **the CLI path had never been exercised for this method.**
 
-★ **Until the fix ships, use raw JSON-RPC**, which bypasses the CLI's conversion entirely:
+★ **On an older binary, use raw JSON-RPC**, which bypasses the CLI's conversion entirely:
 
 ```bash
 curl -s --user <rpcuser>:<rpcpassword> \
