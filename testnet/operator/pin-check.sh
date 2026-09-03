@@ -44,6 +44,7 @@ testnet/operator/install-test.sh	measured start-to-first-listening-socket
 testnet/operator/install.sh	release binary on 2026-08-21
 testnet/operator/ONBOARDING.md	ptx01 runs
 vps-install.sh	CANNOT work here
+testnet/operator/OPERATOR_GUIDE.md	and earlier** it fails from
 EOF
 )"
 
