@@ -140,9 +140,10 @@ sync; it cannot carry your signing traffic, which goes straight to your register
 calls its scope "global". If `ip -6 addr` shows you only `fd…` addresses, you do not have IPv6 for
 this purpose. Most providers enable real IPv6 free on request.
 
-★ **Your wallet machine needs IPv6 too**, for a simpler reason: the seed peers the coordinator gives
-you are IPv6, so an IPv4-only wallet host has nothing to connect to and sits at height 0 with
-`getconnectioncount: 0`.
+★★ **Your wallet machine needs IPv6 too, and `install.sh` refuses it as well.** The reason is
+different and simpler: the seed peers the coordinator gives you are IPv6, and this network has **no
+peer discovery of any kind** — no DNS seeds, no fixed seeds. An IPv4-only wallet host has nothing to
+dial. It starts cleanly, reports no error, and sits at height 0 with `getconnectioncount: 0`.
 
 ★ **Behind CGNAT this cannot work.** If you cannot get an inbound-reachable address for each GM,
 tell the coordinator before you start.

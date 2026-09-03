@@ -1182,8 +1182,14 @@ role_run() {
     # said GAMEMASTER. The leg fails if the second run succeeds, and it also
     # fails if it exits for the WRONG reason -- a refusal that does not name the
     # collision sends the operator to debug something else.
+    # ★ PTX_EXTERNALIP again: this leg needs a WALLET fixture, and a wallet install
+    # now also refuses a host with no routable IPv6 (its seeds are IPv6). The
+    # override is the one documented escape and is IPv6-validated, so it serves
+    # both roles. Without it this leg cannot build its own fixture and reports a
+    # collision failure that has nothing to do with collisions.
     local cfh="$BASE/role-collide"; rm -rf "$cfh"; mkdir -p "$cfh"
     ( cd "$HERE" && HOME="$cfh" PATH="$(dirname "$HEMISD"):$PATH" \
+        PTX_EXTERNALIP=2a07:244:46:6400::ffff \
         PTX_ROLE=wallet PTX_REPO="$TEST_REPO" PTX_REF="$TEST_REF" \
         PTX_PREFIX="$BASE/collide-prefix" PTX_PARAMS_DIR="$PARAMS_DIR" \
         bash ./install.sh ) >"$BASE/collide-1.log" 2>&1
@@ -1306,21 +1312,42 @@ role_run() {
     if [ -n "$hostv6" ]; then
         unk "this host HAS routable IPv6 ($(printf '%s' "$hostv6" | tr '\n' ' ')) so the no-IPv6 refusal DID NOT RUN. Not a pass."
     else
-        local nohome="$BASE/role-nov6" nopre="$BASE/role-nov6-prefix"
-        rm -rf "$nohome" "$nopre"; mkdir -p "$nohome"
-        if ( cd "$HERE" && HOME="$nohome" PTX_ROLE=gamemaster PTX_PREFIX="$nopre" \
-             bash ./install.sh ) >"$BASE/role-nov6.log" 2>&1; then
-            printf '  \033[31m[RED BROKEN]\033[0m gamemaster install SUCCEEDED on a host with no routable IPv6.\n'
-            RED_FAIL=$((RED_FAIL + 1)); rc=1
-        elif grep -q "No global IPv6 address found" "$BASE/role-nov6.log" 2>/dev/null; then
-            printf '  \033[32m[RED ok]\033[0m no-IPv6 host refused, naming IPv6 as the reason\n'
+        # ★★ BOTH ROLES, and the messages must DIFFER. A gamemaster is refused
+        # because signing is point-to-point and it would be invisible to callers;
+        # a wallet host is refused because the seed peers are IPv6 and it would
+        # have nothing to dial. Same outcome, different cause -- and an operator
+        # who is handed the wrong explanation goes looking in the wrong place, so
+        # this leg asserts the ROLE-SPECIFIC sentence, not just that it aborted.
+        local r6
+        for r6 in gamemaster wallet; do
+            local nohome="$BASE/role-nov6-$r6" nopre="$BASE/role-nov6-$r6-prefix"
+            rm -rf "$nohome" "$nopre"; mkdir -p "$nohome"
+            if ( cd "$HERE" && HOME="$nohome" PTX_ROLE="$r6" PTX_PREFIX="$nopre" \
+                 bash ./install.sh ) >"$BASE/role-nov6-$r6.log" 2>&1; then
+                printf '  \033[31m[RED BROKEN]\033[0m %s install SUCCEEDED on a host with no routable IPv6.\n' "$r6"
+                RED_FAIL=$((RED_FAIL + 1)); rc=1
+                continue
+            fi
+            if ! grep -q "No global IPv6 address found" "$BASE/role-nov6-$r6.log" 2>/dev/null; then
+                printf '  \033[31m[RED VACUOUS]\033[0m %s aborted for some other reason -- see %s\n' \
+                    "$r6" "$BASE/role-nov6-$r6.log"
+                RED_FAIL=$((RED_FAIL + 1)); rc=1
+                continue
+            fi
+            # the role-specific reason, which is the part an operator acts on
+            if [ "$r6" = "gamemaster" ]; then
+                grep -q "point-to-point" "$BASE/role-nov6-$r6.log" \
+                    && printf '  \033[32m[RED ok]\033[0m no-IPv6 GAMEMASTER refused, and the reason given is signing reachability\n' \
+                    || { printf '  \033[31m[RED VACUOUS]\033[0m gamemaster refusal did not explain WHY (no point-to-point reason)\n'; RED_FAIL=$((RED_FAIL+1)); rc=1; continue; }
+            else
+                grep -q "seed peers" "$BASE/role-nov6-$r6.log" \
+                    && printf '  \033[32m[RED ok]\033[0m no-IPv6 WALLET host refused, and the reason given is the IPv6 seed peers\n' \
+                    || { printf '  \033[31m[RED VACUOUS]\033[0m wallet refusal gave the gamemaster reason, which sends an operator the wrong way\n'; RED_FAIL=$((RED_FAIL+1)); rc=1; continue; }
+            fi
             RED_PASS=$((RED_PASS + 1))
-            [ ! -e "$nopre" ] && ok "that refusal also wrote nothing" \
-                || { bad "the no-IPv6 refusal created $nopre"; rc=1; }
-        else
-            printf '  \033[31m[RED VACUOUS]\033[0m aborted for some other reason -- see %s\n' "$BASE/role-nov6.log"
-            RED_FAIL=$((RED_FAIL + 1)); rc=1
-        fi
+            [ ! -e "$nopre" ] && ok "the refused $r6 install wrote nothing" \
+                || { bad "the no-IPv6 $r6 refusal created $nopre"; rc=1; }
+        done
     fi
     return $rc
 }

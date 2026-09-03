@@ -265,14 +265,36 @@ elif [ "$PTX_ROLE" = "gamemaster" ]; then
     PTX_IPV6_AUTO="$_v6"
     ok "IPv6 present: $PTX_IPV6_AUTO -- this is what you will register"
 else
-    # Wallet host. Not fatal, but it will not sync: the seed peers are IPv6.
+    # ★★ WALLET HOSTS ABORT TOO, and the reason is DIFFERENT so the message is.
+    # A wallet host does not register an address and does not sign, so none of
+    # the point-to-point argument applies to it. What applies is simpler and just
+    # as fatal: THE COORDINATOR'S SEED PEERS ARE IPv6. This network has no peer
+    # discovery of any kind -- chainparams clears vSeeds and vFixedSeeds and there
+    # are no DNS seeds -- so a host that cannot reach the seeds has nothing to
+    # dial, ever. It sits at height 0 with getconnectioncount: 0 and no diagnostic
+    # pointing at the cause.
+    # ★ This was a warning first. It was promoted because that is not a degraded
+    # node, it is a guaranteed non-functional one -- and it is exactly the failure
+    # a coordinator host hit for a whole day from a single malformed addnode: zero
+    # peers, height 0, and nothing in any log naming the reason.
+    # ★ A wallet host needs AT LEAST one routable IPv6, not exactly one: it never
+    # registers an address, so having several is not ambiguous the way it is for a
+    # gamemaster.
     _v6="$(ptx_routable_ipv6)"
     if [ -z "$_v6" ]; then
-        warn "no global IPv6 address on this WALLET host."
-        echo "         The coordinator's seed peers are IPv6, so this machine will have"
-        echo "         nothing to connect to and will sit at height 0 with"
-        echo "         getconnectioncount: 0. Get IPv6 before you rely on it."
+        printf '\n  [FAIL] No global IPv6 address found on this host.\n\n' >&2
+        printf '  A PTX WALLET host needs IPv6 as well, for a simpler reason than a\n' >&2
+        printf '  gamemaster does: the seed peers the coordinator gives you are IPv6, and\n' >&2
+        printf '  this network has NO peer discovery -- no DNS seeds, no fixed seeds. An\n' >&2
+        printf '  IPv4-only wallet host has nothing to connect to. It will start cleanly,\n' >&2
+        printf '  report no error, and sit at height 0 with getconnectioncount: 0.\n\n' >&2
+        printf '  IPv4 as well is fine -- it is IPv6 that must be there.\n\n' >&2
+        printf '  Most providers enable IPv6 free on request. If yours cannot, tell the\n' >&2
+        printf '  coordinator BEFORE provisioning. See OPERATOR_GUIDE.md.\n\n' >&2
+        printf '  ★ Nothing has been installed or written -- this host is untouched.\n\n' >&2
+        exit 4
     fi
+    ok "IPv6 present: $(printf '%s' "$_v6" | tr '\n' ' ')-- this host can reach the seed peers"
 fi
 
 # ---------------------------------------------------------------------------

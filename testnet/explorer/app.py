@@ -614,7 +614,10 @@ not a validated registration. Nothing you type here leaves your browser.</div>
   <label>BLS <b>public</b> key <span class="host g">gamemaster host</span> &mdash; the <code>public</code>
   half only. The secret never leaves that machine.</label>
   <input id=blspub placeholder="bls-pk-ptx1..." autocomplete=off spellcheck=false>
-  <label>The gamemaster's address and port, as peers will reach it <span class="host g">gamemaster host</span></label>
+  <label>The gamemaster's address and port, as peers will reach it <span class="host g">gamemaster host</span>
+  &mdash; a <b>global IPv6</b> address, <b>bracketed</b>, then the port. IPv4 as well on the host is
+  fine; what you register must be IPv6, because signing goes directly to this address and no relay
+  bridges address families. Addresses starting <code>fd</code> are ULA and do not count.</label>
   <input id=ipport placeholder="[2a07:...:9400]:29994" autocomplete=off spellcheck=false>
   <div id=s4msg></div>
 </div>
