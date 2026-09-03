@@ -475,8 +475,10 @@ guide** — see ODC-094. Write **N** for what you agreed with a given operator.
 
 Against a float of ~193,800 the margin costs nothing, and the alternative is a second round of
 transfers during the week you least want one. Send it as a single payment per operator and let them
-split it — they need **N separate exact 100 HMS outputs**, and `protx_register_fund` can create
-those for them.
+split it — they need **N separate exact 100 HMS outputs**, one per gamemaster, which they create
+themselves with a plain `sendtoaddress` before registering. ★ `protx_register_fund` would build
+those outputs as part of registration, but it **cannot be used on this chain** because it is
+incompatible with `ptxNodeId` — see `OPERATOR_GUIDE.md` §B2.
 
 ★★ **Sum the N you actually assigned, and check it against 11 before you send anything.** The
 network total is what has to clear a quorum, with spare: at exactly 11 the next GM lost stops

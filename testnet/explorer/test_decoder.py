@@ -484,6 +484,28 @@ def test_check_D_is_none_not_false_end_to_end():
         "that reads as the beacon failing verification")
 
 
+def test_register_page():
+    """The /register walkthrough EMITS a correct protx_register command.
+
+    Delegated to node because the walkthrough's logic is JavaScript. Asserting the
+    Python renders the page would be ODC-098 all over again: a check on the
+    instrument rather than on the thing itself. The JS is executed against a DOM
+    shim and the resulting argv is compared to `Hemis-cli help protx_register`
+    from the released v0.3.1-testnet binary.
+    """
+    import shutil, subprocess
+    js = os.path.join(HERE, "test_register_page.js")
+    assert os.path.exists(js), "register page test missing"
+    node = shutil.which("node")
+    # ★ Three-state, not two. No node means NOT PERFORMED -- and a run that did not
+    # perform it must not report a pass, per this suite's standing rule.
+    assert node, ("NOT PERFORMED: node is not installed, so the /register walkthrough "
+                  "was not executed. This is not a pass -- install node or run the "
+                  "suite where it exists.")
+    r = subprocess.run([node, js], capture_output=True, text=True)
+    assert r.returncode == 0, "register walkthrough failed:\n" + r.stdout + r.stderr
+
+
 # ★★ THE ENTRY POINT LIVES AT THE BOTTOM, AND THAT IS LOAD-BEARING.
 # It used to sit ABOVE these test definitions, so when main() ran, the module
 # body had only executed as far as that line and the functions below did not

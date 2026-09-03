@@ -494,6 +494,272 @@ def api_route(method, path, body_hex):
                            "GET %s/commitment/<txid>" % API_PREFIX]}, 404)
 
 
+# ===========================================================================
+# /register — a GUIDED WALKTHROUGH for protx_register. Not a form.
+#
+# ★★ A form assumes you already have the values. This asks for a name, tells you
+# which commands to run and ON WHICH MACHINE, takes the results back, and only
+# then emits the registration command. Step 5 (the compound ptxnodeid) stays
+# hidden until step 4 is done, because that is the step every prior account of
+# this command missed -- including both of ours.
+#
+# ★★ CLIENT-SIDE ONLY, AND ENFORCED BY CSP RATHER THAN BY DISCIPLINE.
+# This page ships connect-src 'none', so the BROWSER blocks any fetch/XHR even
+# if someone later adds one. It composes strings; it never talks to a node. The
+# moment it did, it would become an endpoint on a surface deliberately kept
+# read-only and wallet-less -- the property retiring proxy.py established.
+# ===========================================================================
+REGISTER_CSP = ("default-src 'none'; style-src 'unsafe-inline'; "
+                "script-src 'unsafe-inline'; connect-src 'none'; form-action 'none'")
+
+REGISTER_HTML = r"""<!doctype html><meta charset=utf-8>
+<meta name=viewport content='width=device-width,initial-scale=1'>
+<title>Register a gamemaster - Hemis PTX testnet</title>
+<style>
+:root{--bg:#fbfbfa;--fg:#1a1a18;--mut:#6b6b63;--line:#dcdcd4;--card:#fff;
+--ok:#1a7f45;--no:#b3261e;--acc:#3b4cca;--wal:#2563eb;--gm:#c2410c}
+@media(prefers-color-scheme:dark){:root{--bg:#16161a;--fg:#e8e8e3;--mut:#9a9a92;
+--line:#2f2f36;--card:#1e1e24;--ok:#4ec98a;--no:#ff6b60;--acc:#8ea2ff;--wal:#7ba6ff;--gm:#e2762c}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
+font:15px/1.55 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+.topbar{display:flex;align-items:center;gap:9px;padding:11px 20px;background:var(--card);
+border-bottom:1px solid var(--line);font-size:14px}
+.topbar .brand{color:var(--fg);text-decoration:none;font-weight:600;display:inline-flex;align-items:center;gap:8px}
+.topbar .mark{border-radius:5px}.topbar .crumb,.topbar .here{color:var(--mut)}
+.topbar .back{margin-left:auto;color:var(--acc);text-decoration:none}
+.wrap{max-width:860px;margin:0 auto;padding:26px 20px 90px}
+h1{font-size:21px;margin:0 0 4px}.sub{color:var(--mut);font-size:13.5px;margin:0 0 20px}
+.step{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:0 0 16px}
+.step.off{opacity:.45}
+.step h2{font-size:15px;margin:0 0 10px;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.n{display:inline-flex;width:23px;height:23px;border-radius:50%;background:var(--acc);color:#fff;
+align-items:center;justify-content:center;font-size:12.5px;font-weight:700;flex:0 0 auto}
+label{display:block;font-size:13px;color:var(--mut);margin:10px 0 4px}
+input[type=text],input:not([type]){width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:7px;background:var(--bg);
+color:var(--fg);font:13px ui-monospace,SFMono-Regular,Menlo,monospace}
+.chk{display:flex;align-items:flex-start;gap:8px;margin:12px 0 2px;font-size:13px;color:var(--fg)}
+.chk input{margin-top:3px;flex:0 0 auto}
+.host{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.04em;padding:2px 8px;
+border-radius:20px;text-transform:uppercase}
+.host.w{background:color-mix(in srgb,var(--wal) 16%,transparent);color:var(--wal);border:1px solid var(--wal)}
+.host.g{background:color-mix(in srgb,var(--gm) 16%,transparent);color:var(--gm);border:1px solid var(--gm)}
+.cmd{position:relative;margin:8px 0}
+.cmd pre{margin:0;padding:11px 74px 11px 12px;background:var(--bg);border:1px solid var(--line);
+border-radius:7px;overflow-x:auto;font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-all}
+.cmd button{position:absolute;top:7px;right:7px;padding:4px 10px;border:1px solid var(--line);
+border-radius:6px;background:var(--card);color:var(--fg);font-size:12px;cursor:pointer}
+.err{color:var(--no);font-size:12.5px;margin:5px 0 0;font-weight:600}
+.good{color:var(--ok);font-size:12.5px;margin:5px 0 0}
+.warn{background:color-mix(in srgb,var(--no) 9%,transparent);border-left:3px solid var(--no);
+padding:9px 12px;border-radius:5px;font-size:13px;margin:10px 0}
+.info{background:color-mix(in srgb,var(--acc) 9%,transparent);border-left:3px solid var(--acc);
+padding:9px 12px;border-radius:5px;font-size:13px;margin:10px 0}
+.wait{background:color-mix(in srgb,var(--gm) 10%,transparent);border-left:3px solid var(--gm);
+padding:9px 12px;border-radius:5px;font-size:13px;margin:10px 0}
+.note{color:var(--mut);font-size:12.5px;margin:6px 0 0}
+footer{margin-top:26px;color:var(--mut);font-size:12.5px;border-top:1px solid var(--line);padding-top:14px}
+</style>
+<div class=topbar><a class=brand href='/'><img class=mark src='/img/page-title-img.png' alt='' width=26 height=26><span>Hemis PTX testnet</span></a><span class=crumb>&rsaquo;</span><span class=here>Register a gamemaster</span><a class=back href='/v2'>&larr; Roll verifier</a></div>
+<div class=wrap>
+<h1>Register a gamemaster</h1>
+<p class=sub>Walks the <code>protx_register</code> sequence in the order the chain requires, and composes
+the exact commands. Two machines are involved and the page says which is which at every step.</p>
+
+<div class=warn><b>This page composes text. It checks nothing on chain.</b>
+It cannot tell whether an address exists, whether a BLS key is yours, whether the collateral confirmed,
+or whether a registration succeeded. A completed walkthrough is a correctly-<i>shaped</i> command,
+not a validated registration. Nothing you type here leaves your browser.</div>
+
+<div class=step id=s1>
+  <h2><span class=n>1</span> Name this gamemaster</h2>
+  <label>A short label. Every address below is named after it, so registering four gamemasters cannot
+  reuse an address by accident. This label also becomes the gamemaster's PTX identity on chain.</label>
+  <input id=name placeholder="gm01" autocomplete=off spellcheck=false>
+  <div id=namemsg></div>
+</div>
+
+<div class="step off" id=s2>
+  <h2><span class=n>2</span> Send the collateral first <span class="host w">wallet host</span></h2>
+  <p class=note>This comes first because <code>protx_register</code> needs a collateral output that is
+  already <b>confirmed</b>. Start it now and it matures while you do steps 3 and 4.</p>
+  <div id=cmds2a></div>
+  <label>Paste the collateral address that returned</label>
+  <input id=coladdr placeholder="y..." autocomplete=off spellcheck=false>
+  <div id=cmds2b></div>
+</div>
+
+<div class="step off" id=s3>
+  <h2><span class=n>3</span> Make the keys while it confirms</h2>
+  <p class=note>Nothing here touches the collateral, so do it during the wait.</p>
+  <div id=cmds3></div>
+</div>
+
+<div class="step off" id=s4>
+  <h2><span class=n>4</span> Collect the values <span class="host w">wallet host</span></h2>
+  <p class=note>Run this once the send has at least one confirmation. If it returns an empty list
+  <code>[]</code>, the block has not arrived yet &mdash; wait and run it again.</p>
+  <div id=cmds4></div>
+  <label>Collateral <code>txid</code> &mdash; from the entry showing exactly <code>100.00000000</code></label>
+  <input id=ctxid placeholder="0123...cdef" autocomplete=off spellcheck=false>
+  <label>Collateral output index (<code>vout</code>)</label>
+  <input id=cvout placeholder="0" autocomplete=off spellcheck=false>
+  <label>Owner address &mdash; must differ from the collateral address</label>
+  <input id=owner autocomplete=off spellcheck=false>
+  <label>Payout address &mdash; where gamemaster block rewards go</label>
+  <input id=payout autocomplete=off spellcheck=false>
+  <div class=chk><input type=checkbox id=samepay checked>
+    <span>Use the payout address for PTX lottery rewards too <b>(recommended)</b></span></div>
+  <div id=ptxwrap></div>
+  <label>BLS <b>public</b> key <span class="host g">gamemaster host</span> &mdash; the <code>public</code>
+  half only. The secret never leaves that machine.</label>
+  <input id=blspub placeholder="bls-pk-ptx1..." autocomplete=off spellcheck=false>
+  <label>The gamemaster's address and port, as peers will reach it <span class="host g">gamemaster host</span></label>
+  <input id=ipport placeholder="[2a07:...:9400]:29994" autocomplete=off spellcheck=false>
+  <div id=s4msg></div>
+</div>
+
+<div class="step off" id=s5>
+  <h2><span class=n>5</span> Register <span class="host w">wallet host</span></h2>
+  <div id=cmd5></div>
+  <div id=cmd5note></div>
+</div>
+
+<div class="step off" id=s6>
+  <h2><span class=n>6</span> Finish the gamemaster's config <span class="host g">gamemaster host</span></h2>
+  <p class=note>Registration returns a <b>compound</b> identifier &mdash; your label plus a suffix the chain
+  derives from the collateral outpoint. The gamemaster needs that exact value, not the bare label.</p>
+  <label>Paste the <code>ptxNodeId</code> from the registration response</label>
+  <input id=compound placeholder="gm01:d7b70a85" autocomplete=off spellcheck=false>
+  <div id=cmd6></div>
+</div>
+
+<footer>Composed locally. This page has no network access &mdash; its content-security policy sets
+<code>connect-src 'none'</code>, so the browser blocks any call it might try to make.
+Argument order and rules are taken from <code>Hemis-cli help protx_register</code> in the released
+<code>v0.3.1-testnet</code> binary.</footer>
+</div>
+<script>
+var RESERVED = ["admin","system","null","none","gm","gamemaster","node","default","test"];
+function $(id){return document.getElementById(id)}
+function esc(t){return String(t).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]})}
+
+// Name the rule that failed. "bad protx id suffix" told an operator nothing.
+function labelError(v){
+  if(!v) return "Enter a name.";
+  if(v.length<3||v.length>24) return "Must be 3-24 characters — yours is "+v.length+".";
+  var bad=v.match(/[^a-zA-Z0-9_-]/);
+  if(bad) return "Contains “"+bad[0]+"”. Only letters, digits, hyphen and underscore are allowed.";
+  if(/^[-_]/.test(v)) return "Cannot start with “"+v[0]+"”.";
+  if(/[-_]$/.test(v)) return "Cannot end with “"+v[v.length-1]+"”.";
+  if(/^[0-9]+$/.test(v)) return "Cannot be all digits.";
+  if(RESERVED.indexOf(v.toLowerCase())>=0) return "“"+v+"” is a reserved word ("+RESERVED.join(", ")+").";
+  return null;
+}
+function cmdBlock(host,cmd){
+  var cls = host==="gm" ? "g" : "w";
+  var who = host==="gm" ? "gamemaster host" : "wallet host";
+  return '<div class=cmd><span class="host '+cls+'">'+who+'</span>'+
+         '<pre>'+esc(cmd)+'</pre><button onclick="cp(this)">copy</button></div>';
+}
+function cp(b){
+  var t=b.parentNode.querySelector("pre").textContent;
+  navigator.clipboard.writeText(t).then(function(){b.textContent="copied";
+    setTimeout(function(){b.textContent="copy"},1200)});
+}
+function off(){for(var i=0;i<arguments.length;i++){$(arguments[i]).className="step off"}}
+function render(){
+  var n=$("name").value.trim();
+  var e=labelError(n);
+  $("namemsg").innerHTML = n===""? "" : (e? '<p class=err>'+esc(e)+'</p>' : '<p class=good>Valid label.</p>');
+  if(n===""||e){ off("s2","s3","s4","s5","s6"); $("cmds2a").innerHTML=""; return; }
+
+  // --- step 2: collateral first ---
+  $("s2").className="step";
+  $("cmds2a").innerHTML = cmdBlock("wal",'Hemis-cli getnewaddress "'+n+'-collateral"');
+  var ca=$("coladdr").value.trim();
+  if(!ca){ $("cmds2b").innerHTML=""; off("s3","s4","s5","s6"); return; }
+  $("cmds2b").innerHTML =
+    cmdBlock("wal",'Hemis-cli sendtoaddress "'+ca+'" 100') +
+    '<p class=note>Exactly 100. If the amount is wrong the registration fails with '+
+    '<code>invalid value</code> followed by a satoshi figure &mdash; and the number you needed is not in the message.</p>'+
+    '<div class=wait><b>Now wait for one confirmation.</b> Blocks are about a minute apart. '+
+    'Do step 3 while you wait.</div>';
+
+  // --- step 3: keys, during the wait ---
+  $("s3").className="step";
+  $("cmds3").innerHTML =
+    cmdBlock("wal",'Hemis-cli getnewaddress "'+n+'-owner"') +
+    cmdBlock("wal",'Hemis-cli getnewaddress "'+n+'-payout"') +
+    cmdBlock("gm", 'Hemis-cli generateblskeypair') +
+    '<p class=note>Keep the BLS <b>secret</b> on the gamemaster host and put it in that host’s '+
+    '<code>Hemis.conf</code>. Only the public half is used below.</p>';
+
+  // --- step 4: collect ---
+  $("s4").className="step";
+  $("cmds4").innerHTML = cmdBlock("wal",'Hemis-cli listunspent 1 9999999 "[\\"'+ca+'\\"]"');
+  var same=$("samepay").checked;
+  $("ptxwrap").innerHTML = same ? '' :
+    '<label>PTX payment address &mdash; leave empty to opt out of the lottery</label>'+
+    '<input id=ptxpay autocomplete=off spellcheck=false value="'+esc(window._pp||"")+'">';
+  if(!same){ var pe=$("ptxpay"); if(pe){ pe.addEventListener("input",function(){window._pp=pe.value;render()}); } }
+
+  var v={ctxid:$("ctxid").value.trim(),cvout:$("cvout").value.trim(),owner:$("owner").value.trim(),
+         payout:$("payout").value.trim(),blspub:$("blspub").value.trim(),ipport:$("ipport").value.trim()};
+  var ptxpay = same ? v.payout : (window._pp||"").trim();
+  var msgs=[];
+  if(v.ctxid && !/^[0-9a-fA-F]{64}$/.test(v.ctxid)) msgs.push("The txid should be 64 hex characters — yours is "+v.ctxid.length+".");
+  if(v.cvout && !/^[0-9]+$/.test(v.cvout)) msgs.push("The output index is a plain number, with no quotes or brackets.");
+  if(v.blspub && v.blspub.indexOf("bls-sk")===0) msgs.push("That is the SECRET key. Use the public half — it starts bls-pk.");
+  if(v.owner && v.owner===ca) msgs.push("The owner address must differ from the collateral address.");
+  if(v.ipport && v.ipport.indexOf(":")<0) msgs.push("Include the port, for example “:29994”.");
+  $("s4msg").innerHTML = msgs.length? '<p class=err>'+msgs.map(esc).join("<br>")+'</p>':"";
+  var filled = v.ctxid&&v.cvout&&v.owner&&v.payout&&v.blspub&&v.ipport;
+  if(!filled || msgs.length){ off("s5","s6"); $("cmd5").innerHTML=""; return; }
+
+  // --- step 5: register ---
+  $("s5").className="step";
+  var c='Hemis-cli protx_register \\\n'+
+    '  "'+v.ctxid+'" \\\n'+'  '+v.cvout+' \\\n'+'  "'+v.ipport+'" \\\n'+'  "'+v.owner+'" \\\n'+
+    '  "'+v.blspub+'" \\\n'+'  "" \\\n'+'  "'+v.payout+'" \\\n'+'  0 \\\n'+'  "" \\\n'+
+    '  "'+ptxpay+'" \\\n'+'  "'+n+'"';
+  $("cmd5").innerHTML=cmdBlock("wal",c);
+  $("cmd5note").innerHTML =
+    (ptxpay ? '' :
+      '<div class=info><b>Registering without a PTX payment address.</b> Argument 10 is empty, so this '+
+      'gamemaster earns block rewards normally but is not eligible for PTX lottery payouts. '+
+      'It cannot be changed later &mdash; re-registering is the only fix. Tick the box in step 4 if that '+
+      'was not deliberate.</div>') +
+    '<p class=note>Eleven arguments. The empty strings and the <code>0</code> are positional &mdash; drop one '+
+    'and every argument after it shifts, which is how the PTX payment address and the node id get silently '+
+    'lost. Argument 6 is empty on purpose: the voting address defaults to the owner address.</p>';
+
+  // --- step 6: config line ---
+  $("s6").className="step";
+  var comp=$("compound").value.trim();
+  if(!comp){ $("cmd6").innerHTML=""; return; }
+  if(comp.indexOf(":")<0){
+    $("cmd6").innerHTML='<p class=err>That looks like the bare label. The response returns '+
+      '<code>label:suffix</code> — paste the whole thing, suffix included.</p>'; return; }
+  if(comp.split(":")[0]!==n){
+    $("cmd6").innerHTML='<p class=err>That starts with “'+esc(comp.split(":")[0])+
+      '” but this walkthrough registered “'+esc(n)+'”. Paste the value from this gamemaster’s response.</p>'; return; }
+  $("cmd6").innerHTML='<p class=note>Add this under <code>[ptxtestnet]</code> in the gamemaster’s '+
+    '<code>~/.Hemis/Hemis.conf</code>, then restart it.</p>'+
+    cmdBlock("gm","ptxnodeid="+comp)+cmdBlock("gm","sudo systemctl restart hemis-ptx");
+}
+["name","coladdr","ctxid","cvout","owner","payout","blspub","ipport","compound"].forEach(function(id){
+  $(id).addEventListener("input",render);
+});
+$("samepay").addEventListener("change",render);
+render();
+</script>
+"""
+
+
+def register_page():
+    return REGISTER_HTML
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ptx-verifier"
 
@@ -518,9 +784,22 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(b)
 
     def do_GET(self):
-        r = api_route("GET", self.path.split("?")[0], None)
+        path = self.path.split("?")[0]
+        r = api_route("GET", path, None)
         if r is not None:
             return self._send_json(r[0], r[1])
+        if path.rstrip("/") == "/register":
+            # ★ its own CSP: inline script is needed, connect-src 'none' is the
+            # guarantee that the page cannot call anything even if edited later.
+            b = register_page().encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(b)))
+            self.send_header("Content-Security-Policy", REGISTER_CSP)
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(b)
+            return
         self._send(handle(""))
 
     def do_POST(self):

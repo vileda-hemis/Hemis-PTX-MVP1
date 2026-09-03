@@ -417,8 +417,8 @@ supposed to use, which is why it is written above.
 
 ★ **One output, not a total.** Each collateral must be a **single unspent output** of exactly
 100 HMS. Two payments of 50 do not combine into one, and a 100-HMS payment that your wallet later
-consolidates is no longer a collateral. ★ `protx_register_fund` below builds this output itself, so
-there is nothing for you to split and no `listunspent` check to pass first.
+consolidates is no longer a collateral. ★ You create this output yourself with a plain `sendtoaddress`, before registering — §B2 below. The
+`protx_register_fund` RPC would build it for you, but it cannot be used here — §B2 explains why.
 
 **You hold your own collateral.** The coordinator sends you testHMS — that is the entirety of their
 involvement. They do not hold your coins, do not receive your BLS public key, and do not register
@@ -428,73 +428,127 @@ your gamemasters. **Nothing secret leaves your machines at any point in this gui
 round 100 of margin that covers fees, a re-send and a mistyped address. Two GMs is 300, four is 500.
 ★ Ask once, for the whole amount: each top-up is a round trip through a human.
 
-### B2. Register — `protx_register_fund`, once per gamemaster
+### B2. Register — `protx_register`, once per gamemaster
 
-★★ **This is the procedure. There is nothing to pre-split.** `protx_register_fund` creates the
-exact 100 HMS collateral output itself as part of the registration transaction —
-`src/rpc/rpcevo.cpp:713-718`:
+★★ **Use `protx_register`, and fund the collateral yourself first.** Its sibling
+`protx_register_fund` looks more convenient — it creates the collateral output as part of the
+registration — but **it cannot be used together with `ptxNodeId`, and `ptxNodeId` is not optional
+here.** The reason is structural, not a matter of taste:
 
-```cpp
-const CAmount collAmt = Params().GetConsensus().nGMCollateralAmt;   // 100 * COIN
-tx.vout.emplace_back(collAmt, collateralScript);
-FundSpecialTx(pwallet, tx, pl);
-```
+* The node id's `:suffix` is `SHA256(serialize(collateral outpoint))[0:4]`
+  (`src/rpc/rpcevo.cpp:478-487`).
+* In the `_fund` path the collateral is created *by the registration transaction itself*, so that
+  outpoint's hash is `tx.GetHash()` — read at `src/rpc/rpcevo.cpp:745`, **before**
+  `SignAndSendSpecialTx` writes the completed `node_id` into the transaction's `extraPayload`.
+* Writing it there changes `tx.GetHash()`. The suffix committed on chain is therefore derived from
+  a transaction id the final transaction does not have.
+* Consensus recomputes the suffix from the *resolved* outpoint and rejects the mismatch:
+  `bad-protx-node-id-suffix`, `DoS(100)` (`src/evo/specialtx_validation.cpp:170-179`).
 
-Your wallet just needs ~100 HMS plus fees spendable, in any denomination, at each call.
+★ **This is why registration failed for everyone who tried it.** The error surfaces as
+`bad protx id suffix` and says nothing about which of the two RPCs you used. `_fund` is fine if you
+omit `ptxNodeId` entirely — but then your gamemaster has no PTX identity, and unlabelled
+gamemasters **share a single entry** in the pose tracker, which is keyed by node id.
+
+**So: send the collateral, wait one confirmation, then register.**
+
+#### Step 1 — send the collateral, first
+
+★★ **Do this before anything else.** `protx_register` requires a collateral output that is already
+**confirmed**; if you leave it to last you will sit at the final command with nothing to do but
+wait. Start it now and it matures while you generate the keys.
 
 ```bash
 COLL=$(Hemis-cli getnewaddress "gm1-collateral")
-PAY=$(Hemis-cli getnewaddress "gm1-payout")
+echo "$COLL"
+Hemis-cli sendtoaddress "$COLL" 100
+```
 
-Hemis-cli protx_register_fund \
-  "$COLL" "203.0.113.10:29994" "$PAY" "<BLS PUBLIC>" "" "$PAY" 0 "" "$PAY" "yourname-1"
+Exactly 100 — see the `!=` note above.
+
+#### Step 2 — generate the keys while it confirms
+
+Nothing here touches the collateral, so do it during the wait.
+
+```bash
+OWNER=$(Hemis-cli getnewaddress "gm1-owner")     # WALLET HOST
+PAY=$(Hemis-cli getnewaddress "gm1-payout")      # WALLET HOST
+Hemis-cli generateblskeypair                      # ★ GAMEMASTER HOST, not this one
+```
+
+★ The BLS **secret** stays on the gamemaster host and goes in that host's `Hemis.conf`. Only the
+**public** half is used below.
+
+#### Step 3 — find the collateral outpoint
+
+Once the send has at least one confirmation:
+
+```bash
+Hemis-cli listunspent 1 9999999 "[\"$COLL\"]"
+```
+
+An empty list `[]` means the block has not arrived yet — wait and run it again. Take `txid` and
+`vout` from the entry showing exactly `100.00000000`.
+
+#### Step 4 — register
+
+```bash
+Hemis-cli protx_register \
+  "<collateral txid>" <vout> "203.0.113.10:29994" "$OWNER" "<BLS PUBLIC>" \
+  "" "$PAY" 0 "" "$PAY" "yourname-1"
 ```
 
 | position | argument | value |
 |---|---|---|
-| 1 | `collateralAddress` | a fresh address of **your own** wallet |
-| 2 | `ipAndPort` | the address from Handoff 1, e.g. `203.0.113.10:29994` |
-| 3 | `ownerAddress` | yours |
-| 4 | `operatorPubKey` | the **BLS PUBLIC** key from Handoff 1 |
-| 5 | `votingAddress` | `""` — defaults to `ownerAddress` (`rpcevo.cpp:427-430`) |
-| 6 | `payoutAddress` | yours |
-| 7 | `operatorReward` | **`0`** |
-| 8 | `operatorPayoutAddress` | **`""`** |
-| 9 | `ptxPaymentAddress` | yours — see below, this one is not optional |
-| 10 | `ptxNodeId` | `yourname-1` … `yourname-N` |
+| 1 | `collateralHash` | the `txid` from step 3 |
+| 2 | `collateralIndex` | the `vout` from step 3 — a bare number, no quotes |
+| 3 | `ipAndPort` | the address from Handoff 1, e.g. `203.0.113.10:29994` |
+| 4 | `ownerAddress` | yours — **must differ from the collateral address** |
+| 5 | `operatorPubKey` | the **BLS PUBLIC** key from step 2 |
+| 6 | `votingAddress` | `""` — defaults to `ownerAddress` (`rpcevo.cpp:427-430`) |
+| 7 | `payoutAddress` | yours |
+| 8 | `operatorReward` | **`0`** |
+| 9 | `operatorPayoutAddress` | **`""`** |
+| 10 | `ptxPaymentAddress` | yours — see below |
+| 11 | `ptxNodeId` | `yourname-1` … `yourname-N` |
 
-★★ **Arguments 7 and 8 look optional and are not.** They are positional, so you cannot reach
-`ptxPaymentAddress` (9) or `ptxNodeId` (10) without passing them. `0` and `""` is the accepted
-pair — a non-empty payout address with a zero reward is refused with *"operatorPayoutAddress must
-be empty when operatorReward is 0"* (`rpcevo.cpp:437-455`).
+★★ **Eleven arguments, and 8 and 9 look optional but are not.** They are positional, so you cannot
+reach `ptxPaymentAddress` (10) or `ptxNodeId` (11) without passing them. `0` and `""` is the
+accepted pair — a non-empty payout address with a zero reward is refused with *"operatorPayoutAddress
+must be empty when operatorReward is 0"* (`rpcevo.cpp:437-455`).
 
-★ **Your collateral is protected from your own staker, automatically.** The moment the
-registration transaction lands in your wallet it is locked (`CWallet::LockIfMyCollateral`, called
-from `AddToWalletIfInvolvingMe`, `src/wallet/wallet.cpp:1102`), and every DGM collateral is
-re-locked at each startup (`src/tiertwo/init.cpp:258-266`, gated only by `-gmconflock`, default
-on). You do not need to do anything, and you should not need to worry about it — it is the obvious
-worry and the answer is good.
+★ **The owner address must differ from the collateral address**, and must not already be registered.
+It does *not* have to differ from your payout address — the help text's own example uses one address
+for owner, voting, payout and operator payout.
 
-★ **The help text says the wrong number.** `Hemis-cli help protx_register_fund` claims the
-transaction "will move 10000 HMS" (`src/rpc/rpcevo.cpp:687`). It moves `nGMCollateralAmt`, which is
-**100** here. The help string is inherited and wrong; the code is right.
+★ **Your collateral is protected from your own staker, automatically.** The moment the registration
+transaction lands in your wallet it is locked (`CWallet::LockIfMyCollateral`, called from
+`AddToWalletIfInvolvingMe`, `src/wallet/wallet.cpp:1102`), and every DGM collateral is re-locked at
+each startup (`src/tiertwo/init.cpp:258-266`, gated only by `-gmconflock`, default on). You do not
+need to do anything — it is the obvious worry and the answer is good.
 
 ### ★★ The last two arguments are optional to the RPC and NOT optional to you
 
 They are easy to leave off because they are in the optional group. Do not.
 
-* ★ **`ptxPaymentAddress`** — where PTX lottery rewards are paid. **"GMs without this set are
-  ineligible for PTXPAYOUT lottery wins. Must be set at registration time to participate in the
-  lottery."** Omit it and your GM runs perfectly, signs correctly, and **can never win anything** —
-  and it cannot be fixed by editing a config file, because it is registration-time state.
+* ★ **`ptxPaymentAddress`** — where PTX lottery rewards are paid. The RPC's own help says: **"GMs
+  without this set are ineligible for PTXPAYOUT lottery wins. Must be set at registration time to
+  participate in the lottery."** Omit it and your GM runs perfectly, signs correctly, and wins
+  nothing. **It cannot be changed later — re-registering is the only fix.** Setting it to the same
+  value as your payout address is fine, and is what most operators should do.
 * **`ptxNodeId`** — a human-readable label for the PTX pose-tracker, e.g. `gm01`. Supply the **label
-  only**; the chain appends the collateral-derived `:suffix` itself. Rules: 3–24 chars, `[a-zA-Z0-9_-]`,
-  no leading/trailing `-`/`_`, not all-numeric, not a reserved word. The full `label:suffix` is echoed
-  back in the RPC response — **record it**, it is how your node is identified in quorum output.
+  only**; the chain appends the collateral-derived `:suffix` itself. Rules: 3–24 chars,
+  `[a-zA-Z0-9_-]`, no leading/trailing `-`/`_`, not all-numeric, not a reserved word. The full
+  `label:suffix` is echoed back in the RPC response — **record it**, it is what you put in the
+  gamemaster's `ptxnodeid=` and it is how your node is identified in quorum output.
 
 Use a distinct `ptxNodeId` per GM (`yourname-1` … `yourname-N`).
 
-Record the returned **protx transaction id** for each GM.
+Record the returned **protx transaction id** and **`ptxNodeId`** for each GM.
+
+★ **There is a guided version of this section** that composes the commands for you and checks the
+label rules before you run anything: **https://explorer.hemis.tech/v2/register**. It is the same
+sequence in the same order; it runs entirely in your browser and sends nothing anywhere.
 
 ### ★ HANDOFF 2 — Wallet ➜ Node
 

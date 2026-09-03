@@ -39,9 +39,9 @@ on-chain registration is required.
 ### 2.1 Registration parameters
 
 ```
-protx_register_fund
-  "collateralAddress"   HMS address to receive the 100 HMS collateral output
-  collateralIndex       output index of the collateral in the funding tx
+protx_register
+  "collateralHash"      txid of your existing, CONFIRMED 100 HMS collateral output
+  collateralIndex       output index of that collateral output
   "ipAndPort"           GM's public IP and P2P port (e.g. "172.30.0.11:29994")
   "ownerAddress"        owner EC key address (controls registration updates)
   "operatorPubKey"      GM's BLS operator public key (hex)
@@ -83,7 +83,7 @@ Supply only the label in `ptxNodeId` — no colon. The daemon appends the `:suff
 
 ### 2.4 Registration confirmation
 
-After `protx_register_fund` broadcasts, wait for 1 confirmation before proceeding. Verify the GM
+After `protx_register` broadcasts, wait for 1 confirmation before proceeding. Verify the GM
 appears in the DGM list:
 
 ```bash
@@ -186,7 +186,12 @@ lands in bootstrap.py — reconcile against the harness before use):
 1. Mine 49 PoW blocks to a known address on gm01
 2. Wait for PoS activation at block 50
 3. Wait for UPGRADE_V4_0 at block 265 (TimeProtocolV2 — enforces 60-second slot floor)
-4. Register all GMs via `protx_register_fund` with `ptxPaymentAddress` and `ptxNodeId` set
+4. Register all GMs via `protx_register` with `ptxPaymentAddress` and `ptxNodeId` set.
+   ★★ **Not `protx_register_fund`** — that RPC derives the node-id suffix from `tx.GetHash()`
+   *before* the completed `node_id` is written into `extraPayload` (`rpcevo.cpp:745`), which
+   changes that hash. Consensus recomputes the suffix from the resolved outpoint and rejects the
+   mismatch as `bad-protx-node-id-suffix` (`specialtx_validation.cpp:170-179`). Fund the exact
+   100 HMS collateral with `sendtoaddress`, wait one confirmation, then `protx_register`.
 5. Wait 1 confirmation per registration; verify DGM list
 6. Fund the caller wallet via `sendmany` — use 2 HMS × N UTXOs for UTXO-split funding (each
    roll consumes one UTXO; pre-splitting avoids contention under sequential calls)
