@@ -713,6 +713,19 @@ function render(){
   if(v.blspub && v.blspub.indexOf("bls-sk")===0) msgs.push("That is the SECRET key. Use the public half — it starts bls-pk.");
   if(v.owner && v.owner===ca) msgs.push("The owner address must differ from the collateral address.");
   if(v.ipport && v.ipport.indexOf(":")<0) msgs.push("Include the port, for example “:29994”.");
+  // ★ Gamemasters must register a global IPv6 address: signing is point-to-point
+  // and no relay bridges address families, so an IPv4 registration is invisible.
+  if(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+$/.test(v.ipport))
+    msgs.push("That is an IPv4 address. Gamemasters must register a global IPv6 address — signing "+
+              "goes directly to it and no relay bridges address families, so an IPv4 gamemaster is "+
+              "invisible to the network.");
+  if(/^\[?[Ff][CcDd]/.test(v.ipport))
+    msgs.push("That is a ULA (fc00::/7, the addresses starting fd). Linux calls its scope “global” "+
+              "but it is not routable — no peer outside your own network can reach it.");
+  if(v.ipport && v.ipport.indexOf(":")>=0 && v.ipport.indexOf("[")<0 &&
+     (v.ipport.match(/:/g)||[]).length>1)
+    msgs.push("Bracket the address, then the port: […]:29994. Without brackets the port colon is "+
+              "ambiguous with the address’s own colons.");
   $("s4msg").innerHTML = msgs.length? '<p class=err>'+msgs.map(esc).join("<br>")+'</p>':"";
   var filled = v.ctxid&&v.cvout&&v.owner&&v.payout&&v.blspub&&v.ipport;
   if(!filled || msgs.length){ off("s5","s6"); $("cmd5").innerHTML=""; return; }

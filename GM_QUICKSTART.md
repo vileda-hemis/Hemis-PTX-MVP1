@@ -1,5 +1,12 @@
 # PTX testnet — gamemaster quickstart
 
+
+★★ **Before anything: your host needs a global IPv6 address.** IPv4 as well is fine — it is IPv6
+that must be there. Signing is point-to-point: the caller connects directly to the address you
+register and no relay bridges it, so an IPv4-only gamemaster is invisible to the network while
+still syncing and reporting `Ready`. `install.sh` checks this and aborts before writing anything.
+★ Addresses starting `fd` are ULA and do **not** count, whatever `ip` calls their scope.
+
 **One command on a fresh VPS.** This is the short path. The long path, with every step explained
 and every failure mode named, is `testnet/operator/OPERATOR_GUIDE.md` — the bootstrap below clones
 it onto your machine.

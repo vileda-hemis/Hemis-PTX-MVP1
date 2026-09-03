@@ -137,6 +137,25 @@ t("BUG-059: the curl fallback sends collateralIndex as a real integer",function(
     throw new Error("the page emitted something that looks like a real credential");
 });
 
+t("KDD-110: the page refuses an IPv4, ULA or unbracketed address",function(){
+  good(); els.ipport.value="203.0.113.10:29994"; render();
+  isoff("s5");
+  if(els.s4msg.innerHTML.indexOf("IPv4")<0)throw new Error("IPv4 registration not named");
+
+  good(); els.ipport.value="[fd00:32::1]:29994"; render();
+  isoff("s5");
+  if(els.s4msg.innerHTML.indexOf("ULA")<0)throw new Error("ULA not named");
+
+  good(); els.ipport.value="2001:db8::10:29994"; render();
+  isoff("s5");
+  if(els.s4msg.innerHTML.indexOf("Bracket")<0)throw new Error("unbracketed address not named");
+
+  // and the correct form still passes
+  good(); els.ipport.value="[2001:db8::10]:29994"; render();
+  on("s5");
+  eq(argv()[4],'"[2001:db8::10]:29994"',"bracketed IPv6 reaches arg 3");
+});
+
 t("the guide and the page emit the same argument order",function(){
   // ★★ Two documents describing one command is how the disagreement starts.
   // OPERATOR_GUIDE.md sec B2 carries a positional table; the page emits a command.

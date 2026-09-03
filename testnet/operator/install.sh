@@ -167,6 +167,115 @@ if [ -f "$_role_conf" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# ★★ A GAMEMASTER MUST HAVE A ROUTABLE IPv6 ADDRESS, AND THIS GATE RUNS BEFORE
+# ANYTHING IS WRITTEN OR DOWNLOADED.
+#
+# ★ WHY IPv6 AND NOT "ANY ONE FAMILY": signing is POINT-TO-POINT. The caller
+# connects directly to the address you registered (ptx_sign_client.cpp -- the DGM
+# address IS the address, host and port), and NO relay bridges that connection.
+# The DKG relay does not bridge it either: its inv goes only to GMAUTH-verified
+# peers that are members of the same session (ptx_dkg_net.cpp), so a dual-stack
+# bystander has nothing to forward. A node on the wrong family is not a degraded
+# participant -- for those peers it does not exist, while still syncing and still
+# reporting Ready.
+#
+# ★ IPv4 IS NOT FORBIDDEN. Have it or not; it is simply not what the network
+# routes signing over. Dual-stack hosts are welcome and are handled below.
+#
+# ★★ `scope global` IS NOT SUFFICIENT ON ITS OWN AND THIS WAS MEASURED, NOT
+# ASSUMED. On a host whose only "global" IPv6 addresses were fd00:31::1 and
+# fd00:32::1 -- both ULA (fc00::/7), both unroutable, neither reachable by
+# anyone -- `ip -o -6 addr show scope global` returned BOTH. A naive check
+# would have selected one and produced exactly the invisible-node failure this
+# gate exists to prevent, or aborted for "too many addresses" on a host that
+# has none. Link-local is excluded by scope (fe80:: is scope=link) and ::1 by
+# scope=host, but ULA is scope=global and must be filtered by PREFIX.
+# ---------------------------------------------------------------------------
+ptx_routable_ipv6() {
+    # Routable global unicast only: drop ULA (fc00::/7) and link-local by prefix,
+    # and drop privacy-extension/temporary and deprecated addresses -- those
+    # ROTATE, and registering one means registering an address that stops
+    # existing.
+    ip -o -6 addr show scope global 2>/dev/null \
+        | grep -viE '[[:space:]](temporary|deprecated|tentative)([[:space:]]|$)' \
+        | awk '{print $4}' | cut -d/ -f1 \
+        | grep -viE '^(fc|fd|fe80)' \
+        | grep -vxE '::1' \
+        | sort -u || true
+    # ★ ::1 is dropped explicitly too. `scope global` already excludes it
+    # (loopback is scope=host), but relying on the scope filter for one
+    # exclusion and the prefix filter for the others means a change to either
+    # can open a hole quietly. Both filters are complete on their own.
+    # ★ `|| true` IS LOAD-BEARING UNDER `set -euo pipefail`. Finding no routable
+    # IPv6 is the CASE THIS GATE EXISTS FOR, but grep exits 1 when it matches
+    # nothing, pipefail promotes that to the pipeline, and set -e then killed the
+    # script SILENTLY -- exit 1, zero output, before the abort message could
+    # print. An operator on an IPv4-only host would have seen an installer that
+    # did nothing and said nothing. Caught by running it on such a host.
+}
+
+PTX_IPV6_AUTO=""
+if [ -n "${PTX_EXTERNALIP:-}" ]; then
+    # An explicit override wins -- behind NAT the address you register is not one
+    # this host can see. It must still be IPv6, or the policy is not enforced at
+    # all; a colon is the discriminator (SplitHostPort's own test, netbase.cpp).
+    case "$PTX_EXTERNALIP" in
+        *:*) ok "external address supplied explicitly: $PTX_EXTERNALIP" ;;
+        *)   printf '\n  [FAIL] PTX_EXTERNALIP=%s is not an IPv6 address.\n\n' "$PTX_EXTERNALIP" >&2
+             printf '  PTX requires IPv6 on gamemasters. Signing is point-to-point: a caller\n' >&2
+             printf '  connects directly to the address you register, and no relay bridges it.\n' >&2
+             printf '  An IPv4-only gamemaster is invisible to the network -- it will sync and\n' >&2
+             printf '  report Ready while never being reachable for signing.\n\n' >&2
+             printf '  See OPERATOR_GUIDE.md "What your host needs".\n\n' >&2
+             exit 4 ;;
+    esac
+elif ! command -v ip >/dev/null 2>&1; then
+    printf '\n  [FAIL] iproute2 is not installed, so this host addresses cannot be read.\n\n' >&2
+    printf '  A gamemaster must have a routable IPv6 address and this script cannot\n' >&2
+    printf '  confirm one. Either install it:\n\n      apt-get install -y iproute2\n\n' >&2
+    printf '  or set PTX_EXTERNALIP=<your global IPv6 address> and re-run.\n\n' >&2
+    exit 4
+elif [ "$PTX_ROLE" = "gamemaster" ]; then
+    _v6="$(ptx_routable_ipv6)"
+    _v6n="$(printf '%s\n' "$_v6" | grep -c . || true)"
+    [ -n "$_v6" ] || _v6n=0
+    if [ -z "$_v6" ] || [ "$_v6n" = "0" ]; then
+        printf '\n  [FAIL] No global IPv6 address found on this host.\n\n' >&2
+        printf '  PTX requires IPv6 on gamemasters. Signing is point-to-point: a caller\n' >&2
+        printf '  connects directly to the address you register, and no relay bridges it.\n' >&2
+        printf '  An IPv4-only gamemaster is invisible to the network -- it will sync and\n' >&2
+        printf '  report Ready while never being reachable for signing, and it can be\n' >&2
+        printf '  PoSe-banned for a topology it did not choose.\n\n' >&2
+        printf '  IPv4 as well is fine -- it is IPv6 that must be there.\n\n' >&2
+        printf '  Most providers enable IPv6 free on request. If yours cannot, tell the\n' >&2
+        printf '  coordinator BEFORE provisioning. See OPERATOR_GUIDE.md.\n\n' >&2
+        printf '  ★ Nothing has been installed or written -- this host is untouched.\n\n' >&2
+        exit 4
+    fi
+    if [ "$_v6n" -gt 1 ]; then
+        printf '\n  [FAIL] This host has %s routable IPv6 addresses:\n\n' "$_v6n" >&2
+        printf '%s\n' "$_v6" | sed 's/^/           /' >&2
+        printf '\n  Refusing to guess which one you will register. Pick the STABLE one\n' >&2
+        printf '  (not a privacy/temporary address -- those rotate, and a rotated address\n' >&2
+        printf '  means a gamemaster nobody can reach) and re-run:\n\n' >&2
+        printf '      PTX_EXTERNALIP=<the address> PTX_ROLE=gamemaster ./install.sh\n\n' >&2
+        printf '  ★ Nothing has been installed or written -- this host is untouched.\n\n' >&2
+        exit 4
+    fi
+    PTX_IPV6_AUTO="$_v6"
+    ok "IPv6 present: $PTX_IPV6_AUTO -- this is what you will register"
+else
+    # Wallet host. Not fatal, but it will not sync: the seed peers are IPv6.
+    _v6="$(ptx_routable_ipv6)"
+    if [ -z "$_v6" ]; then
+        warn "no global IPv6 address on this WALLET host."
+        echo "         The coordinator's seed peers are IPv6, so this machine will have"
+        echo "         nothing to connect to and will sit at height 0 with"
+        echo "         getconnectioncount: 0. Get IPv6 before you rely on it."
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # ★ RETRY THE NETWORK REACH -- STEP ONE IS THE MOST LIKELY THING TO FAIL, AND
 # THE WORST PLACE TO FAIL WITHOUT EXPLANATION.
 #
@@ -1035,9 +1144,16 @@ if [ "${EXTERNALIP_DONE:-0}" = "1" ]; then
 elif [ -n "$PTX_EXTERNALIP" ]; then
     EXTERNALIP_LINE="externalip=$PTX_EXTERNALIP"
     ok "advertising external address $PTX_EXTERNALIP"
-elif [ "$(printf '%s\n' "$GLOBAL_ADDRS" | grep -c .)" = "1" ] && [ -n "$GLOBAL_ADDRS" ]; then
-    EXTERNALIP_LINE="externalip=$GLOBAL_ADDRS"
-    ok "advertising external address $GLOBAL_ADDRS (this host's only global address)"
+elif [ -n "$PTX_IPV6_AUTO" ]; then
+    # ★★ SELECT BY FAMILY, NOT BY ADDRESS COUNT. The previous rule auto-set this
+    # only when the host had EXACTLY ONE global address, so a dual-stack host --
+    # which has at least two -- fell to the warn branch below and shipped with
+    # externalip COMMENTED OUT. That is a manual step whose failure mode is a
+    # node that registers and never reaches Ready, imposed on precisely the
+    # hosts that are best provisioned. The gate above has already established
+    # that exactly one ROUTABLE IPv6 address exists; use it.
+    EXTERNALIP_LINE="externalip=$PTX_IPV6_AUTO"
+    ok "advertising external address $PTX_IPV6_AUTO (this host's routable IPv6)"
 else
     EXTERNALIP_LINE="# externalip=<the address you will REGISTER>    <-- set this before you arm"
     warn "could not choose an external address for you."

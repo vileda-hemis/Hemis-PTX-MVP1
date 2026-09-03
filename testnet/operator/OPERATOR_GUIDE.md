@@ -117,6 +117,33 @@ key means the chain cannot tell your nodes apart.
 ★ **The port reservation 32000–33000 is host-wide** and `install.sh` sets it once per host. With
 one GM per host that is simply once each.
 
+★★ **YOUR GAMEMASTER MUST HAVE A GLOBAL IPv6 ADDRESS. Check this before you buy the machine.**
+IPv4 as well is fine and excludes nobody — it is IPv6 that has to be there. `install.sh` refuses to
+install a gamemaster without one, and it refuses **before writing anything**, so a wrong host stays
+clean.
+
+★ **Why, since everything else on this network is family-agnostic:** signing is **point-to-point**.
+The caller connects directly to the address you registered, and **no relay bridges that
+connection** — not a peer, not the coordinator, not a dual-stack node you add later. The DKG
+exchange that forms a quorum is restricted the same way.
+
+★ **A node on the wrong family is not a degraded participant — for those peers it does not exist.**
+It will sync, it will report `Ready`, and it will look completely healthy, because blocks and
+transactions gossip through the mesh and do not care about any of this. The failure appears only
+when a roll needs you. Worse: a gamemaster that cannot exchange DKG material with its own quorum
+can be marked a failed participant and **PoSe-banned for a network topology it did not choose.**
+
+★ **A second, dual-stack machine does not fix an IPv4-only gamemaster.** It will keep your chain in
+sync; it cannot carry your signing traffic, which goes straight to your registered address.
+
+★ **A ULA (`fc00::/7`, the addresses starting `fd`) is not a global address**, even though Linux
+calls its scope "global". If `ip -6 addr` shows you only `fd…` addresses, you do not have IPv6 for
+this purpose. Most providers enable real IPv6 free on request.
+
+★ **Your wallet machine needs IPv6 too**, for a simpler reason: the seed peers the coordinator gives
+you are IPv6, so an IPv4-only wallet host has nothing to connect to and sits at height 0 with
+`getconnectioncount: 0`.
+
 ★ **Behind CGNAT this cannot work.** If you cannot get an inbound-reachable address for each GM,
 tell the coordinator before you start.
 
@@ -258,7 +285,7 @@ you leave it** — the daemon would advertise the private address.
 ```bash
 grep externalip $HOME/.Hemis/Hemis.conf
 # if it is commented out, set it to the SAME address you will register, under [ptxtestnet]:
-echo "externalip=203.0.113.10" >> $HOME/.Hemis/Hemis.conf
+echo "externalip=2001:db8::10" >> $HOME/.Hemis/Hemis.conf   # ← YOUR global IPv6, no brackets here
 ```
 
 Why it is not optional: `CActiveDeterministicGamemasterManager::Init` refuses to arm without a
@@ -354,7 +381,11 @@ operator.
 Copy to your wallet machine, per gamemaster:
 
 1. that host's **BLS PUBLIC key**
-2. that host's **external address and P2P port**, e.g. `203.0.113.10:29994`
+2. that host's **external address and P2P port**, e.g. `[2001:db8::10]:29994`
+   ★ **Brackets around the address, then the port.** `protx_register` takes `ipAndPort` as one
+   string, and without brackets the colon before `29994` is ambiguous with the address's own
+   colons. In `externalip=` (no port) you write the address bare, with no brackets — the two
+   places genuinely differ.
 
 **Do not send the BLS secret — to anywhere, including your own wallet machine.** It belongs on the
 node that uses it and nowhere else. Anyone asking you for it is either mistaken or attacking you.
@@ -503,7 +534,7 @@ An empty list `[]` means the block has not arrived yet — wait and run it again
 
 ```bash
 Hemis-cli protx_register \
-  "<collateral txid>" <vout> "203.0.113.10:29994" "$OWNER" "<BLS PUBLIC>" \
+  "<collateral txid>" <vout> "[2001:db8::10]:29994" "$OWNER" "<BLS PUBLIC>" \
   "" "$PAY" 0 "" "$PAY" "yourname-1"
 ```
 
@@ -511,7 +542,7 @@ Hemis-cli protx_register \
 |---|---|---|
 | 1 | `collateralHash` | the `txid` from step 3 |
 | 2 | `collateralIndex` | the `vout` from step 3 — a bare number, no quotes |
-| 3 | `ipAndPort` | the address from Handoff 1, e.g. `203.0.113.10:29994` |
+| 3 | `ipAndPort` | the address from Handoff 1, **bracketed**, e.g. `[2001:db8::10]:29994` |
 | 4 | `ownerAddress` | yours — **must differ from the collateral address** |
 | 5 | `operatorPubKey` | the **BLS PUBLIC** key from step 2 |
 | 6 | `votingAddress` | `""` — defaults to `ownerAddress` (`rpcevo.cpp:427-430`) |
@@ -544,7 +575,7 @@ sends native integers; **the CLI path had never been exercised for this method.*
 ```bash
 curl -s --user <rpcuser>:<rpcpassword> \
   --data-binary '{"jsonrpc":"1.0","id":"ptx","method":"protx_register","params":[
-    "<collateral txid>", <vout>, "203.0.113.10:29994", "<owner>", "<BLS PUBLIC>",
+    "<collateral txid>", <vout>, "[2001:db8::10]:29994", "<owner>", "<BLS PUBLIC>",
     "", "<payout>", 0, "", "<ptx payment>", "yourname-1"]}' \
   -H 'content-type: text/plain;' http://127.0.0.1:29995/
 ```

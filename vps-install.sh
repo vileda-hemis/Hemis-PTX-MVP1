@@ -2,6 +2,13 @@
 #
 # PTX testnet — VPS bootstrap for gamemaster operators.
 #
+# ★★ YOUR VPS MUST HAVE A GLOBAL IPv6 ADDRESS. Check before you buy it. IPv4 as
+# well is fine -- it is IPv6 that must be there. Signing is point-to-point: the
+# caller connects directly to the address you register and no relay bridges it,
+# so an IPv4-only gamemaster is invisible to the network while still syncing and
+# reporting Ready. install.sh refuses such a host and refuses before writing
+# anything. Addresses starting `fd` are ULA and do NOT count.
+#
 #   wget https://raw.githubusercontent.com/vileda-hemis/Hemis-PTX-MVP1/v0.3.2-testnet/vps-install.sh
 #   bash vps-install.sh
 #

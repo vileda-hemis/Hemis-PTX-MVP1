@@ -789,7 +789,24 @@ green_run() {
         # section 3's second route is "binaries already on your PATH", which is
         # the route that needs no network and no release; the artefact route is
         # exercised by the release rehearsal, not here.
+        # ★ PTX_EXTERNALIP: install.sh now REQUIRES a routable IPv6 on a gamemaster
+        # (KDD-110) and this harness must run on hosts that have none.
+        # ★★ NOT 2001:db8::1. The documentation range is the obvious choice and the
+        # daemon REFUSES it: CNetAddr::IsRFC3849() (netaddress.cpp:329) is consulted
+        # by IsValid() (:438), so init dies with "Cannot resolve -externalip
+        # address" and every green daemon shuts down cleanly -- seven checks
+        # failing for a reason that has nothing to do with what they test. Measured
+        # both bare and bracketed; brackets are irrelevant, the PREFIX is the issue.
+        # A global-unicast address is required, so this uses one from the network's
+        # own prefix with an obviously-fake host part. The REFUSAL path is tested
+        # separately below.
+        # ★★ THIS COMMENT LIVES ABOVE THE COMMAND, NOT INSIDE IT. Put between two
+        # backslash-continued lines it is joined onto the same logical line, so
+        # everything after the # -- INCLUDING `bash ./install.sh` -- becomes part of
+        # the comment. `bash -n` accepts it happily; the install simply never runs,
+        # and seven green checks fail somewhere else entirely.
         ( cd "$HERE" && PATH="$(dirname "$HEMISD"):$PATH" \
+            PTX_EXTERNALIP=2a07:244:46:6400::ffff \
             PTX_REPO="$TEST_REPO" PTX_REF="$TEST_REF" \
             PTX_PREFIX="$prefix" PTX_PARAMS_DIR="$params" \
             PTX_DATADIR="$dd" PTX_P2P_PORT="$p2p" PTX_RPC_PORT="$rpc" \
@@ -1029,6 +1046,7 @@ bare_invocation_run() {
     dd="$fh/.Hemis"
     rm -rf "$fh"; mkdir -p "$fh"
     ( cd "$HERE" && HOME="$fh" PATH="$(dirname "$HEMISD"):$PATH" \
+        PTX_EXTERNALIP=2a07:244:46:6400::ffff \
         PTX_REPO="$TEST_REPO" PTX_REF="$TEST_REF" \
         PTX_PREFIX="$BASE/bare-prefix" \
         bash ./install.sh ) >"$BASE/bare-install.log" 2>&1 \
@@ -1076,8 +1094,12 @@ role_run() {
     for r in gamemaster wallet; do
         fh="$BASE/role-$r"; rm -rf "$fh"; mkdir -p "$fh"
         out="$BASE/role-$r.log"
+        # ★ was 203.0.113.9 -- an IPv4 override, which install.sh now refuses for a
+        # gamemaster. That refusal is correct and is tested as its own RED leg.
+        # (Comment above the command, not inside the continuation -- see the note
+        # on the green install for what that costs.)
         ( cd "$HERE" && HOME="$fh" PATH="$(dirname "$HEMISD"):$PATH" \
-            PTX_ROLE="$r" PTX_EXTERNALIP=203.0.113.9 \
+            PTX_ROLE="$r" PTX_EXTERNALIP=2a07:244:46:6400::ffff \
             PTX_REPO="$TEST_REPO" PTX_REF="$TEST_REF" \
             PTX_PREFIX="$BASE/role-prefix-$r" PTX_PARAMS_DIR="$PARAMS_DIR" \
             bash ./install.sh ) >"$out" 2>&1 \
@@ -1245,6 +1267,60 @@ role_run() {
     else
         printf '  \033[32m[RED ok]\033[0m PTX_ROLE=nonsense aborted instead of defaulting\n'
         RED_PASS=$((RED_PASS + 1))
+    fi
+
+    # ★★ RED: an IPv4 external address must be REFUSED for a gamemaster, and
+    # refused BEFORE anything is written. Signing is point-to-point and no relay
+    # bridges address families (KDD-110), so an IPv4-registered gamemaster syncs,
+    # reports Ready, and is invisible. This leg runs anywhere -- it depends on the
+    # OVERRIDE, not on what addresses the test host happens to have.
+    local v4home="$BASE/role-v4" v4pre="$BASE/role-v4-prefix"
+    rm -rf "$v4home" "$v4pre"; mkdir -p "$v4home"
+    if ( cd "$HERE" && HOME="$v4home" PTX_ROLE=gamemaster PTX_EXTERNALIP=203.0.113.9 \
+         PTX_PREFIX="$v4pre" bash ./install.sh ) >"$BASE/role-v4.log" 2>&1; then
+        printf '  \033[31m[RED BROKEN]\033[0m an IPv4 PTX_EXTERNALIP was ACCEPTED for a gamemaster.\n'
+        RED_FAIL=$((RED_FAIL + 1)); rc=1
+    else
+        if grep -q "not an IPv6 address" "$BASE/role-v4.log" 2>/dev/null; then
+            printf '  \033[32m[RED ok]\033[0m IPv4 external address refused for a gamemaster, and the message says why\n'
+            RED_PASS=$((RED_PASS + 1))
+        else
+            printf '  \033[31m[RED VACUOUS]\033[0m it aborted, but NOT for the IPv6 reason -- see %s\n' "$BASE/role-v4.log"
+            RED_FAIL=$((RED_FAIL + 1)); rc=1
+        fi
+        # ★ "aborts before writing anything" is a CLAIM IN THE MESSAGE, so it is
+        # checked rather than trusted: a half-configured host is worse than none.
+        if [ ! -e "$v4pre" ]; then
+            ok "the refused gamemaster install wrote nothing -- the host is left clean"
+        else
+            bad "the refused install created $v4pre. It must abort BEFORE writing."; rc=1
+        fi
+    fi
+
+    # ★ RED: no routable IPv6 at all must refuse. Only testable on a host that
+    # HAS none -- three states, and a host with IPv6 reports NOT PERFORMED rather
+    # than passing a leg it never ran.
+    local hostv6
+    hostv6="$(ip -o -6 addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 \
+              | grep -viE '^(fc|fd|fe80)' | grep -vxE '::1' | sort -u || true)"
+    if [ -n "$hostv6" ]; then
+        unk "this host HAS routable IPv6 ($(printf '%s' "$hostv6" | tr '\n' ' ')) so the no-IPv6 refusal DID NOT RUN. Not a pass."
+    else
+        local nohome="$BASE/role-nov6" nopre="$BASE/role-nov6-prefix"
+        rm -rf "$nohome" "$nopre"; mkdir -p "$nohome"
+        if ( cd "$HERE" && HOME="$nohome" PTX_ROLE=gamemaster PTX_PREFIX="$nopre" \
+             bash ./install.sh ) >"$BASE/role-nov6.log" 2>&1; then
+            printf '  \033[31m[RED BROKEN]\033[0m gamemaster install SUCCEEDED on a host with no routable IPv6.\n'
+            RED_FAIL=$((RED_FAIL + 1)); rc=1
+        elif grep -q "No global IPv6 address found" "$BASE/role-nov6.log" 2>/dev/null; then
+            printf '  \033[32m[RED ok]\033[0m no-IPv6 host refused, naming IPv6 as the reason\n'
+            RED_PASS=$((RED_PASS + 1))
+            [ ! -e "$nopre" ] && ok "that refusal also wrote nothing" \
+                || { bad "the no-IPv6 refusal created $nopre"; rc=1; }
+        else
+            printf '  \033[31m[RED VACUOUS]\033[0m aborted for some other reason -- see %s\n' "$BASE/role-nov6.log"
+            RED_FAIL=$((RED_FAIL + 1)); rc=1
+        fi
     fi
     return $rc
 }

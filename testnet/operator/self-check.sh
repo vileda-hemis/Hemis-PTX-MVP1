@@ -299,6 +299,49 @@ if [ -n "${REGADDR:-}" ]; then
     else
         ok "registered family matches a bound family"
     fi
+
+    # ★★ THE GAP NEITHER SECTION 4 NOR 5 COULD SEE: "reachable, but only by half
+    # the network". Both of those probe the LOCAL socket or this host's own view
+    # of itself, so a node that binds correctly and answers its own probe still
+    # passes while being invisible to every peer on the other address family.
+    # Signing is point-to-point -- the caller dials the registered address and no
+    # relay bridges it -- so the family you registered is the family you exist on.
+    # See KDD-110.
+    if ! command -v ip >/dev/null 2>&1; then
+        unk "iproute2 absent -- could NOT verify this host owns the address you registered. This is not a pass."
+    else
+        # Routable global unicast only. ULA (fc00::/7) reports scope=global on
+        # Linux and is NOT routable -- registering one produces a node nobody can
+        # reach, which is exactly the failure this leg exists to name.
+        HOST_V6=$(ip -o -6 addr show scope global 2>/dev/null \
+                    | grep -viE '[[:space:]](temporary|deprecated|tentative)([[:space:]]|$)' \
+                    | awk '{print $4}' | cut -d/ -f1 \
+                    | grep -viE '^(fc|fd|fe80)' | grep -vxE '::1' | sort -u || true)
+        HOST_V4=$(ip -o -4 addr show scope global 2>/dev/null \
+                    | awk '{print $4}' | cut -d/ -f1 | sort -u || true)
+
+        case "$REGHOST" in
+            [Ff][CcDd]*) bad "★ You registered $REGHOST, which is a ULA (fc00::/7). Linux calls its scope 'global' but it is NOT routable -- no peer outside your own network can reach it. Register a real global IPv6 address." ;;
+            [Ff][Ee]80*) bad "★ You registered $REGHOST, a link-local address. It is not reachable off this link." ;;
+        esac
+
+        if [ "$FAMILY" = 6 ]; then
+            if [ -z "$HOST_V6" ]; then
+                bad "★ FAMILY GAP: you registered an IPv6 address but this host has NO routable global IPv6 address. Peers cannot reach you and nothing local will show it -- the daemon binds and answers happily. Fix IPv6 on this host, or re-register at an address you actually have."
+            elif printf '%s\n' "$HOST_V6" | grep -qxF "$REGHOST"; then
+                ok "registered address $REGHOST is a routable IPv6 address on this host"
+            else
+                warn "registered $REGHOST is not among this host's addresses ($(printf '%s' "$HOST_V6" | tr '\n' ' '))."
+                echo "         That is CORRECT behind NAT -- you register the router's address --"
+                echo "         and WRONG if you meant to register this machine. Check which it is."
+            fi
+        else
+            # Policy, not preference: signing is point-to-point and this network
+            # routes it over IPv6. An IPv4 registration is invisible to it.
+            bad "★ You registered an IPv4 address ($REGHOST). PTX gamemasters must register a global IPv6 address -- signing is point-to-point and no relay bridges address families, so an IPv4-registered gamemaster is invisible to the network while syncing and reporting Ready. See OPERATOR_GUIDE.md."
+            [ -n "$HOST_V6" ] && echo "         This host HAS routable IPv6: $(printf '%s' "$HOST_V6" | tr '\n' ' ')-- re-register with it."
+        fi
+    fi
 fi
 
 # ---------------------------------------------------------------------------

@@ -30,6 +30,19 @@ seeds gets a working node and a named gap rather than a silent one.
 **The last two are compiled in and gate the tag.** They cannot be changed after operators are
 running without a new genesis or a new binary.
 
+★★ **AND ONE THING YOU MUST TELL OPERATORS BEFORE THEY PROVISION: every host needs a global IPv6
+address.** This is not a value you mint, it is a sentence you send — and it has to arrive *before*
+they buy a machine, because it cannot be fixed afterwards without registering again at a new
+address. `install.sh` enforces it for gamemasters and aborts before writing anything, so the worst
+case is a wasted provisioning rather than a broken node; but an operator who hears it from the
+installer has already paid for the wrong VM.
+
+★ **Two coupled obligations of your own follow from it.** (1) **The seeds you mint above are IPv6**,
+so an IPv4-only host has nothing to dial and sits at height 0 — the requirement applies to WALLET
+hosts too, for that reason alone. (2) If the policy is ever widened to admit IPv4 hosts, **IPv4
+seeds become a prerequisite, not a follow-up** — without them an IPv4 operator cannot bootstrap at
+all, and the only symptom is `getconnectioncount: 0`. See KDD-110.
+
 ### ★★ There used to be five, and two of them were secrets — KDD-085 deleted both
 
 This section is kept rather than removed, because *what changed* is the point.
