@@ -1302,6 +1302,13 @@ role_run() {
         opfiles="GM_QUICKSTART.md vps-install.sh testnet/operator/OPERATOR_GUIDE.md"
         opfiles="$opfiles testnet/operator/OPERATOR_ONEPAGER.md testnet/operator/install.sh"
         opfiles="$opfiles testnet/operator/self-check.sh"
+        # ★ The AUTHORED corpus carries operator-facing numbers (100 HMS, 29994)
+        # and must be guarded exactly like the guide. The DERIVED copies are not
+        # listed: they are byte-copies of files already in this list, and the
+        # staleness leg below enforces that equality -- checking them here would
+        # double-report the same fact under a second path.
+        opfiles="$opfiles testnet/operator/faq/weirdness.md"
+        opfiles="$opfiles testnet/operator/faq/protocol.md"
         for ff in $opfiles; do
             [ -f "$HERE/../../$ff" ] || continue
             while IFS=: read -r ln txt; do
@@ -1361,6 +1368,46 @@ role_run() {
         done
         [ "$badfact" = "0" ] \
             && ok "ports and collateral: $nfact instructional mentions all match install.sh ($a_p2p/$a_rpc) and chainparams ($a_coll HMS)" \
+            || rc=1
+    fi
+
+    # ★★ FAQ CORPUS STALENESS. The corpus's derived half is a BYTE-COPY of the
+    # operator documents, which is the only form of "derived" that cannot drift
+    # semantically -- the text either equals the source or this fails. Copying by
+    # hand, or paraphrasing into the corpus, would recreate the second-source
+    # problem the copy exists to avoid (BUG-054's shape, four instances in a
+    # week).
+    local man="$HERE/faq/derived/MANIFEST.txt"
+    if [ ! -f "$man" ]; then
+        unk "no FAQ corpus manifest -- the staleness check DID NOT RUN. Not a pass."
+    else
+        local stale=0 nsrc=0 want got src
+        while read -r want src; do
+            [ -n "${src:-}" ] || continue
+            nsrc=$((nsrc+1))
+            if [ ! -f "$HERE/../../$src" ]; then
+                bad "corpus manifest names $src, which does not exist"; stale=1; continue
+            fi
+            got="$(sha256sum "$HERE/../../$src" | awk '{print $1}')"
+            [ "$got" = "$want" ] || {
+                bad "corpus is STALE against $src -- re-run testnet/operator/faq/build-corpus.sh"; stale=1; }
+        done < "$man"
+        # ★ And the copy must equal the source BYTE FOR BYTE, not merely have been
+        # generated from a matching hash at some point: a hand-edit to the copy
+        # would leave the manifest correct and the corpus wrong.
+        local d body
+        for d in "$HERE"/faq/derived/*.md; do
+            [ -f "$d" ] || continue
+            src="$(sed -n 's/^<!-- CORPUS-SOURCE: \(.*\) -->$/\1/p' "$d" | head -1)"
+            [ -n "$src" ] || { bad "$(basename "$d") has no CORPUS-SOURCE header"; stale=1; continue; }
+            [ -f "$HERE/../../$src" ] || continue
+            body="$(sed -n '/^> edited for the FAQ bot/,$p' "$d" | tail -n +3)"
+            if [ "$body" != "$(cat "$HERE/../../$src")" ]; then
+                bad "$(basename "$d") is not a byte-copy of $src -- it has been edited in place"; stale=1
+            fi
+        done
+        [ "$stale" = "0" ] \
+            && ok "FAQ corpus: $nsrc derived documents are byte-identical to their sources" \
             || rc=1
     fi
 

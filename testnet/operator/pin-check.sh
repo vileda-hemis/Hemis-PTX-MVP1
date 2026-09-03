@@ -46,12 +46,26 @@ testnet/operator/ONBOARDING.md	ptx01 runs
 vps-install.sh	CANNOT work here
 testnet/operator/pin-check.sh	git clone -b v0.3.2-testnet
 testnet/operator/pin-check.sh	v0.3.3-testnet went out with
+testnet/operator/faq/weirdness.md	and later, where `install.sh` enforces this
+testnet/operator/faq/weirdness.md	its instructions told me to clone
+testnet/operator/faq/weirdness.md	tag only. Fixed in
+testnet/operator/faq/weirdness.md	shipped with a one-page onboarding document
 testnet/operator/OPERATOR_GUIDE.md	and earlier** it fails from
 EOF
 )"
 
 PIN_GLOBS=(GM_QUICKSTART.md vps-install.sh 'testnet/operator/*')
-mapfile -t FILES < <(git ls-files "${PIN_GLOBS[@]}")
+mapfile -t FILES < <(git ls-files "${PIN_GLOBS[@]}" | grep -v '^testnet/operator/faq/derived/')
+# ★★ faq/derived/ IS EXCLUDED FROM CONTENT SCANNING, AND THIS IS NOT A HOLE.
+# Those files are BYTE-COPIES of documents this script already scans at their
+# source paths, and build-corpus.sh embeds each source's SHA256 while
+# install-test.sh fails if any has moved. So their content is checked at its
+# origin and their equality to that origin is enforced separately -- scanning the
+# copy would only re-report the source's own exemptions under a path those
+# exemptions do not name.
+# ★ They remain inside the UNTRACKED check below, deliberately: an uncommitted
+# derived file means the corpus was regenerated and not committed, which is
+# exactly the BUG-060 shape this script now refuses to pass.
 if [ "${#FILES[@]}" -eq 0 ]; then
     echo "pin-check: no files matched -- run me from inside the repository" >&2
     exit 2
