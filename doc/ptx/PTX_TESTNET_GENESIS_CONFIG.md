@@ -34,7 +34,7 @@ Three ways out, and the choice changes the operator documents:
 > **Both banners below record a per-operator number. The operator-facing documents no longer carry
 > one at all.** `OPERATOR_GUIDE.md`, `GM_QUICKSTART.md`, `ONBOARDING.md`, `vps-install.sh` and
 > `install.sh`'s completion output now state a **shape** — one wallet machine, one gamemaster per
-> host, `100 HMS` collateral *per gamemaster*, `(N × 100) + 100 HMS` funding — and say that **N is
+> host, `100 HMS` collateral *per gamemaster*, `(N × 100) + 500 HMS` funding — and say that **N is
 > agreed with the coordinator**. `GENESIS_BOOTSTRAP.md` is where a number is now chosen, per
 > operator, by the coordinator.
 >

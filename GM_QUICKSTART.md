@@ -12,7 +12,7 @@ and every failure mode named, is `testnet/operator/OPERATOR_GUIDE.md` — the bo
 it onto your machine.
 
 ```bash
-wget https://raw.githubusercontent.com/vileda-hemis/Hemis-PTX-MVP1/v0.3.2-testnet/vps-install.sh
+wget https://raw.githubusercontent.com/vileda-hemis/Hemis-PTX-MVP1/v0.3.3-testnet/vps-install.sh
 bash vps-install.sh
 ```
 
@@ -161,7 +161,7 @@ locked out of the daemon you need to produce the key.
 PoSe penalties exactly as if it were firewalled.
 
 ### 3. Register — on the **wallet** machine
-`protx_register` with the collateral txid/vout, your `ip:29994`, and the BLS **public** key.
+`protx_register` with the collateral txid/vout, your `[<gm-ipv6>]:29994` (**bracketed**), and the BLS **public** key.
 `OPERATOR_GUIDE.md` sections B1–B2, and read **"The last two arguments are optional to the RPC and
 NOT optional to you"** before you send it.
 
@@ -171,8 +171,9 @@ NOT optional to you"** before you send it.
 cd ~/Hemis-PTX-MVP1/testnet/operator && ./self-check.sh
 ```
 
-Eight sections: local RPC, chain sync, registration, IPv6 bind coverage, **external reachability at
-the registered address**, PoSe, `ptx_shares.dat` custody, quorum membership. Section 5 is the one
+Ten sections: build identity, role, local RPC, chain sync, registration, IPv6 bind coverage,
+**external reachability at the registered address**, PoSe, `ptx_shares.dat` custody, quorum
+membership. Section 5 is the one
 that catches the closed-RPC failure above.
 
 ---

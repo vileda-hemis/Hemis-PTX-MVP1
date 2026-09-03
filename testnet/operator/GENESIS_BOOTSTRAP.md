@@ -471,7 +471,7 @@ guide** — see ODC-094. Write **N** for what you agreed with a given operator.
 | collateral, N GMs × 100 HMS | N × 100 |
 | registration fees and change | ~5 |
 | margin for a fumbled registration, a re-send, a mistyped address | ~95 |
-| **recommended per operator** | **(N × 100) + 100 HMS** |
+| **recommended per operator** | **(N × 100) + 500 HMS** |
 
 Against a float of ~193,800 the margin costs nothing, and the alternative is a second round of
 transfers during the week you least want one. Send it as a single payment per operator and let them

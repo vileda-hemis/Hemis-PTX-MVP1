@@ -19,7 +19,7 @@ REPO="${PTX_REPO:-https://github.com/vileda-hemis/Hemis-PTX-MVP1.git}"
 #
 # To build a later fix before it is tagged, pass the branch explicitly:
 #   PTX_REF=feature/ptx-dkg PTX_BUILD_FROM_SOURCE=1 ./install.sh
-REF="${PTX_REF:-v0.3.2-testnet}"
+REF="${PTX_REF:-v0.3.3-testnet}"
 PREFIX="${PTX_PREFIX:-/opt/hemis-ptx}"
 # ★★ THE DEFAULT DATADIR, AND THIS IS BUG-047's FIX -- NOT A TIDY-UP.
 # The daemon's own default is $HOME/.Hemis (util/system.cpp GetDefaultDataDir),
@@ -1014,10 +1014,10 @@ rpcbind=::1"
 # free; an explicit list does not, and rpcallowip stayed loopback-only. The two
 # lists were then DISJOINT: the daemon listened on the address it refused and
 # refused the address it listened on. Measured 2026-08-23 on a generated config --
-#   LISTEN 192.168.99.85:29995, 172.17.0.1:29995   (no 127.0.0.1)
+#   LISTEN <coordinator-host>:29995, 172.17.0.1:29995   (no 127.0.0.1)
 #   rpcallowip=127.0.0.1, ::1
 #   Hemis-cli -datadir=<dd> getblockcount  -> couldn't connect to server
-#   via 192.168.99.85                      -> HTTP 403
+#   via <coordinator-host>                      -> HTTP 403
 # -- so generateblskeypair, self-check.sh, every verification step in both
 # documents, and the unit's ExecStartPost round-trip could not work at all.
 # Both halves were reasonable; nothing tested the CONJUNCTION. install-test.sh's

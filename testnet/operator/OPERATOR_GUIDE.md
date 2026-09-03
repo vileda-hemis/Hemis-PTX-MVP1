@@ -172,7 +172,7 @@ apt-get update && apt-get install -y --no-install-recommends git curl ca-certifi
 ```
 
 ```bash
-git clone -b v0.3.2-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
+git clone -b v0.3.3-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 cd Hemis-PTX-MVP1/testnet/operator
 ./install.sh
 ```
@@ -465,7 +465,10 @@ consolidates is no longer a collateral. ★ You create this output yourself with
 involvement. They do not hold your coins, do not receive your BLS public key, and do not register
 your gamemasters. **Nothing secret leaves your machines at any point in this guide.**
 
-**How much:** for **N** gamemasters, ask for **(N × 100) + 100 HMS** — the collaterals, plus a
+**How much:** for **N** gamemasters, ask for **(N × 100) + 500 HMS** — the collaterals, plus 500 to
+STAKE with. ★★ **The 500 is not slack, it is a job.** Operators are expected to stake: without you
+the coordinator is the only block producer and the network's liveness rests on three hosts. Leave it
+idle and you are not doing the thing you were funded to do. It also absorbs fees, a re-send and a
 round 100 of margin that covers fees, a re-send and a mistyped address. Two GMs is 300, four is 500.
 ★ Ask once, for the whole amount: each top-up is a round trip through a human.
 
@@ -553,7 +556,7 @@ Hemis-cli protx_register \
 | 10 | `ptxPaymentAddress` | yours — see below |
 | 11 | `ptxNodeId` | `yourname-1` … `yourname-N` |
 
-★ **BUG-059 — fixed in `v0.3.2-testnet`. If you are on that tag or later, the command above works
+★ **BUG-059 — fixed in `v0.3.3-testnet`. If you are on that tag or later, the command above works
 and you can skip to the next section.** On **v0.3.1-testnet and earlier** it fails from `Hemis-cli`,
 and the failure looks like your mistake rather than ours. Check with `Hemisd -version`. You get:
 

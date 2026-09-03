@@ -1266,6 +1266,104 @@ role_run() {
         [ "$badkeys" = "0" ] && ok "all $checked config-key mentions name real daemon options" || rc=1
     fi
 
+    # ★★ FACT LEG: PORTS AND COLLATERAL, GUARDED BEFORE THEY DRIFT.
+    # The tag has pin-check, the register command has the guide/page agreement
+    # test, config keys have the leg above -- every fact that has ALREADY drifted
+    # has a guard, and the ones that have not drifted yet have none. That is
+    # guards written reactively, and it means the next stale-fact bug is
+    # guaranteed to be in the unguarded set. These are the two largest.
+    #
+    # ★ ONE SOURCE OF TRUTH EACH, read rather than restated: the ports come from
+    # install.sh's own defaults (the same way pin-check reads REF from it), and
+    # the collateral from CPTXTestNetParams in chainparams.cpp. Note the ports
+    # deliberately are NOT the chainparams defaults -- ptxtestnet defaults to P2P
+    # 29993, and install.sh writes 29994 explicitly. Reading chainparams here
+    # would guard the wrong number.
+    #
+    # ★★ SCOPED TO INSTRUCTIONAL USES IN OPERATOR-FACING FILES, and that scoping
+    # is the whole design. A naive scan of every number flagged coordinator float
+    # figures, this harness's own port fixtures and the deliberate
+    # "1000 HMS IS THE WRONG NUMBER" warning -- a linter that cries wolf gets
+    # ignored, so it matches port= / rpcport= / ]:port forms and HMS figures
+    # written next to the word collateral, and nothing else.
+    local a_p2p a_rpc a_coll
+    a_p2p="$(sed -n 's/^P2P_PORT="${PTX_P2P_PORT:-\([0-9]*\)}".*/\1/p' "$HERE/install.sh")"
+    a_rpc="$(sed -n 's/^RPC_PORT="${PTX_RPC_PORT:-\([0-9]*\)}".*/\1/p' "$HERE/install.sh")"
+    a_coll="$(awk '/class CPTXTestNetParams/,/^}/' "$HERE/../../src/chainparams.cpp" 2>/dev/null \
+              | sed -n 's/.*nGMCollateralAmt = \([0-9]*\) \* COIN.*/\1/p' | head -1)"
+    if [ -z "$a_p2p" ] || [ -z "$a_rpc" ] || [ -z "$a_coll" ]; then
+        unk "could not read the authority values (p2p=$a_p2p rpc=$a_rpc coll=$a_coll) -- fact leg DID NOT RUN. Not a pass."
+    else
+        # Deliberate non-matching mentions, named individually so a blanket skip
+        # cannot hide a real one. file <TAB> text that must appear on the line.
+        local FACT_EXEMPT
+        FACT_EXEMPT="$(printf '%s\n' 'install.sh	Bound to [::]:29993')"
+        local opfiles ff badfact=0 nfact=0
+        opfiles="GM_QUICKSTART.md vps-install.sh testnet/operator/OPERATOR_GUIDE.md"
+        opfiles="$opfiles testnet/operator/OPERATOR_ONEPAGER.md testnet/operator/install.sh"
+        opfiles="$opfiles testnet/operator/self-check.sh"
+        for ff in $opfiles; do
+            [ -f "$HERE/../../$ff" ] || continue
+            while IFS=: read -r ln txt; do
+                [ -n "${ln:-}" ] || continue
+                local v ex=""
+                v="$(printf '%s' "$txt" | grep -oE '299[0-9][0-9]' | head -1)"
+                [ "$v" = "$a_p2p" ] || [ "$v" = "$a_rpc" ] || {
+                    while IFS=$'\t' read -r hf ht; do
+                        [ -n "${hf:-}" ] || continue
+                        case "$ff" in *"$hf") : ;; *) continue ;; esac
+                        printf '%s' "$txt" | grep -qF -- "$ht" && ex=1 && break
+                    done <<< "$FACT_EXEMPT"
+                    [ -n "$ex" ] || { bad "$ff:$ln names port $v; install.sh's default is $a_p2p/$a_rpc"; badfact=1; }
+                }
+                nfact=$((nfact+1))
+            # ★ WHOLE LINES, not grep -o matches. -o yields only the matched
+            # token (]:29993), so an exemption keyed on the surrounding text --
+            # which is the only thing that distinguishes a quoted measurement from
+            # a stale instruction -- could never match, and the exemption silently
+            # did nothing. Caught because the GREEN run failed on the one line the
+            # exemption existed for.
+            done < <(grep -nE "(rpcport|port)=299[0-9][0-9]|\]:299[0-9][0-9]|[0-9]:299[0-9][0-9]" "$HERE/../../$ff" 2>/dev/null)
+            while IFS=: read -r ln txt; do
+                [ -n "${ln:-}" ] || continue
+                local cv
+                # ★ A FUNDING FORMULA STATES A TOTAL, NOT A COLLATERAL. "(N x 100)
+                # + 500 HMS" would otherwise be read as a 500 HMS collateral. It is
+                # not skipped, though -- the MULTIPLICAND in it IS the collateral,
+                # so that is what gets checked, which is stricter than skipping and
+                # stricter than the prose check it replaces.
+                # ★ Skip funding-formula lines here; they are checked by their own
+                # scan below. "(N x 100) + 500 HMS -- the collaterals, plus 500 to
+                # stake" reads to this loop as a 500 HMS collateral, which it is
+                # not. A formula states a TOTAL.
+                printf '%s' "$txt" | grep -qE '[Nn] *[×x] *[0-9]+' && continue
+                cv="$(printf '%s' "$txt" | grep -oE '[0-9]+ HMS' | head -1)"
+                [ -z "$cv" ] || [ "$cv" = "$a_coll HMS" ] || {
+                    bad "$ff:$ln states $cv beside the word collateral; chainparams says $a_coll HMS"; badfact=1; }
+                [ -z "$cv" ] || nfact=$((nfact+1))
+            done < <(grep -noiE ".{0,40}collateral.{0,40}" "$HERE/../../$ff" 2>/dev/null)
+            # ★★ FUNDING FORMULAS GET THEIR OWN SCAN, and they need one: a formula
+            # is NOT written next to the word "collateral" -- the one-pager's sits
+            # beside "for N gamemasters" -- so a check living inside the
+            # collateral-context loop never sees it. Measured: a deliberately
+            # broken "(N x 1000)" passed until this scan existed.
+            # The MULTIPLICAND is the collateral, so that is what is checked; the
+            # margin (+500, for staking) is a policy number with no source of
+            # truth in code and is deliberately NOT guarded.
+            while IFS=: read -r ln txt; do
+                [ -n "${ln:-}" ] || continue
+                local mult
+                mult="$(printf '%s' "$txt" | grep -oE '[Nn] *[×x] *[0-9]+' | grep -oE '[0-9]+' | head -1)"
+                [ -z "$mult" ] || [ "$mult" = "$a_coll" ] || {
+                    bad "$ff:$ln funding formula multiplies by $mult; the collateral is $a_coll"; badfact=1; }
+                [ -z "$mult" ] || nfact=$((nfact+1))
+            done < <(grep -nE "[Nn] *[×x] *[0-9]+" "$HERE/../../$ff" 2>/dev/null)
+        done
+        [ "$badfact" = "0" ] \
+            && ok "ports and collateral: $nfact instructional mentions all match install.sh ($a_p2p/$a_rpc) and chainparams ($a_coll HMS)" \
+            || rc=1
+    fi
+
     # RED: an unknown role must ABORT, never fall back to a default.
     if ( cd "$HERE" && HOME="$BASE/role-bad" PTX_ROLE=nonsense bash ./install.sh ) >"$BASE/role-bad.log" 2>&1; then
         printf '  \033[31m[RED BROKEN]\033[0m PTX_ROLE=nonsense was ACCEPTED. An unrecognised role must abort, not silently pick one.\n'

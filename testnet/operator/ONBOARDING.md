@@ -318,7 +318,7 @@ one line that should not be posted where strangers can find it, because there is
 line. That is the shortest description of what KDD-085 changed.
 
 ```
-Tag:            v0.3.2-testnet          (use it in BOTH places: git clone -b <tag>, and PTX_REF=<tag>)
+Tag:            v0.3.3-testnet          (use it in BOTH places: git clone -b <tag>, and PTX_REF=<tag>)
 Repository:     https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 
 Gamemasters:    <N>, one per host, each host with its own routable address
@@ -334,7 +334,7 @@ Ports:          29994 P2P -- open to the internet, ON EVERY MACHINE INCLUDING TH
                 29995 RPC -- LOOPBACK ONLY, both roles. Do not open it. Do not
                 forward it.
 Collateral:     100 HMS per gamemaster, EXACTLY. Not 1000.
-Funding:        I will send you <(N x 100) + 100> HMS once you send me an address (see the
+Funding:        I will send you <(N x 100) + 500> HMS once you send me an address (see the
                 guide: install, start, RESTART ONCE, then send the address -- in that
                 order). That is your N collaterals plus 100 of margin.
 
@@ -366,6 +366,6 @@ the system working, not a fault.
 6. Run `testnet/operator/install-test.sh` — a non-zero exit blocks the tag (`PTX_TESTNET_RELEASE.md` step 0).
 7. Cut the tag; verify the artefacts against `SHA256SUMS`.
 8. Run `GENESIS_BOOTSTRAP.md` end to end.
-9. Send the message above to each operator, with their funding — `(N x 100) + 100` HMS for the
+9. Send the message above to each operator, with their funding — `(N x 100) + 500` HMS for the
    N you agreed with them. ★ Fill in `<N>` per operator before sending; the message template
    deliberately carries a placeholder, not a number.
