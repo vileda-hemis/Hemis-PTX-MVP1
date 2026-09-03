@@ -19,9 +19,16 @@ function good(){reset();
   els.name.value="gm01";els.coladdr.value="yCOLL111";els.ctxid.value="a".repeat(64);
   els.cvout.value="1";els.owner.value="yOWN222";els.payout.value="yPAY333";
   els.blspub.value="bls-pk-ptx1qqq";els.ipport.value="[2a07::1]:29994";els.samepay.checked=true;}
-function strip(h){return h.replace(/<[^>]*>/g,"").replace(/&quot;/g,'"').replace(/&amp;/g,"&")}
-function argv(){var c=strip(els.cmd5.innerHTML).replace(/\s*copy\s*$/,"")
-  .replace(/\\\n\s*/g," ").replace(/^\s*wallet host\s*/i,"").trim();
+function unesc(t){return t.replace(/&quot;/g,'"').replace(/&lt;/g,"<")
+  .replace(/&gt;/g,">").replace(/&amp;/g,"&")}
+// ★ Read the FIRST <pre> exactly, rather than stripping all tags from the block.
+// Tag-stripping deleted the literal <rpcuser> placeholder in the curl fallback --
+// it looks like markup -- and swept the second command into the first's argv.
+function pre(el,i){var m=el.innerHTML.match(/<pre>([\s\S]*?)<\/pre>/g)||[];
+  if(!m[i||0])return "";
+  return unesc(m[i||0].replace(/^<pre>/,"").replace(/<\/pre>$/,""))}
+function strip(h){return unesc(h.replace(/<[^>]*>/g,""))}
+function argv(){var c=pre(els.cmd5,0).replace(/\\\n\s*/g," ").trim();
   return c.match(/"[^"]*"|\S+/g)||[]}
 function t(name,fn){try{fn();pass++;console.log("  ok   "+name)}
   catch(e){fail++;console.log("  FAIL "+name+" -- "+e.message)}}
@@ -108,6 +115,26 @@ t("good compound emits the config line",function(){
 t("page never emits a network call",function(){
   if(/fetch\(|XMLHttpRequest|WebSocket|EventSource|navigator\.sendBeacon/.test(js))
     throw new Error("page contains a network primitive");
+});
+
+t("BUG-059: the curl fallback sends collateralIndex as a real integer",function(){
+  good();render();
+  var h=els.cmd5.innerHTML;
+  if(h.indexOf("BUG-059")<0)throw new Error("no warning that the CLI command fails today");
+  var curl=pre(els.cmd5,1);
+  var m=/--data-binary '([^']+)'/.exec(curl);
+  if(!m)throw new Error("no curl fallback emitted");
+  var j=JSON.parse(m[1]);
+  eq(j.method,"protx_register");
+  eq(j.params.length,11,"curl params");
+  if(typeof j.params[1]!=="number")
+    throw new Error("collateralIndex must be a JSON number, got "+typeof j.params[1]+
+                    " -- that is the bug the fallback exists to avoid");
+  eq(j.params[1],1,"collateralIndex value");
+  if(typeof j.params[0]!=="string")throw new Error("collateralHash must stay a string");
+  // the fallback must never carry credentials
+  if(/--user (?!<rpcuser>)/.test(curl) || /rpcpassword=\S/.test(curl))
+    throw new Error("the page emitted something that looks like a real credential");
 });
 
 t("the guide and the page emit the same argument order",function(){

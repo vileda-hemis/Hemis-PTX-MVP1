@@ -723,7 +723,23 @@ function render(){
     '  "'+v.ctxid+'" \\\n'+'  '+v.cvout+' \\\n'+'  "'+v.ipport+'" \\\n'+'  "'+v.owner+'" \\\n'+
     '  "'+v.blspub+'" \\\n'+'  "" \\\n'+'  "'+v.payout+'" \\\n'+'  0 \\\n'+'  "" \\\n'+
     '  "'+ptxpay+'" \\\n'+'  "'+n+'"';
-  $("cmd5").innerHTML=cmdBlock("wal",c);
+  var J='{"jsonrpc":"1.0","id":"ptx","method":"protx_register","params":['+
+    '"'+v.ctxid+'",'+v.cvout+',"'+v.ipport+'","'+v.owner+'","'+v.blspub+'","","'+v.payout+'",0,"","'+
+    ptxpay+'","'+n+'"]}';
+  var curl="curl -s --user <rpcuser>:<rpcpassword> \\\n"+
+    "  --data-binary '"+J+"' \\\n"+
+    "  -H 'content-type: text/plain;' http://127.0.0.1:29995/";
+  $("cmd5").innerHTML=cmdBlock("wal",c)+
+    '<div class=warn><b>BUG-059: the command above fails on the binaries currently deployed.</b> '+
+    '<code>Hemis-cli</code> sends every argument as a string, and <code>protx_register</code> is '+
+    'missing from the table that converts them back, so the collateral index arrives as '+
+    '<code>"0"</code> and the node answers <b>“JSON value is not an integer as expected”</b>. '+
+    'The command itself is correct — the CLI is not. Fixed in source; until that ships, use the '+
+    'equivalent below, which sends real JSON types and bypasses the CLI entirely.</div>'+
+    cmdBlock("wal",curl)+
+    '<p class=note>Substitute the <code>rpcuser</code> and <code>rpcpassword</code> from your '+
+    'wallet host’s <code>Hemis.conf</code>. This page never sees them — it composes text and has '+
+    'no network access. Note <code>'+v.cvout+'</code> appears unquoted: that is the whole point.</p>';
   $("cmd5note").innerHTML =
     (ptxpay ? '' :
       '<div class=info><b>Registering without a PTX payment address.</b> Argument 10 is empty, so this '+

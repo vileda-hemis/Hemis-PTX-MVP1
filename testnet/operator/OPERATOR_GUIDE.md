@@ -512,6 +512,37 @@ Hemis-cli protx_register \
 | 10 | `ptxPaymentAddress` | yours — see below |
 | 11 | `ptxNodeId` | `yourname-1` … `yourname-N` |
 
+★★ **BUG-059 — that command does not work from `Hemis-cli` on the currently deployed binaries,
+and the failure looks like your mistake rather than ours.** You get:
+
+```
+error code: -1
+error message:
+JSON value is not an integer as expected
+```
+
+★ **Nothing is wrong with your arguments.** `Hemis-cli` sends every argument as a JSON *string*, and
+`src/rpc/client.cpp` holds a table naming which positions to convert back to real types.
+**`protx_register` was missing from that table** — so `collateralIndex` arrived as `"0"` and
+`rpcevo.cpp:547`'s `get_int()` refused it. Its twin `protx_register_prepare`, which shares the same
+handler and the same eleven arguments, *was* listed and worked fine — that difference is how it was
+isolated. It went unnoticed because the 153-gamemaster fleet was registered over Python RPC, which
+sends native integers; **the CLI path had never been exercised for this method.**
+
+★ **Until the fix ships, use raw JSON-RPC**, which bypasses the CLI's conversion entirely:
+
+```bash
+curl -s --user <rpcuser>:<rpcpassword> \
+  --data-binary '{"jsonrpc":"1.0","id":"ptx","method":"protx_register","params":[
+    "<collateral txid>", <vout>, "203.0.113.10:29994", "<owner>", "<BLS PUBLIC>",
+    "", "<payout>", 0, "", "<ptx payment>", "yourname-1"]}' \
+  -H 'content-type: text/plain;' http://127.0.0.1:29995/
+```
+
+★★ **`<vout>` and the `0` must appear WITHOUT quotes.** That is the entire difference between the
+two forms — quote the vout and you reproduce the same error through curl. The credentials are the
+`rpcuser`/`rpcpassword` in your wallet host's own `Hemis.conf`.
+
 ★★ **Eleven arguments, and 8 and 9 look optional but are not.** They are positional, so you cannot
 reach `ptxPaymentAddress` (10) or `ptxNodeId` (11) without passing them. `0` and `""` is the
 accepted pair — a non-empty payout address with a zero reward is refused with *"operatorPayoutAddress

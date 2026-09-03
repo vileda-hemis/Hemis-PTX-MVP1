@@ -127,7 +127,22 @@ static const CRPCConvertParam vRPCConvertParams[] = {
     { "preparebudget", 3, "start" },
     { "preparebudget", 5, "montly_payment" },
     { "prioritisetransaction", 1, "fee_delta" },
+    // ★ Found by test/lint/check-rpc-convert.py while fixing BUG-059, not by a
+    // report: gmfinalbudget vote/vote-many reads a bool at index 2
+    // (budget.cpp:657). Same class, unrelated subsystem.
+    { "gmfinalbudget", 2, "legacy" },
+    // ★★ BUG-059: protx_register was MISSING here while its twin was present.
+    // Hemis-cli sends every argument as a JSON string; this table names the
+    // positions to convert. Without the entry, collateralIndex arrives as "0"
+    // and rpcevo.cpp:547 get_int() throws "JSON value is not an integer as
+    // expected" -- so the CLI could not register a gamemaster at all, while
+    // protx_register_prepare took the identical arguments happily.
+    { "protx_register", 1, "collateralIndex" },
     { "protx_register_prepare", 1, "collateralIndex" },
+    // ★ Same gap, latent: rpcevo.cpp:1113 get_int()s the revoke reason. Not
+    // reproducible without a real gamemaster (the hash lookup fails first),
+    // so this is fixed from the source reading, not from a failing call.
+    { "protx_revoke", 2, "reason" },
     { "quorumdkgsimerror", 1, "rate" },
     { "quorumdkgstatus", 0, "detail_level" },
     { "listquorums", 0, "count" },
