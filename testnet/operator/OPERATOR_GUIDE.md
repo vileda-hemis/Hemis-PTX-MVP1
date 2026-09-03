@@ -458,8 +458,8 @@ hand — see the procedure below, which creates each one as part of registering.
 
 ★★ **The amount is 100 HMS per GM, and it is EXACT.** Source, not folklore:
 `CPTXTestNetParams` sets `consensus.nGMCollateralAmt = 100 * COIN`
-(`src/chainparams.cpp:757`; the class starts at `:733` and its `strNetworkID` is `"ptxtestnet"` at
-`:738`). So **N gamemasters need N × 100 HMS**, and the network total is the sum over all
+(`src/chainparams.cpp:768`; the class starts at `:744` and its `strNetworkID` is `"ptxtestnet"` at
+`:749`). So **N gamemasters need N × 100 HMS**, and the network total is the sum over all
 operators — the coordinator tracks that, you do not.
 
 ★★ **1000 HMS IS THE WRONG NUMBER AND IT WILL BE OFFERED TO YOU.** 1000 is what mainnet

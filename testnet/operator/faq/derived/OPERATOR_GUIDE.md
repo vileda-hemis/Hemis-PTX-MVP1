@@ -1,6 +1,6 @@
 <!-- CORPUS-SOURCE: testnet/operator/OPERATOR_GUIDE.md -->
 <!-- CORPUS-TAG: v0.3.4-testnet -->
-<!-- CORPUS-SHA256: b34797de97dd9ffb0da280f5761d30bb0f97041997050c1d1a3c5dcd00b16de9 -->
+<!-- CORPUS-SHA256: 0311a8474b86cc59c48af2b2c5a50f979888e74a644be18165ad77e8a6187522 -->
 
 > **This document is a verbatim copy of `testnet/operator/OPERATOR_GUIDE.md` at `v0.3.4-testnet`.** It is not
 > edited for the FAQ bot. If it disagrees with anything else in this corpus, it wins.
@@ -465,8 +465,8 @@ hand — see the procedure below, which creates each one as part of registering.
 
 ★★ **The amount is 100 HMS per GM, and it is EXACT.** Source, not folklore:
 `CPTXTestNetParams` sets `consensus.nGMCollateralAmt = 100 * COIN`
-(`src/chainparams.cpp:757`; the class starts at `:733` and its `strNetworkID` is `"ptxtestnet"` at
-`:738`). So **N gamemasters need N × 100 HMS**, and the network total is the sum over all
+(`src/chainparams.cpp:768`; the class starts at `:744` and its `strNetworkID` is `"ptxtestnet"` at
+`:749`). So **N gamemasters need N × 100 HMS**, and the network total is the sum over all
 operators — the coordinator tracks that, you do not.
 
 ★★ **1000 HMS IS THE WRONG NUMBER AND IT WILL BE OFFERED TO YOU.** 1000 is what mainnet
