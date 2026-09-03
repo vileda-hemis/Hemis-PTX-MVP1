@@ -540,6 +540,46 @@ def test_head_is_not_501():
         srv.shutdown(); srv.server_close()
 
 
+def test_verifier_links_to_walkthrough():
+    """/v2 offers the walkthrough, and the href it offers actually serves it.
+
+    ★ Two assertions, because either alone is the ODC-098 shape: a link whose
+    target 404s is worse than no link, and a working route nobody can reach is
+    invisible. The href is read out of the served page and then FETCHED.
+    """
+    import threading, http.client, socketserver, re
+    import app
+    srv = socketserver.TCPServer(("127.0.0.1", 0), app.Handler)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        c.request("GET", "/"); html = c.getresponse().read().decode(); c.close()
+        m = re.search(r"<a class=nav href='([^']+)'>([^<]+)</a>", html)
+        assert m, "the verifier page offers no link to the walkthrough"
+        href, text = m.group(1), m.group(2)
+        assert "register" in text.lower(), "link text does not say what it leads to: %r" % text
+
+        # the advertised href must serve the WALKTHROUGH, not the verifier
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        c.request("GET", href); r = c.getresponse(); body = r.read().decode(); c.close()
+        assert r.status == 200, "%s returned %d" % (href, r.status)
+        assert "Send the collateral first" in body, (
+            "%s returned 200 but served the verifier, not the walkthrough -- which is "
+            "exactly how a 200 lied about the deploy" % href)
+
+        # and both spellings must agree, since nginx strips the /v2 prefix
+        seen = {}
+        for path in ("/register", "/v2/register"):
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            c.request("GET", path); rr = c.getresponse(); seen[path] = rr.read(); c.close()
+            assert rr.status == 200, "%s returned %d" % (path, rr.status)
+        assert seen["/register"] == seen["/v2/register"], (
+            "the two route spellings serve different pages")
+    finally:
+        srv.shutdown(); srv.server_close()
+
+
 # ★★ THE ENTRY POINT LIVES AT THE BOTTOM, AND THAT IS LOAD-BEARING.
 # It used to sit ABOVE these test definitions, so when main() ran, the module
 # body had only executed as far as that line and the functions below did not

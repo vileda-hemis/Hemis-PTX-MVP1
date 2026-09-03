@@ -51,7 +51,7 @@ CSS = """
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
 font:15px/1.55 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 .wrap{max-width:980px;margin:0 auto;padding:28px 20px 80px}
-.topbar{display:flex;align-items:center;gap:9px;padding:11px 20px;background:var(--card);border-bottom:1px solid var(--line);font-size:14px}.topbar .brand{color:var(--fg);text-decoration:none;font-weight:600;display:inline-flex;align-items:center;gap:8px}.topbar .mark{border-radius:5px;vertical-align:middle}.topbar .crumb{color:var(--mut)}.topbar .here{color:var(--mut)}.topbar .back{margin-left:auto;color:var(--acc);text-decoration:none}.topbar .back:hover{text-decoration:underline}h1{font-size:21px;margin:0 0 4px}.sub{color:var(--mut);font-size:13.5px;margin:0 0 22px}
+.topbar{display:flex;align-items:center;gap:9px;padding:11px 20px;background:var(--card);border-bottom:1px solid var(--line);font-size:14px}.topbar .brand{color:var(--fg);text-decoration:none;font-weight:600;display:inline-flex;align-items:center;gap:8px}.topbar .mark{border-radius:5px;vertical-align:middle}.topbar .crumb{color:var(--mut)}.topbar .here{color:var(--mut)}.topbar .nav{margin-left:auto;color:var(--acc);text-decoration:none}.topbar .nav:hover{text-decoration:underline}.topbar .back{margin-left:14px;color:var(--acc);text-decoration:none}.topbar .back:hover{text-decoration:underline}h1{font-size:21px;margin:0 0 4px}.sub{color:var(--mut);font-size:13.5px;margin:0 0 22px}
 textarea{width:100%;min-height:96px;padding:11px;border:1px solid var(--line);border-radius:8px;
 background:var(--card);color:var(--fg);font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;resize:vertical}
 button{margin-top:10px;padding:8px 18px;border:0;border-radius:7px;background:var(--acc);
@@ -184,6 +184,7 @@ HEADER = ("<div class=topbar><a class=brand href='/'>"
           "<img class=mark src='/img/page-title-img.png' alt='' width=26 height=26>"
           "<span>Hemis PTX testnet</span></a>"
           "<span class=crumb>&rsaquo;</span><span class=here>Roll verifier</span>"
+          "<a class=nav href='/v2/register'>Register a gamemaster</a>"
           "<a class=back href='/'>&larr; Block explorer</a></div>")
 
 
@@ -812,7 +813,11 @@ class Handler(BaseHTTPRequestHandler):
         r = api_route("GET", path, None)
         if r is not None:
             return self._send_json(r[0], r[1])
-        if path.rstrip("/") == "/register":
+        # ★ Both spellings: nginx strips the /v2 prefix in production, so the app
+        # sees "/register" -- but a link written "/v2/register" must also work when
+        # the app is hit directly (dev, or the port behind nginx). One route, two
+        # names, so the SAME href is correct in both places.
+        if path.rstrip("/") in ("/register", "/v2/register"):
             # ★ its own CSP: inline script is needed, connect-src 'none' is the
             # guarantee that the page cannot call anything even if edited later.
             b = register_page().encode("utf-8")
