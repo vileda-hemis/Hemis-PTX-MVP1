@@ -766,135 +766,78 @@ done
 ok "sapling parameters verified in $PARAMS_DST"
 
 # ---------------------------------------------------------------------------
-# 4. Kernel port reservation.
+# 4. Kernel port reservation -- REMOVED, and this section now CLEANS UP after it.
 #
-# PTX uses ports in 32000-33000 for its fan-out. Without reserving them the
-# kernel can hand one out as an EPHEMERAL source port for an unrelated outgoing
-# connection, and the PTX listener then fails to bind -- intermittently, under
-# load, which is the worst way to find out.
+# ★★ THIS USED TO RESERVE 32000-33000, AND THE ONLY REASON WAS THE FAN-OUT.
+# The comment here said so in as many words: "PTX uses ports in 32000-33000 for
+# its fan-out." KDD-085 deleted the fan-out. Nothing in the PTX source references
+# that range any more -- measured, zero hits -- so the reservation took 1000
+# ports out of the ephemeral range on every operator's machine to protect a
+# listener that no longer exists, and printed an alarming COULD NOT RESERVE
+# warning on unprivileged containers about a loss that costs them nothing.
 #
-# ★ We APPEND to a dedicated file and never touch existing entries. Writing
-# net.ipv4.ip_local_reserved_ports wholesale would silently discard any
-# reservation another service already made.
+# ★ It is REMOVED rather than left in place because it is a kernel setting on
+# somebody else's server, and "harmless" is not the same as "justified".
+#
+# ★★ AND IT REMOVES ONLY OUR RANGE. The block that wrote this deliberately
+# MERGED with any reservation another service had already made, so the file may
+# hold ports that are not ours; deleting it wholesale would silently take those
+# with it. Same argument as the merge, in reverse. See ODC-106.
 # ---------------------------------------------------------------------------
-say "4. Port reservation"
+say "4. Port reservation (cleanup)"
 SYSCTL_FILE=/etc/sysctl.d/99-ptx-fleet-ports.conf
-# ★ /etc/sysctl.d is NOT guaranteed to exist. Proven 2026-08-19: on
-# debian:bookworm-slim -- and on the minimal LXC/container templates an operator
-# is most likely to spin up for a single GM -- the directory is absent, and this
-# section died with a bare "tee: ...: No such file or directory" AFTER a
-# ten-minute build had already succeeded. Losing a good build to a missing
-# directory is the worst kind of late failure.
-$SUDO mkdir -p "$(dirname "$SYSCTL_FILE")" \
-    || die "cannot create $(dirname "$SYSCTL_FILE") -- run as root, or as a user with sudo"
-WANT="32000-33000"
-CURRENT="$(cat /proc/sys/net/ipv4/ip_local_reserved_ports 2>/dev/null || echo "")"
-
-# ★ `sysctl` is NOT guaranteed to be installed. Proven 2026-08-19 on
-# debian:bookworm-slim: /sbin and /usr/sbin are on PATH but the procps package is
-# absent, so `sysctl -q -p` died as a bare "command not found", exit 127, with
-# set -e giving no explanation -- three lines after a ten-minute build succeeded.
-# Section 1 checks for git/curl/awk/sed/sha256sum/tar and never checked for this
-# one, which is the pattern: the tool you forgot to declare is the one that is
-# missing. Same shape as the `sudo: command not found` finding.
-#
-# Rather than add a dependency, apply the setting the way this script ALREADY
-# READS it -- through /proc -- and use sysctl only when it is there, because
-# `sysctl -p FILE` additionally validates that the file we just wrote parses.
-apply_reservation() {
-    local value="$1"
-    echo "net.ipv4.ip_local_reserved_ports=$value" | $SUDO tee "$SYSCTL_FILE" >/dev/null \
-        || die "could not write $SYSCTL_FILE"
-    # ★★ DECIDE read-only-vs-malformed BEFORE asking sysctl, because sysctl cannot
-    # tell you which one it hit. Without this, an unprivileged container that HAS
-    # procps installed died right here with "the file is malformed" -- a wrong
-    # diagnosis, and fatal, three lines above the handler written for exactly this
-    # case. The no-sysctl branch below has always returned 1 and let the caller
-    # explain properly; the sysctl branch called die() instead, so which message an
-    # operator got depended on whether procps happened to be installed. Caught
-    # 2026-08-21 by running the bootstrap in a container that had procps, having
-    # passed the day before in one that did not.
-    #
-    # test -w is the right probe and was checked, not assumed: in an unprivileged
-    # container running AS ROOT, /proc/sys is mounted ro and `test -w` correctly
-    # reports not-writable (access(2) accounts for a read-only mount; the file's
-    # permission bits alone would say root may write it).
-    $SUDO test -w /proc/sys/net/ipv4/ip_local_reserved_ports 2>/dev/null || return 1
-    if command -v sysctl >/dev/null 2>&1; then
-        # Now a sysctl failure really does mean what the message says: we know the
-        # kernel interface is writable, so the file we just wrote must be at fault.
-        $SUDO sysctl -q -p "$SYSCTL_FILE" \
-            || die "$SYSCTL_FILE was written but sysctl refused to load it -- the file is malformed"
-    else
-        # No procps. The kernel interface is the same one sysctl writes.
-        # stderr suppressed: the caller prints a far better diagnosis than
-        # "Read-only file system", and a raw tee error above it just muddies it.
-        printf '%s' "$value" | $SUDO tee /proc/sys/net/ipv4/ip_local_reserved_ports >/dev/null 2>&1 \
-            || return 1
-    fi
-    # ★ ASSERT, do not assume. Neither branch's exit code proves the kernel took
-    # the value -- and the whole point of this section is that a reservation which
-    # is not actually in force fails LATER, intermittently, under load.
-    local active
-    active="$(cat /proc/sys/net/ipv4/ip_local_reserved_ports 2>/dev/null || echo "")"
-    printf '%s' "$active" | grep -q "$WANT" || return 1
-    return 0
-}
-
-# ★ An UNPRIVILEGED container cannot do this at all, and that must not be reported
-# as "need root" -- proven 2026-08-19: in an unprivileged container running AS
-# ROOT, /proc/sys is a read-only mount, so the old message sent the operator to
-# fix a permission they already had. A wrong diagnosis is worse than none.
-#
-# It must also not be FATAL. A single GM in an unprivileged LXC is a perfectly
-# reasonable deployment and everything else in this installer works there; the
-# reservation is set on the HOST, because ip_local_reserved_ports is per network
-# namespace and an unprivileged guest does not own its own writable copy.
-port_reservation_unavailable() {
-    warn "COULD NOT RESERVE PORTS $WANT -- and this is not a permission you can grant yourself."
-    echo "         /proc/sys is read-only here, which means this is an UNPRIVILEGED container."
-    echo "         (You are $( [ "$(id -u)" -eq 0 ] && echo "already root" || echo "not root" ); root is not the issue.)"
-    echo
-    echo "         WHAT IT COSTS: the kernel may hand out a port in $WANT as an"
-    echo "         ephemeral source port for some unrelated outgoing connection, and the"
-    echo "         PTX listener then fails to bind -- intermittently, under load, which is"
-    echo "         the worst way to find out. The node works; this is a latent fault."
-    echo
-    echo "         FIX IT ON THE HOST, not in here -- run on the Proxmox/LXC host:"
-    echo "           echo 'net.ipv4.ip_local_reserved_ports=$WANT' > $SYSCTL_FILE"
-    echo "           sysctl -p $SYSCTL_FILE"
-    echo "         or run this guest privileged. Then re-run this installer to confirm."
-}
-
-if printf '%s' "$CURRENT" | grep -q "$WANT"; then
-    ok "reservation $WANT already active"
-elif [ -n "$CURRENT" ]; then
-    # Something else reserved ports. Preserve theirs, add ours.
-    MERGED="$CURRENT,$WANT"
-    warn "existing reservation '$CURRENT' found -- MERGING, not replacing"
-    if apply_reservation "$MERGED"; then ok "reserved $MERGED"; else port_reservation_unavailable; fi
+STALE_RANGE="32000-33000"
+if [ ! -f "$SYSCTL_FILE" ]; then
+    ok "no stale port reservation to remove"
 else
-    if apply_reservation "$WANT"; then ok "reserved $WANT"; else port_reservation_unavailable; fi
-fi
-echo "  now active: $(cat /proc/sys/net/ipv4/ip_local_reserved_ports 2>/dev/null || echo '(unreadable)')"
-
-# ★ Being active NOW is not the same as surviving a reboot. sysctl.d files are
-# applied in filename order and the LAST writer of a key wins, so a foreign file
-# that sorts after ours silently drops our range at the next boot -- the machine
-# comes back looking fine and the PTX listener starts failing to bind under load.
-# Proven both ways: a foreign 50-*.conf is harmless, a foreign 99-zz-*.conf wipes us.
-OURS="$(basename "$SYSCTL_FILE")"
-for f in /etc/sysctl.d/*.conf /etc/sysctl.conf; do
-    [ -f "$f" ] || continue
-    [ "$(basename "$f")" = "$OURS" ] && continue
-    grep -q 'ip_local_reserved_ports' "$f" 2>/dev/null || continue
-    if [ "$f" = /etc/sysctl.conf ] || [ "$(basename "$f")" \> "$OURS" ]; then
-        warn "$f also sets ip_local_reserved_ports and is applied AFTER $SYSCTL_FILE."
-        warn "  At the next reboot IT WINS and the $WANT reservation is lost. Merge our range into that file, or rename ours to sort last."
+    OLDVAL="$(sed -n 's/^net\.ipv4\.ip_local_reserved_ports=//p' "$SYSCTL_FILE" | head -1)"
+    # ★★ `|| true` IS LOAD-BEARING, FOR THE SECOND TIME IN THIS FILE. Under
+    # `set -euo pipefail`, grep exits 1 when it filters EVERYTHING out -- which
+    # is the commonest case here, because the usual file contains only our range.
+    # pipefail promotes that to the pipeline and set -e kills the script
+    # silently, mid-section, having printed the header. Identical to the hazard
+    # in ptx_routable_ipv6 above; I wrote the comment there and walked into it
+    # again here. The lesson is that a grep whose EXPECTED result is "no lines"
+    # needs this every time, not when it seems likely.
+    NEWVAL="$(printf '%s' "$OLDVAL" | tr ',' '\n' | grep -vxF "$STALE_RANGE" | paste -sd, - || true)"
+    if [ "$OLDVAL" = "$NEWVAL" ]; then
+        ok "$SYSCTL_FILE holds no PTX reservation -- left alone"
+    elif [ -z "$NEWVAL" ]; then
+        if $SUDO rm -f "$SYSCTL_FILE" 2>/dev/null; then
+            ok "removed the stale $STALE_RANGE reservation (the fan-out it protected is gone)"
+        else
+            warn "could not remove $SYSCTL_FILE -- harmless, but it reserves $STALE_RANGE for nothing."
+            echo "         Remove it by hand on the HOST when convenient:"
+            echo "           rm $SYSCTL_FILE && sysctl --system"
+        fi
     else
-        echo "  note: $f also sets ip_local_reserved_ports, but is applied before ours (harmless)"
+        if printf 'net.ipv4.ip_local_reserved_ports=%s\n' "$NEWVAL" | $SUDO tee "$SYSCTL_FILE" >/dev/null 2>&1; then
+            ok "removed $STALE_RANGE and kept another service's reservation ($NEWVAL)"
+        else
+            warn "could not rewrite $SYSCTL_FILE -- it still reserves $STALE_RANGE for nothing."
+        fi
     fi
-done
+    # ★★ REMOVING THE FILE DOES NOT UN-RESERVE THE PORTS. Measured on a live
+    # host: after deleting the file and running `sysctl --system`, the running
+    # value was still 32000-33000 -- sysctl APPLIES declared values, it does not
+    # unset withdrawn ones. So the range stays reserved until reboot unless it is
+    # cleared explicitly.
+    # ★ Only clear it when OUR range was the whole value. If another service's
+    # reservation remains, rewriting the file and reloading is what updates the
+    # running value, and clearing wholesale would take theirs with it.
+    if [ -z "${NEWVAL:-}" ] && [ ! -f "$SYSCTL_FILE" ]; then
+        # ★ `echo` -- a NEWLINE -- not `printf ''`. Writing zero bytes to a procfs
+        # file is a no-op: it reported success and left the value untouched.
+        # Measured on a live host, which is the only way this distinction shows up.
+        if echo | $SUDO tee /proc/sys/net/ipv4/ip_local_reserved_ports >/dev/null 2>&1; then
+            ok "and cleared the running reservation (it would otherwise persist until reboot)"
+        else
+            warn "the file is gone but the running kernel still reserves $STALE_RANGE until reboot."
+        fi
+    else
+        command -v sysctl >/dev/null 2>&1 && $SUDO sysctl --system >/dev/null 2>&1 || true
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # 5. Configuration.
