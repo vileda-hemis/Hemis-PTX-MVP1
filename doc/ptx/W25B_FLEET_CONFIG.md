@@ -1,4 +1,22 @@
-# W2.5b Fleet Configuration — the multi-quorum drill (98 GM / 8 quorum / 4 caller)
+# W2.5b Fleet Configuration — REFERENCE ONLY (15 GM)
+
+> ★★ **W2.5 IS REFERENCE ONLY AS OF 2026-09-03, AND THE FLEET IS 15 NODES.**
+> This document is kept as the portable recipe, not as a plan of record.
+>
+> ★ **15 GMs means `floor(15 / 11) = 1` active quorum**, so the **multi-quorum
+> behaviour this drill was built to exercise is not reachable at this size** —
+> L>1 routing, concurrent-quorum load, and the reform-headroom arithmetic below
+> all need N ≥ 22 and really N ≥ 33 (ODC-094). That is a consequence of the
+> decision, not an oversight: at 15 the fleet is a **single-quorum functional
+> environment**, which is what it is now for.
+>
+> ★ **The L=1 caveat comes with it:** ODC-094 records that at L=1 a retirement
+> window is **total outage**, because no second quorum exists to carry it. On a
+> reference fleet that is acceptable and expected; it would not be on anything
+> load-bearing.
+>
+> The original 98 GM / 8 quorum / 4 caller topology is preserved below the line
+> for when it is next needed.
 
 *Written 2026-07-28 around the Step-0 chainparams commit (`db52acf`). This is the
 operational doc for standing up the W2.5b scale-validation fleet. Register
@@ -66,7 +84,18 @@ Autotools note: the tree's generated build system was rebased in-container on
 2026-07-28 (libtool 2.4.7). If a build spontaneously re-runs configure/aclocal,
 see the memory recipe: full ordered touch-defusal, never a blind re-autogen.
 
-## 4. Topology — 98 GM / 8 quorum / 4 caller
+## 4. Topology — 15 GM / 1 quorum / 1 caller
+
+- **Arithmetic:** 1 quorum × 11 = 11 seated + 4 spare pool. ★ The pool is
+  deliberately thin: at this size the fleet is for function, not for reform
+  headroom, and a reform draws fresh from those 4.
+- **Network / ports:** as below, sized for the larger fleet and left alone —
+  a 15-node fleet fits inside allocations made for 103 containers.
+- **Fit:** 15 GMs at the 400 MiB cap is **6 GB**, comfortable against ~21 GB
+  available RAM and 18 GB free disk. This is the size that fits without
+  argument.
+
+### The original 98 GM topology, kept for reference
 
 - **Arithmetic:** 8 quorums × 11 = 88 seated + 10 spare pool (top-up-free
   reform headroom; KDD-080 — reform draws fresh from the pool, so the pool
@@ -75,15 +104,18 @@ see the memory recipe: full ordered touch-defusal, never a blind re-autogen.
 - **Network:** `172.31.0.0/24` (the GMAUTH carve-out subnet — 103 containers
   fit; do not move off this subnet without touching `IsPTXBeaFleetAddr`).
 - **Ports:** host RPC from `--port-base 31000` upward (31000..31102).
-- **Host:** node1 measured at 78 containers / 31 GB of 94 GB during KDD-079
-  sizing — a ~103-container fleet fits; watch root-disk (94 GB) not RAM, and
-  keep `-nodebuglogfile` (the disk-hygiene rule).
+- **Host:** node1 measured at 78 containers / 31 GB of 94 GB **root disk** during
+  KDD-079 sizing. ★ **Re-measured 2026-09-03: root disk is 109 GB with 18 GB
+  free, and RAM is 39 GB with ~21 GB available.** The disk figure was sound; the
+  sizing was **silent about RAM**, which is the binding constraint — at the
+  400 MiB container cap, 88 GMs need 34.4 GB and do not fit. Keep
+  `-nodebuglogfile` (the disk-hygiene rule).
 
 ## 5. Launch recipe
 
 ```
 cd /mnt/pve/Node14TB/hemis-ptx/src/hemisd/testnet/w2fleet
-python3 -u run_bootstrap.py --n 98 --callers 4 \
+python3 -u run_bootstrap.py --n 15 --callers 1 \
   --reg-out /mnt/pve/Node14TB/hemis-ptx/w2-fleet/registration-N98.json
 ```
 
