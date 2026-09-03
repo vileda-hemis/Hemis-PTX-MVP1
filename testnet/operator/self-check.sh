@@ -332,7 +332,11 @@ else
     It connects FROM THIS MACHINE to your own registered address. On many NAT
     setups that succeeds via hairpin routing even when NOBODY OUTSIDE can reach
     you, and on a few it fails even when outsiders can. So:
-      - a FAIL here is real: fix it.
+      - a FAIL here is a reason to CHECK FROM OUTSIDE before changing anything.
+        Some setups fail this self-probe while outsiders reach you perfectly
+        well. Ask another operator to connect, or use an external port checker,
+        BEFORE you edit config or firewall rules -- a coordinator host has
+        failed this test while two other hosts reached its P2P port fine.
       - a PASS here is encouraging, NOT proof.
     The only definitive tests are (a) another operator connecting to you, and
     (b) your PoSe score staying at zero -- checked next, and it is the network's
