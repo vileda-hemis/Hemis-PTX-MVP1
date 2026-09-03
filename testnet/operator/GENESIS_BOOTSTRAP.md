@@ -191,7 +191,29 @@ Hemis-cli getstakingstatus | grep -E 'haveconnections|gmsync'
 | `haveconnections` | `true` | zero peers — the `addnode` lines are missing, above the header, or the port is blocked |
 | `gmsync` | `true` | fewer than two peers have answered GETSPORKS; with exactly one peer this clears only after ~1 hour |
 
-★ These three nodes are also the `PTX_SEEDS` value every operator gets. Record all three addresses
+### ★★ The seed set, recorded — because it never was
+
+This step said "record all three addresses" and none were ever written down. They lived only in the
+deployed configs and in the explorer's Add Nodes tab, which made **the coordinator the single copy**.
+Recorded as of **2026-09-03**:
+
+| address | host | role |
+|---|---|---|
+| `[2a07:244:46:6400::9100]:29994` | ptx001 | coordinator, mining host, holds the float |
+| `[2a07:244:46:6400::9200]:29994` | ptx002 | coordinator |
+| `[2a07:244:46:6400::9300]:29994` | ptx003 | coordinator |
+| `[2a07:244:46:6400::9010]:29994` | ptx01 | coordinator spare |
+| `[2a07:f1c0::4001:0:0:1]:29994` | ptxpjh01 | ★ **operator gamemaster, independent provider and prefix** |
+
+★★ **`ptxpjh01` is deliberately in the set and is the most valuable entry in it.** Every other seed
+sits on one VLAN behind one provider; that address does not. A bootstrap set sharing a single
+failure domain is one seed wearing four hats.
+
+★ **THE LIVE SOURCE IS `exp01`'s OWN `addnode` LIST**, which is what the Add Nodes tab publishes.
+The table above is a dated snapshot for when the explorer is unavailable — **if the two disagree,
+exp01 wins and this table is stale.**
+
+★ These nodes are also the `PTX_SEEDS` value every operator gets. Record all addresses
 now — they go in the onboarding message (`ONBOARDING.md`).
 
 ---

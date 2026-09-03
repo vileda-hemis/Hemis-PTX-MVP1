@@ -30,6 +30,16 @@ seeds gets a working node and a named gap rather than a silent one.
 **The last two are compiled in and gate the tag.** They cannot be changed after operators are
 running without a new genesis or a new binary.
 
+★★ **THERE IS NO AUTOMATION FOR THE SEED LIST, AND NO PATH TO ONE TODAY.** `PTX_SEEDS` is consumed
+**once, at install time**. Nothing re-reads it, nothing distributes updates, and a running node
+never learns you changed it. Growing the published set is a manual action in **two** places — the
+recorded table in `GENESIS_BOOTSTRAP.md` and `exp01`'s own `addnode` list. ★ The explorer's Add
+Nodes tab is a **view of exp01's connections**, not a registry: it lists peers exp01 has an
+**outbound** connection to, and a node that only ever dials *in* arrives on an ephemeral source port
+and is filtered out of it. So an operator becomes visible when **exp01 dials them** — because you
+added them, or because address relay promoted them to an outbound slot. **The second does happen**
+(`::9500` reached the list that way, unseeded) but is neither prompt nor guaranteed.
+
 ★★ **AND ONE THING YOU MUST TELL OPERATORS BEFORE THEY PROVISION: every host needs a global IPv6
 address.** This is not a value you mint, it is a sentence you send — and it has to arrive *before*
 they buy a machine, because it cannot be fixed afterwards without registering again at a new
@@ -341,7 +351,9 @@ Funding:        I will send you <(N x 100) + 500> HMS once you send me an addres
 These are already baked into the installer; you should not need to type them, but if
 install.sh warns that any is missing, these are the values:
 
-  PTX_SEEDS      = <addr1> <addr2> <addr3>
+  PTX_SEEDS      = [2a07:244:46:6400::9100]:29994 [2a07:244:46:6400::9200]:29994 \
+                   [2a07:244:46:6400::9300]:29994 [2a07:244:46:6400::9010]:29994 \
+                   [2a07:f1c0::4001:0:0:1]:29994
   PTX_EXTERNALIP = <your own host's public address -- one per host, you set this>
 
 Read testnet/operator/OPERATOR_GUIDE.md and follow it literally.
