@@ -232,6 +232,18 @@ Hemis-cli getgamemasterstatus      # status: Ready
 
 ---
 
+## Upgrading later
+
+★ **`install.sh` never overwrites your `Hemis.conf`.** So an upgrade keeps every edit you made —
+and equally, **a setting introduced by the new tag never arrives.** You end up running new binaries
+on the previous tag's configuration, and nothing reports it.
+
+Stop the service, move `~/Hemis-PTX-MVP1` aside, clone the new tag, re-run `install.sh` with the
+same `PTX_ROLE`, restart. Then **diff your config against the `~/.Hemis/Hemis.conf.template` the
+installer writes** — that diff is everything the upgrade would have changed and did not.
+
+★ Full sequence and the post-upgrade checklist: `OPERATOR_GUIDE.md` **Part D**.
+
 ## Notes
 
 - **Never send anyone your BLS secret.** Only the public half leaves the gamemaster host — and your

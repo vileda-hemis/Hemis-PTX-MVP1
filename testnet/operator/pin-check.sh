@@ -51,6 +51,7 @@ testnet/operator/faq/weirdness.md	its instructions told me to clone
 testnet/operator/faq/weirdness.md	tag only. Fixed in
 testnet/operator/faq/weirdness.md	shipped with a one-page onboarding document
 testnet/operator/OPERATOR_GUIDE.md	and earlier** it fails from
+testnet/operator/OPERATOR_GUIDE.md	made gamemasters ship
 EOF
 )"
 

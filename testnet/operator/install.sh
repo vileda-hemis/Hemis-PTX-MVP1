@@ -1137,7 +1137,7 @@ if [ "$PTX_ROLE" = "wallet" ]; then
 # -- a wallet-role node registers, syncs and looks healthy while never being
 # reachable for signing."
     WALLET_LINE=""
-    ROLE_TRAILER="# ROLE: wallet. Wallet ON (it holds your collateral), listen=1, no externalip. Open P2P inbound."
+    ROLE_TRAILER="# ROLE: wallet"
     ROLE_BANNER="WALLET   (listen=1, no externalip -- holds collateral, registers nothing)"
     ROLE_NEXT='    2. This is the WALLET machine: do NOT generate a BLS key here, and do not
        follow a gamemaster section. Follow OPERATOR_GUIDE.md Part B -- create the
@@ -1153,7 +1153,7 @@ else
     ROLE_LINES="# gamemaster=1
 # gmoperatorprivatekey=<the BLS key you generate in the OPERATOR_GUIDE>"
     WALLET_LINE="disablewallet=1"
-    ROLE_TRAILER="# ROLE: gamemaster. Wallet OFF, listen=1, externalip set."
+    ROLE_TRAILER="# ROLE: gamemaster"
     ROLE_BANNER="GAMEMASTER   (listen=1, externalip set, NO WALLET -- reachable on P2P $P2P_PORT)"
     ROLE_NEXT='    2. Follow OPERATOR_GUIDE.md section "Node side" to generate your BLS key and
        send the PUBLIC half to the wallet operator.'
@@ -1363,6 +1363,17 @@ $ROLE_LINES
 # OPERATOR_GUIDE.md step 8; if it exists only on a banned node you cannot log
 # into, you cannot recover. See OPERATOR_GUIDE.md "If your GM is PoSe-banned".
 $WALLET_LINE
+# ★★ THE STAMP DECLARES THE ROLE AND NOTHING ELSE, DELIBERATELY.
+# It used to describe the configuration too -- "Wallet ON ..., externalip set" --
+# and that prose was a CACHED COPY of facts written a few lines above it. The
+# copy cannot survive the operator edits this guide asks for (uncommenting
+# gamemaster=1, adding the BLS key), so a host was found in the field whose stamp
+# read "externalip set" while externalip was commented out and the wallet was
+# off. Nothing consumed the prose -- self-check.sh section 0b reads only the role
+# NAME and then verifies listen/externalip against the config itself -- so the
+# prose was a claim with no reader except a human being misled by it.
+# ★ Duplicate facts drift; the config below is the single source of truth for
+# what this host is configured to do. See ODC-107.
 $ROLE_TRAILER
 EOF
 }

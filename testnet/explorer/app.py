@@ -571,6 +571,22 @@ It cannot tell whether an address exists, whether a BLS key is yours, whether th
 or whether a registration succeeded. A completed walkthrough is a correctly-<i>shaped</i> command,
 not a validated registration. Nothing you type here leaves your browser.</div>
 
+<div class=step id=s0>
+  <h2><span class=n>0</span> Before you start</h2>
+  <p class=note><b>You need two machines already installed</b> &mdash; a wallet host and this gamemaster
+  host &mdash; and <b>coins in the wallet</b>. This page composes the registration; it does not install
+  anything and cannot get you funded.</p>
+  <ul class=note style="margin:6px 0 0 18px">
+    <li><b>Not installed yet?</b> Follow
+      <a href="https://github.com/vileda-hemis/Hemis-PTX-MVP1/blob/v0.3.4-testnet/testnet/operator/OPERATOR_ONEPAGER.md">OPERATOR_ONEPAGER.md</a>
+      first. It is the authority on prerequisites; this page deliberately does not restate them.</li>
+    <li><b>No coins yet?</b> Ask the coordinator in <b>#testnet</b> for
+      <b>(N&nbsp;&times;&nbsp;100)&nbsp;+&nbsp;500&nbsp;HMS</b> and post your funding address. Wait for
+      <code>Hemis-cli getbalance</code> to show it &mdash; it counts confirmed coins only.</li>
+    <li><b>Already have both?</b> Carry on to step 1.</li>
+  </ul>
+</div>
+
 <div class=step id=s1>
   <h2><span class=n>1</span> Name this gamemaster</h2>
   <label>A short label. Every address below is named after it, so registering four gamemasters cannot
@@ -780,9 +796,22 @@ function render(){
   if(comp.split(":")[0]!==n){
     $("cmd6").innerHTML='<p class=err>That starts with “'+esc(comp.split(":")[0])+
       '” but this walkthrough registered “'+esc(n)+'”. Paste the value from this gamemaster’s response.</p>'; return; }
-  $("cmd6").innerHTML='<p class=note>Add this under <code>[ptxtestnet]</code> in the gamemaster’s '+
-    '<code>~/.Hemis/Hemis.conf</code>, then restart it.</p>'+
-    cmdBlock("gm","ptxnodeid="+comp)+cmdBlock("gm","sudo systemctl restart hemis-ptx");
+  $("cmd6").innerHTML='<p class=note>Put <b>all three</b> lines under <code>[ptxtestnet]</code> in the '+
+    'gamemaster’s <code>~/.Hemis/Hemis.conf</code>, then restart. Two of them are already in the file, '+
+    'commented out by <code>install.sh</code> &mdash; uncomment those rather than adding duplicates.</p>'+
+    '<div class=warn><b>All three go in together, then one restart.</b> <code>gamemaster=1</code> with no '+
+    'key makes the daemon <b>refuse to start</b>, so do not add it on its own. And a gamemaster that is '+
+    'registered but holds no key registers fine, syncs fine, reports <code>Ready</code> &mdash; and cannot '+
+    'sign anything.</div>'+
+    cmdBlock("gm","gmoperatorprivatekey=<the BLS SECRET from step 3>\ngamemaster=1\nptxnodeid="+comp)+
+    '<p class=note>★ The secret is the <b>secret</b> half from step 3, the one that never left this machine. '+
+    'This page does not ask for it and never sees it &mdash; paste it in the config yourself.</p>'+
+    '<p class=note>★ Also check <code>externalip=</code> is present and <b>not</b> commented. '+
+    '<code>install.sh</code> writes it for you from this host’s global IPv6 address; without it the '+
+    'gamemaster never reaches <code>Ready</code>. Do not add a second copy &mdash; if it is missing, the '+
+    'install did not complete.</p>'+
+    cmdBlock("gm","sudo systemctl restart hemis-ptx")+
+    cmdBlock("gm","Hemis-cli getgamemasterstatus   # expect: \"status\": \"Ready\"");
 }
 ["name","coladdr","ctxid","cvout","owner","payout","blspub","ipport","compound"].forEach(function(id){
   $(id).addEventListener("input",render);

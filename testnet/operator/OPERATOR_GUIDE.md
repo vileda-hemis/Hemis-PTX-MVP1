@@ -687,6 +687,71 @@ The sections that matter most:
 
 ---
 
+## ★★ Part D — Upgrading to a new tag
+
+Everything above is written for a **first install**. Upgrading is different, and the difference is
+one sentence: **`install.sh` never overwrites an existing `Hemis.conf`.**
+
+```bash
+# ON THE HOST BEING UPGRADED
+sudo systemctl stop hemis-ptx
+mv ~/Hemis-PTX-MVP1 ~/Hemis-PTX-MVP1.old
+git clone -b v0.3.4-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
+cd Hemis-PTX-MVP1/testnet/operator
+PTX_ROLE=gamemaster ./install.sh          # or PTX_ROLE=wallet on the wallet machine
+sudo systemctl restart hemis-ptx
+```
+
+### ★★ What `install.sh` will and will not do
+
+It **replaces the binaries** and **leaves your config exactly as it was** — it prints
+*"already exists — leaving it alone"* and writes a reference config beside it, at
+`~/.Hemis/Hemis.conf.template`, showing what a **fresh** install of this tag would have written.
+
+★ **That cuts both ways, and the second half is the one that surprises people.**
+
+* **Nothing you edited is lost.** Your `gmoperatorprivatekey`, `gamemaster=1`, `ptxnodeid` and
+  `externalip` survive the upgrade untouched. You do **not** re-do Part A.
+* ★★ **And nothing NEW arrives.** A setting introduced by the tag you are upgrading *to* is not
+  added to your existing config. Your host keeps the **previous tag's configuration** while running
+  the **new tag's binaries**, and nothing reports the mismatch.
+
+**A real example, measured on the coordinator's own hosts:** `v0.3.3-testnet` made gamemasters ship
+with `disablewallet=1`. Hosts upgraded from earlier tags are still running **without** it — they
+kept the old config, exactly as designed, and the new setting never appeared.
+
+### The post-upgrade checklist
+
+★ **Do this every time. It is short, and the failure it catches is silent.**
+
+```bash
+Hemisd -version                                   # 1. is this the tag you installed?
+diff -u ~/.Hemis/Hemis.conf.template ~/.Hemis/Hemis.conf   # 2. what did this tag change?
+grep -nE '^(gamemaster|gmoperatorprivatekey|externalip|ptxnodeid)=' ~/.Hemis/Hemis.conf
+Hemis-cli getgamemasterstatus                     # 4. status: Ready
+./self-check.sh                                   # 5. exit 0, no [????]
+```
+
+1. **`Hemisd -version` must print the tag you just installed.** If it prints the old one, the
+   binaries did not replace — check that `install.sh` completed rather than aborting.
+2. ★ **The `diff` is the step people skip and it is the point of the exercise.** The template is what
+   a fresh install of this tag looks like; the diff is therefore *"everything this upgrade would have
+   changed and did not"*. The `rpcpassword` line is expected to differ — ignore that one. Anything
+   else is a decision for you: adopt it or leave it deliberately.
+3. **All four lines must be present and uncommented** on a gamemaster. A commented
+   `gmoperatorprivatekey` or `gamemaster=1` gives you a node that syncs, reports no error, and
+   answers `getgamemasterstatus` with *"This is not a gamemaster."*
+4. ★★ **Do not use the `# ROLE:` line as evidence of anything but the role.** It names the role and
+   nothing else, deliberately — see the note in your config. Older configs carry a longer stamp that
+   *described* the configuration; **that description can be wrong**, and on at least one host it
+   was: it read `Wallet ON … externalip set` while the wallet was off and `externalip` was
+   commented. The config lines are the truth; the stamp is a label.
+
+★ **If your config predates the role stamp entirely** (no `# ROLE:` line at all — true of the
+earliest installs), `self-check.sh` section 0b will say so rather than guess. Re-running
+`install.sh` does **not** add it, because your config is preserved. Add the line by hand, or accept
+that 0b cannot check your role.
+
 ## ★★ If your GM is PoSe-banned
 
 **This is the one failure on this network that does not fix itself, and it arrives fast.**

@@ -1137,6 +1137,27 @@ role_run() {
     # funds. Asserted on the UNCOMMENTED line specifically -- the setting sat in
     # this file as "# disablewallet=1" for months, and a check that merely
     # grepped for the word would have passed against a comment the whole time.
+    # ★★ THE ROLE STAMP DECLARES THE ROLE AND NOTHING ELSE. It used to describe
+    # the configuration as well ("Wallet ON ..., externalip set"), which is a
+    # CACHED COPY of lines a few above it -- and a field host was found whose
+    # stamp claimed "externalip set" while externalip was commented and the
+    # wallet was off. Nothing reads the prose: self-check 0b takes the role NAME
+    # and verifies the rest against the config. So the prose had exactly one
+    # audience, a human, and it lied to them.
+    local st
+    for st in "$gm" "$wa"; do
+        local stamp
+        stamp="$(grep -oE '^# ROLE: .*' "$st" 2>/dev/null | head -1)"
+        [ -n "$stamp" ] || { bad "$(basename "$(dirname "$st")") has no '# ROLE:' stamp"; rc=1; continue; }
+        if printf '%s' "$stamp" | grep -qiE 'wallet (on|off)|externalip|listen=|inbound|collateral'; then
+            bad "the role stamp describes CONFIGURATION, not just the role: $stamp -- that is a cached copy of lines in the same file and it goes stale the moment an operator edits them."
+            rc=1
+        fi
+    done
+    grep -qxE '# ROLE: (gamemaster|wallet)' "$gm" && grep -qxE '# ROLE: (gamemaster|wallet)' "$wa" \
+        && ok "the role stamp names the role and asserts nothing else about the config" \
+        || { bad "a role stamp is not the bare '# ROLE: <role>' form self-check 0b parses."; rc=1; }
+
     if grep -qE '^disablewallet=1' "$gm" && ! grep -qE '^disablewallet=1' "$wa"; then
         ok "the two roles differ on the wallet (gamemaster disables it, wallet host keeps it)"
     else

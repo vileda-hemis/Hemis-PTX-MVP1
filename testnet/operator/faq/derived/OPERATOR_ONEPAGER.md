@@ -1,6 +1,6 @@
 <!-- CORPUS-SOURCE: testnet/operator/OPERATOR_ONEPAGER.md -->
 <!-- CORPUS-TAG: v0.3.4-testnet -->
-<!-- CORPUS-SHA256: 77fe839eecdfd28908b90cedb87d6d409b619fd59bb2b5366d16f327a4caa2c9 -->
+<!-- CORPUS-SHA256: 2b1f594b59adb6929276125bde87ce9191ba190bf06897871e0203843a48316a -->
 
 > **This document is a verbatim copy of `testnet/operator/OPERATOR_ONEPAGER.md` at `v0.3.4-testnet`.** It is not
 > edited for the FAQ bot. If it disagrees with anything else in this corpus, it wins.
@@ -238,6 +238,18 @@ Hemis-cli getgamemasterstatus      # status: Ready
 ```
 
 ---
+
+## Upgrading later
+
+★ **`install.sh` never overwrites your `Hemis.conf`.** So an upgrade keeps every edit you made —
+and equally, **a setting introduced by the new tag never arrives.** You end up running new binaries
+on the previous tag's configuration, and nothing reports it.
+
+Stop the service, move `~/Hemis-PTX-MVP1` aside, clone the new tag, re-run `install.sh` with the
+same `PTX_ROLE`, restart. Then **diff your config against the `~/.Hemis/Hemis.conf.template` the
+installer writes** — that diff is everything the upgrade would have changed and did not.
+
+★ Full sequence and the post-upgrade checklist: `OPERATOR_GUIDE.md` **Part D**.
 
 ## Notes
 

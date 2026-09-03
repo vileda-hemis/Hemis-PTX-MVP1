@@ -107,6 +107,27 @@ t("compound from a different gamemaster is refused",function(){
   if(els.cmd6.innerHTML.indexOf("but this walkthrough registered")<0)throw new Error("not caught");
 });
 
+t("step 6 emits the KEY and gamemaster=1, not just ptxnodeid",function(){
+  // ★ The defect this pins: step 6 used to emit ptxnodeid= alone. An operator
+  // following the page end to end registered successfully and had a gamemaster
+  // holding no key -- registered, synced, "Ready", and unable to sign.
+  good(); els.compound.value="gm01:d7b70a85"; render();
+  var h=strip(els.cmd6.innerHTML);
+  if(h.indexOf("gmoperatorprivatekey=")<0)throw new Error("no BLS key line -- the GM cannot sign");
+  if(h.indexOf("gamemaster=1")<0)throw new Error("no gamemaster=1 -- the node never arms");
+  if(h.indexOf("ptxnodeid=gm01:d7b70a85")<0)throw new Error("no ptxnodeid line");
+  if(h.indexOf("refuse to start")<0)throw new Error("does not warn that gamemaster=1 without a key refuses to start");
+  if(h.indexOf("externalip")<0)throw new Error("does not mention externalip, without which the GM never arms");
+  // ★ and the page must NEVER ask for or echo the secret itself
+  if(/bls-sk-/.test(els.cmd6.innerHTML))throw new Error("the page emitted something that looks like a real BLS secret");
+  // ★ Check the PAGE SOURCE, not the DOM shim: the shim creates elements on
+  // demand, so getElementById never returns null and the assertion would be
+  // about the instrument rather than the page (ODC-098). Caught by this test
+  // failing the moment it was written.
+  if(/<input[^>]*id=(bls)?secret\b/.test(html))
+    throw new Error("the page has an input for the BLS secret; it must never handle one");
+});
+
 t("good compound emits the config line",function(){
   good();els.compound.value="gm01:d7b70a85";render();
   if(els.cmd6.innerHTML.indexOf("ptxnodeid=gm01:d7b70a85")<0)throw new Error("config line missing");
