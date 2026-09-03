@@ -124,6 +124,23 @@ fi
 [ -x "$HEMISCLI" ] || die "no Hemis-cli. Set PTX_TEST_BINDIR=<dir> or put it on PATH."
 
 BASE="${PTX_TEST_BASE:-$(mktemp -d -t ptx-install-test.XXXXXX)}"
+
+# ★★ THIS SUITE CANNOT BE RUN TWICE AT ONCE, and the failure is silent-ish.
+# The legs bind FIXED ports (29902/29993/29994/29995 and 29992+2n), so a second
+# concurrent run steals them; daemons then die of "Unable to bind to" and their
+# RED legs are scored VACUOUS -- a leg that proved nothing, reported as a
+# coverage LOSS rather than an error. Measured: two overlapping runs turned
+# "8 falsified, 0 vacuous" into "6 falsified, 2 vacuous", which reads exactly
+# like a regression in the code under test and cost a full investigation to
+# attribute. The "0 vacuous" guard did its job -- this warning names the most
+# likely cause so the next reader does not go looking in the wrong place.
+if pgrep -x Hemisd >/dev/null 2>&1; then
+    printf '\n  \033[33m[WARN]\033[0m a Hemisd is ALREADY RUNNING on this host.\n'
+    printf '         This suite binds fixed ports. If that daemon (or another copy of\n'
+    printf '         this script) holds them, RED legs will die of the environment and be\n'
+    printf '         scored VACUOUS -- which looks like lost coverage, not a port clash.\n'
+    printf '         Stop it first, or expect "N vacuous" and read this note again.\n\n'
+fi
 # ★★ ONE params dir, shared by install.sh (which WRITES it) and start_daemon
 # (which must be TOLD it). This was a live defect: green_run passed
 # PTX_PARAMS_DIR outside the daemon's HOME, and start_daemon then launched with
@@ -1091,6 +1108,30 @@ role_run() {
         ok "the two roles differ on externalip (gamemaster sets it, wallet does not)"
     else
         bad "externalip does not distinguish the roles -- a wallet host is advertising, or a gamemaster is not."; rc=1
+    fi
+
+    # ★★ THE THIRD ROLE DIFFERENCE: a gamemaster has NO WALLET. It signs with a
+    # BLS key read from the config, never from a wallet, and it never holds
+    # funds. Asserted on the UNCOMMENTED line specifically -- the setting sat in
+    # this file as "# disablewallet=1" for months, and a check that merely
+    # grepped for the word would have passed against a comment the whole time.
+    if grep -qE '^disablewallet=1' "$gm" && ! grep -qE '^disablewallet=1' "$wa"; then
+        ok "the two roles differ on the wallet (gamemaster disables it, wallet host keeps it)"
+    else
+        if grep -qE '^#[[:space:]]*disablewallet' "$gm"; then
+            bad "gamemaster has disablewallet COMMENTED OUT -- that is the pre-decision state, not the decision."
+        else
+            bad "the wallet does not distinguish the roles -- a gamemaster is carrying a wallet, or a wallet host has lost one."
+        fi
+        rc=1
+    fi
+
+    # ★ And the wallet host must still HAVE one, stated positively rather than
+    # inferred from the absence above: the collateral lives there.
+    if ! grep -qE '^disablewallet' "$wa"; then
+        ok "wallet host keeps its wallet -- it holds the collateral and registers the GMs"
+    else
+        bad "wallet host has a disablewallet line; it cannot hold collateral or register anything."; rc=1
     fi
 
     # ★ The unit decision is role-shaped, and this asserts the DIFFERENCE rather

@@ -154,8 +154,9 @@ cd Hemis-PTX-MVP1/testnet/operator
 command. The wallet machine in Part B needs `PTX_ROLE=wallet`, and that one is **not** the default,
 so it is the one you have to type. ★ The completion output names the role it built; if it says the
 wrong one, **re-run with the other rather than editing the config by hand** — the roles differ in
-three lines and hand-patching one of them is how you end up with a node that looks right and is
-not.
+three places (the `gamemaster` stanza, `externalip`, and `disablewallet`) and hand-patching one of
+them is how you end up with a node that looks right and is not. ★ `listen=1` is deliberately the
+**same** in both: a wallet host listens so it returns peers to a network with no DNS seed.
 
 ★ **No datadir or port overrides, and repeat this unchanged on each of your GM hosts.** One GM
 per host means the defaults are already right: datadir `~/.Hemis`, P2P 29994, RPC 29995.
@@ -280,7 +281,15 @@ Output has two halves:
 ```
 
 * **`secret`** — goes into `Hemis.conf` on **this** machine, as `gmoperatorprivatekey=<secret>`.
-  **It never leaves this machine.** Not in chat, not in email, not in a ticket.
+  **Not in chat, not in email, not in a ticket, and never to us** — nobody needs it but you.
+
+  ★★ **But keep your own copy somewhere off this machine, and do it now.** A gamemaster host has
+  **no wallet** (`disablewallet=1` — it never holds funds, so it cannot pay a transaction fee and
+  could not run a recovery itself even with one). **Un-banning a PoSe-banned gamemaster therefore
+  runs from your WALLET machine, and it needs this secret passed to it as argument 4** — a banned
+  gamemaster cannot supply its own. If the only copy lives on a node you cannot log into, you
+  cannot recover it and the gamemaster is gone. A password manager or an offline note is enough;
+  the rule is that it exists in exactly one more place than this host, and that place is yours.
 * **`public`** — this is what you hand to the wallet operator.
 
 ★★ **The setting is spelled `gmoperatorprivatekey`, and nothing else works.** It is read at
@@ -679,8 +688,7 @@ A revival with the fault still present is banned again in another forty minutes.
 ### Then recover — and read this before you copy anything
 
 ```bash
-# ON THE GAMEMASTER HOST, which already has the BLS secret in its Hemis.conf.
-# Needs a few HMS in this node's own wallet to pay the fee.
+# ON YOUR WALLET HOST -- it has the funds. The gamemaster has no wallet.
 Hemis-cli protx_update_service \
     "<your protx txid>" "" "" "<YOUR BLS SECRET>"
 ```
@@ -690,9 +698,14 @@ Left empty, the RPC falls back to the node's own active gamemaster key — but t
 `GetValidGM`, which returns `nullptr` for a banned gamemaster
 (`src/evo/deterministicgms.cpp:114-121`), and the manager is in `GAMEMASTER_POSE_BANNED` rather
 than `Ready` (`src/activegamemaster.cpp:146-147`). **A banned gamemaster cannot supply its own key
-to un-ban itself.** This is the single exception to "the BLS secret never moves" in Handoff 1 — and
-running the command *on the gamemaster host* is what keeps it from moving at all, which is why this
-guide leaves the wallet enabled there and suggests keeping a few HMS in it.
+to un-ban itself.**
+
+★★ **This is why A4 told you to keep a copy of the secret off the gamemaster.** The command funds a
+transaction (`FundSpecialTx`, `src/rpc/rpcevo.cpp:282`), so it must run somewhere with coins — and
+a gamemaster **never holds coins**, which is why it ships with `disablewallet=1`. Measured on a
+live zero-balance node, the same call fails `Insufficient funds.` **So this was never a command you
+could have run on the gamemaster**, whether or not it had a wallet; an empty wallet cannot fund
+anything. It runs on your wallet host, and it needs the secret you saved.
 
 ★ **The second argument is `""` and that is deliberate.** `Hemis-cli help protx_update_service`
 says *"If the IP is changed for a gamemaster that got PoSe-banned, the ProUpServTx will also revive

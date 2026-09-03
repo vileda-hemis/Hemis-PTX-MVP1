@@ -139,6 +139,11 @@ Hemis-cli generateblskeypair
 
 * the **`public`** half goes to the wallet operator. **Send the public half only.**
 
+★ **Save your own copy of the secret somewhere off this machine before you move on.** This host has
+no wallet, so un-banning it later runs from your wallet machine and needs the secret there. If the
+only copy is on a node you cannot reach, the gamemaster cannot be recovered. See
+`OPERATOR_GUIDE.md` A4.
+
 ★★ **`gamemaster=1` goes in with the key and not before.** `install.sh` ships it commented out
 deliberately: with the role enabled and no key the daemon **refuses to start** — `Error: ERROR:
 Gamemaster priv key cannot be empty.` — and `generateblskeypair` is an RPC call, so you would be

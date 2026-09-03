@@ -1005,6 +1005,7 @@ if [ "$PTX_ROLE" = "wallet" ]; then
 # not here. If you meant to build a gamemaster, re-run with PTX_ROLE=gamemaster
 # -- a wallet-role node registers, syncs and looks healthy while never being
 # reachable for signing."
+    WALLET_LINE=""
     ROLE_TRAILER="# ROLE: wallet. Wallet ON (it holds your collateral), listen=1, no externalip. Open P2P inbound."
     ROLE_BANNER="WALLET   (listen=1, no externalip -- holds collateral, registers nothing)"
     ROLE_NEXT='    2. This is the WALLET machine: do NOT generate a BLS key here, and do not
@@ -1020,11 +1021,12 @@ else
     LISTEN_LINE="listen=1"
     ROLE_LINES="# gamemaster=1
 # gmoperatorprivatekey=<the BLS key you generate in the OPERATOR_GUIDE>"
-    ROLE_TRAILER="# ROLE: gamemaster. Wallet ON (see the trade above), listen=1, externalip set."
-    ROLE_BANNER="GAMEMASTER   (listen=1, externalip set -- must be reachable on P2P $P2P_PORT)"
+    WALLET_LINE="disablewallet=1"
+    ROLE_TRAILER="# ROLE: gamemaster. Wallet OFF, listen=1, externalip set."
+    ROLE_BANNER="GAMEMASTER   (listen=1, externalip set, NO WALLET -- reachable on P2P $P2P_PORT)"
     ROLE_NEXT='    2. Follow OPERATOR_GUIDE.md section "Node side" to generate your BLS key and
        send the PUBLIC half to the wallet operator.'
-    ok "role: GAMEMASTER host -- listen=1, externalip required, wallet enabled"
+    ok "role: GAMEMASTER host -- listen=1, externalip required, wallet DISABLED"
     EXTERNALIP_DONE=0
 fi
 
@@ -1191,31 +1193,38 @@ $ADDNODE_LINES
 # uncomment BOTH of these and restart.
 $ROLE_LINES
 
-# --- Wallet posture on a gamemaster host -----------------------------------
-# ★ THE WALLET IS LEFT ON DELIBERATELY, and here is the trade, because the
-# alternative is one line and you should be able to make the choice yourself.
+# --- Wallet posture -------------------------------------------------------
+# ★ ON A GAMEMASTER THIS IS OFF, and here is the reasoning, because it is one
+# line and you should be able to check it yourself. On a wallet host the line
+# below is absent and the wallet is on -- that host holds your collateral.
 #
-# ★ THE TRADE CHANGED, AND IT NOW POINTS ONE WAY. This block used to weigh the
-# wallet against a leaked CALLER CREDENTIAL that could call any rpc here. KDD-085
-# DELETED that credential (see the top of this file: there is no caller
-# credential and no caller allow-list entry any more) and RPC is bound to
-# loopback only. So the risk half of the trade is gone while the benefit half
-# below is unchanged -- which is why the wallet stays on by default rather than
-# by inertia. What remains at risk is a few HMS of fee money; your COLLATERAL is
-# not here, it lives on your wallet machine.
+# ★ A GAMEMASTER NEVER HOLDS FUNDS, and that is what decides this. It signs with
+# its BLS key; the key is read from this file (tiertwo/init.cpp:290), never from
+# a wallet. Measured: DKG, share storage and the P2P signing path touch no wallet
+# code; self-check.sh calls no wallet RPC; generateblskeypair works with the
+# wallet off; and a gamemaster starts, syncs and reports status normally without
+# one.
 #
-# Uncommenting this shrinks that to availability only:
-# disablewallet=1
+# ★★ WHAT THIS DOES NOT COST YOU, stated because the old text here weighed it
+# the other way. Un-banning a gamemaster needs protx_update_service, which funds
+# a transaction through FundSpecialTx (rpc/rpcevo.cpp:282) -- and an UNFUNDED
+# wallet cannot fund one: measured on a live zero-balance node, the call fails
+# "Insufficient funds." So on-node recovery was ALREADY unavailable on a host
+# that holds no coins. Turning the wallet off removes a wallet you could not
+# have used, not a recovery route you had.
 #
-# ★ But it forecloses the on-node PoSe recovery route. Un-banning a gamemaster
-# needs protx_update_service, which needs a wallet to pay the fee
-# (rpc/rpcevo.cpp:913, :977) -- and a BANNED gamemaster cannot supply its own BLS
-# key to that call (GetValidGM returns nullptr while banned,
-# evo/deterministicgms.cpp:114-121), so the key must be passed explicitly and the
-# call must be made from a machine that has BOTH the key and a funded wallet.
-# With the wallet on, that machine is this one and the BLS secret never moves.
-# With disablewallet=1, you must copy the BLS secret to your wallet machine.
-# See OPERATOR_GUIDE.md "If your GM is PoSe-banned".
+# ★ WHAT IT DOES COST, honestly: you cannot fund this host in an emergency
+# without re-enabling the wallet and restarting. If you would rather keep that
+# option, delete the line below -- an empty wallet is still an attack surface
+# and still a wallet.dat to lose, which is why it is off by default.
+#
+# ★ SO RECOVERY RUNS FROM YOUR WALLET MACHINE, and it needs the BLS SECRET
+# passed explicitly as argument 4 -- a banned gamemaster cannot supply its own
+# (GetValidGM returns nullptr while banned, evo/deterministicgms.cpp:115-121).
+# KEEP A COPY OF THAT SECRET SOMEWHERE YOU CAN REACH. You generate it in
+# OPERATOR_GUIDE.md step 8; if it exists only on a banned node you cannot log
+# into, you cannot recover. See OPERATOR_GUIDE.md "If your GM is PoSe-banned".
+$WALLET_LINE
 $ROLE_TRAILER
 EOF
 }
