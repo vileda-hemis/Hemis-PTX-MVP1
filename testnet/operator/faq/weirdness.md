@@ -204,6 +204,38 @@ know how far off it is.
 
 ---
 
+## Symptom: my PoSe penalty is `0` — does that mean my gamemaster is working?
+
+**Applies to:** all versions.
+
+**The obvious reading is wrong.** `PoSePenalty: 0` looks like the network confirming you are fine.
+It is not a clean bill of health; on a small network it is **the absence of any verdict at all**.
+
+**What is actually happening.** Two different quorum mechanisms run on this chain, with two
+different sizes, and PoSe belongs to the one that is **not** PTX signing.
+
+| | quorum size | what it does | is PoSe involved? |
+|---|---|---|---|
+| `llmq` (inherited) | **3** | the DKG whose commitments carry `validMembers` | ★ **yes — this is the only thing that moves PoSe** |
+| PTXDKG (this project) | **11** | forms the quorums that sign PTX rolls | no |
+
+`nPoSePenalty` is written in exactly one place, and only when an `llmq` commitment marks you an
+invalid member. So:
+
+★ **Below three registered gamemasters, no `llmq` commitment can form, so the counter cannot move
+and `0` means nothing whatsoever.** It is not evidence, in either direction.
+
+★★ **And even once it does move, it is a verdict on `llmq` DKG participation — not on whether your
+PTX gamemaster is signing anything.** "PoSe is the network's opinion of you" is true and is
+routinely over-read: a penalty of `0` alongside a PTX quorum you never got selected for is two
+unrelated facts, not one reassuring one.
+
+**Do you need to act?** No — but do not use `0` as proof. To judge whether your node is healthy, run
+`./self-check.sh` and believe its exit code; a **non-zero** PoSe penalty is worth reporting because
+it is the network's verdict rather than your machine's, but a zero one is not worth reading at all.
+
+---
+
 ## Symptom: I registered without `ptxPaymentAddress` — can I add it now?
 
 **Applies to:** all versions. ★ **No, and this is the one mistake that cannot be undone in place.**
