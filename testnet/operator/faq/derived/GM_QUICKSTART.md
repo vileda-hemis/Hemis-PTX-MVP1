@@ -1,6 +1,6 @@
 <!-- CORPUS-SOURCE: GM_QUICKSTART.md -->
 <!-- CORPUS-TAG: v0.3.5-testnet -->
-<!-- CORPUS-SHA256: b67343ed05aec0e026c51cc7fdb19a8834ee5c34c79ea634b0d3b642dcce1fdd -->
+<!-- CORPUS-SHA256: a28cc26afa42458c950c0ff16aa79aa221413d8e6d76e6c5545112ddedfdf96d -->
 
 > **This document is a verbatim copy of `GM_QUICKSTART.md` at `v0.3.5-testnet`.** It is not
 > edited for the FAQ bot. If it disagrees with anything else in this corpus, it wins.
@@ -137,11 +137,15 @@ Open each GM's two ports, in both places. See the table above.
 
 ### 2. Start the daemon and generate the BLS key — **per GM**
 
-The BLS key is an **RPC call**, so the daemon has to be running first. `install.sh` has already
-started it under systemd, so you do not start it yourself.
+The BLS key is an **RPC call**, so the daemon has to be running first — and ★★ **nothing has
+started it.** This section used to say `install.sh` had; it has not. `install.sh` writes the
+systemd unit and deliberately leaves a gamemaster **stopped**, because `gamemaster=1` with no key
+refuses to start and the key does not exist yet. `vps-install.sh` says so in its own banner:
+*"NOTHING HAS BEEN STARTED."*
 
 ```bash
-Hemis-cli getblockcount      # answers within a few seconds
+Hemisd -daemon
+Hemis-cli -rpcwait getblockcount     # 0 is correct -- you have no addnode lines yet
 Hemis-cli generateblskeypair
 ```
 
@@ -155,8 +159,15 @@ Hemis-cli generateblskeypair
   # to:
   #       gamemaster=1
   #       gmoperatorprivatekey=<BLS SECRET>
-  sudo systemctl restart hemis-ptx
+  sudo systemctl enable --now hemis-ptx
   ```
+
+  ★★ **`enable`, not just `restart`.** From here the unit runs the node, and `enable` is what
+  brings it back after a reboot. Measured on the coordinator's own hosts, 2026-09-02: all four
+  were running hand-started daemons with this unit present and disabled — including the one
+  holding the entire float. A gamemaster down after a reboot accrues PoSe penalties exactly as
+  if it were firewalled.
+
 
   ★ **Uncomment rather than append.** Appending works — `[ptxtestnet]` is the only section header
   and it is near the top, so a line added at the end is still inside it — but it leaves the

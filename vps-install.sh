@@ -23,7 +23,9 @@
 # Read it before you run it. It is short on purpose: it does NOT install anything
 # itself. It fetches the pinned release and hands off to testnet/operator/install.sh,
 # which is the real installer -- the one that verifies checksums, checks glibc,
-# reserves the fan-out ports and writes your configs.
+# writes your configs. (It used to reserve a block of kernel ports for the
+# signing fan-out; ODC-106 removed that -- the fan-out is gone and install.sh
+# now CLEANS UP the stale reservation instead of making one.)
 #
 # ★ WHY A WRAPPER AND NOT A SECOND INSTALLER. A copy of the install logic here
 # would be a second thing to keep in sync with the first, and the two would drift
@@ -147,7 +149,10 @@ for n in $(seq 1 "$GM_COUNT"); do
     # override is passed at all -- the ports are the SAME on every host, because
     # the hosts differ rather than the ports. The n>1 arithmetic survives only for
     # the coordinator-directed exception above, and it is NOT the supported shape:
-    # a second GM here would sit on RPC 29997, which the fan-out never dials.
+    # ★ THE REASON CHANGED, AND THIS COMMENT USED TO GIVE THE OLD ONE. A second
+    # GM here sits on RPC 29997, which the deleted signing fan-out could never
+    # have dialled. KDD-085 removed the fan-out, so co-hosting is now
+    # mechanically possible -- and still unsupported, because it is untested.
     if [ "$n" = "1" ]; then
         # ★ GM 1 goes in the DAEMON'S OWN DEFAULT datadir, matching install.sh.
         # That is BUG-047's fix: a bare `Hemisd` on this host then finds a real
@@ -160,8 +165,10 @@ for n in $(seq 1 "$GM_COUNT"); do
         p2p=$((29992 + 2 * n)); rpc=$((29993 + 2 * n))
         datadir="$HOME/.hemis-ptxtestnet-$n"
         warn "GM $n is a SECOND gamemaster on this host, on RPC $rpc."
-        warn "  The signing fan-out dials one port for every member; this GM will"
-        warn "  register and never be contacted. Use a separate host instead."
+        warn "  Co-hosting became mechanically possible when KDD-085 deleted the"
+        warn "  signing fan-out -- signing now arrives over P2P at each GM's own"
+        warn "  registered port. It is UNTESTED, so it is not a supported shape."
+        warn "  Use a separate host instead."
     fi
     printf '\n---------- GM %s of %s: datadir %s, P2P %s, RPC %s ----------\n' \
         "$n" "$GM_COUNT" "$datadir" "$p2p" "$rpc"
@@ -214,4 +221,15 @@ cat <<EOF
    4. START, then verify:
         Hemisd -datadir=\$HOME/.Hemis -daemon
         cd $CLONE_DIR/testnet/operator && ./self-check.sh
+
+      Hemisd -daemon is right for step 2, before the key exists. Once the key is
+      IN the config, switch to the unit this installer already wrote and ENABLE it,
+      so the node comes back after a reboot:
+
+        sudo systemctl enable --now hemis-ptx
+
+      ★ enable is the half that matters. Measured 2026-09-02: all four coordinator
+        hosts were running hand-started daemons with this unit present and disabled
+        -- including the one holding the entire float. A gamemaster down after a
+        reboot accrues PoSe penalties exactly as if it were firewalled.
 EOF

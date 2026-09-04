@@ -1392,6 +1392,23 @@ role_run() {
             || rc=1
     fi
 
+    # ★★ OPERATOR-DOCUMENT INVARIANTS (ODC-105 + the presence limb). Delegated to
+    # doc-check.sh rather than reimplemented here, so there is ONE exemption list
+    # and one place to look when it fires. ★ It checks presence, absence and one
+    # ordering -- it does NOT catch a semantic reversal, and its own header says so.
+    if [ -x "$HERE/doc-check.sh" ]; then
+        local dcout
+        if dcout="$(bash "$HERE/doc-check.sh" 2>&1)"; then
+            ok "operator documents: 4 invariants hold ($(printf '%s' "$dcout" | grep -c '\[ok\]') checks)"
+        else
+            printf '%s\n' "$dcout" | grep '\[FAIL\]' | sed 's/^/      /'
+            bad "doc-check.sh: operator-document invariants FAILED -- see above"
+            rc=1
+        fi
+    else
+        unk "doc-check.sh not executable -- the document invariants DID NOT RUN. Not a pass."
+    fi
+
     # ★★ FAQ CORPUS STALENESS. The corpus's derived half is a BYTE-COPY of the
     # operator documents, which is the only form of "derived" that cannot drift
     # semantically -- the text either equals the source or this fails. Copying by
