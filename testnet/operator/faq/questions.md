@@ -130,3 +130,13 @@ opposite claim and an answer that mixes them is incoherent.
 
 ★ If you find yourself about to say the wallet is "on but empty", or to suggest keeping "a few HMS"
 on a gamemaster, stop: that is the reversed text, and it was removed.
+
+## "it won't arm" / "local address doesn't match the ProTx" / "registered but not arming"
+
+★★ **Covered, and the answer is a config/registration disagreement — not a network fault.**
+→ `weirdness.md` **"my gamemaster will not arm — \"Local address ... does not match the address from ProTx\""**
+
+Two causes that look identical: `port=`/`rpcport=` transposed in the config, or a registration made
+with **no port**, in which case the chain stored the default `:29993`. Remedy is
+`protx_update_service` from the **wallet host** with the **BLS secret** as argument 4 — never
+re-registration.

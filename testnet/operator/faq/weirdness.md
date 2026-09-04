@@ -204,6 +204,57 @@ know how far off it is.
 
 ---
 
+## Symptom: my gamemaster will not arm — "Local address ... does not match the address from ProTx"
+
+**Applies to:** all versions.
+
+**The obvious reading is wrong.** The message looks like a network fault, so you will check
+connectivity. **It is not about reachability.** The node compares the address *and port* it
+advertises against the one recorded on chain at registration, and refuses to arm when they differ.
+It is a **configuration disagreement**, and it is one of the few PTX errors that names both sides —
+read them, because the difference is usually just the port.
+
+**What is actually happening.** There are two causes and they look identical:
+
+1. ★ **The port in your config disagrees with the registered one.** Most often `port=` and
+   `rpcport=` have been transposed: the node then advertises its **RPC** port as its P2P address.
+   A fresh install never does this — a first gamemaster gets `port=29994` / `rpcport=29995`, and a
+   second or later one on the same host gets `29996`/`29997`, `29998`/`29999`. **If yours are
+   crossed, they were edited by hand.**
+2. ★★ **You registered without a port at all.** `protx_register` accepts a bracketed address with
+   no port and **does not complain** — the chain stores the network default **`:29993`**, which no
+   host listens on. The registration succeeds, the node syncs, `getgamemasterstatus` reports
+   `Ready`, and nothing goes wrong until arming.
+
+**Which one is it?** Compare them directly:
+
+```bash
+grep -E '^(port|rpcport)=' ~/.Hemis/Hemis.conf     # on the gamemaster host
+Hemis-cli protx_info <proTxHash> | grep -i service  # the registered address:port
+```
+
+If the registered port is `29993` you never set one. If it is your **RPC** port, the two config
+lines are transposed.
+
+**Do you need to act?** Yes, and ★★ **the fix is `protx_update_service`, not re-registration.**
+Your registration and collateral are fine; only the service address is wrong, and that is exactly
+what this command changes.
+
+```
+protx_update_service "proTxHash" "ipAndPort" ("operatorPayoutAddress" "operatorKey")
+```
+
+★★ **Run it from your WALLET host, and the BLS SECRET has to travel there.** This is the part
+nobody expects: the wallet host pays for the transaction, but it does not hold your gamemaster's
+operator key, so you must pass the **secret** as the fourth argument. The guide mentions this only
+under PoSe recovery; it applies here too, and it is the one time the secret leaves the gamemaster.
+Move it deliberately, use it, and do not leave a copy behind.
+
+★ **Fix the config as well as the chain.** Updating the registration alone leaves a host whose
+`port=` is still wrong; correct both, then restart the daemon and arm.
+
+---
+
 ## Symptom: I installed the wrong role — can I re-run `install.sh` to convert this host?
 
 **Applies to:** all versions.

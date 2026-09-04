@@ -731,7 +731,19 @@ function render(){
   if(v.cvout && !/^[0-9]+$/.test(v.cvout)) msgs.push("The output index is a plain number, with no quotes or brackets.");
   if(v.blspub && v.blspub.indexOf("bls-sk")===0) msgs.push("That is the SECRET key. Use the public half — it starts bls-pk.");
   if(v.owner && v.owner===ca) msgs.push("The owner address must differ from the collateral address.");
-  if(v.ipport && v.ipport.indexOf(":")<0) msgs.push("Include the port, for example “:29994”.");
+  // ★★ THE CHECK HERE USED TO BE VACUOUS. It asked whether the string contained
+  // ANY colon -- and a bracketed IPv6 address is made of colons, so it could never
+  // fire on the only address family this page accepts. A registration with no port
+  // is ACCEPTED: the chain stores the chainparams default :29993, which nothing
+  // listens on. The gamemaster then installs cleanly, syncs, reports Ready, and
+  // refuses to arm with "Local address ... does not match the address from ProTx".
+  // ★ The remedy is protx_update_service from the WALLET host, which requires the
+  // BLS SECRET to travel there -- the one movement this architecture otherwise
+  // avoids. Found live on ptxtestnet-03, 2026-09-04.
+  if(v.ipport && /^\[[^\]]+\]$/.test(v.ipport))
+    msgs.push("Missing the port. This does not fail at registration \u2014 the chain stores the "+
+              "default :29993, which nothing listens on, and the gamemaster then refuses to "+
+              "arm. Write it as \u201c[\u2026]:29994\u201d.");
   // ★ Gamemasters must register a global IPv6 address: signing is point-to-point
   // and no relay bridges address families, so an IPv4 registration is invisible.
   if(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+$/.test(v.ipport))
@@ -745,7 +757,19 @@ function render(){
      (v.ipport.match(/:/g)||[]).length>1)
     msgs.push("Bracket the address, then the port: […]:29994. Without brackets the port colon is "+
               "ambiguous with the address’s own colons.");
-  $("s4msg").innerHTML = msgs.length? '<p class=err>'+msgs.map(esc).join("<br>")+'</p>':"";
+  // ★ A non-29994 port is a WARNING and must NOT block: vps-install.sh legitimately
+  // assigns 29996, 29998, ... to the 2nd and later gamemasters sharing one host, so
+  // requiring 29994 exactly would reject configurations this project's own bootstrap
+  // creates. Errors gate step 5; warnings do not.
+  var warns=[];
+  var pm=/^\[[^\]]+\]:(\d+)$/.exec(v.ipport||"");
+  if(pm && pm[1]!=="29994")
+    warns.push("Port "+pm[1]+" is not the documented 29994. That is correct only for a second "+
+               "or later gamemaster sharing ONE host, where vps-install.sh assigns 29996, 29998, \u2026 "+
+               "One gamemaster per host uses 29994 \u2014 check port= in that host\u2019s Hemis.conf. "+
+               "This value must equal it exactly or the node will not arm.");
+  $("s4msg").innerHTML = (msgs.length? '<p class=err>'+msgs.map(esc).join("<br>")+'</p>':"")
+                       + (warns.length? '<p class=note>'+warns.map(esc).join("<br>")+'</p>':"");
   var filled = v.ctxid&&v.cvout&&v.owner&&v.payout&&v.blspub&&v.ipport;
   if(!filled || msgs.length){ off("s5","s6"); $("cmd5").innerHTML=""; return; }
 

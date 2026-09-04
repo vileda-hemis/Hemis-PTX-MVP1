@@ -177,6 +177,41 @@ t("KDD-110: the page refuses an IPv4, ULA or unbracketed address",function(){
   eq(argv()[4],'"[2001:db8::10]:29994"',"bracketed IPv6 reaches arg 3");
 });
 
+t("a bracketed address with NO PORT is refused, and the refusal names the port",function(){
+  // ★★ RED-PROVED AGAINST THE DEFECT IT NAMES. The old check was
+  //   if(v.ipport.indexOf(":")<0) ...
+  // which asks whether the string contains ANY colon. A bracketed IPv6 address is
+  // made of colons, so that check could never fire on the only family this page
+  // accepts. The assertion below fails against that version and passes against the
+  // replacement -- verified by reverting the predicate, 2026-09-04.
+  good(); els.ipport.value="[2a07:f1c0::4001:0:0:3]"; render();
+  isoff("s5");
+  if(els.s4msg.innerHTML.indexOf("Missing the port")<0)
+    throw new Error("a portless bracketed address was ACCEPTED -- the vacuous colon check is back");
+  // ★ It must also say WHY, because ":29993 which nothing listens on" is the whole
+  // reason this is worse than an obvious error: registration succeeds.
+  if(els.s4msg.innerHTML.indexOf("29993")<0)
+    throw new Error("the refusal does not name the default the chain would store");
+});
+
+t("a non-29994 port WARNS but does not block, because multi-GM hosts are legitimate",function(){
+  // ★★ The discriminator. vps-install.sh assigns 29996/29998/... to the 2nd and
+  // later gamemasters on one host, so requiring 29994 exactly would reject a
+  // configuration this project's own bootstrap creates. Warn, do not gate.
+  good(); els.ipport.value="[2001:db8::10]:29996"; render();
+  on("s5");
+  if(els.s4msg.innerHTML.indexOf("29996")<0) throw new Error("the odd port was not named");
+  if(els.s4msg.innerHTML.indexOf("class=err")>=0)
+    throw new Error("a legitimate multi-GM port was reported as an ERROR and would block step 5");
+  eq(argv()[4],'"[2001:db8::10]:29996"',"the odd port still reaches the command");
+
+  // ★ and the documented port produces no warning at all
+  good(); els.ipport.value="[2001:db8::10]:29994"; render();
+  on("s5");
+  if(els.s4msg.innerHTML.indexOf("not the documented")>=0)
+    throw new Error("29994 warned about itself");
+});
+
 t("the guide and the page emit the same argument order",function(){
   // ★★ Two documents describing one command is how the disagreement starts.
   // OPERATOR_GUIDE.md sec B2 carries a positional table; the page emits a command.
