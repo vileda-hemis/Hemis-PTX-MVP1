@@ -1,6 +1,6 @@
 <!-- CORPUS-SOURCE: testnet/operator/OPERATOR_ONEPAGER.md -->
 <!-- CORPUS-TAG: v0.3.5-testnet -->
-<!-- CORPUS-SHA256: 3462c397111514b5722506bb502cda92c235bc537cfaea096ee72d51b0307f17 -->
+<!-- CORPUS-SHA256: 936f1acc6c7968f4d35590e0c50c614d1214def7b85f93564df78c006068548f -->
 
 > **This document is a verbatim copy of `testnet/operator/OPERATOR_ONEPAGER.md` at `v0.3.5-testnet`.** It is not
 > edited for the FAQ bot. If it disagrees with anything else in this corpus, it wins.
@@ -113,12 +113,26 @@ Hemis-cli backupwallet ~/wallet-backup.dat
 
 ## Each gamemaster host
 
-**8. Install**, then generate the BLS keypair **here**. The installer does not generate it.
+**8. Install**, then **start the daemon**, then generate the BLS keypair **here**. The installer
+does not generate it — and it does not start a gamemaster either.
 
 ```bash
 PTX_ROLE=gamemaster ./install.sh
+Hemisd -daemon
+Hemis-cli -rpcwait getblockcount     # 0 is CORRECT here, and it proves the daemon answers
 Hemis-cli generateblskeypair
 ```
+
+★★ **The order matters and this step used to have it wrong.** `install.sh` writes the systemd unit
+but deliberately does **not** start a gamemaster — `gamemaster=1` with no key refuses to start, so
+there is nothing to run until step 9. But `generateblskeypair` is an **RPC call**: it needs a daemon
+listening. Run `install.sh` and then reach for the key without starting anything and you get
+`couldn't connect to server`.
+
+★ **`getblockcount` returning `0` is not a fault.** You have no `addnode` lines yet, so no peers, so
+nothing to sync from — the node has only its genesis block. It is a liveness check: it proves the
+RPC answers before you depend on it. ★ `-rpcwait` is not padding: `-daemon` forks before the RPC
+server is up, so an immediate call can fail on a node that is starting perfectly well.
 
 Keep the **secret** on this machine. Only the **public** half goes to the wallet host.
 
@@ -149,6 +163,16 @@ sudo systemctl enable --now hemis-ptx
 > come back.
 >
 > `ptxnodeid=` comes later — you cannot know it until after registration.
+
+★ **Before registering, confirm this host has peers:**
+
+```bash
+Hemis-cli getconnectioncount         # must be > 0
+```
+
+> ★ Zero here means your `addnode` lines are missing, wrong, or above the `[ptxtestnet]` header.
+> Registering an unreachable gamemaster succeeds and then fails later, quietly — the chain records
+> the address you gave it whether or not anything answers there.
 
 **10. Register**, from the **wallet host**, once per gamemaster.
 
@@ -225,6 +249,7 @@ ptxnodeid=gm1:a1b2c3d4
 
 ```bash
 sudo systemctl restart hemis-ptx
+Hemis-cli -rpcwait getconnectioncount    # ★ -rpcwait: the RPC server lags the restart
 ```
 
 > Lost the response? `Hemis-cli protx_list true true` on the wallet host lists the ProTxs involving
@@ -233,9 +258,15 @@ sudo systemctl restart hemis-ptx
 **12. Verify:**
 
 ```bash
-./self-check.sh                    # exit 0, no [????]
-Hemis-cli getgamemasterstatus      # status: Ready
+grep -c '^externalip=' ~/.Hemis/Hemis.conf   # must be exactly 1
+./self-check.sh                              # exit 0, no [????]
+Hemis-cli -rpcwait getgamemasterstatus       # status: Ready
 ```
+
+★ **The `externalip` count is first because it is the one this document used to get wrong.** Two
+lines means the daemon advertises one of them, and if it is not the one you registered the
+gamemaster syncs, reports `Ready`, and then refuses to arm. `self-check.sh` catches it from
+`v0.3.5-testnet` onward; on an earlier tag it does not, which is why the `grep` is here.
 
 ---
 
