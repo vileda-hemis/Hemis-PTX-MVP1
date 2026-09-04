@@ -1,6 +1,6 @@
 <!-- CORPUS-SOURCE: testnet/operator/OPERATOR_GUIDE.md -->
 <!-- CORPUS-TAG: v0.3.5-testnet -->
-<!-- CORPUS-SHA256: 58a00bf500411db41fb14475f7ad8ff4e653904d7c9b4c1249c54b87bf5aa41f -->
+<!-- CORPUS-SHA256: ab70940d1c97f58246553602c24d989a61e8ccbcb99d3c78ebc47dab99b228ff -->
 
 > **This document is a verbatim copy of `testnet/operator/OPERATOR_GUIDE.md` at `v0.3.5-testnet`.** It is not
 > edited for the FAQ bot. If it disagrees with anything else in this corpus, it wins.
@@ -255,15 +255,33 @@ which is an **RPC call**, not an offline command.
 
 ```bash
 Hemisd -daemon
-Hemis-cli getblockcount     # should answer within a few seconds
+Hemis-cli -rpcwait getblockcount     # 0 is correct here -- you have no peers yet
 ```
+
+★ **`-rpcwait` is not padding.** `-daemon` forks before the RPC server finishes starting, so an
+immediate call can fail on a node that is coming up perfectly well. And `0` is the right answer at
+this point: `install.sh` writes your `addnode` lines **commented**, so nothing is connected yet and
+the node has only its genesis block. This is a liveness check, not a sync check.
 
 If `Hemisd` is not found, `install.sh` did not install binaries — go back to A1.
 To stop it: `Hemis-cli stop`.
 
-★ **This is a 24/7 node.** `-daemon` survives your shell but not a reboot. Arrange for it to start
-at boot (a systemd unit, or `@reboot` in cron) before you report the node as ready — a GM that is
-down after a reboot accrues PoSe penalties exactly as if it were firewalled.
+★★ **This is a 24/7 node, and you do NOT need to arrange a boot mechanism — `install.sh` already
+wrote one.** This paragraph used to say *"a systemd unit, or `@reboot` in cron"*, which sent
+operators off to build something they already had. There is a `hemis-ptx` unit on this machine.
+
+★ **It is deliberately not started yet on a gamemaster**, because `gamemaster=1` with no key refuses
+to start and the key does not exist until A4. So `Hemisd -daemon` is right for now. **Once the key
+is in the config (end of A5), switch to the unit and enable it:**
+
+```bash
+sudo systemctl enable --now hemis-ptx
+```
+
+> **`enable` is the half that matters.** `--now` starts it; `enable` is what brings it back after a
+> reboot. Measured on the coordinator's own hosts, 2026-09-02: all four were running hand-started
+> daemons with this unit present and disabled — including the one holding the entire float. A
+> gamemaster that is down after a reboot accrues PoSe penalties exactly as if it were firewalled.
 
 ### A3. Find your external address — get this right
 
