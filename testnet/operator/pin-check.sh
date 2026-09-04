@@ -49,6 +49,9 @@ testnet/operator/pin-check.sh	v0.3.3-testnet went out with
 testnet/operator/faq/weirdness.md	and later, where `install.sh` enforces this
 testnet/operator/faq/weirdness.md	its instructions told me to clone
 testnet/operator/faq/questions.md	its instructions told me to clone
+testnet/operator/OPERATOR_GUIDE.md	BUG-059 — fixed in
+testnet/operator/faq/weirdness.md	BUG-060 and fixed in
+testnet/operator/faq/weirdness.md	or later**. If you already installed
 testnet/operator/faq/weirdness.md	tag only. Fixed in
 testnet/operator/faq/weirdness.md	shipped with a one-page onboarding document
 testnet/operator/OPERATOR_GUIDE.md	and earlier** it fails from

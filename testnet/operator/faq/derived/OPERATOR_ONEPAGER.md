@@ -1,8 +1,8 @@
 <!-- CORPUS-SOURCE: testnet/operator/OPERATOR_ONEPAGER.md -->
-<!-- CORPUS-TAG: v0.3.4-testnet -->
-<!-- CORPUS-SHA256: 2b1f594b59adb6929276125bde87ce9191ba190bf06897871e0203843a48316a -->
+<!-- CORPUS-TAG: v0.3.5-testnet -->
+<!-- CORPUS-SHA256: 3462c397111514b5722506bb502cda92c235bc537cfaea096ee72d51b0307f17 -->
 
-> **This document is a verbatim copy of `testnet/operator/OPERATOR_ONEPAGER.md` at `v0.3.4-testnet`.** It is not
+> **This document is a verbatim copy of `testnet/operator/OPERATOR_ONEPAGER.md` at `v0.3.5-testnet`.** It is not
 > edited for the FAQ bot. If it disagrees with anything else in this corpus, it wins.
 
 # Hemis PTX Testnet — Operator Onboarding
@@ -43,7 +43,7 @@ firewall). **29995 stays closed** — RPC is loopback-only on both roles.
 
 ```bash
 sudo apt-get update && sudo apt-get install -y git curl ca-certificates
-git clone -b v0.3.4-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
+git clone -b v0.3.5-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 cd Hemis-PTX-MVP1/testnet/operator
 ```
 

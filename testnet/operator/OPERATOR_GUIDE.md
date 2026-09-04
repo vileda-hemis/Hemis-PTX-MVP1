@@ -172,7 +172,7 @@ apt-get update && apt-get install -y --no-install-recommends git curl ca-certifi
 ```
 
 ```bash
-git clone -b v0.3.4-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
+git clone -b v0.3.5-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 cd Hemis-PTX-MVP1/testnet/operator
 ./install.sh
 ```
@@ -727,7 +727,7 @@ one sentence: **`install.sh` never overwrites an existing `Hemis.conf`.**
 # ON THE HOST BEING UPGRADED
 sudo systemctl stop hemis-ptx
 mv ~/Hemis-PTX-MVP1 ~/Hemis-PTX-MVP1.old
-git clone -b v0.3.4-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
+git clone -b v0.3.5-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 cd Hemis-PTX-MVP1/testnet/operator
 PTX_ROLE=gamemaster ./install.sh          # or PTX_ROLE=wallet on the wallet machine
 sudo systemctl restart hemis-ptx
