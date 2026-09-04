@@ -129,7 +129,17 @@ else
     if [ -z "$_declared" ]; then
         unk "this config predates the PTX_ROLE toggle (no '# ROLE:' line) -- re-run install.sh to stamp it, or check listen/externalip by hand"
     elif [ "$_declared" = "gamemaster" ]; then
-        if [ "$_listen" -ge 1 ] && [ "$_extip" -ge 1 ]; then
+        # ★★ TWO externalip LINES PASS A "-ge 1" TEST, AND THAT IS HOW THIS WAS MISSED.
+        # v0.3.4's one-pager told operators to ADD `externalip=<address, bare, no
+        # brackets>` to a config where install.sh had already written one. The result
+        # is two lines: the daemon advertises one of them, and if it is not the one you
+        # registered, the gamemaster syncs, reports Ready, and then refuses to arm with
+        # "Local address ... does not match the address from ProTx" -- the same failure
+        # family as a transposed port. A count check that accepts "1 or more" cannot
+        # see it, which is why it did not.
+        if [ "$_extip" -gt 1 ]; then
+            bad "★ $_extip 'externalip=' lines in $ROLE_CONF, and there must be exactly one. install.sh writes it for you; a second added by hand is a contradiction, and the daemon advertises only one of the two. Delete the line you added, keep the installer's, restart, and re-check."
+        elif [ "$_listen" -ge 1 ] && [ "$_extip" -ge 1 ]; then
             ok "role gamemaster, and the config matches it (listen=1, externalip set)"
         else
             bad "role says GAMEMASTER but listen=1 is $( [ "$_listen" -ge 1 ] && echo present || echo MISSING ) and externalip is $( [ "$_extip" -ge 1 ] && echo set || echo MISSING ). A gamemaster without both registers, shows ENABLED and never receives a signing request."
