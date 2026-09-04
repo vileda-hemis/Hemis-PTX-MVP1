@@ -90,3 +90,30 @@ the number people assume.
 ★ **Covered, and this one does not clear by itself.**
 → `OPERATOR_GUIDE.md` **"If your GM is PoSe-banned"** — needs `protx_update_service` from the wallet
 host, with the BLS secret.
+
+## "how do I install?" / "is it one command?" / "do I run the bootstrap on both machines?"
+
+★ **Covered, and the answer differs per machine — do not give one command for both.**
+→ `weirdness.md` **"do I run `vps-install.sh` on my wallet machine too?"**
+→ `GM_QUICKSTART.md` — the **gamemaster** fast path (`vps-install.sh`)
+→ `OPERATOR_GUIDE.md` **"A1. Install"** and **"Part B — Wallet machine"**
+
+The bootstrap is gamemaster-only and passes no role. A wallet host clones and runs
+`PTX_ROLE=wallet ./install.sh` as its first and only install.
+
+## "can I re-run install.sh?" / "how do I change a host's role?" / "I installed the wrong role"
+
+★★ **Covered, and re-running does NOT convert a host.** Never say that it does.
+→ `weirdness.md` **"I installed the wrong role — can I re-run `install.sh` to convert this host?"`**
+
+The config is never overwritten; a disagreeing `# ROLE:` stamp is refused with `ROLE COLLISION`
+(exit 3); and an *unstamped* older host is not detected at all, which is worse.
+
+## "what does install.sh put in the config?" / "does it set gamemaster=1?"
+
+★ **Covered, and the answer is no — it ships it COMMENTED, deliberately.**
+→ `OPERATOR_GUIDE.md` **"`gamemaster=1` goes in NOW, with the key, and not before"**
+→ `GM_QUICKSTART.md` and `OPERATOR_ONEPAGER.md` config listings
+
+`gamemaster=1` with no key does not start a limited node — it refuses to start. The gamemaster role
+does ship `disablewallet=1`.

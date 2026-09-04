@@ -204,6 +204,83 @@ know how far off it is.
 
 ---
 
+## Symptom: I installed the wrong role — can I re-run `install.sh` to convert this host?
+
+**Applies to:** all versions.
+
+**The obvious reading is wrong.** `install.sh` looks idempotent, so re-running it with a different
+`PTX_ROLE` looks like the way to change a host's role. **It is not.** Re-running does **not** convert
+anything, and depending on the host it either refuses outright or quietly leaves you worse off.
+
+**What is actually happening.** Two separate behaviours, and you need both:
+
+★ **The config is never overwritten once it exists.** If `~/.Hemis/Hemis.conf` is present,
+`install.sh` prints *"already exists — leaving it alone"*, writes a **reference** config beside it as
+`Hemis.conf.template` for you to `diff`, and carries on with everything else. That message is a
+**warning, not an error** — the script does not stop for it.
+
+★★ **So a role change cannot work by re-running.** Everything else would be set up for the new role
+while the config stayed the old one. `install.sh` has a **`ROLE COLLISION`** guard for exactly this:
+it compares the `# ROLE:` stamp inside your existing config against the role you asked for, and if
+they differ it **refuses with exit 3 before doing any work** — no packages, no clone, no binaries,
+no unit.
+
+★★ **The dangerous case is a host with no role stamp.** The stamp was added later, so a config
+written by an older `install.sh` does not carry one — and the guard only fires when it finds a stamp
+to compare. On such a host the collision is **not** detected: the run completes, the banner reports
+**the role you asked for**, and the config on disk is still the role you had. A machine that is
+neither role, reported as the role it is not.
+
+**Do you need to act?** Only if you actually need to change a host's role. The installer's own
+refusal tells you the sequence, and it is the same by hand:
+
+```bash
+sudo systemctl disable --now hemis-ptx
+mv ~/.Hemis/Hemis.conf ~/.Hemis/Hemis.conf.was-gamemaster
+PTX_ROLE=wallet ./install.sh
+```
+
+★ **Better: do not get here.** A wallet host and a gamemaster host are different machines on
+purpose. If you meant to build the other one, build it on the other box.
+
+---
+
+## Symptom: do I run `vps-install.sh` on my wallet machine too?
+
+**Applies to:** all versions.
+
+**The obvious reading is wrong.** The bootstrap is the first command in the quickstart, so it looks
+like the way every machine starts. **A wallet machine never runs it.**
+
+**What is actually happening.** `vps-install.sh` is the **gamemaster** bootstrap — its own first line
+says so — and it is gamemaster-only **by construction, not by omission**: it invokes the installer as
+a bare `bash ./install.sh`, passing **no role at all**, so the installer takes its default. There is
+no wallet mode, no flag that gives it one, and no environment variable it forwards.
+
+★★ **And the obvious repair does not work either, so do not start down it.** "Bootstrap first, then
+re-run with the wallet role" **fails at both steps**: step one silently builds a *gamemaster* (a role
+was never passed), and step two is refused outright, because the bootstrap leaves a
+`# ROLE: gamemaster` stamp in the config and the installer's `ROLE COLLISION` guard exits 3 on a
+stamp that disagrees with the role you asked for. There is no point in the sequence at which you
+have a working wallet host.
+
+★★ **A wallet machine takes a different path from the very beginning, and it is shorter:** clone the
+repository and run the installer once, with the role given explicitly.
+
+```bash
+git clone -b <tag> https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
+cd Hemis-PTX-MVP1/testnet/operator
+PTX_ROLE=wallet ./install.sh
+```
+
+★ **That is the first and only install on that host.** Do not bootstrap first and then "re-run for
+the wallet role" — see the role-collision entry above for why that does not work.
+
+**Do you need to act?** If you already bootstrapped a machine you meant to be your wallet host, read
+the role-collision entry: the config is a gamemaster config and re-running will not convert it.
+
+---
+
 ## Symptom: my PoSe penalty is `0` — does that mean my gamemaster is working?
 
 **Applies to:** all versions.
