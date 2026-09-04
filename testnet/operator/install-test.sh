@@ -177,6 +177,22 @@ cleanup() {
     # ★ Sweep any daemon this run started that is NOT in PIDS -- a start that
     # failed to record its pid is exactly the case that leaked before.
     pkill -f "Hemisd -datadir=$BASE" 2>/dev/null
+    # ★★★ REMOVE ANY UNIT THIS RUN ENABLED. Since KDD-109 the WALLET role does
+    # `systemctl enable --now hemis-ptx`, and the ROLE leg exercises that role --
+    # so running this suite ENABLES A ROOT UNIT ON THE TEST HOST, pointed at a
+    # scratch datadir this function then deletes. Observed on node1: the unit
+    # crash-looped 240 times against a deleted directory, held 29994/29995, and
+    # aborted the NEXT run of this very suite with exit 3. The harness made itself
+    # unrunnable. ★ Only ever removes a unit whose ExecStart names $BASE -- a real
+    # node's unit on a real host must survive this untouched.
+    if [ -f /etc/systemd/system/hemis-ptx.service ] \
+       && grep -q -- "-datadir=$BASE" /etc/systemd/system/hemis-ptx.service 2>/dev/null; then
+        systemctl disable --now hemis-ptx >/dev/null 2>&1
+        rm -f /etc/systemd/system/hemis-ptx.service
+        systemctl daemon-reload >/dev/null 2>&1
+        systemctl reset-failed hemis-ptx >/dev/null 2>&1
+        printf '  cleanup: removed the hemis-ptx unit this run enabled (scratch datadir)\n'
+    fi
     if [ "$DEFAULT_DATADIR_PREEXISTED" = 0 ] && [ -e "$DEFAULT_DATADIR" ]; then
         # ★ States what it OBSERVED, not what it assumes. The first version said
         # "something ran a daemon ... which means it was synchronising MAINNET".
