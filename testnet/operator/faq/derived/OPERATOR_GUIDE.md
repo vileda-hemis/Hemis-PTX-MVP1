@@ -1,6 +1,6 @@
 <!-- CORPUS-SOURCE: testnet/operator/OPERATOR_GUIDE.md -->
 <!-- CORPUS-TAG: v0.3.4-testnet -->
-<!-- CORPUS-SHA256: 0311a8474b86cc59c48af2b2c5a50f979888e74a644be18165ad77e8a6187522 -->
+<!-- CORPUS-SHA256: 9cf9af2811044b894a762d01db46ee8cab3aca4a3ee617da52c4ebf9f6c89b9c -->
 
 > **This document is a verbatim copy of `testnet/operator/OPERATOR_GUIDE.md` at `v0.3.4-testnet`.** It is not
 > edited for the FAQ bot. If it disagrees with anything else in this corpus, it wins.
@@ -442,12 +442,25 @@ exactly why and how.)
    start is the one that proves the file opens;
 3. **only then** give the coordinator an address.
 
-★ **Your gamemaster hosts each also create a `wallet.dat`**, because the shipped config leaves the
-wallet on. Those wallets hold nothing and you do not need to back them up — but keep **a few HMS**
-in one of them if you want the on-node PoSe recovery route to work without moving your BLS secret.
+★★ **Your gamemaster hosts have no wallet at all, and must never hold funds.** The gamemaster role
+ships `disablewallet=1`, so no `wallet.dat` is created on those machines and there is nothing on them
+to back up. ★ **This paragraph used to say the opposite** — that gamemasters create a wallet and that
+you should keep a few HMS in one for on-node PoSe recovery. Both halves were wrong:
+
+* **A gamemaster never holds coins.** It provides nothing on a machine whose only job is to answer
+  with a BLS key, and it adds a `wallet.dat` to lose and a balance to misconfigure.
+* ★★ **The on-node recovery route it described does not exist.** `protx_update_service` funds its
+  transaction through `FundSpecialTx`, and a wallet with no spendable balance cannot fund one —
+  measured on a live zero-balance node, the call fails with **`Insufficient funds`** (`-32603`). So
+  on-node recovery was never available on a host obeying the no-funds rule; putting coins there to
+  enable it would break the rule *and* still be the wrong machine to run it from.
+
+★ **Recovery always runs from your wallet host**, with the BLS secret passed explicitly as argument
+4 — a banned gamemaster cannot supply its own. Keep a copy of that secret somewhere you can reach.
 See "If your GM is PoSe-banned".
 
-★ **The reason is Berkeley DB, and it is specific to this build.** `install.sh` compiles with
+★ **One more reason not to fund a wallet on this build: Berkeley DB, and it is specific to this
+build.** `install.sh` compiles with
 `--with-incompatible-bdb` (`install.sh` section 3b, and it says so out loud on every source build:
 *"this build uses the SYSTEM Berkeley DB, not 4.8: wallets it creates are NOT readable by a stock
 release binary"*). A `wallet.dat` created here is written by the system BDB — 5.3 on Debian 12 —

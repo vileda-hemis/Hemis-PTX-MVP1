@@ -85,9 +85,11 @@ not hold for one host.
 
 ## 1. Install, with the wallet
 
-The wallet is **enabled by default** — the shipped config template writes no `disablewallet` and
-`DEFAULT_DISABLE_WALLET = false` (`src/wallet/wallet.h:87`, read at `src/wallet/init.cpp:55`).
-There is nothing to turn on.
+The wallet is on for **this** host because it is a `PTX_ROLE=wallet` install, and that role writes no
+`disablewallet` line; `DEFAULT_DISABLE_WALLET = false` (`src/wallet/wallet.h:87`, read at
+`src/wallet/init.cpp:55`), so there is nothing to turn on. ★ **This is role-dependent and used to be
+stated as though it were universal:** the `gamemaster` role ships `disablewallet=1`, so a gamemaster
+host has no wallet at all. Do not carry this paragraph across to a gamemaster.
 
 ```bash
 git clone -b <the tag> https://github.com/vileda-hemis/Hemis-PTX-MVP1.git

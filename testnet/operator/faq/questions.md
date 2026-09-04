@@ -117,3 +117,16 @@ The config is never overwritten; a disagreeing `# ROLE:` stamp is refused with `
 
 `gamemaster=1` with no key does not start a limited node — it refuses to start. The gamemaster role
 does ship `disablewallet=1`.
+
+## "does the gamemaster have a wallet?" / "should I keep some coins on it?"
+
+★★ **Covered, and the answer is NO to both. Do not hedge this one** — the guide used to contain the
+opposite claim and an answer that mixes them is incoherent.
+→ `OPERATOR_GUIDE.md` — the gamemaster role ships `disablewallet=1`; **no wallet, no `wallet.dat`,
+  nothing to back up**, and a gamemaster **must never hold funds**.
+→ `OPERATOR_GUIDE.md` **"If your GM is PoSe-banned"** — recovery **always** runs from the wallet
+  host with the BLS secret passed explicitly. There is no on-node route: `FundSpecialTx` cannot fund
+  a transaction from an empty wallet, so it never worked.
+
+★ If you find yourself about to say the wallet is "on but empty", or to suggest keeping "a few HMS"
+on a gamemaster, stop: that is the reversed text, and it was removed.
