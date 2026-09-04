@@ -49,6 +49,11 @@ testnet/operator/pin-check.sh	v0.3.3-testnet went out with
 testnet/operator/faq/weirdness.md	and later, where `install.sh` enforces this
 testnet/operator/faq/weirdness.md	its instructions told me to clone
 testnet/operator/faq/questions.md	its instructions told me to clone
+testnet/explorer/app.py	BUG-059 — fixed in
+testnet/explorer/app.py	and earlier</b> the command above fails
+testnet/explorer/app.py	binary.</footer>
+testnet/explorer/test_decoder.py	from the released
+testnet/explorer/test_register_page.js	Argument order is asserted against
 testnet/operator/OPERATOR_GUIDE.md	BUG-059 — fixed in
 testnet/operator/faq/weirdness.md	BUG-060 and fixed in
 testnet/operator/faq/weirdness.md	or later**. If you already installed
@@ -59,7 +64,12 @@ testnet/operator/OPERATOR_GUIDE.md	made gamemasters ship
 EOF
 )"
 
-PIN_GLOBS=(GM_QUICKSTART.md vps-install.sh 'testnet/operator/*')
+# ★★ testnet/explorer/* IS IN SCOPE, AND ITS ABSENCE WAS A HOLE. The /v2/register
+# walkthrough links operators at OPERATOR_ONEPAGER.md by TAG, and that link sat a
+# release behind through an entire pin bump because this gate never looked at the
+# directory. Same shape as BUG-054 and BUG-060: the pin was live, the gate's
+# scope was not. A pin site the gate cannot see is a pin site that rots.
+PIN_GLOBS=(GM_QUICKSTART.md vps-install.sh 'testnet/operator/*' 'testnet/explorer/*')
 mapfile -t FILES < <(git ls-files "${PIN_GLOBS[@]}" | grep -v '^testnet/operator/faq/derived/')
 # ★★ faq/derived/ IS EXCLUDED FROM CONTENT SCANNING, AND THIS IS NOT A HOLE.
 # Those files are BYTE-COPIES of documents this script already scans at their
