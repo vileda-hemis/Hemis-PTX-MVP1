@@ -48,6 +48,7 @@ testnet/operator/pin-check.sh	git clone -b v0.3.2-testnet
 testnet/operator/pin-check.sh	v0.3.3-testnet went out with
 testnet/operator/faq/weirdness.md	and later, where `install.sh` enforces this
 testnet/operator/faq/weirdness.md	its instructions told me to clone
+testnet/operator/faq/questions.md	its instructions told me to clone
 testnet/operator/faq/weirdness.md	tag only. Fixed in
 testnet/operator/faq/weirdness.md	shipped with a one-page onboarding document
 testnet/operator/OPERATOR_GUIDE.md	and earlier** it fails from
