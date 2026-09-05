@@ -39,6 +39,26 @@ set -uo pipefail
 SELF_CHECK_TAG="v0.4.0-testnet"
 
 DATADIR="${PTX_DATADIR:-$HOME/.Hemis}"
+
+# ★★★ THE CHAIN DIRECTORY, NOT THE DATADIR. Everything the daemon writes per-chain
+# -- debug.log, blocks/, and ptx_shares.dat -- lives in a NETWORK SUBDIRECTORY of
+# the datadir ("ptxtestnet", "ptxbea", "regtest"), because GetDataDir() is
+# chain-scoped. Section 7 checked "$DATADIR/ptx_shares.dat" and so reported the
+# shares file absent on every host for the entire life of the chain.
+#
+# ★ That answer was RIGHT ONLY BY ACCIDENT: no ceremony had ever completed, so
+# absent was true. The first quorum formed 2026-09-05 at h5606 and the shares
+# landed at .Hemis/ptxtestnet/ptx_shares.dat -- and the check STILL said absent,
+# because it cannot pass. A check whose negative result happens to be correct is
+# indistinguishable from one that works, until the day it should turn positive.
+#
+# Derived, not hardcoded: the subdir name differs per network, so find the one the
+# daemon is actually using rather than assuming ptxtestnet.
+CHAINDIR="$DATADIR"
+for _d in "$DATADIR"/*/; do
+    [ -f "${_d}debug.log" ] || [ -d "${_d}blocks" ] || continue
+    CHAINDIR="${_d%/}"; break
+done
 CLI="${PTX_CLI:-Hemis-cli}"
 # ★ Read the ports from THIS GM's own config, not from a constant. A host running
 # three GMs has three port pairs, and probing the wrong pair reports a healthy
@@ -182,7 +202,7 @@ fi
 say "1. Daemon and RPC (local)"
 # ---------------------------------------------------------------------------
 if ! cli getblockcount >/dev/null; then
-    bad "cannot reach the daemon's RPC locally. Is it running? Try: tail -50 $DATADIR/debug.log"
+    bad "cannot reach the daemon's RPC locally. Is it running? Try: tail -50 $CHAINDIR/debug.log"
     echo; echo "  Nothing else can be checked until the daemon answers. Stopping."; exit 1
 fi
 HEIGHT=$(cli getblockcount)
@@ -559,7 +579,7 @@ fi
 # ---------------------------------------------------------------------------
 say "7. ptx_shares.dat -- custody"
 # ---------------------------------------------------------------------------
-SHARES="$DATADIR/ptx_shares.dat"
+SHARES="$CHAINDIR/ptx_shares.dat"
 if [ -f "$SHARES" ]; then
     ok "ptx_shares.dat present ($(stat -c%s "$SHARES") bytes, modified $(stat -c%y "$SHARES" | cut -d. -f1))"
     cat <<'NOTE'
