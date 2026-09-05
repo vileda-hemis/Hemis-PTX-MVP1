@@ -15,6 +15,10 @@
 #include "uint256.h"
 #include "validation.h"
 #include "wallet/wallet.h"
+#include "evo/specialtx_validation.h"
+#include "coins.h"
+#include "chain.h"
+#include "primitives/block.h"
 
 #include <boost/test/unit_test.hpp>
 
@@ -457,6 +461,101 @@ BOOST_AUTO_TEST_CASE(Bug061_CollateralIsSelectableUntilItIsLocked)
     wallet.AvailableCoins(&relaxed, nullptr, includeLocked);
     BOOST_CHECK_MESSAGE(contains(relaxed),
         "fIncludeLocked=true must bring it back -- otherwise (b) proves nothing");
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+
+// ---------------------------------------------------------------------------
+// BUG-063 -- a block template that fails validation must NAME the transaction
+// that failed it, so the assembler can evict rather than rebuild the same
+// doomed block forever.
+//
+// CheckSpecialTx reports the REASON, never the offender, and the throw at
+// blockassembler.cpp:409 carries only FormatStateMessage(). The per-transaction
+// loop in ProcessSpecialTxsInBlock is the only place that knows which tx it
+// was; the fix records it on the CValidationState, which already travels
+// blockassembler -> TestBlockValidity -> ConnectBlock -> here.
+//
+// The offender is deliberately SECOND in block.vtx: an implementation that
+// merely named "the first transaction", or that set the hash unconditionally,
+// passes a weaker test and fails this one.
+// ---------------------------------------------------------------------------
+BOOST_FIXTURE_TEST_SUITE(ptx_bug063_tests, PTXBeaTestingSetup)
+
+BOOST_AUTO_TEST_CASE(Bug063_FailedBlockNamesTheOffendingTransaction)
+{
+    // (1) a well-formed NORMAL tx -- must pass the loop and must NOT be named.
+    CMutableTransaction okTx;
+    okTx.nVersion = CTransaction::TxVersion::SAPLING;
+    okTx.nType    = CTransaction::TxType::NORMAL;
+    okTx.vin.emplace_back(COutPoint(UINT256_ZERO, 0));
+    okTx.vout.emplace_back(CTxOut(1 * COIN, CScript() << OP_TRUE));
+    CTransactionRef okRef = MakeTransactionRef(CTransaction(okTx));
+
+    // (2) a PROREG whose payload cannot be deserialised -- the offender.
+    CMutableTransaction badTx;
+    badTx.nVersion     = CTransaction::TxVersion::SAPLING;
+    badTx.nType        = CTransaction::TxType::PROREG;
+    badTx.extraPayload = std::vector<unsigned char>{0x01, 0x02, 0x03};
+    badTx.vin.emplace_back(COutPoint(UINT256_ZERO, 1));
+    badTx.vout.emplace_back(CTxOut(1 * COIN, CScript() << OP_TRUE));
+    CTransactionRef badRef = MakeTransactionRef(CTransaction(badTx));
+
+    CBlock block;
+    block.vtx.emplace_back(okRef);    // offender is NOT first, on purpose
+    block.vtx.emplace_back(badRef);
+
+    CBlockIndex idx;
+    idx.nHeight = 10;
+    idx.pprev   = nullptr;
+
+    CCoinsView dummy;
+    CCoinsViewCache view(&dummy);
+    std::map<uint256, CPTXRollCommitPayload> noParents;
+
+    CValidationState state;
+    // Nothing is named before the call -- so a later non-null hash is evidence
+    // the loop set it, not that the field defaults to something.
+    BOOST_CHECK(!state.HasOffendingTx());
+
+    bool ok;
+    {
+        LOCK(cs_main);
+        // fJustCheck=true keeps the PTX state sentry disarmed: this test must
+        // not mutate the lottery/pose globals it does not own.
+        ok = ProcessSpecialTxsInBlock(block, &idx, &view, noParents, state, true);
+    }
+
+    BOOST_CHECK_MESSAGE(!ok, "a block carrying an undeserialisable PROREG must fail");
+    BOOST_CHECK_MESSAGE(state.HasOffendingTx(),
+        "the failing block must name its offender -- without this the assembler "
+        "cannot evict and rebuilds the same invalid template forever (BUG-063)");
+    BOOST_CHECK_EQUAL(state.GetOffendingTx().ToString(), badRef->GetHash().ToString());
+    BOOST_CHECK_MESSAGE(state.GetOffendingTx() != okRef->GetHash(),
+        "must name the OFFENDER, not merely the first transaction in the block");
+}
+
+BOOST_AUTO_TEST_CASE(Bug063_CleanBlockNamesNothing)
+{
+    // ★ The discriminator. If the hash were set unconditionally -- or left over
+    // from anywhere -- the test above would pass while the assembler evicted an
+    // innocent transaction on every template it built.
+    CMutableTransaction okTx;
+    okTx.nVersion = CTransaction::TxVersion::SAPLING;
+    okTx.nType    = CTransaction::TxType::NORMAL;
+    okTx.vin.emplace_back(COutPoint(UINT256_ZERO, 7));
+    okTx.vout.emplace_back(CTxOut(1 * COIN, CScript() << OP_TRUE));
+
+    CValidationState state;
+    CBlockIndex idx; idx.nHeight = 10; idx.pprev = nullptr;
+    CCoinsView dummy; CCoinsViewCache view(&dummy);
+    {
+        LOCK(cs_main);
+        CheckSpecialTx(CTransaction(okTx), idx.pprev, &view, state);
+    }
+    BOOST_CHECK_MESSAGE(!state.HasOffendingTx(),
+        "a transaction that passes must leave no offender named");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
