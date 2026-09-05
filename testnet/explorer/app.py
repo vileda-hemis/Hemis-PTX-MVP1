@@ -23,6 +23,25 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# ★★ SELF-REPORTED BUILD IDENTITY. This file is a DEPLOYED artefact: it is copied
+# onto the explorer host and served from there, so no repo-side gate can see what
+# is actually running -- pin-check.sh validates the file in git while this page
+# may serve something two releases older. Measured 2026-09-05: the live page was
+# still on v0.3.5-testnet, having missed v0.3.6 entirely, and carried a port
+# validation that could never fire.
+#
+# ★ The hash is computed from THIS FILE at import, so it cannot be edited to lie
+# without changing the value it reports. ★★ And it is emitted into the page
+# FOOTER rather than a log: anyone can read it in a browser without a shell,
+# which is the same property the register page's offline verification rests on.
+DEPLOY_TAG = "v0.4.0-testnet"
+try:
+    import hashlib as _hl
+    with open(os.path.abspath(__file__), "rb") as _f:
+        DEPLOY_HASH = _hl.sha256(_f.read()).hexdigest()[:12]
+except Exception:
+    DEPLOY_HASH = "unknown"
+
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer   # noqa: E402
 from urllib.parse import parse_qs                                      # noqa: E402
 
@@ -656,7 +675,8 @@ not a validated registration. Nothing you type here leaves your browser.</div>
 <footer>Composed locally. This page has no network access &mdash; its content-security policy sets
 <code>connect-src 'none'</code>, so the browser blocks any call it might try to make.
 Argument order and rules are taken from <code>Hemis-cli help protx_register</code> in the released
-<code>v0.3.1-testnet</code> binary.</footer>
+<code>v0.3.1-testnet</code> binary.
+<br><span class=deployid>serving """ + DEPLOY_TAG + """ &middot; app """ + DEPLOY_HASH + """</span></footer>
 </div>
 <script>
 var RESERVED = ["admin","system","null","none","gm","gamemaster","node","default","test"];

@@ -26,6 +26,18 @@ set -uo pipefail
 # $HOME/.Hemis -- see the BUG-047 note there. A self-check that looked in a
 # different directory from the one the operator installed into would report a
 # perfectly healthy node as missing.
+# ★★ THE TAG THIS SCRIPT SHIPPED WITH. A CONSTANT ON PURPOSE, AND THE REASON
+# MATTERS. Section 0 below compares the BINARY against the host's checked-out
+# source -- which is the right check for binary/source drift, and is blind to the
+# case where the whole clone is old, because then the reference is stale too.
+# This script is itself a deployed artefact: it is copied onto a host at install
+# time and never updated again. Measured 2026-09-05: every fleet host carried a
+# self-check.sh 3,013 bytes behind the repo, so none of them could see section 1b
+# -- the drift detector was itself drifted, and reported green while blind.
+# pin-check.sh enforces this value at each cut, which is the half a repo-side
+# gate can see.
+SELF_CHECK_TAG="v0.4.0-testnet"
+
 DATADIR="${PTX_DATADIR:-$HOME/.Hemis}"
 CLI="${PTX_CLI:-Hemis-cli}"
 # ★ Read the ports from THIS GM's own config, not from a constant. A host running
@@ -69,6 +81,14 @@ probe() {
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 say "0. Build identity -- are you running what you were told to run?"
+# ★ First: does THIS SCRIPT declare itself, and does it match the binary? A stale
+# self-check.sh cannot report the checks it does not contain, so it must say what
+# it is before it says anything about the host.
+_bin_tag="$( (command -v Hemisd >/dev/null 2>&1 && Hemisd -version 2>/dev/null | head -1) | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+-testnet' | head -1)"
+printf '  [info] self-check.sh shipped with %s\n' "$SELF_CHECK_TAG"
+if [ -n "$_bin_tag" ] && [ "$_bin_tag" != "$SELF_CHECK_TAG" ]; then
+    warn "this self-check.sh is from $SELF_CHECK_TAG but the daemon is $_bin_tag -- your copy of the operator scripts is STALE and cannot run checks added since. Re-fetch: git -C ~/Hemis-PTX-MVP1 fetch --tags && git -C ~/Hemis-PTX-MVP1 checkout $_bin_tag -- testnet/operator/"
+fi
 # ---------------------------------------------------------------------------
 # ★★ THIS CHECK DID NOT EXIST, AND ITS ABSENCE IS THE DEFECT IT FIXES.
 # Nothing in install.sh, self-check.sh or the readiness criteria ever compared

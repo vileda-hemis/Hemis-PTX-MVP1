@@ -52,7 +52,8 @@ testnet/operator/faq/questions.md	its instructions told me to clone
 testnet/operator/OPERATOR_ONEPAGER.md	onward; on an earlier tag
 testnet/explorer/app.py	BUG-059 — fixed in
 testnet/explorer/app.py	and earlier</b> the command above fails
-testnet/explorer/app.py	binary.</footer>
+testnet/explorer/app.py	</code> binary.
+testnet/explorer/app.py	having missed
 testnet/explorer/test_decoder.py	from the released
 testnet/explorer/test_register_page.js	Argument order is asserted against
 testnet/operator/OPERATOR_GUIDE.md	BUG-059 — fixed in
