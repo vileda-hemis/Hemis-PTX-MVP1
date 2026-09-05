@@ -1,5 +1,5 @@
 <!-- CORPUS-AUTHORED: question index -->
-<!-- CORPUS-TAG: v0.3.6-testnet -->
+<!-- CORPUS-TAG: v0.4.0-testnet -->
 
 # How operators actually phrase things
 
@@ -165,7 +165,7 @@ then enable again.
 **v0.3.6 fixes both:** the daemon start is in step 8, and `Hemis-cli stop` sits between it and
 `enable --now`.
 
-★★ **No C++ changed.** `src/` is byte-identical from `v0.3.2-testnet` through `v0.3.6-testnet`, so
+★★ **That was true up to `v0.3.6-testnet` and is NOT true of `v0.4.0-testnet`.** `src/` is byte-identical from `v0.3.2-testnet` through `v0.3.6-testnet`, so
 the daemon differs only in its build-id and version string. **Upgrading is optional** — an operator
 who has already installed needs only the `systemctl is-active hemis-ptx` check. Anyone **mid-install
 should use v0.3.6**, because the earlier steps do not work as written.

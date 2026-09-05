@@ -1,8 +1,8 @@
 <!-- CORPUS-SOURCE: testnet/operator/OPERATOR_GUIDE.md -->
-<!-- CORPUS-TAG: v0.3.6-testnet -->
-<!-- CORPUS-SHA256: c9046c8b1a7e0900fff4c489828ea16763557995538f0acc844b4b4050d2b546 -->
+<!-- CORPUS-TAG: v0.4.0-testnet -->
+<!-- CORPUS-SHA256: ca052e16b6c3e83f33b84dc71f0e45cb4954dcad42321b60c6ba8197c41a2f4f -->
 
-> **This document is a verbatim copy of `testnet/operator/OPERATOR_GUIDE.md` at `v0.3.6-testnet`.** It is not
+> **This document is a verbatim copy of `testnet/operator/OPERATOR_GUIDE.md` at `v0.4.0-testnet`.** It is not
 > edited for the FAQ bot. If it disagrees with anything else in this corpus, it wins.
 
 # PTX testnet — operator guide
@@ -179,7 +179,7 @@ apt-get update && apt-get install -y --no-install-recommends git curl ca-certifi
 ```
 
 ```bash
-git clone -b v0.3.6-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
+git clone -b v0.4.0-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 cd Hemis-PTX-MVP1/testnet/operator
 ./install.sh
 ```
@@ -782,7 +782,7 @@ one sentence: **`install.sh` never overwrites an existing `Hemis.conf`.**
 # ON THE HOST BEING UPGRADED
 sudo systemctl stop hemis-ptx
 mv ~/Hemis-PTX-MVP1 ~/Hemis-PTX-MVP1.old
-git clone -b v0.3.6-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
+git clone -b v0.4.0-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 cd Hemis-PTX-MVP1/testnet/operator
 PTX_ROLE=gamemaster ./install.sh          # or PTX_ROLE=wallet on the wallet machine
 sudo systemctl restart hemis-ptx
