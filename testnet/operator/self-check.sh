@@ -169,6 +169,53 @@ HEIGHT=$(cli getblockcount)
 ok "RPC answers locally; height $HEIGHT"
 
 # ---------------------------------------------------------------------------
+say "1b. ★ Service supervision -- will this node come back after a reboot?"
+# ---------------------------------------------------------------------------
+# ★★ The failure this exists to catch is SILENT and DELAYED, which is why the
+# daemon answering RPC above proves nothing about it. `Hemis-cli stop && Hemisd`
+# -- the mainnet restart reflex -- leaves a perfectly healthy node that systemd
+# does NOT own: the stop marks the unit inactive, the datadir frees, the
+# hand-start succeeds, and nothing collides or errors. The node then runs for
+# weeks and disappears at the next reboot, at which point nobody connects it to
+# a command typed a fortnight earlier.
+#
+# Found live on 2026-09-05: ptx004 had reached this state TWICE (once at install,
+# once during maintenance) and ptx007 was running unenabled. Both were invisible
+# to this script, because until now it checked nothing about the unit at all.
+if ! command -v systemctl >/dev/null 2>&1; then
+    warn "no systemctl on this host -- cannot check service supervision (not a failure if you supervise another way)"
+elif ! systemctl list-unit-files hemis-ptx.service >/dev/null 2>&1 \
+     || [ -z "$(systemctl list-unit-files hemis-ptx.service --no-legend 2>/dev/null)" ]; then
+    warn "no hemis-ptx.service on this host -- if you started the daemon by hand it will NOT survive a reboot"
+else
+    U_ACTIVE=$(systemctl is-active  hemis-ptx.service 2>/dev/null)
+    U_ENABLED=$(systemctl is-enabled hemis-ptx.service 2>/dev/null)
+    U_MAINPID=$(systemctl show hemis-ptx.service -p MainPID --value 2>/dev/null)
+    RUNNING_PIDS=$(pgrep -x Hemisd 2>/dev/null | tr '\n' ' ')
+    FIRST_PID=$(printf '%s' "$RUNNING_PIDS" | awk '{print $1}')
+
+    # (i) enabled -- survives reboot at all
+    if [ "$U_ENABLED" = "enabled" ]; then
+        ok "hemis-ptx.service is enabled -- it starts on boot"
+    else
+        bad "hemis-ptx.service is NOT enabled (is-enabled: ${U_ENABLED:-unknown}). This node will NOT come back after a reboot. Fix: sudo systemctl enable hemis-ptx"
+    fi
+
+    # (ii) ★ the orphan: a daemon is running but it is not the unit's daemon
+    if [ -n "$FIRST_PID" ] && [ "$U_MAINPID" != "$FIRST_PID" ]; then
+        bad "a Hemisd is running (pid $FIRST_PID) but systemd does not own it (unit MainPID=${U_MAINPID:-0}, state ${U_ACTIVE:-unknown}). This is the \`Hemis-cli stop && Hemisd\` state: healthy now, gone at the next reboot. Fix: $CLI stop; sudo systemctl reset-failed hemis-ptx; sudo systemctl start hemis-ptx"
+    elif [ -n "$FIRST_PID" ]; then
+        ok "the running daemon IS the unit's (MainPID $U_MAINPID) -- systemd owns it"
+    fi
+
+    # (iii) a unit that gave up. It reports failed while a hand-started daemon
+    #       serves RPC perfectly well, so (i) and (ii) can both look survivable.
+    if [ "$U_ACTIVE" = "failed" ]; then
+        bad "hemis-ptx.service is in the failed state. Check: journalctl -u hemis-ptx -n 30 --no-pager"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 say "2. Chain sync"
 # ---------------------------------------------------------------------------
 PEERS=$(cli getconnectioncount || echo 0)
