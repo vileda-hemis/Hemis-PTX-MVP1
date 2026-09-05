@@ -654,11 +654,28 @@ must be empty when operatorReward is 0"* (`rpcevo.cpp:437-455`).
 It does *not* have to differ from your payout address — the help text's own example uses one address
 for owner, voting, payout and operator payout.
 
-★ **Your collateral is protected from your own staker, automatically.** The moment the registration
-transaction lands in your wallet it is locked (`CWallet::LockIfMyCollateral`, called from
-`AddToWalletIfInvolvingMe`, `src/wallet/wallet.cpp:1102`), and every DGM collateral is re-locked at
-each startup (`src/tiertwo/init.cpp:258-266`, gated only by `-gmconflock`, default on). You do not
-need to do anything — it is the obvious worry and the answer is good.
+★ **Your collateral is protected from your own staker once the registration exists — and NOT
+before.** The moment the registration transaction lands in your wallet it is locked
+(`CWallet::LockIfMyCollateral`, called from `AddToWalletIfInvolvingMe`,
+`src/wallet/wallet.cpp:1102`), and every DGM collateral is re-locked at each startup
+(`src/tiertwo/init.cpp:258-266`, gated only by `-gmconflock`, default on).
+
+★★ **But both mechanisms are keyed on the registration already existing, so neither covers the
+window that matters.** `LockIfMyCollateral` fires when the ProRegTx *arrives* — after the wallet has
+already chosen that transaction's inputs — and the startup relock walks the **registered** list, which
+an unconfirmed registration is not in. In that gap the collateral is an ordinary spendable coin, and
+**the wallet can select it to pay the registration's own fee**: the transaction then names as its
+collateral an outpoint it simultaneously spends, and is invalid from the moment it is built. Whether
+this happens is decided by which vout your change landed on — it is luck, not a rule. It bit ptx12 on
+2026-09-05 and halted the chain for 30 minutes (BUG-061, BUG-062).
+
+★ **What to do about it.** Fund the collateral and let it **confirm**, then register — do not register
+against an output your wallet may still reach for. If you are registering from a wallet that also
+stakes, check afterwards that `getrawtransaction <protx-txid> 1` does **not** list your collateral
+outpoint among its own `vin`; if it does, the registration will never confirm no matter how long you
+wait, and you must re-fund and re-register. `lockunspent` is **not** a workaround on this build — its
+signature differs from Bitcoin's and `lockunspent false '[{...}]'` is refused with *"Expected type
+bool, got array"*.
 
 ### ★★ The last two arguments are optional to the RPC and NOT optional to you
 
