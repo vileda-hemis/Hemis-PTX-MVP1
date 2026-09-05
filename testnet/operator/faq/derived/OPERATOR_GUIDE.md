@@ -1,6 +1,6 @@
 <!-- CORPUS-SOURCE: testnet/operator/OPERATOR_GUIDE.md -->
 <!-- CORPUS-TAG: v0.3.5-testnet -->
-<!-- CORPUS-SHA256: ab70940d1c97f58246553602c24d989a61e8ccbcb99d3c78ebc47dab99b228ff -->
+<!-- CORPUS-SHA256: 751d5404e9b677005201067a4dc3f779e02cde70e85840c61159b0439a6b76a3 -->
 
 > **This document is a verbatim copy of `testnet/operator/OPERATOR_GUIDE.md` at `v0.3.5-testnet`.** It is not
 > edited for the FAQ bot. If it disagrees with anything else in this corpus, it wins.
@@ -275,8 +275,16 @@ to start and the key does not exist until A4. So `Hemisd -daemon` is right for n
 is in the config (end of A5), switch to the unit and enable it:**
 
 ```bash
+Hemis-cli stop                             # ★ REQUIRED -- see below
 sudo systemctl enable --now hemis-ptx
 ```
+
+★★ **The `Hemis-cli stop` is not optional and it fails half-silently without it.** The daemon you
+hand-started still holds the datadir lock, so `enable --now` **partly succeeds**: `enable` works,
+`--now` fails with *"Cannot obtain a lock on data directory"*. You are left with an **enabled unit
+that is not running** beside a **manual daemon that is** — everything looks fine, and the node does
+not come back after a reboot. If you have already hit it: `Hemis-cli stop`, then
+`sudo systemctl reset-failed hemis-ptx` (the retry limit will have tripped), then enable again.
 
 > **`enable` is the half that matters.** `--now` starts it; `enable` is what brings it back after a
 > reboot. Measured on the coordinator's own hosts, 2026-09-02: all four were running hand-started

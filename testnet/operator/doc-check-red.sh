@@ -37,6 +37,11 @@ red "INV-3 forbidden, externalip= presented as a line to add" "$T" "presents 'ex
 T=$(mk); printf '\nArrange for it to start at boot with @reboot in cron.\n' >> "$T/testnet/operator/OPERATOR_GUIDE.md"
 red "INV-4 retired noun, unmarked @reboot" "$T" "names a retired mechanism with no retirement marker"
 
+# INV-5: remove the stop between the hand-start and the enable -- the defect an
+# operator hit on ptx007, and one my own two fixes composed into.
+T=$(mk); sed -i '/Hemis-cli stop  *# ★ REQUIRED/d' "$T/testnet/operator/OPERATOR_ONEPAGER.md"
+red "INV-5 stop removed between hand-start and enable" "$T" "is still holding the datadir"
+
 # and the exemption-rot check
 T=$(mk); sed -i '/no .-ptxfanoutport. to match/d' "$T/testnet/operator/ONBOARDING.md"
 red "exemption rot, an allowlist entry that stops matching" "$T" "STALE EXEMPTION"

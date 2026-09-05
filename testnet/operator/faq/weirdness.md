@@ -204,6 +204,57 @@ know how far off it is.
 
 ---
 
+## Symptom: `systemctl` says the unit is **enabled** but the daemon running is not the unit's
+
+**Applies to:** all versions.
+
+**The obvious reading is wrong.** `systemctl enable --now hemis-ptx` printed no error you noticed,
+`Hemis-cli getblockcount` answers, and the node is synced. **It looks finished.** It is not: the
+daemon answering you is the one *you* started by hand, and the unit is enabled but **dead**.
+
+**What is actually happening.** `enable --now` is two operations, and only the first succeeded.
+`enable` creates the boot symlink — that always works. `--now` then tries to *start* the service,
+and it cannot, because the daemon you hand-started in the previous step **still holds the datadir
+lock**. The unit fails with *"Cannot obtain a lock on data directory"*.
+
+★★ **Nothing tells you.** `systemctl enable --now` does not fail loudly when only the `--now` half
+fails, your node keeps answering, and every check passes — because a node *is* running. It is just
+not the one systemd will bring back.
+
+**The consequence arrives at the next reboot.** The hand-started daemon dies with the machine, the
+unit tries to start it, and — depending on how many times it already retried — may have tripped its
+restart limit and stopped trying. Your gamemaster is down, unreachable, and accruing PoSe penalties.
+★ This was measured on four coordinator hosts on 2026-09-02, all running hand-started daemons beside
+an enabled-but-stopped unit, including the one holding the entire float.
+
+**How to tell:**
+
+```bash
+systemctl is-enabled hemis-ptx     # enabled
+systemctl is-active  hemis-ptx     # ★ failed or inactive -- THIS is the tell
+pgrep -a Hemisd                    # yet a Hemisd is running: it is yours, not the unit's
+```
+
+**Do you need to act?** Yes, and it takes three commands:
+
+```bash
+Hemis-cli stop
+sudo systemctl reset-failed hemis-ptx   # ★ the retry limit will have tripped
+sudo systemctl enable --now hemis-ptx
+systemctl is-active hemis-ptx           # must now say: active
+```
+
+★ **`reset-failed` is the step people miss.** After five failed starts in five minutes the unit
+enters a failed state and *refuses to retry* — that limit is deliberate, so a broken unit stops
+hammering rather than looping invisibly. Until you clear it, `enable --now` will appear to do
+nothing at all.
+
+★★ **The documents used to cause this**, by telling you to hand-start the daemon for
+`generateblskeypair` and then to enable the unit, with nothing in between. They now say
+`Hemis-cli stop` first. If you followed an earlier copy, this entry is why.
+
+---
+
 ## Symptom: my gamemaster will not arm — "Local address ... does not match the address from ProTx"
 
 **Applies to:** all versions.

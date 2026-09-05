@@ -1,6 +1,6 @@
 <!-- CORPUS-SOURCE: testnet/operator/OPERATOR_ONEPAGER.md -->
 <!-- CORPUS-TAG: v0.3.5-testnet -->
-<!-- CORPUS-SHA256: 936f1acc6c7968f4d35590e0c50c614d1214def7b85f93564df78c006068548f -->
+<!-- CORPUS-SHA256: 365524a3615784495446f58d5f6f3f66401371a9819d2ff9cbc46b8e4f17e4d5 -->
 
 > **This document is a verbatim copy of `testnet/operator/OPERATOR_ONEPAGER.md` at `v0.3.5-testnet`.** It is not
 > edited for the FAQ bot. If it disagrees with anything else in this corpus, it wins.
@@ -156,8 +156,16 @@ the duplicate is the one that is hard to spot later. If it is missing, the insta
 — re-run it rather than patching around it.
 
 ```bash
+Hemis-cli stop                             # ★ REQUIRED -- see below
 sudo systemctl enable --now hemis-ptx
 ```
+
+★★ **The `Hemis-cli stop` is not optional and it fails half-silently without it.** The daemon you
+hand-started still holds the datadir lock, so `enable --now` **partly succeeds**: `enable` works,
+`--now` fails with *"Cannot obtain a lock on data directory"*. You are left with an **enabled unit
+that is not running** beside a **manual daemon that is** — everything looks fine, and the node does
+not come back after a reboot. If you have already hit it: `Hemis-cli stop`, then
+`sudo systemctl reset-failed hemis-ptx` (the retry limit will have tripped), then enable again.
 
 > **`enable` matters.** Without it the daemon runs until the next reboot and then silently does not
 > come back.

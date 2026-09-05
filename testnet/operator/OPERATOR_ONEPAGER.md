@@ -149,8 +149,16 @@ the duplicate is the one that is hard to spot later. If it is missing, the insta
 — re-run it rather than patching around it.
 
 ```bash
+Hemis-cli stop                             # ★ REQUIRED -- see below
 sudo systemctl enable --now hemis-ptx
 ```
+
+★★ **The `Hemis-cli stop` is not optional and it fails half-silently without it.** The daemon you
+hand-started still holds the datadir lock, so `enable --now` **partly succeeds**: `enable` works,
+`--now` fails with *"Cannot obtain a lock on data directory"*. You are left with an **enabled unit
+that is not running** beside a **manual daemon that is** — everything looks fine, and the node does
+not come back after a reboot. If you have already hit it: `Hemis-cli stop`, then
+`sudo systemctl reset-failed hemis-ptx` (the retry limit will have tripped), then enable again.
 
 > **`enable` matters.** Without it the daemon runs until the next reboot and then silently does not
 > come back.

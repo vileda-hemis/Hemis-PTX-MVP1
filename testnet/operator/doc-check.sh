@@ -122,6 +122,45 @@ for f in "${DOCS[@]}"; do
 done
 [ "$n4" -eq 0 ] && ok "every mention of a retired mechanism is marked as retired"
 
+say "INV-5  a hand-started daemon must be STOPPED before the unit is enabled"
+# ★★★ THIS DEFECT WAS INTRODUCED BY TWO CORRECT FIXES COMPOSING. INV-1 forced a
+# daemon start before generateblskeypair; INV-2 forced `systemctl enable --now`.
+# Applied independently, they leave the operator hand-starting a daemon and then
+# enabling a unit that cannot bind the datadir: `enable` succeeds, `--now` fails
+# on "Cannot obtain a lock on data directory", and the result is an ENABLED unit
+# that is not running beside a manual daemon that is. Everything reads green and
+# the node dies at the next reboot -- exactly the state measured on four
+# coordinator hosts on 2026-09-02. Found by an operator following the document.
+#
+# ★ The stop must be A STEP, not a mention. OPERATOR_GUIDE.md carries the aside
+# "To stop it: `Hemis-cli stop`" between the two, and a line-order check would
+# have passed on it. So the stop is only counted inside a fenced code block.
+for f in "${DOCS[@]}"; do
+    [ -f "$f" ] || continue
+    en=$(grep -n 'systemctl enable --now hemis-ptx' "$f" | head -1 | cut -d: -f1)
+    st=$(grep -nE '^\s*(sudo )?Hemisd( -datadir=[^ ]*)? -daemon' "$f" | head -1 | cut -d: -f1)
+    [ -z "$en" ] || [ -z "$st" ] && continue
+    [ "$st" -gt "$en" ] && continue          # unit enabled first; no hand-start to strand
+    # ★ The fenced-block rule is a MARKDOWN rule. It exists because prose can
+    # mention a command without prescribing it -- OPERATOR_GUIDE.md's "To stop it:
+    # `Hemis-cli stop`" is an aside, not a step, and a line-order check passes on
+    # it wrongly. A shell script has no fences and no asides: every line of a
+    # heredoc banner is instruction the operator reads as a step. So .md files
+    # require the stop inside a fence; everything else requires only line order.
+    case "$f" in
+        *.md) stop=$(awk -v a="$st" -v b="$en" '
+                  /^[[:space:]]*```/ { inb = !inb; next }
+                  inb && NR>a && NR<b && /Hemis-cli stop|systemctl stop hemis-ptx/ { print NR; exit }' "$f") ;;
+        *)    stop=$(awk -v a="$st" -v b="$en" '
+                  NR>a && NR<b && /Hemis-cli stop|systemctl stop hemis-ptx/ { print NR; exit }' "$f") ;;
+    esac
+    if [ -n "$stop" ]; then
+        ok "$f  stops the hand-started daemon at :$stop before enabling at :$en"
+    else
+        bad "$f:$en enables the unit at :$en while a daemon hand-started at :$st is still holding the datadir. 'enable' will succeed and '--now' will fail on the lock -- leaving an enabled-but-stopped unit beside a running manual daemon. Add 'Hemis-cli stop' as a STEP between them."
+    fi
+done
+
 say "Exemptions"
 while IFS=$'\t' read -r ef es; do
     [ -z "${ef:-}" ] && continue
@@ -134,7 +173,7 @@ done <<< "$EXEMPT"
 
 say "Verdict"
 if [ "$FAIL" -eq 0 ]; then
-    printf '  doc-check: OK -- %d documents, 4 invariants, every exemption still matches\n' "${#DOCS[@]}"
+    printf '  doc-check: OK -- %d documents, 5 invariants, every exemption still matches\n' "${#DOCS[@]}"
     exit 0
 fi
 printf '  doc-check: %d FAILURE(S)\n' "$FAIL"

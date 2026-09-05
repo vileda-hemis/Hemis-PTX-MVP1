@@ -226,7 +226,14 @@ cat <<EOF
       IN the config, switch to the unit this installer already wrote and ENABLE it,
       so the node comes back after a reboot:
 
+        Hemis-cli stop            # REQUIRED: the hand-started daemon holds the lock
         sudo systemctl enable --now hemis-ptx
+
+      ★ WITHOUT THE STOP THIS FAILS HALF-SILENTLY. The hand-started daemon still
+        holds the datadir lock, so 'enable' succeeds and '--now' fails on "Cannot
+        obtain a lock on data directory" -- an enabled unit that is NOT running,
+        beside a manual daemon that is. If you hit it: Hemis-cli stop, then
+        sudo systemctl reset-failed hemis-ptx, then enable again.
 
       ★ enable is the half that matters. Measured 2026-09-02: all four coordinator
         hosts were running hand-started daemons with this unit present and disabled

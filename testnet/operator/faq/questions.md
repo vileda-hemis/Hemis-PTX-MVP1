@@ -140,3 +140,12 @@ Two causes that look identical: `port=`/`rpcport=` transposed in the config, or 
 with **no port**, in which case the chain stored the default `:29993`. Remedy is
 `protx_update_service` from the **wallet host** with the **BLS secret** as argument 4 — never
 re-registration.
+
+## "enable --now didn't work" / "unit is enabled but not running" / "it died after a reboot"
+
+★★ **Covered, and the cause is a lock, not a systemd problem.**
+→ `weirdness.md` **"`systemctl` says the unit is enabled but the daemon running is not the unit's"**
+
+`enable` succeeds and `--now` fails because the hand-started daemon holds the datadir. Fix is
+`Hemis-cli stop`, then **`systemctl reset-failed hemis-ptx`** (the retry limit will have tripped),
+then enable again.
