@@ -22,6 +22,8 @@
 #include "compat/sanity.h"
 #include "consensus/upgrades.h"
 #include "fs.h"
+
+#include <cstdlib>   // getenv, for the systemd INVOCATION_ID check
 #include "httpserver.h"
 #include "httprpc.h"
 #include "invalid.h"
@@ -404,6 +406,7 @@ std::string HelpMessage(HelpMessageMode mode)
     if (mode == HMM_BITCOIND) {
 #if !defined(WIN32)
         strUsage += HelpMessageOpt("-daemon", "Run in the background as a daemon and accept commands");
+        strUsage += HelpMessageOpt("-allowhandstart", "Start even though this host has a hemis-ptx systemd unit and systemd did not start this process. Correct for debugging or a disposable datadir; a node started this way is unsupervised and does not survive a reboot");
 #endif
     }
     strUsage += HelpMessageOpt("-datadir=<dir>", "Specify data directory");
@@ -1174,9 +1177,68 @@ static bool LockDataDirectory(bool probeOnly)
     return true;
 }
 
+// ★★★ REFUSE A HAND-START ON A HOST THAT HAS A UNIT (2026-09-05).
+//
+// The damaging sequence is not a mistake, it is a REFLEX: `Hemis-cli stop && Hemisd`
+// is how every Hemis mainnet operator has restarted a node for years, and on a
+// systemd host it produces a perfectly healthy daemon that systemd does not own.
+// Nothing collides and nothing errors -- the stop leaves the unit inactive, the
+// datadir frees, the hand-start succeeds -- and the node then runs for weeks and
+// does not come back from the next reboot, at which point nobody connects it to a
+// command typed a fortnight earlier. Measured on ptx004 twice (install, and again
+// during maintenance BY SOMEONE WHO KNEW THE DEFECT EXISTED) and on ptx007.
+//
+// Documentation cannot close this. The one-pager already carried the warning, and
+// doc-check.sh already enforced the warning's presence, when both hosts broke.
+//
+// ★ The discriminator is INVOCATION_ID: systemd sets it in the environment of a
+// service's processes and it is inherited by their children. Verified 2026-09-05:
+// present on unit-started daemons and equal to the unit's InvocationID; absent in
+// an interactive ssh session, which is where the reflex is typed.
+//
+// ★★ KNOWN LIMIT, stated rather than hidden: anything launched FROM a systemd
+// service inherits that service's INVOCATION_ID and is therefore not caught --
+// cron units, provisioning tools, and (measured) the qemu guest agent. Those are
+// automation, not muscle memory, so the case this exists for is covered.
+//
+// REFUSES rather than warns: a warning scrolls past in a foreground start and
+// teaches nothing, while a refusal costs one keystroke and closes the class.
+static bool RefuseUnsupervisedStart()
+{
+    if (gArgs.GetBoolArg("-allowhandstart", false)) {
+        // Loud on purpose. A silent override on a producer is its own defect: it
+        // would let the state this check exists to prevent be re-created with no
+        // trace in the log anyone reads afterwards.
+        LogPrintf("★ WARNING: -allowhandstart was given. This daemon is NOT supervised by "
+                  "systemd, will NOT restart on failure, and will NOT come back after a "
+                  "reboot. Correct for a disposable datadir or debugging; wrong for a node "
+                  "you intend to keep.\n");
+        return true;
+    }
+    static const fs::path unit_path("/etc/systemd/system/hemis-ptx.service");
+    if (!fs::exists(unit_path)) return true;          // no unit -> nothing to strand
+    if (std::getenv("INVOCATION_ID") != nullptr) return true;  // started by systemd
+
+    return UIError(strprintf(_(
+        "This host has a hemis-ptx systemd unit and this daemon was not started by it.\n\n"
+        "Start it with:\n"
+        "    sudo systemctl start hemis-ptx\n"
+        "or, after editing the config:\n"
+        "    sudo systemctl restart hemis-ptx\n\n"
+        "A daemon started by hand is not owned by systemd. It serves RPC perfectly and "
+        "runs until the next reboot, and then it does not come back -- which is why this "
+        "refuses instead of warning.\n\n"
+        "If you meant to start one by hand (debugging, or a disposable datadir), pass "
+        "-allowhandstart.")));
+}
+
 bool AppInitSanityChecks()
 {
     // ********************************************************* Step 4: sanity checks
+
+    // ★ Before anything expensive and before the datadir lock: refuse a hand-start
+    // on a host that has a unit. See RefuseUnsupervisedStart above.
+    if (!RefuseUnsupervisedStart()) return false;
 
     // Initialize elliptic curve code
     RandomInit();
