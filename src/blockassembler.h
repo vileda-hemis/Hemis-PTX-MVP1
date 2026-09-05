@@ -25,6 +25,24 @@ class CWallet;
 
 namespace Consensus { struct Params; };
 
+class CValidationState;
+
+/**
+ * ★ BUG-063: evict the transaction that a failed block template named.
+ *
+ * Extracted from BlockAssembler::CreateNewBlock so it can be tested directly:
+ * the eviction there was reachable only by driving the whole assembler against
+ * a live mempool, which left the half that actually removes the transaction
+ * proven by reading rather than by test.
+ *
+ * Returns true only when a transaction was actually removed. Names nothing,
+ * removes nothing: a state with no offender (the ordinary case, and every
+ * failure that is not a per-transaction one) must leave the pool untouched,
+ * because a template that evicted on every failure would drop innocent
+ * transactions — worse than the bug this fixes.
+ */
+bool PTX_EvictOffendingTx(CTxMemPool& pool, const CValidationState& state);
+
 struct CBlockTemplate
 {
     CBlock block;

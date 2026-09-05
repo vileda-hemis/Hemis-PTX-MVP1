@@ -19,6 +19,10 @@
 #include "coins.h"
 #include "chain.h"
 #include "primitives/block.h"
+#include "blockassembler.h"
+#include "txmempool.h"
+#include "validationinterface.h"
+#include "scheduler.h"
 
 #include <boost/test/unit_test.hpp>
 
@@ -556,6 +560,118 @@ BOOST_AUTO_TEST_CASE(Bug063_CleanBlockNamesNothing)
     }
     BOOST_CHECK_MESSAGE(!state.HasOffendingTx(),
         "a transaction that passes must leave no offender named");
+}
+
+
+// --- BUG-063, the eviction half ------------------------------------------
+// PTX_EvictOffendingTx was extracted out of BlockAssembler::CreateNewBlock so
+// it can be driven directly. Before the extraction this half was reachable only
+// by building a real template against a live mempool, which left the code that
+// actually removes the transaction proven by reading rather than by test.
+
+// ★ A hidden global precondition, found by segfault rather than by reading:
+// removeRecursive -> removeUnchecked -> GetMainSignals().TransactionRemovedFromMempool
+// (txmempool.cpp:547) dereferences CMainSignals::m_internals, which is null
+// unless a background signal scheduler has been registered. Only the full
+// TestingSetup does that -- and ODC-112 forbids using it in test_ptx, because it
+// repoints the datadir cache and strands ptx_pose_rpc_tests. So register one
+// directly for the duration: it touches no datadir, so it cannot repeat ODC-112.
+// The scheduler is never run; the callback simply queues and is discarded.
+struct SignalSchedulerGuard {
+    CScheduler scheduler;
+    SignalSchedulerGuard()  { GetMainSignals().RegisterBackgroundSignalScheduler(scheduler); }
+    ~SignalSchedulerGuard() { GetMainSignals().UnregisterBackgroundSignalScheduler(); }
+};
+
+static CTransactionRef MakePoolTx(uint32_t n)
+{
+    CMutableTransaction m;
+    m.nVersion = CTransaction::TxVersion::SAPLING;
+    m.nType    = CTransaction::TxType::NORMAL;
+    m.vin.emplace_back(COutPoint(UINT256_ZERO, n));
+    m.vout.emplace_back(CTxOut(1 * COIN, CScript() << OP_TRUE));
+    return MakeTransactionRef(CTransaction(m));
+}
+
+static void AddToPool(CTxMemPool& pool, const CTransactionRef& tx)
+{
+    pool.addUnchecked(tx->GetHash(), CTxMemPoolEntry(tx, 0, 0, 1, false, 0));
+}
+
+BOOST_AUTO_TEST_CASE(Bug063_EvictRemovesOnlyTheNamedTransaction)
+{
+    SignalSchedulerGuard signals;
+    CTxMemPool pool(CFeeRate(1000));
+    CTransactionRef innocent = MakePoolTx(1);
+    CTransactionRef offender = MakePoolTx(2);
+    AddToPool(pool, innocent);
+    AddToPool(pool, offender);
+    BOOST_REQUIRE_EQUAL(pool.size(), 2U);
+
+    CValidationState state;
+    state.SetOffendingTx(offender->GetHash());
+
+    BOOST_CHECK_MESSAGE(PTX_EvictOffendingTx(pool, state), "must report that it evicted");
+    BOOST_CHECK_EQUAL(pool.size(), 1U);
+    BOOST_CHECK_MESSAGE(!pool.exists(offender->GetHash()),
+        "the named transaction must be gone -- otherwise the next template rebuilds "
+        "the identical invalid block and the producer never recovers (BUG-063)");
+    BOOST_CHECK_MESSAGE(pool.exists(innocent->GetHash()),
+        "the transaction that was NOT named must survive");
+}
+
+BOOST_AUTO_TEST_CASE(Bug063_EvictDoesNothingWhenNothingIsNamed)
+{
+    SignalSchedulerGuard signals;
+    // ★ The discriminator, and it guards the failure that is WORSE than the bug:
+    // an assembler that evicted on every validation failure would drop innocent
+    // transactions from every template it built.
+    CTxMemPool pool(CFeeRate(1000));
+    CTransactionRef tx = MakePoolTx(3);
+    AddToPool(pool, tx);
+
+    CValidationState state;   // a failure that named no transaction
+    BOOST_CHECK_MESSAGE(!PTX_EvictOffendingTx(pool, state), "must not claim an eviction");
+    BOOST_CHECK_EQUAL(pool.size(), 1U);
+    BOOST_CHECK_MESSAGE(pool.exists(tx->GetHash()),
+        "a failure that names nothing must leave the pool untouched");
+}
+
+BOOST_AUTO_TEST_CASE(Bug063_EvictToleratesANameThePoolDoesNotHold)
+{
+    SignalSchedulerGuard signals;
+    // Coinbase and coinstake are in block.vtx but never in the mempool, so a
+    // template that failed on one of those names a hash the pool has never seen.
+    // That must be a no-op, not an assert and not a wider removal.
+    CTxMemPool pool(CFeeRate(1000));
+    CTransactionRef tx = MakePoolTx(4);
+    AddToPool(pool, tx);
+
+    CValidationState state;
+    state.SetOffendingTx(MakePoolTx(99)->GetHash());   // never added
+
+    BOOST_CHECK(!PTX_EvictOffendingTx(pool, state));
+    BOOST_CHECK_EQUAL(pool.size(), 1U);
+    BOOST_CHECK(pool.exists(tx->GetHash()));
+}
+
+BOOST_AUTO_TEST_CASE(Bug063_EvictIsIdempotent)
+{
+    SignalSchedulerGuard signals;
+    // The producer may fail the same template shape twice before the pool
+    // settles; evicting an already-evicted transaction must be harmless.
+    CTxMemPool pool(CFeeRate(1000));
+    CTransactionRef offender = MakePoolTx(5);
+    AddToPool(pool, offender);
+
+    CValidationState state;
+    state.SetOffendingTx(offender->GetHash());
+
+    BOOST_CHECK(PTX_EvictOffendingTx(pool, state));
+    BOOST_CHECK_EQUAL(pool.size(), 0U);
+    BOOST_CHECK_MESSAGE(!PTX_EvictOffendingTx(pool, state),
+        "second call must be a no-op, not a double removal");
+    BOOST_CHECK_EQUAL(pool.size(), 0U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

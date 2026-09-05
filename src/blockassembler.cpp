@@ -413,31 +413,35 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
             // The guard's own comment assumes "the next iteration rebuilds from a
             // fresh mempool/tip view"; the view IS fresh, and the offender is still
             // in it. That is what turned a one-block fault into a 30-minute halt at
-            // h4533, and the h420 wedge before it ("48 consecutive templates ...
-            // one per block for 48 minutes", specialtx_validation.cpp:1608-1618) --
-            // second occurrence, different trigger, same retry-forever shape.
-            //
-            // Only the per-transaction loops can name the offender, so this fires
-            // only when one did (ProcessSpecialTxsInBlock). Coinbase/coinstake are
-            // in block.vtx but not in the mempool, so get() returns null for them
-            // and nothing is evicted. Cost of a hostile or accidental bad tx is now
-            // ONE block per producer, then that producer is immune.
-            if (state.HasOffendingTx()) {
-                const uint256& badHash = state.GetOffendingTx();
-                CTransactionRef badTx = mempool.get(badHash);
-                if (badTx) {
-                    LogPrintf("%s: BUG-063 evicting %s from the mempool - it made this "
-                              "template invalid (%s)\n",
-                              __func__, badHash.ToString(), FormatStateMessage(state));
-                    mempool.removeRecursive(*badTx, MemPoolRemovalReason::UNKNOWN);
-                }
-            }
+            // h4533, and the h420 wedge before it (specialtx_validation.cpp:1608-1618)
+            // -- second occurrence, different trigger, same retry-forever shape.
+            PTX_EvictOffendingTx(mempool, state);
             throw std::runtime_error(
                     strprintf("%s: TestBlockValidity failed: %s", __func__, FormatStateMessage(state)));
         }
     }
 
     return std::move(pblocktemplate);
+}
+
+bool PTX_EvictOffendingTx(CTxMemPool& pool, const CValidationState& state)
+{
+    // Only the per-transaction loops name an offender (ProcessSpecialTxsInBlock).
+    // Every other failure leaves this null, and must evict nothing.
+    if (!state.HasOffendingTx()) return false;
+
+    const uint256& badHash = state.GetOffendingTx();
+
+    // Coinbase and coinstake live in block.vtx but never in the mempool, so a
+    // template that failed on one of those finds nothing here and removes
+    // nothing -- correct, and the reason this is a lookup rather than an assert.
+    CTransactionRef badTx = pool.get(badHash);
+    if (!badTx) return false;
+
+    LogPrintf("PTX_EvictOffendingTx: BUG-063 evicting %s from the mempool - it made "
+              "this template invalid (%s)\n", badHash.ToString(), FormatStateMessage(state));
+    pool.removeRecursive(*badTx, MemPoolRemovalReason::UNKNOWN);
+    return true;
 }
 
 void BlockAssembler::onlyUnconfirmed(CTxMemPool::setEntries& testSet)
