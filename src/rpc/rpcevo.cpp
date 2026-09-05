@@ -144,7 +144,7 @@ static const std::map<ProRegParam, std::string> mapParamHelp = {
             "                                 Must be set at registration time to participate in the lottery.\n"
         },
         {ptxNodeId,
-            "%d. \"ptxNodeId\"              (string, optional) Human-readable label for this GM's PTX pose-tracker identity (ODC-022 KDD-033).\n"
+            "%d. \"ptxNodeId\"              (string, REQUIRED) Human-readable label for this GM's PTX pose-tracker identity (ODC-022 KDD-033).\n"
             "                                 Supply the label only (e.g. \"gm01\"); the chain appends the collateral-derived :suffix.\n"
             "                                 The full compound identifier (label:suffix) is echoed in the RPC response.\n"
             "                                 Label rules: 3-24 chars, [a-zA-Z0-9_-], no leading/trailing -/_, not all-numeric, not a reserved word.\n"
@@ -461,16 +461,43 @@ static ProRegPL ParseProRegPLParams(const UniValue& params, unsigned int paramId
             pl.scriptPTXPayment = GetScriptForDestination(CTxDestination(ParsePubKeyIDFromAddress(strPTXPayee)));
         }
     }
-    // ODC-022: optional PTX node label (operator supplies label only; :suffix appended by caller after collateral is known)
-    if (params.size() > paramIdx + 8) {
+    // ★★★ ptxNodeId IS REQUIRED (2026-09-05). It was "optional" to this RPC and the
+    // guide has always said it is "optional to the RPC and NOT optional to you" --
+    // a documented warning that a live operator walked straight past, because the
+    // /v2/register page emitted a command without it and he ran what the page gave
+    // him. The result registers, syncs, reports Ready, and is INVISIBLE to quorum
+    // formation forever: PTX_DKG_IsGMPTXEligible (ptx_dkg.cpp:101-104) is a single
+    // `!node_id.empty()` test. Nothing reported it -- the gamemaster looked
+    // perfect. It cost the network its first quorum and cost the operator a
+    // re-registration, because node_id cannot be updated afterwards: no
+    // protx_update_* path touches it.
+    //
+    // ★ Refusing here is the same trade as the hand-start block: one keystroke of
+    // friction at the moment of the mistake, against a failure that is silent,
+    // delayed and unfixable in place.
+    // ★ Deliberately NOT enforced by pinning the RPC's arity: that throws the
+    // usage text, which tells an integrator they got the count wrong but not
+    // WHICH argument is missing. Arity stays permissive so every under-supplied
+    // call lands here and gets the argument named.
+    if (params.size() <= paramIdx + 8) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER,
+            "ptxNodeId is required. Supply a label (3-24 chars, letters/digits/-/_) as the last "
+            "argument; the chain appends the collateral-derived :suffix itself. A gamemaster "
+            "registered without it can never join a quorum, and it cannot be added later -- "
+            "re-registration is the only fix.");
+    }
+    {
         const std::string& strLabel = params[paramIdx + 8].get_str();
-        if (!strLabel.empty()) {
-            if (strLabel.find(':') != std::string::npos) {
-                throw JSONRPCError(RPC_INVALID_PARAMETER,
-                    "ptxNodeId must be a label only (no colon); the chain appends the :suffix automatically");
-            }
-            pl.node_id = strLabel;  // temporary: just the label; caller appends :suffix after collateral outpoint is known
+        if (strLabel.empty()) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                "ptxNodeId must not be empty. A gamemaster with no node id can never join a "
+                "quorum, and it cannot be added later -- re-registration is the only fix.");
         }
+        if (strLabel.find(':') != std::string::npos) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                "ptxNodeId must be a label only (no colon); the chain appends the :suffix automatically");
+        }
+        pl.node_id = strLabel;  // temporary: just the label; caller appends :suffix after collateral outpoint is known
     }
     return pl;
 }

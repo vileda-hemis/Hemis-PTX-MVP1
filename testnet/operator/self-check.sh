@@ -345,7 +345,22 @@ else
         esac
     fi
     NODEID=$(jval ptxNodeId)
-    [ -n "$NODEID" ] && echo "  ptxNodeId: $NODEID"
+    # ★★★ AN EMPTY ptxNodeId IS TERMINAL AND SILENT. Quorum eligibility is one
+    # test -- PTX_DKG_IsGMPTXEligible (src/ptx/ptx_dkg.cpp:101-104) is
+    # `!node_id.empty()` and nothing else. A gamemaster registered without it
+    # registers, syncs, reports Ready, collects payments, and is NEVER selected
+    # for a ceremony. Every other check in this script passes on such a node.
+    #
+    # ★ Measured 2026-09-05: an operator registered without the argument -- it is
+    # the LAST positional of protx_register and was "optional" to the RPC -- and
+    # the network sat at 10 eligible of 11 for hours with no tool reporting why.
+    # It cannot be repaired in place: no protx_update_* path touches node_id, so
+    # the only fix is to register again.
+    if [ -n "$NODEID" ]; then
+        echo "  ptxNodeId: $NODEID"
+    else
+        bad "this gamemaster has NO ptxNodeId, so it can never join a quorum. It will register, sync, report Ready and be ignored by every ceremony. It cannot be added later -- re-register with the label as the last argument of protx_register."
+    fi
 
     # ★★ The registration-time trap from the OPERATOR_GUIDE, checked rather than
     # described. ptxPaymentAddress can ONLY be set at registration; a GM without it
