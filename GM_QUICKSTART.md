@@ -137,8 +137,8 @@ refuses to start and the key does not exist yet. `vps-install.sh` says so in its
 *"NOTHING HAS BEEN STARTED."*
 
 ```bash
-Hemisd -daemon
-Hemis-cli -rpcwait getblockcount     # 0 is correct -- you have no addnode lines yet
+sudo systemctl start hemis-ptx       # ★ NOT `Hemisd` -- a hand-started daemon is not
+Hemis-cli -rpcwait getblockcount     #   owned by systemd and dies at the next reboot
 Hemis-cli generateblskeypair
 ```
 

@@ -1,6 +1,6 @@
 <!-- CORPUS-SOURCE: GM_QUICKSTART.md -->
 <!-- CORPUS-TAG: v0.3.6-testnet -->
-<!-- CORPUS-SHA256: 29c15bf13286e965d0fb3f0623cb130a7b1647630cc652e09a4f636388d2b180 -->
+<!-- CORPUS-SHA256: 4e6c171718207f1f59c4f8340fade296f04edb17e733a8dfa8166a2acd31c6ab -->
 
 > **This document is a verbatim copy of `GM_QUICKSTART.md` at `v0.3.6-testnet`.** It is not
 > edited for the FAQ bot. If it disagrees with anything else in this corpus, it wins.
@@ -144,8 +144,8 @@ refuses to start and the key does not exist yet. `vps-install.sh` says so in its
 *"NOTHING HAS BEEN STARTED."*
 
 ```bash
-Hemisd -daemon
-Hemis-cli -rpcwait getblockcount     # 0 is correct -- you have no addnode lines yet
+sudo systemctl start hemis-ptx       # ★ NOT `Hemisd` -- a hand-started daemon is not
+Hemis-cli -rpcwait getblockcount     #   owned by systemd and dies at the next reboot
 Hemis-cli generateblskeypair
 ```
 

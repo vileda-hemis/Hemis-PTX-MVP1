@@ -1361,6 +1361,26 @@ UNITEOF
     # come back. Measured 2026-09-02: all four coordinator hosts were running
     # hand-started daemons with this unit present and disabled -- including the
     # one holding the entire float and producing blocks.
+    # ★ A daemon systemd does not own must be stopped BEFORE the unit is enabled,
+    # or `enable --now` fails half-silently: `enable` succeeds, `--now` dies on
+    # "Cannot obtain a lock on data directory", and the host is left with an
+    # ENABLED unit and a hand-started daemon -- looking healthy right up to the
+    # reboot that does not bring it back. Observed twice on ptx004 (2026-09-02 at
+    # install, 2026-09-05 during maintenance) and it is the state self-check.sh
+    # section 1b now reports.
+    _hs_pid=$(pgrep -x Hemisd 2>/dev/null | head -1)
+    _hs_main=$($SUDO systemctl show hemis-ptx.service -p MainPID --value 2>/dev/null)
+    if [ -n "$_hs_pid" ] && [ "$_hs_pid" != "${_hs_main:-0}" ]; then
+        warn "a Hemisd systemd does not own is running (pid $_hs_pid) and holds the datadir"
+        "$BINDIR/Hemis-cli" -datadir="$DATADIR" stop >/dev/null 2>&1 || true
+        for _i in $(seq 1 30); do pgrep -x Hemisd >/dev/null 2>&1 || break; sleep 2; done
+        if pgrep -x Hemisd >/dev/null 2>&1; then
+            warn "it did not stop -- the unit will fail to take the lock. Stop it, then: sudo systemctl enable --now hemis-ptx"
+        else
+            ok "stopped it, so the unit can own the datadir (this is the step operators skip)"
+        fi
+    fi
+
     if [ "$PTX_ROLE" = "wallet" ]; then
         if $SUDO systemctl enable --now hemis-ptx >/dev/null 2>&1; then
             ok "wrote $UNIT, and ENABLED it -- a wallet host has no key to wait for, so it starts now and survives reboot"

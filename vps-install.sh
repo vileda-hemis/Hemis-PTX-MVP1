@@ -219,12 +219,13 @@ cat <<EOF
       output per gamemaster.
 
    4. START, then verify:
-        Hemisd -datadir=\$HOME/.Hemis -daemon
+        sudo systemctl start hemis-ptx
         cd $CLONE_DIR/testnet/operator && ./self-check.sh
 
-      Hemisd -daemon is right for step 2, before the key exists. Once the key is
-      IN the config, switch to the unit this installer already wrote and ENABLE it,
-      so the node comes back after a reboot:
+      Start it through the unit this installer already wrote -- never by hand. A
+      hand-started daemon is not owned by systemd: it serves RPC perfectly, runs
+      until the next reboot and then does not come back. Once the key is IN the
+      config, restart and ENABLE it:
 
         Hemis-cli stop            # REQUIRED: the hand-started daemon holds the lock
         sudo systemctl enable --now hemis-ptx

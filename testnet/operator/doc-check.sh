@@ -42,6 +42,7 @@ EXEMPT="$(cat <<'EOF'
 testnet/operator/ONBOARDING.md	no `-ptxfanoutport` to match
 testnet/operator/ONBOARDING.md	wrong fan-out port
 testnet/operator/ONBOARDING.md	a dedicated fan-out credential
+testnet/operator/ONBOARDING.md	.hemis-spork
 EOF
 )"
 FAIL=0; USED=""
@@ -122,42 +123,55 @@ for f in "${DOCS[@]}"; do
 done
 [ "$n4" -eq 0 ] && ok "every mention of a retired mechanism is marked as retired"
 
-say "INV-5  a hand-started daemon must be STOPPED before the unit is enabled"
-# ★★★ THIS DEFECT WAS INTRODUCED BY TWO CORRECT FIXES COMPOSING. INV-1 forced a
-# daemon start before generateblskeypair; INV-2 forced `systemctl enable --now`.
-# Applied independently, they leave the operator hand-starting a daemon and then
-# enabling a unit that cannot bind the datadir: `enable` succeeds, `--now` fails
-# on "Cannot obtain a lock on data directory", and the result is an ENABLED unit
-# that is not running beside a manual daemon that is. Everything reads green and
-# the node dies at the next reboot -- exactly the state measured on four
-# coordinator hosts on 2026-09-02. Found by an operator following the document.
+say "INV-5  no document may tell an operator to start the daemon by hand"
+# ★★★ THIS INVARIANT WAS REPLACED 2026-09-05, and the replacement is the point.
+# It used to require a `Hemis-cli stop` STEP between a documented hand-start and
+# `systemctl enable --now`, because those two composed into an enabled unit that
+# could not bind the datadir. That rule was correct and it was still not enough:
+# ptx004 reached the broken state TWICE anyway -- once at install and once during
+# maintenance -- with the stop present in the document and this gate passing.
 #
-# ★ The stop must be A STEP, not a mention. OPERATOR_GUIDE.md carries the aside
-# "To stop it: `Hemis-cli stop`" between the two, and a line-order check would
-# have passed on it. So the stop is only counted inside a fenced code block.
+# ★★ The reason is that the failure is not an ordering mistake, it is a HABIT.
+# `Hemis-cli stop && Hemisd` is the mainnet restart reflex, and it produces the
+# damage with no collision and no error at all: the stop leaves the unit inactive,
+# the datadir frees, the hand-start succeeds, and systemd simply no longer owns
+# the process. OPERATOR_GUIDE.md literally prescribed that pair at :403.
+#
+# ★ So the documents no longer hand-start ANYWHERE -- step 8 uses
+# `systemctl start hemis-ptx`, and `gamemaster=1` is still commented at that
+# point so the unit comes up cleanly. A step that does not exist cannot be
+# skipped, and this gate now enforces its absence rather than its ordering.
+# Keeping the old check would have been a gate enforcing a rule that no longer
+# applies -- BUG-060's shape, one layer up.
 for f in "${DOCS[@]}"; do
     [ -f "$f" ] || continue
-    en=$(grep -n 'systemctl enable --now hemis-ptx' "$f" | head -1 | cut -d: -f1)
-    st=$(grep -nE '^\s*(sudo )?Hemisd( -datadir=[^ ]*)? -daemon' "$f" | head -1 | cut -d: -f1)
-    [ -z "$en" ] || [ -z "$st" ] && continue
-    [ "$st" -gt "$en" ] && continue          # unit enabled first; no hand-start to strand
-    # ★ The fenced-block rule is a MARKDOWN rule. It exists because prose can
-    # mention a command without prescribing it -- OPERATOR_GUIDE.md's "To stop it:
-    # `Hemis-cli stop`" is an aside, not a step, and a line-order check passes on
-    # it wrongly. A shell script has no fences and no asides: every line of a
-    # heredoc banner is instruction the operator reads as a step. So .md files
-    # require the stop inside a fence; everything else requires only line order.
+    # Prescriptions only: a hand-start on its own line, inside a fenced block for
+    # markdown. Prose ABOUT the hand-start is how this defect gets explained, and
+    # explaining it must stay legal or the documents cannot warn about it.
+    # ★ `Hemisd -version` / `-help` are QUERIES, not starts -- they exit immediately
+    # and own no datadir. Counting them would make the gate cry wolf on the very
+    # command the guide uses to check which build is installed.
     case "$f" in
-        *.md) stop=$(awk -v a="$st" -v b="$en" '
+        *.md) hits=$(awk '
                   /^[[:space:]]*```/ { inb = !inb; next }
-                  inb && NR>a && NR<b && /Hemis-cli stop|systemctl stop hemis-ptx/ { print NR; exit }' "$f") ;;
-        *)    stop=$(awk -v a="$st" -v b="$en" '
-                  NR>a && NR<b && /Hemis-cli stop|systemctl stop hemis-ptx/ { print NR; exit }' "$f") ;;
+                  inb && /^[[:space:]]*(sudo )?Hemisd([[:space:]]|$)/ && !/-version|-help|-\?/ { print NR }' "$f") ;;
+        *)    hits=$(awk '/^[[:space:]]*(sudo )?Hemisd([[:space:]]|$)/ && !/-version|-help|-\?/ { print NR }' "$f") ;;
     esac
-    if [ -n "$stop" ]; then
-        ok "$f  stops the hand-started daemon at :$stop before enabling at :$en"
+    # ★ A start against a DISPOSABLE datadir (spork work) is legitimate: there is
+    # no unit for it, so there is nothing for it to strand. Those are exemptions
+    # rather than pattern holes, so they stay visible and are themselves checked.
+    kept=""
+    for h in $hits; do
+        line=$(sed -n "${h}p" "$f")
+        exempt "$f" "$line" || kept="$kept $h"
+    done
+    hits="$kept"
+    if [ -z "${hits// /}" ]; then
+        ok "$f  never tells the operator to start the daemon by hand"
     else
-        bad "$f:$en enables the unit at :$en while a daemon hand-started at :$st is still holding the datadir. 'enable' will succeed and '--now' will fail on the lock -- leaving an enabled-but-stopped unit beside a running manual daemon. Add 'Hemis-cli stop' as a STEP between them."
+        for h in $hits; do
+            bad "$f:$h prescribes a hand-start. A daemon started by hand is not owned by systemd: it serves RPC perfectly, survives until the next reboot and then does not come back. Use 'sudo systemctl start hemis-ptx' (or 'restart'). This is the \`Hemis-cli stop && Hemisd\` state that self-check.sh section 1b reports."
+        done
     fi
 done
 

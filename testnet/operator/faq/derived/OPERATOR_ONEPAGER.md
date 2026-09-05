@@ -1,6 +1,6 @@
 <!-- CORPUS-SOURCE: testnet/operator/OPERATOR_ONEPAGER.md -->
 <!-- CORPUS-TAG: v0.3.6-testnet -->
-<!-- CORPUS-SHA256: 7adfe1b0b4342758e442cf74bcfb1e09db1859149fc8610b5ca15ecb6488f1c3 -->
+<!-- CORPUS-SHA256: 722f5ee44fbe611d75feb710e384790947da8844b8d83d36b462e155c195325b -->
 
 > **This document is a verbatim copy of `testnet/operator/OPERATOR_ONEPAGER.md` at `v0.3.6-testnet`.** It is not
 > edited for the FAQ bot. If it disagrees with anything else in this corpus, it wins.
@@ -118,10 +118,20 @@ does not generate it — and it does not start a gamemaster either.
 
 ```bash
 PTX_ROLE=gamemaster ./install.sh
-Hemisd -daemon
+sudo systemctl start hemis-ptx       # ★ NOT `Hemisd` -- see below
 Hemis-cli -rpcwait getblockcount     # 0 is CORRECT here, and it proves the daemon answers
 Hemis-cli generateblskeypair
 ```
+
+★★ **Start it through systemd, never by hand — not even here.** `gamemaster=1` is still commented
+out at this point, so the unit starts cleanly and `generateblskeypair` works exactly the same
+against it: it is an RPC call and does not care who started the daemon. ★ **The reason for the rule
+is that the hand-start is the thing that breaks the host**, and it breaks it silently: a daemon
+started by hand is not owned by systemd, so it survives until the next reboot and then does not come
+back. This step used to say `Hemisd -daemon`, and that instruction cost two hosts.
+
+★ **This needs `sudo`, where the old hand-start did not.** If your sudo is broken you will find out
+here rather than three steps later.
 
 ★★ **The order matters and this step used to have it wrong.** `install.sh` writes the systemd unit
 but deliberately does **not** start a gamemaster — `gamemaster=1` with no key refuses to start, so
@@ -156,16 +166,22 @@ the duplicate is the one that is hard to spot later. If it is missing, the insta
 — re-run it rather than patching around it.
 
 ```bash
-Hemis-cli stop                             # ★ REQUIRED -- see below
-sudo systemctl enable --now hemis-ptx
+sudo systemctl restart hemis-ptx
+sudo systemctl enable  hemis-ptx
 ```
 
-★★ **The `Hemis-cli stop` is not optional and it fails half-silently without it.** The daemon you
-hand-started still holds the datadir lock, so `enable --now` **partly succeeds**: `enable` works,
-`--now` fails with *"Cannot obtain a lock on data directory"*. You are left with an **enabled unit
-that is not running** beside a **manual daemon that is** — everything looks fine, and the node does
-not come back after a reboot. If you have already hit it: `Hemis-cli stop`, then
-`sudo systemctl reset-failed hemis-ptx` (the retry limit will have tripped), then enable again.
+★★ **No `Hemis-cli stop` here any more, and that is the point.** The daemon has been systemd's since
+step 8, so `restart` picks up the config you just edited and there is no hand-started process to
+collide with. The old sequence hand-started in step 8 and required a `Hemis-cli stop` here to undo
+it — one easily-missed step whose omission fails half-silently, leaving an **enabled unit that is not
+running** beside a **manual daemon that is**. Everything looks fine, and the node does not come back
+after a reboot.
+
+★ **If you are on a host built the old way, or you started one by hand:** `Hemis-cli stop`, then
+`sudo systemctl reset-failed hemis-ptx` (the retry limit will have tripped), then
+`sudo systemctl enable --now hemis-ptx`. ★★ `./self-check.sh` section **1b** reports this state
+directly — it compares the unit's `MainPID` against the running daemon, so it catches it whenever it
+arises rather than only at install.
 
 > **`enable` matters.** Without it the daemon runs until the next reboot and then silently does not
 > come back.

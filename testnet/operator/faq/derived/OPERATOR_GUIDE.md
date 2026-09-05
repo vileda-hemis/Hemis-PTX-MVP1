@@ -1,6 +1,6 @@
 <!-- CORPUS-SOURCE: testnet/operator/OPERATOR_GUIDE.md -->
 <!-- CORPUS-TAG: v0.3.6-testnet -->
-<!-- CORPUS-SHA256: 673026c0e05bafe72edd1810511b66c022210e4a2d60db9f4be0ab9e7fd7cce3 -->
+<!-- CORPUS-SHA256: c9046c8b1a7e0900fff4c489828ea16763557995538f0acc844b4b4050d2b546 -->
 
 > **This document is a verbatim copy of `testnet/operator/OPERATOR_GUIDE.md` at `v0.3.6-testnet`.** It is not
 > edited for the FAQ bot. If it disagrees with anything else in this corpus, it wins.
@@ -254,11 +254,17 @@ Nothing below this line works until the daemon is running — including generati
 which is an **RPC call**, not an offline command.
 
 ```bash
-Hemisd -daemon
+sudo systemctl start hemis-ptx       # ★ NOT `Hemisd` -- see below
 Hemis-cli -rpcwait getblockcount     # 0 is correct here -- you have no peers yet
 ```
 
-★ **`-rpcwait` is not padding.** `-daemon` forks before the RPC server finishes starting, so an
+★★ **Start it through systemd, never by hand.** `gamemaster=1` is still commented out here, so the
+unit starts cleanly, and `generateblskeypair` works exactly the same against it — it is an RPC call
+and does not care who started the daemon. ★ **A daemon you start by hand is not owned by systemd:**
+it serves RPC perfectly, survives until the next reboot, and then does not come back. `./self-check.sh`
+section 1b reports that state.
+
+★ **`-rpcwait` is not padding.** The unit returns before the RPC server has finished starting, so an
 immediate call can fail on a node that is coming up perfectly well. And `0` is the right answer at
 this point: `install.sh` writes your `addnode` lines **commented**, so nothing is connected yet and
 the node has only its genesis block. This is a liveness check, not a sync check.
@@ -407,8 +413,7 @@ file, which is inside the section, so the commands below are correct as written.
 # Add the secret AND enable the gamemaster role, then restart the daemon:
 echo "gmoperatorprivatekey=<BLS SECRET>" >> $HOME/.Hemis/Hemis.conf
 echo "gamemaster=1"                      >> $HOME/.Hemis/Hemis.conf
-Hemis-cli stop
-Hemisd -daemon
+sudo systemctl restart hemis-ptx    # ★ NOT `Hemis-cli stop && Hemisd`
 
 # Prove it took -- this answers only if the daemon came back up:
 Hemis-cli getblockcount

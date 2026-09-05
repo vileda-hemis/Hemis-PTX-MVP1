@@ -37,10 +37,26 @@ red "INV-3 forbidden, externalip= presented as a line to add" "$T" "presents 'ex
 T=$(mk); printf '\nArrange for it to start at boot with @reboot in cron.\n' >> "$T/testnet/operator/OPERATOR_GUIDE.md"
 red "INV-4 retired noun, unmarked @reboot" "$T" "names a retired mechanism with no retirement marker"
 
-# INV-5: remove the stop between the hand-start and the enable -- the defect an
-# operator hit on ptx007, and one my own two fixes composed into.
-T=$(mk); sed -i '/Hemis-cli stop  *# ★ REQUIRED/d' "$T/testnet/operator/OPERATOR_ONEPAGER.md"
-red "INV-5 stop removed between hand-start and enable" "$T" "is still holding the datadir"
+# INV-5: put a hand-start back into the documented path -- the instruction that
+# actually cost two hosts. ★ This leg REPLACED an earlier one that deleted the
+# `Hemis-cli stop` between a hand-start and the enable; when INV-5 was rewritten
+# on 2026-09-05 that mutation stopped producing a defect, and this suite reported
+# the leg VACUOUS rather than passing it. A red leg that survives the invariant it
+# was written for is testing nothing -- which is the whole reason it is checked.
+T=$(mk); sed -i 's|^sudo systemctl start hemis-ptx.*$|Hemisd -daemon|' "$T/testnet/operator/OPERATOR_ONEPAGER.md"
+red "INV-5 hand-start restored to the documented path" "$T" "prescribes a hand-start"
+
+# ★ And the inverse: a QUERY must not trip it. `Hemisd -version` owns no datadir
+# and exits immediately; counting it would make the gate cry wolf on the command
+# the guide uses to check which build is installed.
+T=$(mk); sed -i 's|^sudo systemctl start hemis-ptx.*$|&\nHemisd -version|' "$T/testnet/operator/OPERATOR_ONEPAGER.md"
+if bash "$T/testnet/operator/doc-check.sh" >/dev/null 2>&1; then
+    printf '  [RED]  INV-5 inverse: `Hemisd -version` correctly NOT treated as a start\n'
+    PASS=$((PASS+1))
+else
+    printf '  [VACUOUS] INV-5 inverse: a query tripped the gate -- it cries wolf\n'
+    FAIL=$((FAIL+1))
+fi
 
 # and the exemption-rot check
 T=$(mk); sed -i '/no .-ptxfanoutport. to match/d' "$T/testnet/operator/ONBOARDING.md"
