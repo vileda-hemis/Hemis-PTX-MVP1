@@ -473,3 +473,38 @@ BUG-060 and fixed in `v0.3.4-testnet`.
 `v0.3.2` or `v0.3.3`, nothing on your node is wrong because of this — the binaries in those
 releases are sound — but re-clone at the current tag so the documents you are following match the
 software.
+
+## Symptom: `Hemisd` refuses to start — "this host has a hemis-ptx systemd unit"
+
+You ran `Hemisd` (or `Hemis-cli stop && Hemisd`, the mainnet restart reflex) and got:
+
+```
+Error: This host has a hemis-ptx systemd unit and this daemon was not started by it.
+Start it with:
+    sudo systemctl start hemis-ptx
+```
+
+**This is deliberate, and the fix is the command in the message.** Use `sudo systemctl start
+hemis-ptx` for a first start and `sudo systemctl restart hemis-ptx` after editing your config.
+Nothing is broken; the daemon simply declined to start in a way that would have hurt you later.
+
+**Why it refuses rather than warns.** A hand-started daemon works perfectly — it syncs, serves RPC,
+signs, and looks completely healthy. But systemd does not own it, so **it does not come back after a
+reboot**, and you find out weeks later from a restart nobody connects to a command typed a fortnight
+earlier. A warning would scroll past in a foreground start and teach nothing. Two coordinator nodes
+were in exactly that state and no tool reported it until `self-check.sh` gained the check.
+
+**If you genuinely want a hand-started daemon** — debugging, or a disposable datadir — pass
+`-allowhandstart`. It starts, and logs loudly that the node is unsupervised and will not survive a
+reboot. Do not use it on a node you intend to keep.
+
+**To find out whether you are already in that state**, on any version, run `./self-check.sh` and look
+at section 1b. It compares the unit's `MainPID` against the running daemon and reports:
+
+```
+[FAIL] a Hemisd is running (pid N) but systemd does not own it ... healthy now, gone at the next reboot.
+```
+
+It also flags a unit that is running but never `enable`d, which fails the same way at the next boot.
+
+**Introduced in `v0.4.0-testnet`.** Earlier versions accept a hand-start silently.
