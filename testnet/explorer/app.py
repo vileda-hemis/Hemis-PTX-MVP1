@@ -264,7 +264,11 @@ def footer():
                 "Paste raw payload hex — the checks need nothing else. This page deliberately does "
                 "not borrow another operator's node: an answer that depends on privileged access "
                 "is not verification.")
-    return ("<footer><p>%s</p><p>Field layout is read from "
+    # ★ Build identity on EVERY page, not just the register form. This file is a
+    # deployed artefact with no repo-side gate able to see it, so the page states
+    # what it is and anyone can check it from a browser without a shell.
+    ident = ("<p class=deployid>serving %s &middot; app %s</p>" % (DEPLOY_TAG, DEPLOY_HASH))
+    return (ident + "<footer><p>%s</p><p>Field layout is read from "
             "<code>SERIALIZE_METHODS</code> in <code>src/primitives/transaction.h</code>, not "
             "hand-written here, and <code>test_decoder.py</code> fails if the two ever diverge.</p>"
             "</footer>" % node)
@@ -866,6 +870,82 @@ render();
 """
 
 
+def api_docs_page():
+    """★ THE PTX API, DOCUMENTED WHERE AN INTEGRATOR LOOKS.
+
+    eIquidus's own /info page documents its inherited endpoints and says nothing
+    about these three, so a developer reading the API surface of this chain sees a
+    generic block explorer and no sign the chain does anything unusual -- on the
+    one surface whose whole purpose is demonstrating that it does.
+
+    ★★ This page lives in THIS file rather than in eIquidus's info.pug because
+    info.pug is vendored third-party software with no source in this repository:
+    editing it creates an unversioned deployed artefact that the next upstream
+    update silently reverts. Here it is covered by pin-check and carries the
+    footer build identity, so its own drift is visible.
+    """
+    return ("<!doctype html><meta charset=utf-8><meta name=viewport "
+            "content='width=device-width,initial-scale=1'>"
+            "<title>PTX API - Hemis PTX testnet</title>"
+            "<style>%s</style>%s<div class=wrap><h1>PTX API</h1>"
+            "<p class=sub>Three endpoints. Everything the chain does that a generic "
+            "block explorer does not.</p>"
+
+            "<div class=card><h2>POST /v2/api/v1/verify</h2>"
+            "<p>Raw payload hex in, decoded roll and re-derived checks out. "
+            "<b>Pure computation</b> &mdash; no node, no index, no chain. "
+            "It runs if the node is down.</p>"
+            "<pre>curl -X POST https://ptx-explorer.lnky.uk/v2/api/v1/verify \\\n"
+            "     -H 'Content-Type: application/json' -d '{\"hex\":\"&lt;payload hex&gt;\"}'</pre></div>"
+
+            "<div class=card><h2>GET /v2/api/v1/tx/&lt;txid&gt;</h2>"
+            "<p>Fetches the transaction, decodes its extra payload, and runs the same checks.</p>"
+            "<pre>curl https://ptx-explorer.lnky.uk/v2/api/v1/tx/&lt;txid&gt;</pre></div>"
+
+            "<div class=card><h2>GET /v2/api/v1/commitment/&lt;txid&gt;</h2>"
+            "<p>Reports whether a roll commitment is <code>settled</code>, plus "
+            "<code>past_declared_expiry</code>.</p>"
+            "<p>★ <b>Those two are not the same kind of fact.</b> <code>settled</code> is a chain "
+            "fact. <code>past_declared_expiry</code> is arithmetic on a value the payload declares "
+            "about itself &mdash; there is <b>no consensus-enforced settlement window</b> on this "
+            "chain, so nothing rejects a commitment for being late. The API reports both and lets "
+            "you judge; it does not invent a verdict the chain does not have.</p>"
+            "<pre>curl https://ptx-explorer.lnky.uk/v2/api/v1/commitment/&lt;txid&gt;</pre></div>"
+
+            "<div class=card><h2>Every response carries <code>payload_hex</code></h2>"
+            "<p>★ <b>Returning decoded values without the bytes they came from would make this an "
+            "oracle.</b> You would be trusting our arithmetic. With the payload bytes in the same "
+            "response you can re-derive every check independently &mdash; against your own node, "
+            "your own decoder, or by hand. That is the point of the API, and it is why the field is "
+            "on responses that failed as well as ones that succeeded.</p></div>"
+
+            "<div class=card><h2>Four states, and never <code>false</code></h2>"
+            "<p><code>200</code> + <code>\"ok\": true|false</code> &mdash; checked, and this is the answer.<br>"
+            "<code>200</code> + <code>\"ok\": null</code> + a reason &mdash; <b>not performed</b>. "
+            "Never <code>false</code>: a <code>false</code> where the answer is &ldquo;we did not "
+            "check&rdquo; is a machine-readable lie.<br>"
+            "<code>400 malformed</code> &mdash; the bytes are wrong, with the offset.<br>"
+            "<code>404 not_found</code> &mdash; no such transaction, or it carries no extra payload.<br>"
+            "<code>422 unsupported_payload</code> &mdash; valid bytes this service does not decode.</p>"
+            "<p>★ <b>The 422 is the one worth understanding.</b> A ProRegTx is a perfectly valid "
+            "special transaction; it simply is not a roll payload. Reporting it as "
+            "<code>malformed</code> would tell you your bytes are broken when they are not. The "
+            "response names every structure that was tried and why each was rejected:</p>"
+            "<pre>{ \"error\": \"unsupported_payload\",\n"
+            "  \"tried\": [ {\"struct\": \"CProbabilisticTxPayload\",\n"
+            "               \"why\": \"unique: bool byte is 0x08, not 0 or 1\"},\n"
+            "             {\"struct\": \"CPTXRollCommitPayload\",\n"
+            "               \"why\": \"unique: bool byte is 0x08, not 0 or 1\"} ] }</pre></div>"
+
+            "<div class=card><h2>Rate limits</h2>"
+            "<p><code>/verify</code> is <b>not limited</b> &mdash; it makes the node do nothing.<br>"
+            "<code>/tx/</code> and <code>/commitment/</code> are limited to <b>30 requests per "
+            "minute per IP</b>, burst 10, returning <code>429</code>. They make this node do I/O "
+            "for a stranger, which is the reason for the difference.</p></div>"
+
+            "%s</div>" % (CSS, HEADER, footer()))
+
+
 def register_page():
     return REGISTER_HTML
 
@@ -926,6 +1006,15 @@ class Handler(BaseHTTPRequestHandler):
         # sees "/register" -- but a link written "/v2/register" must also work when
         # the app is hit directly (dev, or the port behind nginx). One route, two
         # names, so the SAME href is correct in both places.
+        if path.rstrip("/") in ("/api", "/v2/api"):
+            b = api_docs_page().encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(b)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self._body(b)
+            return
         if path.rstrip("/") in ("/register", "/v2/register"):
             # ★ its own CSP: inline script is needed, connect-src 'none' is the
             # guarantee that the page cannot call anything even if edited later.
