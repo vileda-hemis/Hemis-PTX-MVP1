@@ -8,6 +8,7 @@
 #define BITCOIN_CONSENSUS_VALIDATION_H
 
 #include <string>
+#include "uint256.h"
 
 /** "reject" message codes */
 static const unsigned char REJECT_MALFORMED = 0x01;
@@ -33,6 +34,14 @@ private:
     unsigned int chRejectCode;
     bool corruptionPossible;
     std::string strDebugMessage;
+    // ★ BUG-063: which transaction made this block invalid. Set only by the
+    // per-transaction loops that KNOW it (ProcessSpecialTxsInBlock); everything
+    // else leaves it null. This exists so the block assembler can EVICT the
+    // offending transaction instead of rebuilding the same doomed template
+    // forever -- the state object already travels the whole way from
+    // blockassembler.cpp -> TestBlockValidity -> ConnectBlock -> the loop, so
+    // carrying the hash needs no signature changes anywhere.
+    uint256 hashOffendingTx;
 
 public:
     CValidationState() : mode(MODE_VALID), nDoS(0), chRejectCode(0), corruptionPossible(false) {}
@@ -93,6 +102,10 @@ public:
     unsigned int GetRejectCode() const { return chRejectCode; }
     std::string GetRejectReason() const { return strRejectReason; }
     std::string GetDebugMessage() const { return strDebugMessage; }
+    // ★ BUG-063
+    void SetOffendingTx(const uint256& hash) { hashOffendingTx = hash; }
+    const uint256& GetOffendingTx() const { return hashOffendingTx; }
+    bool HasOffendingTx() const { return !hashOffendingTx.IsNull(); }
     int GetDoSScore() const { return nDoS; }
 };
 

@@ -1644,6 +1644,10 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
     // check special txes
     for (const CTransactionRef& tx: block.vtx) {
         if (!CheckSpecialTx(*tx, pindex->pprev, view, state)) {
+            // ★ BUG-063: this loop is the only place that knows WHICH transaction
+            // failed -- CheckSpecialTx reports the reason, not the offender. Name
+            // it so the assembler can evict rather than retry it forever.
+            state.SetOffendingTx(tx->GetHash());
             // pass the state returned by the function above
             return false;
         }

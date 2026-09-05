@@ -13,6 +13,8 @@
 #include "ptx/ptx_wallet.h"
 #include "script/standard.h"
 #include "uint256.h"
+#include "validation.h"
+#include "wallet/wallet.h"
 
 #include <boost/test/unit_test.hpp>
 
@@ -350,6 +352,111 @@ BOOST_AUTO_TEST_CASE(OperatedGMs_PoseFieldsPopulated)
     BOOST_CHECK_EQUAL(result[0].penalized_this_window, true);
 
     g_ptx_pose_tracker.AdvanceLotteryWindow();  // clean up
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+
+// ---------------------------------------------------------------------------
+// BUG-061 -- a ProRegTx could spend the very collateral it was registering.
+//
+// Coin selection had no reason not to: the collateral is a confirmed,
+// correctly-sized, wallet-owned coin, and at 100 HMS it is exactly what
+// AvailableCoins reaches for to pay a fee. On 2026-09-05 it did, and the
+// resulting registration was invalid the moment it was built -- it named
+// bbfeb633:1 as its collateral and spent bbfeb633:1 as its input. Its three
+// siblings survived on OUTPUT ORDERING ALONE.
+//
+// The fix locks the collateral in ProTxRegister BEFORE FundSpecialTx, relying
+// on AvailableCoins skipping locked coins (wallet.cpp:2504). This proves that
+// mechanism on the real wallet path, and the third leg is the discriminator:
+// re-running with fIncludeLocked=true must bring the coin BACK, which is what
+// makes "it disappeared" evidence about the LOCK rather than about anything
+// else the filter might have rejected it for.
+// ---------------------------------------------------------------------------
+
+// ★ Deliberately reuses the file's existing BasicTestingSetup-based fixture.
+// A full TestingSetup would be the obvious choice and is WRONG here: it calls
+// SetDataDir()+ClearDatadirCache() and then removes that tree on teardown, and
+// ptx_pose_rpc_tests (BasicTestingSetup, no SetDataDir of its own) reads
+// GetDataDir() -- so introducing the first TestingSetup into test_ptx left the
+// cache pointing at a deleted directory and broke two pose tests that had
+// nothing to do with this change. Depth is faked off a bare CBlockIndex
+// instead, which is all GetDepthInMainChain() actually consults.
+BOOST_FIXTURE_TEST_SUITE(ptx_collateral_lock_tests, PTXBeaTestingSetup)
+
+BOOST_AUTO_TEST_CASE(Bug061_CollateralIsSelectableUntilItIsLocked)
+{
+    CWallet wallet("bug061", WalletDatabase::CreateDummy());
+    {
+        LOCK(wallet.cs_wallet);
+        wallet.SetupSPKM(false);
+    }
+
+    // A key the wallet owns, and a 100 HMS P2PKH output to it: the collateral.
+    CKey key;
+    key.MakeNewKey(true);
+    BOOST_CHECK(wallet.AddKeyPubKey(key, key.GetPubKey()));
+    const CScript collScript = GetScriptForDestination(key.GetPubKey().GetID());
+
+    CMutableTransaction mtx;
+    mtx.nLockTime = 0;                      // final, so CheckFinalTx passes
+    mtx.vin.emplace_back(COutPoint(UINT256_ZERO, 999));
+    mtx.vout.emplace_back(CTxOut(100 * COIN, collScript));
+    CTransactionRef txRef = MakeTransactionRef(CTransaction(mtx));
+
+    CWalletTx wtx(&wallet, txRef);
+    wallet.LoadToWallet(wtx);
+
+    // Give it positive depth without a chain: GetDepthInMainChain() reads only
+    // the wallet's last-processed height and the tx's recorded block height.
+    static const uint256 fakeHash = uint256S("01");
+    CBlockIndex fakeTip;
+    fakeTip.nHeight = 101;
+    fakeTip.phashBlock = &fakeHash;
+    {
+        LOCK(wallet.cs_wallet);
+        wallet.SetLastBlockProcessed(&fakeTip);
+        wallet.mapWallet.at(txRef->GetHash()).m_confirm =
+                CWalletTx::Confirmation(CWalletTx::Status::CONFIRMED, 100, fakeHash, 0);
+    }
+
+    const COutPoint collateral(txRef->GetHash(), 0);
+    CWallet::AvailableCoinsFilter filter;
+    filter.fOnlySafe = false;
+    filter.minDepth  = 0;
+
+    auto contains = [&collateral](const std::vector<COutput>& v) {
+        for (const COutput& o : v) {
+            if (o.tx->GetHash() == collateral.hash && (unsigned int)o.i == collateral.n) return true;
+        }
+        return false;
+    };
+
+    // (a) RED -- the defect itself: with nothing locked the collateral is an
+    //     ordinary candidate input, and coin selection can spend it to pay the
+    //     fee of the very registration that names it.
+    std::vector<COutput> before;
+    wallet.AvailableCoins(&before, nullptr, filter);
+    BOOST_CHECK_MESSAGE(contains(before),
+        "pre-lock: the collateral must be a selectable input -- that IS the bug");
+
+    // (b) GREEN -- the mechanism the fix relies on (wallet.cpp:2504).
+    WITH_LOCK(wallet.cs_wallet, wallet.LockCoin(collateral); );
+    std::vector<COutput> after;
+    wallet.AvailableCoins(&after, nullptr, filter);
+    BOOST_CHECK_MESSAGE(!contains(after),
+        "post-lock: the collateral must NOT be selectable");
+
+    // (c) DISCRIMINATOR -- prove the disappearance is the LOCK and nothing else.
+    //     Without this, (b) would pass just as well if the filter had rejected
+    //     the coin for an unrelated reason, and would be evidence of nothing.
+    CWallet::AvailableCoinsFilter includeLocked = filter;
+    includeLocked.fIncludeLocked = true;
+    std::vector<COutput> relaxed;
+    wallet.AvailableCoins(&relaxed, nullptr, includeLocked);
+    BOOST_CHECK_MESSAGE(contains(relaxed),
+        "fIncludeLocked=true must bring it back -- otherwise (b) proves nothing");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

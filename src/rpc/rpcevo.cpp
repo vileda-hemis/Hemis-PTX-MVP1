@@ -583,7 +583,44 @@ static UniValue ProTxRegister(const JSONRPCRequest& request, bool fSignAndSend)
     // make sure fee calculation works
     pl.vchSig.resize(CPubKey::COMPACT_SIGNATURE_SIZE);
 
-    FundSpecialTx(pwallet, tx, pl);
+    // ★ BUG-061 (2026-09-05, halted the chain 30 min at h4533): LOCK THE COLLATERAL
+    // BEFORE FUNDING.  Coin selection had no reason not to spend the very outpoint
+    // this registration names -- it is a confirmed, correctly-sized, wallet-owned
+    // coin, and being 100 HMS it is exactly what AvailableCoins reaches for to pay
+    // a fee.  It did: the ptx12 ProRegTx named bbfeb633:1 as its collateral and
+    // spent bbfeb633:1 as its input, so it was invalid the moment it was built.
+    // Its three siblings survived on OUTPUT ORDERING ALONE -- selection took vout 1
+    // every time; for them that was the change, for ptx12 it was the collateral.
+    //
+    // ★★ The existing protections cannot cover this window, and that is structural:
+    // LockIfMyCollateral (wallet.cpp:1102) fires from AddToWalletIfInvolvingMe, i.e.
+    // when the ProRegTx ARRIVES -- after its inputs were chosen -- and the -gmconflock
+    // relock (tiertwo/init.cpp:259-266) walks GetListAtChainTip(), the REGISTERED
+    // list, which an unconfirmed registration is not in.  Both are keyed on the
+    // registration already existing.  Locking here is what makes the lock fire at
+    // BUILD time, which is what the operator guide has always promised.
+    //
+    // AvailableCoins skips locked coins (wallet.cpp:2504), so this is exclusion by
+    // the mechanism the wallet already uses -- no coin-control plumbing needed.
+    // Left locked if funding fails: a collateral SHOULD be locked, and that is the
+    // safe direction.  Harmless when the collateral is not ours (protx_register_prepare
+    // with an external collateral) -- LockCoin is consulted only for our own coins.
+    WITH_LOCK(pwallet->cs_wallet, pwallet->LockCoin(pl.collateralOutpoint); );
+
+    try {
+        FundSpecialTx(pwallet, tx, pl);
+    } catch (const UniValue& objError) {
+        // ★ The message matters as much as the lock.  Without this, a wallet whose
+        // only candidate input WAS the collateral now fails with a bare "Insufficient
+        // funds", sending an operator to look for coins they can see in their balance.
+        const UniValue& msg = find_value(objError, "message");
+        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
+                strprintf("could not fund the registration (%s). The collateral %s-%d is locked "
+                          "and cannot pay for its own registration -- it is the coin being "
+                          "registered. Fund this wallet with a separate output to cover the fee.",
+                          msg.isStr() ? msg.get_str() : "no reason given",
+                          collateralHash.ToString(), collateralIndex));
+    }
 
     if (fSignAndSend) {
         SignSpecialTxPayloadByString(pl, keyCollateral); // prove we own the collateral

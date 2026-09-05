@@ -406,6 +406,32 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
         CValidationState state;
         if (fTestValidity &&
             !TestBlockValidity(state, *pblock, pindexPrev, false, false, false)) {
+            // ★ BUG-063 (2026-09-05): EVICT THE TRANSACTION THAT FAILED THIS
+            // TEMPLATE. BUG-024 made the producer survive an unbuildable candidate
+            // instead of dying on it, which was right -- but it kept the offending
+            // transaction, so every rebuild reproduced the identical invalid block.
+            // The guard's own comment assumes "the next iteration rebuilds from a
+            // fresh mempool/tip view"; the view IS fresh, and the offender is still
+            // in it. That is what turned a one-block fault into a 30-minute halt at
+            // h4533, and the h420 wedge before it ("48 consecutive templates ...
+            // one per block for 48 minutes", specialtx_validation.cpp:1608-1618) --
+            // second occurrence, different trigger, same retry-forever shape.
+            //
+            // Only the per-transaction loops can name the offender, so this fires
+            // only when one did (ProcessSpecialTxsInBlock). Coinbase/coinstake are
+            // in block.vtx but not in the mempool, so get() returns null for them
+            // and nothing is evicted. Cost of a hostile or accidental bad tx is now
+            // ONE block per producer, then that producer is immune.
+            if (state.HasOffendingTx()) {
+                const uint256& badHash = state.GetOffendingTx();
+                CTransactionRef badTx = mempool.get(badHash);
+                if (badTx) {
+                    LogPrintf("%s: BUG-063 evicting %s from the mempool - it made this "
+                              "template invalid (%s)\n",
+                              __func__, badHash.ToString(), FormatStateMessage(state));
+                    mempool.removeRecursive(*badTx, MemPoolRemovalReason::UNKNOWN);
+                }
+            }
             throw std::runtime_error(
                     strprintf("%s: TestBlockValidity failed: %s", __func__, FormatStateMessage(state)));
         }
