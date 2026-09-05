@@ -149,3 +149,23 @@ re-registration.
 `enable` succeeds and `--now` fails because the hand-started daemon holds the datadir. Fix is
 `Hemis-cli stop`, then **`systemctl reset-failed hemis-ptx`** (the retry limit will have tripped),
 then enable again.
+
+## "what changed in v0.3.6?" / "why a new tag?" / "do I need to upgrade?"
+
+★ **Covered. Two document defects, no code change — say both parts.**
+→ `weirdness.md` **"`systemctl` says the unit is enabled but the daemon running is not the unit's"**
+
+**v0.3.5 shipped two defects in the install steps, both hit by following them correctly:**
+1. Step 8 ran `install.sh` then `generateblskeypair` with **no daemon started** — and
+   `generateblskeypair` is an RPC call, so it failed with `couldn't connect to server`.
+2. Then, once a daemon *was* started by hand, the next step enabled the unit with **nothing stopping
+   the first** — so `enable` succeeded, `--now` failed on the datadir lock, and the operator was left
+   with an enabled-but-dead unit beside a running manual daemon. It survives until the next reboot.
+
+**v0.3.6 fixes both:** the daemon start is in step 8, and `Hemis-cli stop` sits between it and
+`enable --now`.
+
+★★ **No C++ changed.** `src/` is byte-identical from `v0.3.2-testnet` through `v0.3.6-testnet`, so
+the daemon differs only in its build-id and version string. **Upgrading is optional** — an operator
+who has already installed needs only the `systemctl is-active hemis-ptx` check. Anyone **mid-install
+should use v0.3.6**, because the earlier steps do not work as written.
