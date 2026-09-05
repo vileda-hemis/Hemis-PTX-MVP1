@@ -1,5 +1,5 @@
 <!-- CORPUS-AUTHORED: refusal behaviour -->
-<!-- CORPUS-TAG: v0.3.5-testnet -->
+<!-- CORPUS-TAG: v0.3.6-testnet -->
 
 # When the bot should not answer, and what it should say
 

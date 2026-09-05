@@ -1415,7 +1415,7 @@ role_run() {
     if [ -x "$HERE/doc-check.sh" ]; then
         local dcout
         if dcout="$(bash "$HERE/doc-check.sh" 2>&1)"; then
-            ok "operator documents: 4 invariants hold ($(printf '%s' "$dcout" | grep -c '\[ok\]') checks)"
+            ok "operator documents: 5 invariants hold ($(printf '%s' "$dcout" | grep -c '\[ok\]') checks)"
         else
             printf '%s\n' "$dcout" | grep '\[FAIL\]' | sed 's/^/      /'
             bad "doc-check.sh: operator-document invariants FAILED -- see above"

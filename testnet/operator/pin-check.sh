@@ -49,6 +49,7 @@ testnet/operator/pin-check.sh	v0.3.3-testnet went out with
 testnet/operator/faq/weirdness.md	and later, where `install.sh` enforces this
 testnet/operator/faq/weirdness.md	its instructions told me to clone
 testnet/operator/faq/questions.md	its instructions told me to clone
+testnet/operator/OPERATOR_ONEPAGER.md	onward; on an earlier tag
 testnet/explorer/app.py	BUG-059 — fixed in
 testnet/explorer/app.py	and earlier</b> the command above fails
 testnet/explorer/app.py	binary.</footer>

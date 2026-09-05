@@ -1,8 +1,8 @@
 <!-- CORPUS-SOURCE: GM_QUICKSTART.md -->
-<!-- CORPUS-TAG: v0.3.5-testnet -->
-<!-- CORPUS-SHA256: bf9664f900c75527d17d81f5b1fc02d1416ddd1ac3e209f1a19e44ddd50c6408 -->
+<!-- CORPUS-TAG: v0.3.6-testnet -->
+<!-- CORPUS-SHA256: 29c15bf13286e965d0fb3f0623cb130a7b1647630cc652e09a4f636388d2b180 -->
 
-> **This document is a verbatim copy of `GM_QUICKSTART.md` at `v0.3.5-testnet`.** It is not
+> **This document is a verbatim copy of `GM_QUICKSTART.md` at `v0.3.6-testnet`.** It is not
 > edited for the FAQ bot. If it disagrees with anything else in this corpus, it wins.
 
 # PTX testnet — gamemaster quickstart
@@ -19,7 +19,7 @@ and every failure mode named, is `testnet/operator/OPERATOR_GUIDE.md` — the bo
 it onto your machine.
 
 ```bash
-wget https://raw.githubusercontent.com/vileda-hemis/Hemis-PTX-MVP1/v0.3.5-testnet/vps-install.sh
+wget https://raw.githubusercontent.com/vileda-hemis/Hemis-PTX-MVP1/v0.3.6-testnet/vps-install.sh
 bash vps-install.sh
 ```
 

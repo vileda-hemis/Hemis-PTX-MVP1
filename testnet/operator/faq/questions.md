@@ -1,5 +1,5 @@
 <!-- CORPUS-AUTHORED: question index -->
-<!-- CORPUS-TAG: v0.3.5-testnet -->
+<!-- CORPUS-TAG: v0.3.6-testnet -->
 
 # How operators actually phrase things
 

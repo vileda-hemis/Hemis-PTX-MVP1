@@ -578,7 +578,7 @@ not a validated registration. Nothing you type here leaves your browser.</div>
   anything and cannot get you funded.</p>
   <ul class=note style="margin:6px 0 0 18px">
     <li><b>Not installed yet?</b> Follow
-      <a href="https://github.com/vileda-hemis/Hemis-PTX-MVP1/blob/v0.3.5-testnet/testnet/operator/OPERATOR_ONEPAGER.md">OPERATOR_ONEPAGER.md</a>
+      <a href="https://github.com/vileda-hemis/Hemis-PTX-MVP1/blob/v0.3.6-testnet/testnet/operator/OPERATOR_ONEPAGER.md">OPERATOR_ONEPAGER.md</a>
       first. It is the authority on prerequisites; this page deliberately does not restate them.</li>
     <li><b>No coins yet?</b> Ask the coordinator in <b>#testnet</b> for
       <b>(N&nbsp;&times;&nbsp;100)&nbsp;+&nbsp;500&nbsp;HMS</b> and post your funding address. Wait for

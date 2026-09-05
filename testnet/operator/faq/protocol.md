@@ -1,5 +1,5 @@
 <!-- CORPUS-AUTHORED: protocol explanation -->
-<!-- CORPUS-TAG: v0.3.5-testnet -->
+<!-- CORPUS-TAG: v0.3.6-testnet -->
 
 # What PTX actually does
 
