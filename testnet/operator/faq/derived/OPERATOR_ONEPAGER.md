@@ -1,6 +1,6 @@
 <!-- CORPUS-SOURCE: testnet/operator/OPERATOR_ONEPAGER.md -->
 <!-- CORPUS-TAG: v0.3.6-testnet -->
-<!-- CORPUS-SHA256: 59179c54aeaa2757cc637c0b05fdc1a6ef958ba3ddbd8cee5f7addc1d80660b0 -->
+<!-- CORPUS-SHA256: 7adfe1b0b4342758e442cf74bcfb1e09db1859149fc8610b5ca15ecb6488f1c3 -->
 
 > **This document is a verbatim copy of `testnet/operator/OPERATOR_ONEPAGER.md` at `v0.3.6-testnet`.** It is not
 > edited for the FAQ bot. If it disagrees with anything else in this corpus, it wins.
@@ -244,8 +244,10 @@ Hemis-cli protx_register \
 > does not know until after it has committed the wrong one. Registration fails with
 > `bad protx id suffix`. `OPERATOR_GUIDE.md` §B2 has the full reason.
 
-Collateral auto-locks against the staker and stays on the wallet host. **The gamemaster never holds
-funds and ships with no wallet at all.**
+Collateral auto-locks against the staker **once the registration confirms — not before**; in that
+gap the registration can spend the collateral to pay its own fee, so check it is absent from that
+transaction's own `vin` (`getrawtransaction <protx-txid> 1`). The collateral stays on the wallet
+host. **The gamemaster never holds funds and ships with no wallet at all.**
 
 **11. Add the compound node id**, on the **gamemaster host**. The registration response returned
 something like `gm1:a1b2c3d4` — that, not the bare label, goes in `~/.Hemis/Hemis.conf` under

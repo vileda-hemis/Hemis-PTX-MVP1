@@ -237,8 +237,10 @@ Hemis-cli protx_register \
 > does not know until after it has committed the wrong one. Registration fails with
 > `bad protx id suffix`. `OPERATOR_GUIDE.md` §B2 has the full reason.
 
-Collateral auto-locks against the staker and stays on the wallet host. **The gamemaster never holds
-funds and ships with no wallet at all.**
+Collateral auto-locks against the staker **once the registration confirms — not before**; in that
+gap the registration can spend the collateral to pay its own fee, so check it is absent from that
+transaction's own `vin` (`getrawtransaction <protx-txid> 1`). The collateral stays on the wallet
+host. **The gamemaster never holds funds and ships with no wallet at all.**
 
 **11. Add the compound node id**, on the **gamemaster host**. The registration response returned
 something like `gm1:a1b2c3d4` — that, not the bare label, goes in `~/.Hemis/Hemis.conf` under

@@ -17,8 +17,15 @@ A gamemaster is a node that has locked **100 HMS** of collateral on chain and re
 identity — an address peers can reach it at, and a BLS key it signs with. Registration puts that
 identity in a list every node agrees on. Gamemasters are the set from which quorums are drawn.
 
-★ The collateral is **not spent and not sent to anyone.** It stays in your wallet, locked so your
-own staker cannot spend it by accident. It is a stake, not a fee.
+★ The collateral is **not spent and not sent to anyone.** It stays in your wallet. It is a stake,
+not a fee.
+
+★★ **It is locked against your own staker only once the registration confirms** — not before. In the
+gap between funding the collateral and the registration confirming it is an ordinary spendable coin,
+and the registration transaction itself can spend it to pay its own fee. That is what halted the
+chain on 2026-09-05. After registering, check the collateral is not among that transaction's own
+inputs: `Hemis-cli getrawtransaction <your-protx-txid> 1`. If it is, that registration will never
+confirm — re-fund and register again.
 
 ---
 
