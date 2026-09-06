@@ -244,7 +244,16 @@ def page(body, q="", here="Verify"):
             "<title>Roll verifier - Hemis PTX testnet</title>"
             "<style>%s</style>%s<div class=wrap><h1>PTX roll verifier</h1>"
             "<p class=sub>Re-derives a roll from the transaction bytes. Checks P, A and B and C "
-            "need no node, no index and no chain — paste hex and they run.</p>%s%s%s</div>"
+            "need no node, no index and no chain — paste hex and they run.</p>"
+            # ★ KDD-121, stated ONCE and positively rather than hedged everywhere. A page
+            # whose checks all pass reads as authoritative, and this is where an integrator
+            # forms their model of the guarantee -- so it has to say what the guarantee is.
+            # Consensus enforces the SIGNATURE over the seed; it never re-derives the beacon
+            # from the signature nor the results from the beacon (PTX_BLS_SigToBeacon and
+            # PTX_MapBeacon have callers only in rpc/ptx.cpp). B and C exist HERE and nowhere
+            # else. Detection, not prevention -- and saying so is what makes the checks mean
+            # something rather than look decorative.
+            "<p class=sub><b>Consensus does not perform these checks.</b> The network verifies the quorum's signature over the round seed; it does not re-derive the beacon from that signature, nor the results from that beacon. Those are checks B and C, and they run here. A roll whose numbers did not follow from its beacon would be accepted by the chain and caught by anyone who looked \u2014 so manipulation is not prevented, it is detectable, permanent and public.</p>%s%s%s</div>"
             % (CSS, header(here), FORM.format(q=esc(q)), body, footer()))
 
 
@@ -718,7 +727,7 @@ var RESERVED = ["admin","system","null","none","gm","gamemaster","node","default
 function $(id){return document.getElementById(id)}
 function esc(t){return String(t).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]})}
 
-// Name the rule that failed. "bad protx id suffix" told an operator nothing.
+# Name the rule that failed. "bad protx id suffix" told an operator nothing.
 function labelError(v){
   if(!v) return "Enter a name.";
   if(v.length<3||v.length>24) return "Must be 3-24 characters — yours is "+v.length+".";
@@ -748,7 +757,7 @@ function render(){
   $("namemsg").innerHTML = n===""? "" : (e? '<p class=err>'+esc(e)+'</p>' : '<p class=good>Valid label.</p>');
   if(n===""||e){ off("s2","s3","s4","s5","s6"); $("cmds2a").innerHTML=""; return; }
 
-  // --- step 2: collateral first ---
+  # --- step 2: collateral first ---
   $("s2").className="step";
   $("cmds2a").innerHTML = cmdBlock("wal",'Hemis-cli getnewaddress "'+n+'-collateral"');
   var ca=$("coladdr").value.trim();
@@ -760,7 +769,7 @@ function render(){
     '<div class=wait><b>Now wait for one confirmation.</b> Blocks are about a minute apart. '+
     'Do step 3 while you wait.</div>';
 
-  // --- step 3: keys, during the wait ---
+  # --- step 3: keys, during the wait ---
   $("s3").className="step";
   $("cmds3").innerHTML =
     cmdBlock("wal",'Hemis-cli getnewaddress "'+n+'-owner"') +
@@ -769,7 +778,7 @@ function render(){
     '<p class=note>Keep the BLS <b>secret</b> on the gamemaster host and put it in that host’s '+
     '<code>Hemis.conf</code>. Only the public half is used below.</p>';
 
-  // --- step 4: collect ---
+  # --- step 4: collect ---
   $("s4").className="step";
   $("cmds4").innerHTML = cmdBlock("wal",'Hemis-cli listunspent 1 9999999 "[\\"'+ca+'\\"]"');
   var same=$("samepay").checked;
@@ -786,21 +795,21 @@ function render(){
   if(v.cvout && !/^[0-9]+$/.test(v.cvout)) msgs.push("The output index is a plain number, with no quotes or brackets.");
   if(v.blspub && v.blspub.indexOf("bls-sk")===0) msgs.push("That is the SECRET key. Use the public half — it starts bls-pk.");
   if(v.owner && v.owner===ca) msgs.push("The owner address must differ from the collateral address.");
-  // ★★ THE CHECK HERE USED TO BE VACUOUS. It asked whether the string contained
-  // ANY colon -- and a bracketed IPv6 address is made of colons, so it could never
-  // fire on the only address family this page accepts. A registration with no port
-  // is ACCEPTED: the chain stores the chainparams default :29993, which nothing
-  // listens on. The gamemaster then installs cleanly, syncs, reports Ready, and
-  // refuses to arm with "Local address ... does not match the address from ProTx".
-  // ★ The remedy is protx_update_service from the WALLET host, which requires the
-  // BLS SECRET to travel there -- the one movement this architecture otherwise
-  // avoids. Found live on ptxtestnet-03, 2026-09-04.
+  # ★★ THE CHECK HERE USED TO BE VACUOUS. It asked whether the string contained
+  # ANY colon -- and a bracketed IPv6 address is made of colons, so it could never
+  # fire on the only address family this page accepts. A registration with no port
+  # is ACCEPTED: the chain stores the chainparams default :29993, which nothing
+  # listens on. The gamemaster then installs cleanly, syncs, reports Ready, and
+  # refuses to arm with "Local address ... does not match the address from ProTx".
+  # ★ The remedy is protx_update_service from the WALLET host, which requires the
+  # BLS SECRET to travel there -- the one movement this architecture otherwise
+  # avoids. Found live on ptxtestnet-03, 2026-09-04.
   if(v.ipport && /^\[[^\]]+\]$/.test(v.ipport))
     msgs.push("Missing the port. This does not fail at registration \u2014 the chain stores the "+
               "default :29993, which nothing listens on, and the gamemaster then refuses to "+
               "arm. Write it as \u201c[\u2026]:29994\u201d.");
-  // ★ Gamemasters must register a global IPv6 address: signing is point-to-point
-  // and no relay bridges address families, so an IPv4 registration is invisible.
+  # ★ Gamemasters must register a global IPv6 address: signing is point-to-point
+  # and no relay bridges address families, so an IPv4 registration is invisible.
   if(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+$/.test(v.ipport))
     msgs.push("That is an IPv4 address. Gamemasters must register a global IPv6 address — signing "+
               "goes directly to it and no relay bridges address families, so an IPv4 gamemaster is "+
@@ -812,10 +821,10 @@ function render(){
      (v.ipport.match(/:/g)||[]).length>1)
     msgs.push("Bracket the address, then the port: […]:29994. Without brackets the port colon is "+
               "ambiguous with the address’s own colons.");
-  // ★ A non-29994 port is a WARNING and must NOT block: vps-install.sh legitimately
-  // assigns 29996, 29998, ... to the 2nd and later gamemasters sharing one host, so
-  // requiring 29994 exactly would reject configurations this project's own bootstrap
-  // creates. Errors gate step 5; warnings do not.
+  # ★ A non-29994 port is a WARNING and must NOT block: vps-install.sh legitimately
+  # assigns 29996, 29998, ... to the 2nd and later gamemasters sharing one host, so
+  # requiring 29994 exactly would reject configurations this project's own bootstrap
+  # creates. Errors gate step 5; warnings do not.
   var warns=[];
   var pm=/^\[[^\]]+\]:(\d+)$/.exec(v.ipport||"");
   if(pm && pm[1]!=="29994")
@@ -828,7 +837,7 @@ function render(){
   var filled = v.ctxid&&v.cvout&&v.owner&&v.payout&&v.blspub&&v.ipport;
   if(!filled || msgs.length){ off("s5","s6"); $("cmd5").innerHTML=""; return; }
 
-  // --- step 5: register ---
+  # --- step 5: register ---
   $("s5").className="step";
   var c='Hemis-cli protx_register \\\n'+
     '  "'+v.ctxid+'" \\\n'+'  '+v.cvout+' \\\n'+'  "'+v.ipport+'" \\\n'+'  "'+v.owner+'" \\\n'+
@@ -865,7 +874,7 @@ function render(){
     'and every argument after it shifts, which is how the PTX payment address and the node id get silently '+
     'lost. Argument 6 is empty on purpose: the voting address defaults to the owner address.</p>';
 
-  // --- step 6: config line ---
+  # --- step 6: config line ---
   $("s6").className="step";
   var comp=$("compound").value.trim();
   if(!comp){ $("cmd6").innerHTML=""; return; }
