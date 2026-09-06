@@ -273,9 +273,14 @@ read them, because the difference is usually just the port.
    second or later one on the same host gets `29996`/`29997`, `29998`/`29999`. **If yours are
    crossed, they were edited by hand.**
 2. ★★ **You registered without a port at all.** `protx_register` accepts a bracketed address with
-   no port and **does not complain** — the chain stores the network default **`:29993`**, which no
-   host listens on. The registration succeeds, the node syncs, `getgamemasterstatus` reports
-   `Ready`, and nothing goes wrong until arming.
+   no port and **does not complain** — it fills in the network default. ★ **Which default you got
+   depends on when you registered.** Before 2026-09-06 that was **`:29993`**, which no host on this
+   network listens on, so the registration succeeded, the node synced,
+   `getgamemasterstatus` reported `Ready`, and nothing went wrong until arming. From the
+   **first release after 2026-09-06** the default is **`:29994`** (BUG-071) — the port every node actually runs — so
+   a portless registration now lands on the right port by accident rather than the wrong one.
+   **Existing `:29993` registrations are not repaired by that change** and still need the fix
+   below.
 
 **Which one is it?** Compare them directly:
 
@@ -284,8 +289,9 @@ grep -E '^(port|rpcport)=' ~/.Hemis/Hemis.conf     # on the gamemaster host
 Hemis-cli protx_info <proTxHash> | grep -i service  # the registered address:port
 ```
 
-If the registered port is `29993` you never set one. If it is your **RPC** port, the two config
-lines are transposed.
+If the registered port is `29993` you never set one — that is the old default, and it is the
+tell. If it is your **RPC** port, the two config lines are transposed. (A registration made on a build
+carrying BUG-071 with no port shows `29994`, which is correct and needs nothing.)
 
 **Do you need to act?** Yes, and ★★ **the fix is `protx_update_service`, not re-registration.**
 Your registration and collateral are fine; only the service address is wrong, and that is exactly

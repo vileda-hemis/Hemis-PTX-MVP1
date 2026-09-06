@@ -708,7 +708,7 @@ public:
 
 /**
  * PTX closed testnet — isolated network for PTX protocol development.
- * pchMessageStart = "PTXT"  P2P port 29993  -- both set in CPTXTestNetParams below.
+ * pchMessageStart = "PTXT"  P2P port 29994  -- both set in CPTXTestNetParams below.
  * RPC port 29995 -- set in CBaseChainParams for "ptxtestnet", NOT here.
  *
  * ★ This line said `"PTX2" … RPC port 29902` until 2026-08-23 and was wrong on both
@@ -925,7 +925,47 @@ public:
         pchMessageStart[1] = 0x54; // 'T'
         pchMessageStart[2] = 0x58; // 'X'
         pchMessageStart[3] = 0x54; // 'T'  -- "PTXT"
-        nDefaultPort = 29993;
+        // ★★★ 29993 -> 29994 (2026-09-06, BUG-071). THE TWIN OF THE 29902->29995 FIX
+        // ALREADY RECORDED IN chainparamsbase.cpp:49. That note says this class of
+        // mismatch "used to be load-bearing for CONSENSUS-ADJACENT behaviour"; the RPC
+        // half was corrected on 2026-08-21 and the P2P half was not, because nothing
+        // was visibly broken. It was not broken. It was throttled.
+        //
+        // ★ 29993 WAS deliberate -- for a different chain than the one now running.
+        // e60e116 (2026-05-18) created CPTXTestNetParams as an "isolated closed
+        // testnet", and 29993 kept it clear of ptxbea's 29994. When this network
+        // became the public testnet nobody revisited it: install.sh writes
+        // port=29994, every node runs 29994, and eleven ProRegTxs record :29994 on
+        // chain. Both genesis specs say so too -- PTX_TESTNET_GENESIS_CONFIG.md:120
+        // and TESTNET_GENESIS_PARAMS.md:50 both give nDefaultPort 29994 "as
+        // specified". Nothing anywhere recorded a decision to keep 29993 after the
+        // operators moved.
+        //
+        // ★★ WHAT IT COST, measured 2026-09-06: net.cpp:1832 skips any address whose
+        // port != GetDefaultPort() until 50 tries have failed. With the default at
+        // 29993 and every live node on 29994, EVERY REAL ADDRESS WAS DE-PRIORITISED
+        // BY THE OUTBOUND SELECTOR, while the only default-port entries in addrman
+        // were five stale records that never answer. Automatic discovery still
+        // worked -- ptxwallet01 and ptx004 both found all three PJH hosts unseeded --
+        // but against the grain, which is why addnode carried the network and why the
+        // topology read as hub-and-spoke (KDD-123). This gets WORSE with scale, not
+        // better: the throttle is a fixed 50-try penalty per selection pass, and it
+        // bites hardest exactly when the network outgrows everyone seeding everyone.
+        //
+        // ★★ NOT CONSENSUS. The only validation-side reader of a default port is
+        // specialtx_validation.cpp:45, and it reads MAIN's default explicitly, never
+        // the active chain's. A partial rollout therefore DEGRADES, it does not
+        // break: an un-upgraded node merely prefers different addresses, and no
+        // handshake, wire format or validity rule involves this number.
+        //
+        // ★ KNOWN COLLISION, stated rather than discovered later: ptxbea's default is
+        // also 29994 (see CPTXBeaTestNetParams below), which TESTNET_GENESIS_PARAMS.md:50
+        // flagged -- "the two must never share a host. Pick 29996 if they ever might".
+        // They are separated by magic and datadir, so this is a port-binding hazard on
+        // a host running BOTH chains with neither given an explicit -port, not a
+        // network-safety one. Accepted knowingly: matching what is deployed and what
+        // both genesis specs say beats keeping a number no node has ever listened on.
+        nDefaultPort = 29994;
 
         vSeeds.clear();
 

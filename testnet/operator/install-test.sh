@@ -1312,10 +1312,14 @@ role_run() {
     #
     # ★ ONE SOURCE OF TRUTH EACH, read rather than restated: the ports come from
     # install.sh's own defaults (the same way pin-check reads REF from it), and
-    # the collateral from CPTXTestNetParams in chainparams.cpp. Note the ports
-    # deliberately are NOT the chainparams defaults -- ptxtestnet defaults to P2P
-    # 29993, and install.sh writes 29994 explicitly. Reading chainparams here
-    # would guard the wrong number.
+    # the collateral from CPTXTestNetParams in chainparams.cpp. ★ The ports are
+    # still read from install.sh rather than chainparams, and that is now a
+    # DELIBERATE redundancy rather than a necessity: until 2026-09-06 ptxtestnet
+    # defaulted to P2P 29993 while install.sh wrote 29994, so reading chainparams
+    # would have guarded the wrong number. BUG-071 made the default 29994 and the
+    # two agree -- but install.sh remains the authority here, because what this
+    # leg checks is that the DOCUMENTS match what the INSTALLER writes, and
+    # sourcing both sides from chainparams would make the check tautological.
     #
     # ★★ SCOPED TO INSTRUCTIONAL USES IN OPERATOR-FACING FILES, and that scoping
     # is the whole design. A naive scan of every number flagged coordinator float

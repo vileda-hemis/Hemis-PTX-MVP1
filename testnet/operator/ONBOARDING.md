@@ -164,12 +164,15 @@ directory is the point.
 
 The ports below are deliberately outside every default this chain uses, so this cannot collide with
 the node already running on ptx01. ★ The defaults, from source rather than memory: ptxtestnet is
-P2P **29993** (`chainparams.cpp:886`) and RPC **29995** (`chainparamsbase.cpp:69`) — and on the
+P2P **29994** (`chainparams.cpp`, `CPTXTestNetParams`; it was 29993 until 2026-09-06, BUG-071) and
+RPC **29995** (`chainparamsbase.cpp:69`) — and on the
 binary ptx01 actually runs, `1591450`, the RPC default is **29902** (`chainparamsbase.cpp:49` in
 that tree; the 29902→29995 change landed later the same day). 29974/29975 clears all three, and
-29994 as well, which is **ptxbea's** P2P port (`chainparams.cpp:1097`), not ptxtestnet's. None of
-this actually reaches the daemon below — the conf sets both ports explicitly — but the reason for
-the choice should be the true one.
+29994 as well, which is **now BOTH ptxtestnet's and ptxbea's** P2P default — ptxtestnet's moved
+29993→29994 on 2026-09-06 (BUG-071) to match what every node actually runs, and the two chains
+share the number deliberately, separated by message magic and datadir. None of this actually
+reaches the daemon below — the conf sets both ports explicitly — but the reason for the choice
+should be the true one.
 
 The chain state is irrelevant — this needs the wallet only, and height 0 with zero peers is fine.
 

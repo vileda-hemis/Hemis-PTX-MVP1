@@ -1162,6 +1162,12 @@ ptxtestnet=1
 # same lines above the header: "Bound to [::]:29993" rather than the P2P port asked
 # for, and RPC attempted on 29902 rather than the one asked for. A node that is
 # listening on the wrong ports looks entirely healthy from the inside.
+# ★ HISTORICAL, AND LEFT AS MEASURED: both of those defaults have since moved to
+# what install.sh writes -- RPC 29902->29995 on 2026-08-21, P2P 29993->29994 on
+# 2026-09-06 (BUG-071). The trap this comment documents is UNCHANGED: a setting
+# above the [ptxtestnet] header is still silently ignored. Only the numbers a
+# mis-sectioned node lands on have changed, which makes the failure quieter, not
+# rarer -- do not read the new agreement as a reason to relax the header rule.
 [ptxtestnet]
 
 # --- RPC -------------------------------------------------------------------

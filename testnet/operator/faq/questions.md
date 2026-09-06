@@ -137,7 +137,8 @@ on a gamemaster, stop: that is the reversed text, and it was removed.
 → `weirdness.md` **"my gamemaster will not arm — \"Local address ... does not match the address from ProTx\""**
 
 Two causes that look identical: `port=`/`rpcport=` transposed in the config, or a registration made
-with **no port**, in which case the chain stored the default `:29993`. Remedy is
+with **no port**, in which case the chain stored the network default — `:29993` before 2026-09-06,
+which nothing listens on; `:29994` on builds carrying BUG-071 (from 2026-09-06), which is correct. Remedy is
 `protx_update_service` from the **wallet host** with the **BLS secret** as argument 4 — never
 re-registration.
 
