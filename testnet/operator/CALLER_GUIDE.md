@@ -173,40 +173,42 @@ value is permanent.
 
 ---
 
-## 5. `exclude` accepts two different things
+## 5. `exclude` — integers only
 
-**Integers** — values never to draw:
+Values never to draw:
 
 ```
 '[13]'          exclude 13
 '[1, 2, 3]'     exclude 1, 2 and 3
 ```
 
-**64-character transaction ids** — exclude *everything a previous roll produced*:
+They are excluded from the draw and folded into `params_hash`, so the seed commits to exactly the
+exclusions that were applied. Remember §3: an exclusion that leaves fewer eligible values than
+`count` on a `unique` draw costs you 1 HMS.
+
+### ★★ Transaction ids are NOT accepted
+
+You may see `exclude_txids` in the payload structure, and older help text described 64-character
+transaction ids as a way to exclude everything a previous roll produced. **That is not implemented,
+and `ptx_roll` now refuses it:**
 
 ```
-'["<settle txid of an earlier roll>"]'
+error -32602: tx_id exclusions are not implemented — use integer exclusions
 ```
 
-The chain looks that transaction up, reads its results, and adds all of them to your exclusion set.
-That is how you get uniqueness *across* rolls rather than within one.
+★ The refusal is free — it happens before the commitment is built, so nothing is broadcast and no
+fee is paid.
 
-You can mix both in the same array.
+★★★ **Why it is refused rather than ignored, because the history matters if you are reading the
+payload format.** Until 2026-09-06 a tx_id was *accepted*: written into both payloads, folded into
+`params_hash`, and therefore committed to by the seed the quorum signed — and then **silently
+dropped** before the draw. Measured: excluding a roll that produced `[6,3,1,7,8,4]` from a 1–8 draw
+should have forced the result to `{2,5}`; it returned `[7,1]`, both inside the excluded set, while
+the payload recorded the exclusion. The chain was attesting to something it had not done. Refusing
+the input removes that possibility entirely — `exclude_txids` is now empty in every payload.
 
-### ★★ Two things you must know before using the txid form
-
-**It fails silently.** If the txid is unknown, **not yet confirmed**, or not a PTX settle at all,
-it is **skipped** — the roll proceeds without that exclusion, succeeds, and may return exactly the
-values you were trying to avoid. The only trace is a line in the caller's own debug log. Confirm the
-transaction before referencing it.
-
-**The public verifier will report `C: false` on such a roll.** This is expected and is not a defect
-in your roll. `/v2` re-derives results from the transaction bytes alone, with no node and no chain —
-that is the property that makes it trustworthy. Resolving a txid exclusion *requires* a chain
-lookup, so the verifier cannot reproduce it and its results check will disagree.
-
-★ If independent public verifiability matters to you, use integer exclusions. If cross-roll
-uniqueness matters more, use txids and understand that check C will not pass.
+★ If you need uniqueness *across* rolls, do it caller-side: keep the previous results and pass them
+as integers, within the 9000-byte budget.
 
 ---
 
@@ -262,7 +264,7 @@ https://ptx-explorer.lnky.uk/v2/api/v1/tx/<settle txid>
 | **P** | `ptx_params_hash` matches the parameters you asked for |
 | **A** | `round_seed` is the hash of `game_id`, height, nonce and params |
 | **B** | `beacon == SHA256(quorum_sig)` |
-| **C** | `results` follow from the beacon (see §5 for the txid-exclusion caveat) |
+| **C** | `results` follow from the beacon |
 | **D** | *not performed by the page* — it needs the quorum's key |
 
 ★ Check D is performed **by consensus**, which verifies the threshold signature against the
@@ -277,6 +279,14 @@ network; it would simply fail check C for anyone who looked.
 
 So: **the signature proves a quorum signed that seed. Checks B and C are what tie the numbers to
 it, and running them is on you.**
+
+★★★ **And check C confirms consistency, not correctness.** It recomputes the results from the
+beacon using the parameters in the payload — so it catches numbers that do not follow from the
+beacon, and it cannot catch a payload whose *parameters* misdescribe what was asked for. This is not
+hypothetical: when tx_id exclusions were silently dropped (§5), check C **passed** on a roll that
+ignored its own recorded exclusion, because the verifier computed with an empty exclusion set and so
+had the node. Both agreed on a result honouring nothing. Check P is what binds the parameters to the
+seed, which is why it is checked first and why it exists at all.
 
 ### ★ `caller_pubkey`
 
