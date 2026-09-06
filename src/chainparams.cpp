@@ -941,16 +941,23 @@ public:
         // specified". Nothing anywhere recorded a decision to keep 29993 after the
         // operators moved.
         //
-        // ★★ WHAT IT COST, measured 2026-09-06: net.cpp:1832 skips any address whose
-        // port != GetDefaultPort() until 50 tries have failed. With the default at
-        // 29993 and every live node on 29994, EVERY REAL ADDRESS WAS DE-PRIORITISED
-        // BY THE OUTBOUND SELECTOR, while the only default-port entries in addrman
-        // were five stale records that never answer. Automatic discovery still
-        // worked -- ptxwallet01 and ptx004 both found all three PJH hosts unseeded --
-        // but against the grain, which is why addnode carried the network and why the
-        // topology read as hub-and-spoke (KDD-123). This gets WORSE with scale, not
-        // better: the throttle is a fixed 50-try penalty per selection pass, and it
-        // bites hardest exactly when the network outgrows everyone seeding everyone.
+        // ★★ WHAT IT COSTS -- and NOT what I first claimed (ODC-122). The first
+        // version of this comment said net.cpp:1832's non-default-port skip
+        // de-prioritised every live address and throttled discovery. That was a
+        // MISREADING: `nTries` counts addresses DRAWN FROM addrman in one selection
+        // pass, not connection attempts -- the comment above it says so -- so passing
+        // 50 costs microseconds and then non-default ports are accepted. A
+        // pre-deployment baseline across 11 hosts measured 47 outbound connections to
+        // addresses in no seed list, ptxwallet01 reaching 8 of them ~50s after its 3
+        // seeds. Discovery is fast. There is no throttle to fix here.
+        //
+        // ★★ THE REAL COST IS A FOOT-GUN, AND IT REACHES THE CHAIN. rpcevo.cpp:416
+        // resolves a portless protx_register address against this value, so a
+        // registration written without a port recorded :29993 -- a port nothing on
+        // this network listens on. weirdness.md documents the result: the
+        // registration succeeds, the node syncs, getgamemasterstatus says Ready, and
+        // nothing goes wrong until arming. Same shape at net.cpp:1882 (a portless
+        // addnode) and net.cpp:107 (a node with no port= binds it and is invisible).
         //
         // ★★ NOT CONSENSUS. The only validation-side reader of a default port is
         // specialtx_validation.cpp:45, and it reads MAIN's default explicitly, never
