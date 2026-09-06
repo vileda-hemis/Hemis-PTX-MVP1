@@ -279,22 +279,60 @@ int64_t TrySendSignReq(CConnman& connman, const CService& addr,
 {
     int64_t used = -1;
     too_old_out = false;
-    connman.ForNode(addr,
-        [](const CNode*) { return true; },
-        [&](CNode* pnode) {
-            // ★★ CAPABILITY CHECK (§9.13(h)). An older node has no handler for
-            // ptxsignreq and IGNORES it silently, so sending would buy nothing
-            // and cost a member slot until its budget expired. Ask the version
-            // instead -- the peer already told us during the handshake.
-            if (pnode->nVersion > 0 && pnode->nVersion < PTX_SIGNREQ_MIN_PROTO_VERSION) {
-                too_old_out = true;
-                return true;
-            }
-            CNetMsgMaker msgMaker(pnode->GetSendVersion());
-            connman.PushMessage(pnode, msgMaker.Make(NetMsgType::PTXSIGNREQ, req));
-            used = pnode->GetId();
+
+    // The send itself, shared by both passes below.
+    auto trySend = [&](CNode* pnode) -> bool {
+        // ★★ CAPABILITY CHECK (§9.13(h)). An older node has no handler for
+        // ptxsignreq and IGNORES it silently, so sending would buy nothing
+        // and cost a member slot until its budget expired. Ask the version
+        // instead -- the peer already told us during the handshake.
+        if (pnode->nVersion > 0 && pnode->nVersion < PTX_SIGNREQ_MIN_PROTO_VERSION) {
+            too_old_out = true;
             return true;
+        }
+        // ★ BUG-069: nVersion == 0 means the handshake has NOT finished. The
+        // guard above tests > 0, so an unset version fell THROUGH to a send
+        // built from an unset send-version -- "ERROR: Requesting unset send
+        // version for node: N. Using 209", observed twice during the 2026-09-06
+        // round. ForNode(CService) does not filter on NodeFullyConnected (unlike
+        // ForEachNode), so a half-open node reaches here. Leave it UNSENT: that
+        // is a waiting state with a bounded exit and the 150 ms tick retries.
+        if (pnode->nVersion <= 0) return false;
+        CNetMsgMaker msgMaker(pnode->GetSendVersion());
+        connman.PushMessage(pnode, msgMaker.Make(NetMsgType::PTXSIGNREQ, req));
+        used = pnode->GetId();
+        return true;
+    };
+
+    // Pass 1: the member's advertised CService, port-exact. Unchanged.
+    connman.ForNode(addr, [](const CNode*) { return true; }, trySend);
+
+    // ★★★ BUG-068 -- THE KEY MISMATCH. ForNode matches CService (ip AND port);
+    // OpenNetworkConnection below dedups on CNetAddr (ip ONLY) and returns
+    // SILENTLY when any connection to that ip exists. A member that dialled US
+    // is present under its EPHEMERAL source port: pass 1 cannot see it, and the
+    // dial is refused because we already are connected -- so it stayed UNSENT
+    // until the bound expired and was reported UNREACHABLE, forever, on every
+    // retry. Measured on ptxtestnet 2026-09-06: 6 of 10 QUAL members in exactly
+    // that state, ZERO requests delivered to any of them (confirmed from the
+    // member side -- ptx08's log window held no PTX lines at all).
+    // Using their connection is safe: PTXSIGNREQ is direction-agnostic (the
+    // member replies on the same CNode via PushMessage(pfrom)), the reply is
+    // matched by node id, and a peer answering for a seat we did not ask is
+    // rejected TERMINAL on the signer_protx cross-check.
+    // The fix lives HERE and not in ForNode because ForNode is shared with
+    // TierTwoConnMan (tiertwo/net_gamemasters.cpp:373), which dials and then
+    // uses port-exact matching to ask "did MY outbound land?" -- an ip-only key
+    // there would report success off someone else's inbound.
+    if (used < 0 && !too_old_out) {
+        const CNetAddr want = static_cast<const CNetAddr&>(addr);
+        connman.ForEachNode([&](CNode* pnode) {
+            if (used >= 0 || too_old_out) return;          // first match wins
+            if (!(static_cast<const CNetAddr&>(pnode->addr) == want)) return;
+            trySend(pnode);   // ForEachNode already filters NodeFullyConnected
         });
+    }
+
     if (used < 0 && !too_old_out) {
         // Not connected. Open one; the next tick re-resolves and finds it.
         // ★ Nothing is recorded here that a later read depends on -- that
