@@ -36,7 +36,7 @@ firewall). **29995 stays closed** — RPC is loopback-only on both roles.
 
 ```bash
 sudo apt-get update && sudo apt-get install -y git curl ca-certificates
-git clone -b v0.4.0-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
+git clone -b v0.4.1-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 cd Hemis-PTX-MVP1/testnet/operator
 ```
 

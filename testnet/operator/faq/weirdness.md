@@ -1,5 +1,5 @@
 <!-- CORPUS-AUTHORED: expected weirdness -->
-<!-- CORPUS-TAG: v0.4.0-testnet -->
+<!-- CORPUS-TAG: v0.4.1-testnet -->
 
 # Things that look broken and are not
 
@@ -83,7 +83,7 @@ with different magic bytes — and gives you a perfectly healthy daemon on the w
 
 ---
 
-## Symptom: peers report `Hemis Core:1.3.1` but I installed v0.4.0-testnet
+## Symptom: peers report `Hemis Core:1.3.1` but I installed v0.4.1-testnet
 
 **Applies to:** all versions.
 
@@ -91,8 +91,8 @@ with different magic bytes — and gives you a perfectly healthy daemon on the w
 install did not take".
 
 **What is actually happening.** `1.3.1` is the inherited Hemis Core lineage version carried in the
-P2P subversion string. It is not the PTX release number. A node built from `v0.4.0-testnet`
-advertises the lineage version to peers while `Hemisd -version` reports `v0.4.0-testnet`.
+P2P subversion string. It is not the PTX release number. A node built from `v0.4.1-testnet`
+advertises the lineage version to peers while `Hemisd -version` reports `v0.4.1-testnet`.
 
 **Do you need to act?** No. To check what a node is really running, use `Hemisd -version` on that
 machine — not the peer list.

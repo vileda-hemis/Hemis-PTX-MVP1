@@ -12,7 +12,7 @@ and every failure mode named, is `testnet/operator/OPERATOR_GUIDE.md` — the bo
 it onto your machine.
 
 ```bash
-wget https://raw.githubusercontent.com/vileda-hemis/Hemis-PTX-MVP1/v0.4.0-testnet/vps-install.sh
+wget https://raw.githubusercontent.com/vileda-hemis/Hemis-PTX-MVP1/v0.4.1-testnet/vps-install.sh
 bash vps-install.sh
 ```
 
