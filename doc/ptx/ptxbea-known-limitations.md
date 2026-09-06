@@ -226,15 +226,31 @@ or intentional without a design decision. See BUG-015 for the mechanism.
 
 ## 10. `exclude` tx_id form deferred
 
-**Register ID:** None — confirmed from `src/rpc/ptx.cpp:87–89`.  
-**Status:** Integer excludes work. tx_id excludes accepted by parameter validation but silently
-ignored at resolution time.
+**Register ID:** BUG-065 (2026-09-06).  
+**Status:** Integer excludes work. tx_id excludes are **REJECTED** at parameter validation.
 
-`ptx_roll`'s `exclude` parameter accepts 64-char tx_id strings per the parameter validation path,
-but `PTX_ResolveExclude` in `src/rpc/ptx.cpp` logs "PTX: tx_id exclude resolution deferred to
-Phase 2" and ignores the tx_id entries. A working implementation exists in
-`src/ptx/ptx_exclude.cpp` (uses `GetTransaction` + `GetTxPayload`), but it is not currently wired
-into `ptx_roll` — `ptx.cpp` does not include `ptx_exclude.h`.
+**This section was correct and complete before the behaviour was measured** — it named the static
+`PTX_ResolveExclude` in `src/rpc/ptx.cpp`, quoted its "deferred to Phase 2" log line, and noted that
+the working implementation in `src/ptx/ptx_exclude.cpp` was never wired in. What it did not say, and
+what measurement showed, is that *silently ignored* understated the problem.
+
+**What was actually happening.** A tx_id was accepted, written into BOTH payloads by
+`PTX_BuildExcludeLists`, folded into `params_hash` by `PTX_HashParams`, and therefore committed to
+by the `round_seed` **the quorum signed** — and then dropped before the draw. Measured 2026-09-06:
+excluding a roll that produced `[6,3,1,7,8,4]` from a 1–8 draw leaves a forced pool of `{2,5}` for
+`count=2`; the roll returned `[7,1]`, both inside the excluded set, while the payload recorded the
+exclusion. **The chain was attesting to something it had not done** — a false attestation, not a
+no-op.
+
+**Resolution: refuse, do not stub.** `ptx_roll` now throws
+`-32602 tx_id exclusions are not implemented — use integer exclusions` in front validation, before
+the commitment is built — free to hit, nothing broadcast. `exclude_txids` is consequently empty in
+every payload, so the seed cannot commit to an exclusion that is ignored.
+
+**Why still deferred rather than implemented.** Resolving a tx_id requires a chain lookup, and `/v2`
+verifies with no node, no index and no chain. Wiring `ptx_exclude.cpp` in would make every roll
+using the feature **unverifiable by the node-free verifier** — a decision about what `/v2`
+guarantees, not a missing patch.
 
 Integer excludes work correctly through the full path.
 

@@ -73,13 +73,17 @@ ptx_roll count low high unique exclude game_id caller_salt
 | 2 | `low` | int | yes | Minimum value, inclusive |
 | 3 | `high` | int | yes | Maximum value, inclusive; must be ≥ `low` |
 | 4 | `unique` | bool | yes | If true, draws without replacement (Fisher-Yates); pool must be ≥ `count` |
-| 5 | `exclude` | array | yes | Integers or 64-char hex tx_ids to exclude; pass `[]` for none |
+| 5 | `exclude` | array | yes | **Integers only**; pass `[]` for none. tx_id strings are **rejected** — see the note below |
 | 6 | `game_id` | string | yes | Caller-defined game identifier. **Length-capped only** (128 bytes, and it shares a 9000-byte budget with excludes and results). Its CONTENT is not validated: it is stored byte-identical and permanently, and reaches every consumer unchanged — **escape it before rendering a `game_id` you did not create.** |
 | 7 | `caller_salt` | string | yes | Caller entropy; must be a hex string (only `[0-9a-f]`); may be empty string `""` |
 
-**`exclude` note:** integer elements are resolved and excluded correctly. 64-char tx_id string
-elements are accepted by parameter validation but are silently ignored at resolution time — tx_id
-exclude resolution is deferred. See `ptxbea-known-limitations.md` §10.
+**`exclude` note:** integer elements are resolved and excluded correctly. **tx_id string elements
+are now REJECTED** with `-32602 tx_id exclusions are not implemented — use integer exclusions`,
+thrown in front validation before any fee is paid. They were previously accepted and silently
+dropped — which meant the payload recorded them and the round seed committed to them while the
+draw ignored them, a false attestation rather than a no-op (BUG-065, measured 2026-09-06). See
+`ptxbea-known-limitations.md` §10 for why the feature stays deferred: resolving a tx_id needs a
+chain lookup, and making it work would render such rolls unverifiable by the node-free `/v2`.
 
 **`caller_salt` note:** `IsHex()` validation is strict — only lowercase hex characters `[0-9a-f]`
 are accepted. Prefixes such as `"0x"` or any non-hex character will be rejected with
