@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # without changing the value it reports. ★★ And it is emitted into the page
 # FOOTER rather than a log: anyone can read it in a browser without a shell,
 # which is the same property the register page's offline verification rests on.
-DEPLOY_TAG = "v0.4.1-testnet"
+DEPLOY_TAG = "v0.4.2-testnet"
 try:
     import hashlib as _hl
     with open(os.path.abspath(__file__), "rb") as _f:
@@ -205,14 +205,14 @@ def render_check(c):
 # linked to /v2/register and nothing else. That is a sharper form of KDD-118:
 # the information exists and cannot be reached, which is worth the same as not
 # having it. One nav, defined once, rendered on every page.
-# ★ The caller guide is a repo document, so this leaves the site. It points at
-# the BRANCH and not at the pinned tag on purpose: CALLER_GUIDE.md postdates
-# v0.4.1-testnet (tag 04c1dd1, guide 5b23901), so a tag-pinned URL would 404
-# until the next cut. Switch it to the tag when one is cut that contains it --
-# and note pin-check does not police this line precisely because it carries no
-# tag, which is the trade being made knowingly rather than by accident.
+# ★ The caller guide is a repo document, so this link leaves the site. It is
+# TAG-PINNED, and that is the point: it briefly pointed at the branch because
+# CALLER_GUIDE.md postdated v0.4.1-testnet and a tag URL would have 404'd, and a
+# branch link is policed by nothing. pin-check now sees this tag and enforces it
+# like every other pin -- a guard rather than a comment someone has to read at
+# the right moment (ODC-118).
 CALLER_GUIDE_URL = ("https://github.com/vileda-hemis/Hemis-PTX-MVP1/blob/"
-                    "feature/ptx-dkg/testnet/operator/CALLER_GUIDE.md")
+                    "v0.4.2-testnet/testnet/operator/CALLER_GUIDE.md")
 
 NAV = (("/v2",              "Verify"),
        ("/v2/health",       "Health"),
@@ -641,7 +641,7 @@ not a validated registration. Nothing you type here leaves your browser.</div>
   anything and cannot get you funded.</p>
   <ul class=note style="margin:6px 0 0 18px">
     <li><b>Not installed yet?</b> Follow
-      <a href="https://github.com/vileda-hemis/Hemis-PTX-MVP1/blob/v0.4.1-testnet/testnet/operator/OPERATOR_ONEPAGER.md">OPERATOR_ONEPAGER.md</a>
+      <a href="https://github.com/vileda-hemis/Hemis-PTX-MVP1/blob/v0.4.2-testnet/testnet/operator/OPERATOR_ONEPAGER.md">OPERATOR_ONEPAGER.md</a>
       first. It is the authority on prerequisites; this page deliberately does not restate them.</li>
     <li><b>No coins yet?</b> Ask the coordinator in <b>#testnet</b> for
       <b>(N&nbsp;&times;&nbsp;100)&nbsp;+&nbsp;500&nbsp;HMS</b> and post your funding address. Wait for

@@ -36,7 +36,7 @@ set -uo pipefail
 # -- the drift detector was itself drifted, and reported green while blind.
 # pin-check.sh enforces this value at each cut, which is the half a repo-side
 # gate can see.
-SELF_CHECK_TAG="v0.4.1-testnet"
+SELF_CHECK_TAG="v0.4.2-testnet"
 
 DATADIR="${PTX_DATADIR:-$HOME/.Hemis}"
 
