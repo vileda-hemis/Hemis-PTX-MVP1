@@ -972,9 +972,9 @@ def register_page():
 # not reach.
 # ─────────────────────────────────────────────────────────────────────────────
 _feed_lock = threading.Lock()
-_feed = {"from": None, "to": None, "commits": {}, "settles": {}, "err": None}
+_feed = {"from": None, "to": None, "commits": {}, "settles": {}, "dkg": [], "err": None}
 
-TYPE_COMMIT, TYPE_SETTLE = 12, 6
+TYPE_COMMIT, TYPE_SETTLE, TYPE_DKG = 12, 6, 11
 
 
 def _feed_scan(budget_blocks=20000):
@@ -1002,6 +1002,11 @@ def _feed_scan(budget_blocks=20000):
                     _feed["settles"][t["txid"]] = {
                         "height": h, "time": blk.get("time"),
                         "spends": [i.get("txid") for i in t.get("vin", []) if i.get("txid")]}
+                elif ty == TYPE_DKG:
+                    # ★ One scan, two pages. A PTXDKG transaction is a ceremony
+                    # RESULT landing on chain, so its height is where a quorum
+                    # record was written -- the anchor for quorum history.
+                    _feed["dkg"].append({"height": h, "txid": t["txid"]})
             _feed["to"] = h
         else:
             _feed["err"] = None
@@ -1100,6 +1105,99 @@ def feed_page():
         return page(head + "</div>")
     return page(head + "<table><tr><th>height</th><th>commitment</th><th>game_id</th>"
                 "<th>draw</th><th>state</th><th></th></tr>" + "".join(rows) + "</table></div>")
+
+
+def quorums_page():
+    """★ QUORUM HISTORY, AND THE COLUMN THAT DOES NOT EXIST (KDD-118).
+
+    `ptx_quorum_list` is an AS-OF-HEIGHT query, not a history: it answers "what
+    was active at height H". So the set of quorums that have ever existed is
+    recovered from the chain -- every PTXDKG transaction (type 11) is a ceremony
+    result landing, and its height is where a record was written.
+
+    ★★ The per-ceremony progression (`qual=N bad=M` at each phase transition) is
+    LOG-ONLY and in no RPC. It is not omitted silently here: the page says the
+    column does not exist and why. Scraping eleven machines' logs would make this
+    page depend on their log retention, which is a worse property than a missing
+    column -- if that progression matters, it is a case for a new RPC field, not
+    a scraper.
+    """
+    st = _feed_scan()
+    seen, records = {}, []
+    for d in sorted(st.get("dkg", []), key=lambda x: x["height"]):
+        try:
+            lst = rpc("ptx_quorum_list", [d["height"] + 1])
+        except Exception:                                     # noqa: BLE001
+            continue
+        for q in (lst.get("quorums") if isinstance(lst, dict) else lst) or []:
+            qh = q.get("quorum_hash")
+            if qh and qh not in seen:
+                seen[qh] = d["height"]
+    for qh in seen:
+        try:
+            records.append(rpc("ptx_quorum_info", [qh]))
+        except Exception:                                     # noqa: BLE001
+            records.append({"quorum_hash": qh, "_err": True})
+    records.sort(key=lambda r: -(r.get("mined_height") or 0))
+
+    out = ['<div class=card><h2>Quorums</h2>']
+    if st.get("err"):
+        out.append('<div class=empty><b>Scan incomplete:</b> %s — quorums formed outside the '
+                   'scanned range are missing from this list.</div>' % esc(st["err"]))
+    if not records:
+        out.append('<div class=empty><b>No quorum records found.</b> Empty, not zero — this is '
+                   'what the scan of blocks %s–%s found, not a statement that none have ever '
+                   'existed.</div>' % (esc(st.get("from")), esc(st.get("to"))))
+        return page("".join(out) + "</div>")
+
+    out.append('<div class=why>Recovered by scanning for PTXDKG transactions (type 11), because '
+               '<code>ptx_quorum_list</code> answers "what was active at height H" rather than '
+               'listing history. Ceremony detail below is what the chain records; see the note '
+               'at the foot for what it does not.</div>')
+    for r in records:
+        qh = r.get("quorum_hash", "")
+        if r.get("_err"):
+            out.append('<div class=empty><code>%s…</code> — record could not be read.</div>'
+                       % esc(qh[:24]))
+            continue
+        fs, cs = r.get("formed_size", 0), r.get("completed_size", 0)
+        mem = r.get("members") or []
+        nq = [m.get("node_id", "?") for m in mem if not m.get("in_qual")]
+        sup, dis = r.get("superseded_height", -1), r.get("disbanded_height", -1)
+        if sup and sup > 0:
+            life = "superseded at %s" % esc(sup)
+        elif dis and dis > 0:
+            life = "disbanded at %s" % esc(dis)
+        elif r.get("state") == "active":
+            life = "<span class=good>active</span>"
+        else:
+            life = esc(r.get("state", "?"))
+        out.append('<div class=stats>'
+                   '<div class=stat><div class=k>quorum</div><div class=v><code>%s…</code></div></div>'
+                   '<div class=stat><div class=k>formed at</div><div class=v>%s</div>'
+                   '<div class=why>anchor boundary</div></div>'
+                   '<div class=stat><div class=k>mined at</div><div class=v>%s</div>'
+                   '<div class=why>ceremony result on chain</div></div>'
+                   '<div class=stat><div class=k>members</div><div class=v>%d of %d</div>'
+                   '<div class=why>qualified of formed</div></div>'
+                   '<div class=stat><div class=k>state</div><div class=v>%s</div></div>'
+                   '</div>'
+                   % (esc(qh[:24]), esc(r.get("formation_height")), esc(r.get("mined_height")),
+                      cs, fs, life))
+        if nq:
+            out.append('<div class=note><b>Did not qualify:</b> %s — named rather than counted, '
+                       'because "%d of %d" cannot be acted on.</div>' % (esc(", ".join(nq)), cs, fs))
+        elif fs:
+            out.append('<div class=why>All %d members qualified.</div>' % fs)
+    out.append('<div class=empty><b>Not available here: per-ceremony progression.</b> The '
+               '<code>qual</code> and <code>bad</code> counts at each phase transition '
+               '(HASH_COMMIT&rarr;CONTRIB&rarr;COMPLAINT&rarr;JUSTIFY&rarr;PREMIT&rarr;FINALIZE) '
+               'exist only in each member\'s debug log and in no RPC. They are not shown rather '
+               'than being guessed. Reading them would mean scraping eleven machines\' logs, '
+               'which would make this page depend on their log retention — a worse property than '
+               'a missing column. If that progression matters, it is a case for a new RPC field.'
+               '</div>')
+    return page("".join(out) + "</div>")
 
 
 def health_page():
@@ -1382,6 +1480,15 @@ class Handler(BaseHTTPRequestHandler):
         # names, so the SAME href is correct in both places.
         if path.rstrip("/") in ("/api", "/v2/api"):
             b = api_docs_page().encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(b)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self._body(b)
+            return
+        if path.rstrip("/") in ("/quorums", "/v2/quorums"):
+            b = quorums_page().encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(b)))
