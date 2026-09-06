@@ -62,6 +62,9 @@ auto-commits a PTXSESS transaction to chain.
 ptx_roll count low high unique exclude game_id caller_salt
 ```
 
+> ★ **This file documents `ptxbea`, the harness chain.** For calling PTX on **ptxtestnet** — what a caller actually needs, what each failure costs, the confirmed-coin cycle, the two forms of `exclude` and what you can and cannot verify — see [`testnet/operator/CALLER_GUIDE.md`](../../testnet/operator/CALLER_GUIDE.md), which is written from measurement on the live chain.
+
+
 ### Parameters
 
 | # | Name | Type | Required | Description |
@@ -71,7 +74,7 @@ ptx_roll count low high unique exclude game_id caller_salt
 | 3 | `high` | int | yes | Maximum value, inclusive; must be ≥ `low` |
 | 4 | `unique` | bool | yes | If true, draws without replacement (Fisher-Yates); pool must be ≥ `count` |
 | 5 | `exclude` | array | yes | Integers or 64-char hex tx_ids to exclude; pass `[]` for none |
-| 6 | `game_id` | string | yes | Caller-defined game identifier; no format constraint |
+| 6 | `game_id` | string | yes | Caller-defined game identifier. **Length-capped only** (128 bytes, and it shares a 9000-byte budget with excludes and results). Its CONTENT is not validated: it is stored byte-identical and permanently, and reaches every consumer unchanged — **escape it before rendering a `game_id` you did not create.** |
 | 7 | `caller_salt` | string | yes | Caller entropy; must be a hex string (only `[0-9a-f]`); may be empty string `""` |
 
 **`exclude` note:** integer elements are resolved and excluded correctly. 64-char tx_id string

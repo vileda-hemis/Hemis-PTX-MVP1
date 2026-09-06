@@ -205,12 +205,22 @@ def render_check(c):
 # linked to /v2/register and nothing else. That is a sharper form of KDD-118:
 # the information exists and cannot be reached, which is worth the same as not
 # having it. One nav, defined once, rendered on every page.
-NAV = (("/v2",          "Verify"),
-       ("/v2/health",   "Health"),
-       ("/v2/feed",     "Rolls"),
-       ("/v2/quorums",  "Quorums"),
-       ("/v2/api",      "API"),
-       ("/v2/register", "Register"))
+# ★ The caller guide is a repo document, so this leaves the site. It points at
+# the BRANCH and not at the pinned tag on purpose: CALLER_GUIDE.md postdates
+# v0.4.1-testnet (tag 04c1dd1, guide 5b23901), so a tag-pinned URL would 404
+# until the next cut. Switch it to the tag when one is cut that contains it --
+# and note pin-check does not police this line precisely because it carries no
+# tag, which is the trade being made knowingly rather than by accident.
+CALLER_GUIDE_URL = ("https://github.com/vileda-hemis/Hemis-PTX-MVP1/blob/"
+                    "feature/ptx-dkg/testnet/operator/CALLER_GUIDE.md")
+
+NAV = (("/v2",              "Verify"),
+       ("/v2/health",       "Health"),
+       ("/v2/feed",         "Rolls"),
+       ("/v2/quorums",      "Quorums"),
+       ("/v2/api",          "API"),
+       (CALLER_GUIDE_URL,   "Caller guide"),
+       ("/v2/register",     "Register"))
 
 
 def header(here="Verify"):

@@ -28,6 +28,68 @@ documented here so you are not misled into thinking they matter. Both need a res
 
 ---
 
+## 1a. Three ways to integrate, and the first one needs nothing
+
+**1. Verify-only — start here.** You are handed a settle txid by someone else and you want to prove
+the numbers are real. **You need no wallet, no coins, no account and nothing from us.**
+
+```
+https://ptx-explorer.lnky.uk/v2?q=<settle txid>
+https://ptx-explorer.lnky.uk/v2/api/v1/tx/<settle txid>
+```
+
+Both fetch the transaction, decode it and re-derive the result from the bytes. The API returns JSON
+with the parameters, the results and the checks. ★ This is the lowest-effort integration and the one
+most games will start with — a player disputes a draw, you hand them a URL.
+
+★★ **The lookup uses a node; the checks do not.** The page fetches the transaction from a node its
+operator runs, then verifies it with arithmetic alone — no chain, no index. If you would rather not
+depend on that node at all, pass the raw `extraPayload` hex instead of a txid and the identical
+checks run with no lookup at all.
+
+**2. Self-hosted backend.** You want to *make* rolls, so you run a wallet with coins and call
+`ptx_roll` yourself. Everything else in this guide is about this model.
+
+★★★ **The wallet belongs on your server, never in the game client.** A funded key shipped in a build
+is a funded key in every player's hands, and the funding ends the same day. The client asks your
+backend for a roll; your backend calls the chain and returns the txid; the client can verify it with
+model 1.
+
+**3. Broker — does not exist.** There is no service that will roll on your behalf for a fee. If you
+need rolls, you need model 2 or someone running it for you privately. Said plainly so nobody plans
+around a component that is not there.
+
+---
+
+## 1b. Batching, throughput and what you actually wait for
+
+★★★ **One roll can return up to 1000 values for one fee.** That is the answer to "I need randomness
+every frame" — you do not roll per action, you roll a batch and consume it.
+
+**Measured:** `ptx_roll 1000 1 100000 false '[]' batch-test ""` returned **1000 values in 0.645 s**,
+for the same 1 HMS any other roll costs.
+
+* The hard cap is **`count` ≤ 1000** (`count N exceeds maximum 1000`).
+* A second cap can bind first: `game_id + 8×(int excludes) + 65×(txid excludes) + 8×count ≤ 9000`.
+  At `count=1000` that is 8000 bytes of the budget, leaving ~1000 for everything else.
+
+**The two latencies are very different, and the second is the one you design around:**
+
+| | |
+|---|---|
+| `ptx_roll` returns | **under a second** — measured 0.3–1.5 s, including the batch above |
+| the settle **confirms** | **the next block** — a 60-second target, so 0–60 s, ~30 s typical |
+
+★ The call returns as soon as the quorum has signed and both transactions are broadcast. The results
+are final at that moment — a reorg cannot change them, because the seed and signature are
+self-contained. What the block gives you is *confirmation*, not the answer.
+
+★★ So: **do not make a player wait for confirmation to see a result.** Show the result on return,
+and treat confirmation as the point at which it becomes independently verifiable by anyone. If your
+game needs the draw settled before it pays out, budget a minute, not a second.
+
+---
+
 ## 2. The call
 
 ```
