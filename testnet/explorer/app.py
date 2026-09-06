@@ -269,6 +269,177 @@ def page(body, q="", here="Verify"):
 #
 # Probed, not assumed; cached briefly so a reload does not hammer the node, and
 # short-timeout so a hung node degrades the sentence rather than the page.
+# ★★★ ACTIVE REACHABILITY PROBE — because the peer table answers a DIFFERENT
+# QUESTION than the one the panel was asked.  A peer table says "do we hold a
+# connection", and this node only ever holds connections to hosts in its own
+# addnode seed list plus whatever gossip hands it.  Reporting that as
+# "reachability" made every seeded host green and every unseeded host a problem,
+# which is a picture of THIS NODE'S CONFIG, not of the network.
+#
+# ★ It was not hypothetical.  It reported a fault on the only external operator's
+# gamemaster for days while that node was in_qual, signing, and taking lottery
+# wins -- because its address is not in this node's seed list, so this node never
+# dialled it.  A manual `addnode <advertised-address> onetry` connected in under
+# two seconds, first attempt.
+#
+# ★★ SO KEEP BOTH FACTS.  "We hold a connection" and "the advertised port answers
+# when we dial it" are different evidence and neither implies the other.  A
+# member we peer with AND can dial is the strongest row; a member we do not peer
+# with but CAN dial is fine and must not read as a fault; a member we can neither
+# peer with nor dial is the only row that warrants attention.
+#
+# ★ WHAT A PROBE FROM HERE STILL DOES NOT PROVE.  It is not the caller's view --
+# a firewall can admit this host and refuse the caller.  But note it is strictly
+# STRONGER evidence than self-check.sh section 5, whose own caveat says a
+# self-probe "succeeds via hairpin routing even when NOBODY OUTSIDE can reach
+# you" and that "the only definitive tests are (a) another operator connecting to
+# you".  This IS another operator connecting -- from a different network, with no
+# hairpin path.  A FAILURE here is still not proof of a fault at the far end.
+PROBE_TTL     = 120.0    # seconds; 11 members re-probed at most every 2 minutes
+PROBE_TIMEOUT = 1.5      # seconds per member, run concurrently
+_probe_cache  = {"t": 0.0, "res": {}}
+_probe_lock   = threading.Lock()
+
+
+def _probe_one(host, port):
+    """TCP connect to host:port.  Returns (ok, ms, err).  IPv6-first via getaddrinfo."""
+    import socket
+    t0 = time.time()
+    try:
+        infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    except OSError as e:                                        # noqa: BLE001
+        return False, None, "cannot resolve: %s" % e
+    err = "no usable address"
+    for fam, styp, proto, _canon, sa in infos:
+        sock = socket.socket(fam, styp, proto)
+        sock.settimeout(PROBE_TIMEOUT)
+        try:
+            sock.connect(sa)
+            return True, int((time.time() - t0) * 1000), None
+        except OSError as e:                                    # noqa: BLE001
+            err = str(e)
+        finally:
+            sock.close()
+    return False, int((time.time() - t0) * 1000), err
+
+
+def _probe_members(targets):
+    """targets: {node_id: (host, port)} -> ({node_id: (ok, ms, err)}, measured_at).
+
+    Cached for PROBE_TTL.  A stale cache that still covers every target is served
+    as-is; the age is reported so a consumer can see how old the answer is rather
+    than being told a 2-minute-old probe is live.
+    """
+    now = time.time()
+    with _probe_lock:
+        fresh = now - _probe_cache["t"] < PROBE_TTL
+        covers = set(targets) <= set(_probe_cache["res"])
+        if fresh and covers:
+            return dict(_probe_cache["res"]), _probe_cache["t"]
+    res, threads = {}, []
+
+    def run(nid, host, port):
+        try:
+            res[nid] = _probe_one(host, port)
+        except Exception as e:                                  # noqa: BLE001
+            res[nid] = (False, None, "probe error: %s" % e)
+
+    for nid, (h, prt) in targets.items():
+        if not h or not prt:
+            # ★ NOT a failed dial. Nothing was dialled, because the chain carries no
+            # address to dial. Collapsing this into "no answer" would recreate the
+            # exact conflation this whole change exists to remove.
+            res[nid] = (None, None, "no address on chain to dial")
+            continue
+        th = threading.Thread(target=run, args=(nid, h, prt), daemon=True)
+        th.start()
+        threads.append(th)
+    for th in threads:
+        th.join(PROBE_TIMEOUT + 0.5)
+    at = time.time()
+    with _probe_lock:
+        _probe_cache.update(t=at, res=dict(res))
+    return res, at
+
+
+def _split_service(svc):
+    """'[2a0a::1]:29994' or '1.2.3.4:29994' -> ('2a0a::1', 29994).  ('', 0) if unusable."""
+    if not svc or ":" not in svc:
+        return "", 0
+    host, _sep, port = svc.rpartition(":")
+    try:
+        prt = int(port)
+    except ValueError:
+        return "", 0
+    return host.strip("[]"), prt
+
+
+def _classify_members(members, roster, peers):
+    """One classifier, shared by the API and the page, so they cannot disagree.
+
+    Returns a list of dicts, one per quorum member, each carrying BOTH facts:
+      peered : "outbound" | "inbound" | None      -- do we hold a connection
+      dial   : True | False | None                -- does the advertised port answer
+    plus a `state` that never collapses "we never dialled it" into "it is down".
+    """
+    byip = {}
+    for p in peers or []:
+        a = p.get("addr", "")
+        ip = a.rsplit(":", 1)[0].strip("[]") if a else ""
+        byip.setdefault(ip, []).append(a)
+    svc_of = {}
+    for d in roster or []:
+        st = d.get("dgmstate") or {}
+        if st.get("ptxNodeId"):
+            svc_of[st["ptxNodeId"]] = _split_service(st.get("service", ""))
+
+    rows = []
+    for m in members or []:
+        nid = m.get("node_id", "?")
+        host, prt = svc_of.get(nid, ("", 0))
+        conns = byip.get(host, [])
+        r = {"node_id": nid, "service": ("[%s]:%d" % (host, prt)) if host and ":" in host
+             else ("%s:%d" % (host, prt) if host else ""),
+             "peered": None, "dial": None, "dial_ms": None, "dial_error": None}
+        if conns:
+            r["peered"] = "outbound" if any(c.endswith(":%d" % prt) for c in conns) else "inbound"
+        rows.append(r)
+
+    # Probe every member, peered or not.  Probing the peered ones too is what makes
+    # "peered AND dialable" a stronger row than either fact alone, and it costs
+    # nothing extra -- the probes run concurrently and are cached together.
+    targets = {r["node_id"]: svc_of.get(r["node_id"], ("", 0)) for r in rows}
+    probes, at = _probe_members(targets)
+    for r in rows:
+        ok, ms, err = probes.get(r["node_id"], (None, None, "not probed"))
+        r["dial"], r["dial_ms"], r["dial_error"] = ok, ms, err
+        if r["peered"] and ok:
+            r["state"], r["why"] = "peered + dialable", (
+                "we hold an %s connection AND its advertised port answers" % r["peered"])
+        elif r["peered"]:
+            r["state"], r["why"] = "peered", (
+                "we hold an %s connection; its advertised port did not answer a fresh dial "
+                "(%s) -- not necessarily a fault, the live connection is the stronger fact"
+                % (r["peered"], err or "no reason given"))
+        elif ok:
+            r["state"], r["why"] = "dialable, not peered", (
+                "this node holds no connection to it and has never dialled it -- but its "
+                "advertised port answers on demand, which is what a caller does at sign time. "
+                "NOT a fault.")
+        elif ok is False:
+            r["state"], r["why"] = "no answer", (
+                "no connection held, and a fresh dial to its advertised address failed: %s"
+                % (err or "no reason given"))
+        elif not r["service"]:
+            r["state"], r["why"] = "no on-chain address", (
+                "this member's registration carries no service address, so there is nothing to "
+                "dial and nothing to match a peer entry against. A registration problem, not a "
+                "reachability one.")
+        else:
+            r["state"], r["why"] = "not probed", (err or "probe did not run")
+    return rows, at
+
+
 _node_cache = {"t": 0.0, "up": None, "height": None}
 
 def node_status():
@@ -1314,8 +1485,27 @@ def observe_health():
     reach = {"measured_from": "the explorer's node, NOT the roll caller",
              "caveat": "a caller's own view can differ, and the caller's view is the one that "
                        "decides whether a roll reaches threshold",
+             # ★★ `reachable`/`no_connection`/`inbound_only` keep their ORIGINAL meaning --
+             # they are peer-table facts and existing consumers depend on them. What
+             # changed is that a peer-table fact is no longer presented as reachability.
+             # `no_connection` is now exactly the union of `dialable` and `no_answer`,
+             # and ONLY `no_answer` is a candidate fault.
+             "key_notes": {
+                 "reachable": "members this node HOLDS a connection to. A peer-table fact: it "
+                              "reflects this node's addnode seeds and gossip, not the network.",
+                 "no_connection": "no connection held. == dialable + no_answer + not_probed. "
+                                  "NOT a fault on its own -- see `dialable`.",
+                 "dialable": "no connection held, but the member's advertised port ANSWERED a "
+                             "fresh TCP dial. This is what a caller does at sign time. Fine.",
+                 "no_answer": "no connection held AND the advertised port did not answer. This "
+                              "is the only list worth acting on.",
+                 "answering": "reachable + dialable -- the number that predicts whether the next "
+                              "roll can reach threshold.",
+             },
              "measured": False, "reachable": None, "total": None,
-             "threshold": None, "inbound_only": [], "no_connection": [], "error": None}
+             "threshold": None, "inbound_only": [], "no_connection": [],
+             "dialable": [], "no_answer": [], "answering": None,
+             "members": [], "probe": None, "error": None}
     peers, e_p = q("getpeerinfo")
     qs = (qh or {}).get("quorums") or []
     if peers is None or not qs:
@@ -1326,30 +1516,34 @@ def observe_health():
         if info is None or roster is None:
             reach["error"] = e_i or e_r
         else:
-            byip = {}
-            for pr in peers:
-                a = pr.get("addr", "")
-                ip = a.rsplit(":", 1)[0].strip("[]") if a else ""
-                byip.setdefault(ip, []).append(a)
-            addr_of = {}
-            for dd in roster:
-                stt = dd.get("dgmstate") or {}
-                if stt.get("ptxNodeId"):
-                    svc = stt.get("service", "")
-                    addr_of[stt["ptxNodeId"]] = svc.rsplit(":", 1)[0].strip("[]") if svc else ""
             mem = info.get("members") or []
+            rows, probed_at = _classify_members(mem, roster, peers)
             n_ok = 0
-            for m in mem:
-                nid = m.get("node_id", "?")
-                conns = byip.get(addr_of.get(nid, ""), [])
-                if not conns:
-                    reach["no_connection"].append(nid)
-                elif any(c.endswith(":29994") for c in conns):
+            for r in rows:
+                nid = r["node_id"]
+                if r["peered"]:
                     n_ok += 1
+                    if r["peered"] == "inbound":
+                        reach["inbound_only"].append(nid)
                 else:
-                    reach["inbound_only"].append(nid); n_ok += 1
+                    reach["no_connection"].append(nid)
+                    if r["dial"] is True:
+                        reach["dialable"].append(nid)
+                    elif r["dial"] is False:
+                        reach["no_answer"].append(nid)
             reach.update(measured=True, reachable=n_ok, total=len(mem),
-                         threshold=(info.get("formed_size", 0) // 2 + 1))
+                         answering=n_ok + len(reach["dialable"]),
+                         members=rows,
+                         threshold=(info.get("formed_size", 0) // 2 + 1),
+                         probe={"performed": True,
+                                "at": int(probed_at),
+                                "age_s": int(time.time() - probed_at),
+                                "ttl_s": PROBE_TTL, "timeout_s": PROBE_TIMEOUT,
+                                "caveat": "a TCP connect from THIS host to the member's "
+                                          "on-chain advertised address. Not the caller's route: "
+                                          "a firewall can admit this host and refuse the caller. "
+                                          "Stronger than a self-probe, which hairpin routing can "
+                                          "make succeed when nobody outside can reach the node."})
     body = {
         "kind": "observation",
         "height": h, "height_error": e_h,
@@ -1628,50 +1822,58 @@ def health_page():
 
     # ── reachability ─────────────────────────────────────────────────────────
     out.append("<div class=card><h2>Member reachability</h2>")
-    out.append('<div class=why>Measured <b>from this page\'s node</b>, which is not the node that '
-               'calls <code>ptx_roll</code>. A caller\'s own view can differ, and its view is the '
-               'one that decides whether a roll reaches threshold. Shown because a member that '
-               'nothing can connect to cannot sign, and because "unreachable" in a caller\'s log '
-               'does not distinguish "down" from "never dialled".</div>')
+    out.append('<div class=why>Two separate facts per member, because they answer different '
+               'questions and neither implies the other. <b>Connection</b> is whether this node '
+               'holds a peer entry — a fact about <i>this node\'s addnode seeds and gossip</i>, '
+               'not about the network. <b>Dial</b> is a fresh TCP connect to the address the '
+               'member advertises on chain, which is what a caller does at sign time. '
+               '<b>Not dialled is not the same as down</b>: this panel used to collapse the two '
+               'and reported a fault on an external operator\'s gamemaster for days while it was '
+               'in_qual, signing, and winning lotteries — simply because its address is not in '
+               'this node\'s seed list.</div>')
+    out.append('<div class=why>Still not the caller\'s view: a firewall can admit this host and '
+               'refuse the caller. But it is stronger than a self-probe — '
+               '<code>self-check.sh</code> §5 warns that hairpin routing lets a node reach its '
+               'own address when nobody outside can. This is another host on another network '
+               'dialling, which §5 calls the definitive test.</div>')
     if not peers or not quorums:
         out.append('<div class=empty>Not measurable: %s</div>'
                    % esc(e_pi or "no active quorum to measure against"))
     else:
-        byip = {}
-        for p in peers:
-            a = p.get("addr", "")
-            ip = a.rsplit(":", 1)[0].strip("[]") if a else ""
-            byip.setdefault(ip, []).append(a)
         info, _ = _rpc("ptx_quorum_info", [quorums[0].get("quorum_hash", "")])
         members = (info or {}).get("members") or []
-        addr_of = {}
-        if roster:
-            for d in roster:
-                st = d.get("dgmstate") or {}
-                if st.get("ptxNodeId"):
-                    svc = st.get("service", "")
-                    addr_of[st["ptxNodeId"]] = svc.rsplit(":", 1)[0].strip("[]") if svc else ""
-        rows, reach = [], 0
-        for m in members:
-            nid = m.get("node_id", "?")
-            ip = addr_of.get(nid, "")
-            conns = byip.get(ip, [])
-            if not conns:
-                state, why = "no connection", "this node holds no connection to it"
-            elif any(c.endswith(":29994") for c in conns):
-                state, why = "connected", "outbound to its advertised port"; reach += 1
+        mrows, probed_at = _classify_members(members, roster, peers)
+        rows, held, answering, faults = [], 0, 0, 0
+        for r in mrows:
+            if r["peered"]:
+                held += 1
+            if r["peered"] or r["dial"] is True:
+                answering += 1
+            if not r["peered"] and r["dial"] is False:
+                faults += 1
+            conn = r["peered"] or "none"
+            if r["dial"] is True:
+                dial = "answers (%s ms)" % r["dial_ms"] if r["dial_ms"] is not None else "answers"
+            elif r["dial"] is False:
+                dial = "no answer"
             else:
-                state, why = "inbound only", ("it connected to us on an ephemeral port; "
-                                              "reachable, but a caller must look it up by "
-                                              "address rather than address+port"); reach += 1
-            rows.append("<tr><td><code>%s</code></td><td>%s</td><td class=why>%s</td></tr>"
-                        % (esc(nid), esc(state), esc(why)))
+                dial = "not probed"
+            rows.append("<tr><td><code>%s</code></td><td>%s</td><td>%s</td><td>%s</td>"
+                        "<td class=why>%s</td></tr>"
+                        % (esc(r["node_id"]), esc(conn), esc(dial), esc(r["state"]), esc(r["why"])))
         thr = (info or {}).get("formed_size", 0) // 2 + 1
-        out.append("<div class=stats>%s</div>" % nd(
-            "reachable", "%d of %d" % (reach, len(members)),
-            "threshold is %d — a roll needs that many members to answer" % thr))
-        out.append("<table><tr><th>member</th><th>state</th><th>meaning</th></tr>%s</table>"
-                   % "".join(rows))
+        age = int(time.time() - probed_at)
+        out.append("<div class=stats>%s%s%s</div>" % (
+            nd("answering", "%d of %d" % (answering, len(members)),
+               "held connection OR advertised port answers — threshold is %d" % thr),
+            nd("connections held", "%d of %d" % (held, len(members)),
+               "this node's own peer table; low is not a fault"),
+            nd("no answer", "%d" % faults,
+               "the only count worth acting on" if faults else "nothing to act on")))
+        out.append("<table><tr><th>member</th><th>connection</th><th>dial</th><th>state</th>"
+                   "<th>meaning</th></tr>%s</table>" % "".join(rows))
+        out.append('<div class=why>Dial results are cached for %ds; this set is %ds old.</div>'
+                   % (int(PROBE_TTL), age))
     out.append("</div>")
 
     return page("".join(out), here="Health")
