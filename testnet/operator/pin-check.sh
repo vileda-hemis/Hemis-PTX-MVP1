@@ -66,6 +66,8 @@ testnet/operator/faq/weirdness.md	shipped with a one-page onboarding document
 testnet/operator/OPERATOR_GUIDE.md	and earlier** it fails from
 testnet/operator/OPERATOR_GUIDE.md	made gamemasters ship
 testnet/operator/faq/questions.md	byte-identical from
+testnet/operator/faq/questions.md	is the first release
+testnet/operator/faq/questions.md	both predate the fix
 EOF
 )"
 

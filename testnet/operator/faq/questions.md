@@ -166,6 +166,17 @@ then enable again.
 `enable --now`.
 
 ★★ **That was true up to `v0.3.6-testnet` and is NOT true of `v0.4.2-testnet`.** `src/` is byte-identical from `v0.3.2-testnet` through `v0.3.6-testnet`, so
-the daemon differs only in its build-id and version string. **Upgrading is optional** — an operator
-who has already installed needs only the `systemctl is-active hemis-ptx` check. Anyone **mid-install
-should use v0.3.6**, because the earlier steps do not work as written.
+the daemon differed only in its build-id and version string across that run.
+
+**Upgrading is NOT optional if you run a gamemaster.** `v0.4.1-testnet` is the first release
+containing the BUG-068 fix. Without it, a member that dialled *you* — rather than the other way
+round — is never reached by a sign request: the lookup matched on IP **and port**, the dial was
+deduplicated away on IP alone and returned silently, and the member sat out every round with
+nothing logged. Measured at the first live roll: 6 of 10 eligible members in that state, 0 requests
+delivered. `v0.3.6-testnet` and `v0.4.0-testnet` both predate the fix.
+
+`v0.3.6..v0.4.2` is 583 insertions across 9 source files, so the "only the version string differs"
+reasoning no longer applies at all.
+
+Anyone **mid-install should use `v0.4.2-testnet`** — the current pin, and the tag every other
+instruction in this corpus refers to.
