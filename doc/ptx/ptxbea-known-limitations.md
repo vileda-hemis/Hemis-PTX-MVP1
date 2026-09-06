@@ -227,7 +227,14 @@ or intentional without a design decision. See BUG-015 for the mechanism.
 ## 10. `exclude` tx_id form deferred
 
 **Register ID:** BUG-065 (2026-09-06).  
-**Status:** Integer excludes work. tx_id excludes are **REJECTED** at parameter validation.
+**Status:** Integer excludes work. tx_id excludes are **REJECTED** at parameter validation —
+**on `d0effa0` and later only.**
+
+> **Which binary are you running?** The refusal is NOT in `v0.4.2-testnet` or any earlier release.
+> On every published binary to date a tx_id exclusion is still **accepted and silently dropped**,
+> with the false attestation described below. Do not use the tx_id form until you are running a
+> release cut at or after `d0effa0`. `ptx_roll` on those binaries gives you no signal at all — the
+> call succeeds.
 
 **This section was correct and complete before the behaviour was measured** — it named the static
 `PTX_ResolveExclude` in `src/rpc/ptx.cpp`, quoted its "deferred to Phase 2" log line, and noted that
