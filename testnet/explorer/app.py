@@ -43,6 +43,7 @@ except Exception:
     DEPLOY_HASH = "unknown"
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer   # noqa: E402
+import threading
 from urllib.parse import parse_qs                                      # noqa: E402
 
 from ptx_payload_spec import extract_spec              # noqa: E402
@@ -950,6 +951,157 @@ def register_page():
     return REGISTER_HTML
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ROLL FEED
+#
+# ★ There is NO RPC that lists rolls. `ptx_lottery_history` is wallet-scoped and
+# `settlement_history` is a 20-entry ring of SETTLEMENTS, not of rolls. The only
+# complete source is the chain, so this scans blocks for type 12 (PTXROLLCOMMIT)
+# and type 6 (PTXSESS). Measured 1 ms/block, ~8 s for the whole chain, so the
+# scan is incremental and cached rather than per-request.
+#
+# ★★ THE FEED SHOWS ROLLS THAT PRODUCED NO RESULT. Eight of the first ten paid
+# commitments never settled. A feed listing only settled rolls would present a
+# chain that works flawlessly -- the same misrepresentation `total_rolls` makes
+# by counting commitments and being read as draws.
+#
+# ★★★ AND IT DOES NOT CALL THEM FAILED. There is no consensus-enforced
+# settlement window (BUG-034 retired it), so a commitment that will never settle
+# is indistinguishable from one that still might. "No settle observed" is a fact
+# this page can support; "failed" and "pending" are both verdicts the chain does
+# not reach.
+# ─────────────────────────────────────────────────────────────────────────────
+_feed_lock = threading.Lock()
+_feed = {"from": None, "to": None, "commits": {}, "settles": {}, "err": None}
+
+TYPE_COMMIT, TYPE_SETTLE = 12, 6
+
+
+def _feed_scan(budget_blocks=20000):
+    """Incremental block scan. Returns (commits, settles, scanned_to, err)."""
+    with _feed_lock:
+        try:
+            tip = rpc("getblockcount", [])
+        except Exception as e:                                # noqa: BLE001
+            _feed["err"] = str(e)
+            return _feed
+        start = (_feed["to"] + 1) if _feed["to"] is not None else max(1, tip - budget_blocks)
+        if _feed["from"] is None:
+            _feed["from"] = start
+        for h in range(start, tip + 1):
+            try:
+                blk = rpc("getblock", [rpc("getblockhash", [h]), 2])
+            except Exception as e:                            # noqa: BLE001
+                _feed["err"] = "scan stopped at %d: %s" % (h, e)
+                break
+            for t in blk.get("tx", []):
+                ty = t.get("type", 0)
+                if ty == TYPE_COMMIT:
+                    _feed["commits"][t["txid"]] = {"height": h, "time": blk.get("time")}
+                elif ty == TYPE_SETTLE:
+                    _feed["settles"][t["txid"]] = {
+                        "height": h, "time": blk.get("time"),
+                        "spends": [i.get("txid") for i in t.get("vin", []) if i.get("txid")]}
+            _feed["to"] = h
+        else:
+            _feed["err"] = None
+        return _feed
+
+
+def _payload_of(txid):
+    """extraPayload -> decoded fields, or (None, reason)."""
+    try:
+        tx = rpc("getrawtransaction", [txid, 1])
+    except Exception as e:                                    # noqa: BLE001
+        return None, "lookup failed: %s" % e
+    hx = tx.get("extraPayload") or ""
+    if not hx:
+        return None, "no extraPayload"
+    d, tried = sniff(hx)
+    if d is None:
+        return None, "payload did not decode"
+    # ★ sniff() returns a DECODED OBJECT; the flat field map comes from as_dict().
+    # Using the object directly made every field read None -- and because the
+    # settled/unsettled test keyed off d.get("results"), a genuinely settled roll
+    # rendered as "no settle observed" while the counter above it said otherwise.
+    # The page disagreeing with its own counter is what exposed it.
+    return as_dict(d), None
+
+
+def feed_page():
+    st = _feed_scan()
+    rows = []
+    settle_for = {}
+    for stxid, s in st["settles"].items():
+        for parent in s["spends"]:
+            if parent in st["commits"]:
+                settle_for[parent] = stxid
+    order = sorted(st["commits"].items(), key=lambda kv: -kv[1]["height"])[:60]
+
+    for ctxid, c in order:
+        stxid = settle_for.get(ctxid)
+        src = stxid or ctxid
+        d, why = _payload_of(src)
+        gid = esc(d.get("game_id")) if d else "<span class=na>—</span>"
+        if d:
+            params = "%s from %s–%s%s%s" % (
+                d.get("count"), d.get("low"), d.get("high"),
+                ", distinct" if d.get("unique") else "",
+                (", excluding %s" % ", ".join(str(x) for x in d["exclude_integers"]))
+                if d.get("exclude_integers") else "")
+        else:
+            params = '<span class=na>%s</span>' % esc(why or "unavailable")
+        if stxid:
+            # ★ KDD-118: "a settle exists" and "its payload decoded" are DIFFERENT
+            # facts. The state is decided by the coin-chain -- a settle spending
+            # this commitment -- and never by whether this page could read the
+            # results. Conflating them made a settled roll read as unsettled.
+            state = '<span class=good>settled</span>'
+            note = ""
+            link = ('<a href="/v2?q=%s">verify &rarr;</a>' % esc(stxid))
+            if d and d.get("results"):
+                res = " ".join('<b>%s</b>' % esc(v) for v in d["results"])
+            else:
+                res = ('<span class=na>settled, but this page could not read the results '
+                       '(%s)</span>' % esc(why or "unknown"))
+        else:
+            res = '<span class=na>none</span>'
+            state = '<span class=warn>no settle observed</span>'
+            note = ('<div class=why>The commitment is on chain and its fee is paid, but no '
+                    'settle spending it has been seen. There is no consensus-enforced '
+                    'settlement window, so this is not "failed" and not "pending" — only '
+                    'that no result was published.</div>')
+            link = ('<a href="/v2?q=%s">verify commitment &rarr;</a>' % esc(ctxid))
+        rows.append(
+            "<tr><td>%s</td><td><code>%s</code></td><td>%s</td><td>%s</td>"
+            "<td>%s%s</td><td>%s</td></tr>"
+            % (esc(c["height"]), esc(ctxid[:12]) + "…", gid, params, state, note, link))
+
+    scanned = ('blocks %s–%s' % (esc(st["from"]), esc(st["to"]))
+               if st["to"] is not None else 'not yet scanned')
+    n_c, n_s = len(st["commits"]), len(settle_for)
+    head = ('<div class=card><h2>Rolls</h2><div class=stats>'
+            '<div class=stat><div class=k>paid commitments</div><div class=v>%d</div>'
+            '<div class=why>every roll that paid its fee</div></div>'
+            '<div class=stat><div class=k>produced a result</div><div class=v>%d</div>'
+            '<div class=why>a settle spending that commitment was found</div></div>'
+            '<div class=stat><div class=k>no settle observed</div><div class=v>%d</div>'
+            '<div class=why>fee paid, no result published</div></div></div>'
+            '<div class=why>Scanned %s. A roll is two transactions: a commitment that pays the '
+            'fee, and a settle that publishes the result and spends it. Both are listed because '
+            'a feed of settles alone would show a chain that never fails.</div>'
+            % (n_c, n_s, n_c - n_s, scanned))
+    if st["err"]:
+        head += '<div class=empty><b>Scan incomplete:</b> %s — the list below is partial and the ' \
+                'counts above understate.</div>' % esc(st["err"])
+    if not rows:
+        head += ('<div class=empty><b>No rolls found in the scanned range.</b> Empty, not zero: '
+                 'this is what the scan saw, not a statement that none exist outside it.</div>')
+        return page(head + "</div>")
+    return page(head + "<table><tr><th>height</th><th>commitment</th><th>game_id</th>"
+                "<th>draw</th><th>state</th><th></th></tr>" + "".join(rows) + "</table></div>")
+
+
 def health_page():
     """★ NETWORK HEALTH, WITH THE REASON FOR EVERY STATE (KDD-118).
 
@@ -1230,6 +1382,15 @@ class Handler(BaseHTTPRequestHandler):
         # names, so the SAME href is correct in both places.
         if path.rstrip("/") in ("/api", "/v2/api"):
             b = api_docs_page().encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(b)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self._body(b)
+            return
+        if path.rstrip("/") in ("/feed", "/v2/feed", "/rolls", "/v2/rolls"):
+            b = feed_page().encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(b)))
