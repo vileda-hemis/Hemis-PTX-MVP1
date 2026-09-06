@@ -1107,6 +1107,185 @@ def feed_page():
                 "<th>draw</th><th>state</th><th></th></tr>" + "".join(rows) + "</table></div>")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# OBSERVATION API  —  /v2/api/v1/observe/*
+#
+# ★ A DIFFERENT API FROM /verify, /tx, /commitment, AND IT SAYS SO. Those are
+# VERIFICATION: pure, chain-derived, every response carries payload_hex so the
+# caller can re-derive the answer without trusting this service. These are
+# OBSERVATION: derived from a block scan, cached, and incomplete by nature. An
+# observation endpoint cannot make the verification claim, and mixing the two
+# without saying so weakens the ones that can.
+#
+# ★★ THE HONESTY SURVIVES INTO JSON OR IT DOES NOT COUNT. A machine cannot read
+# the caveat paragraph an HTML page prints beside a number, so:
+#   - state is a STRING ENUM, never a boolean. `settled: false` would rebuild
+#     KDD-118 in a format machines consume, because false reads as "did not
+#     settle" when the truth is "no settle observed, and no consensus-enforced
+#     window exists to make that final".
+#   - every response carries `scan`, so a consumer can tell "we did not see it"
+#     from "it is not there". Counts are explicitly scoped to that range.
+#   - a -1 sentinel is emitted as null PLUS a companion boolean, so a consumer
+#     never has to know that -1 means unset.
+# ─────────────────────────────────────────────────────────────────────────────
+OBSERVE_PREFIXES = ("/v2/api/v1/observe/", "/api/v1/observe/")
+
+_STATE_SEMANTICS = {
+    "settled": "a settle transaction spending this commitment's output was found in the scanned "
+               "range; the pairing is structural (coin-chain), not heuristic",
+    "no_settle_observed": "the commitment is on chain and its fee is paid, and no settle spending "
+                          "it was found in the scanned range. This is NOT 'failed' and NOT "
+                          "'pending': BUG-034 retired the settlement window, so there is no "
+                          "consensus-enforced deadline and a roll that will never settle is "
+                          "indistinguishable from one that still might.",
+}
+
+
+def _scan_block():
+    st = _feed_scan()
+    return {
+        "from": st.get("from"), "to": st.get("to"),
+        "complete": st.get("err") is None,
+        "error": st.get("err"),
+        "note": ("counts and lists below describe ONLY blocks from..to. Absence here means "
+                 "'not seen in this range', never 'does not exist'."),
+    }
+
+
+def _sentinel(v):
+    """-1 / missing -> (None, False); a real height -> (h, True)."""
+    return (None, False) if v is None or v < 0 else (v, True)
+
+
+def observe_rolls():
+    st = _feed_scan()
+    settle_for = {}
+    for stxid, s in st["settles"].items():
+        for parent in s["spends"]:
+            if parent in st["commits"]:
+                settle_for[parent] = stxid
+    rolls = []
+    for ctxid, c in sorted(st["commits"].items(), key=lambda kv: -kv[1]["height"]):
+        stxid = settle_for.get(ctxid)
+        d, why = _payload_of(stxid or ctxid)
+        rolls.append({
+            "commitment_txid": ctxid,
+            "commitment_height": c["height"],
+            "settle_txid": stxid,
+            "settle_height": st["settles"][stxid]["height"] if stxid else None,
+            "state": "settled" if stxid else "no_settle_observed",
+            "game_id": (d or {}).get("game_id"),
+            "params": None if not d else {
+                "count": d.get("count"), "low": d.get("low"), "high": d.get("high"),
+                "unique": d.get("unique"),
+                "exclude_integers": d.get("exclude_integers"),
+            },
+            "results": (d or {}).get("results"),
+            "payload_read": d is not None,
+            "payload_error": None if d is not None else why,
+            "verify_url": "/v2?q=%s" % (stxid or ctxid),
+        })
+    n_s = sum(1 for r in rolls if r["state"] == "settled")
+    return {
+        "kind": "observation",
+        "not_verification": "Derived from a cached block scan. Unlike /v2/api/v1/tx, this cannot "
+                            "be independently re-derived from the response; use the verify_url or "
+                            "the verification endpoints for that.",
+        "scan": _scan_block(),
+        "state_semantics": _STATE_SEMANTICS,
+        "counts": {"paid_commitments": len(rolls), "settled": n_s,
+                   "no_settle_observed": len(rolls) - n_s,
+                   "scoped_to_scan_range": True},
+        "rolls": rolls,
+    }
+
+
+def observe_quorums():
+    st = _feed_scan()
+    seen = {}
+    for d in sorted(st.get("dkg", []), key=lambda x: x["height"]):
+        try:
+            lst = rpc("ptx_quorum_list", [d["height"] + 1])
+        except Exception:                                     # noqa: BLE001
+            continue
+        for q in (lst.get("quorums") if isinstance(lst, dict) else lst) or []:
+            if q.get("quorum_hash"):
+                seen.setdefault(q["quorum_hash"], d["height"])
+    out = []
+    for qh in seen:
+        try:
+            r = rpc("ptx_quorum_info", [qh])
+        except Exception as e:                                # noqa: BLE001
+            out.append({"quorum_hash": qh, "record_read": False, "error": str(e)})
+            continue
+        sup_h, sup = _sentinel(r.get("superseded_height"))
+        dis_h, dis = _sentinel(r.get("disbanded_height"))
+        mem = r.get("members") or []
+        out.append({
+            "quorum_hash": qh, "record_read": True,
+            "state": r.get("state"),
+            "formation_height": r.get("formation_height"),
+            "mined_height": r.get("mined_height"),
+            "formed_size": r.get("formed_size"),
+            "completed_size": r.get("completed_size"),
+            "superseded_height": sup_h, "superseded": sup,
+            "disbanded_height": dis_h, "disbanded": dis,
+            # ★ ODC-116: the record HAS reformed_height and ptx_quorum_info does
+            # not emit it, so a consumer can see THAT a quorum was reformed and
+            # not WHEN. Named rather than omitted.
+            "reformed_height": None,
+            "reformed_height_available": False,
+            "reformed_height_note": "recorded on chain (CPTXQuorumRecord.reformed_height) but not "
+                                    "emitted by ptx_quorum_info — see ODC-116",
+            "members": [{"node_id": m.get("node_id"), "share_index": m.get("share_index"),
+                         "in_qual": m.get("in_qual")} for m in mem],
+            "not_qualified": [m.get("node_id") for m in mem if not m.get("in_qual")],
+        })
+    out.sort(key=lambda r: -(r.get("mined_height") or 0))
+    return {
+        "kind": "observation",
+        "scan": _scan_block(),
+        "unavailable": {
+            "per_ceremony_progression": "qual/bad at each phase transition exists only in each "
+                                        "member's debug log and in no RPC. Not shown rather than "
+                                        "guessed; it would need a new RPC field, not a scraper.",
+        },
+        "quorums": out,
+    }
+
+
+def observe_health():
+    def q(m, p=None):
+        try:
+            return rpc(m, p or []), None
+        except Exception as e:                                # noqa: BLE001
+            return None, str(e)
+    h, e_h = q("getblockcount")
+    gmc, e_g = q("getgamemastercount")
+    qh, e_q = q("ptx_quorum_health")
+    lot, e_l = q("ptx_lottery_status")
+    body = {
+        "kind": "observation",
+        "height": h, "height_error": e_h,
+        "gamemasters": gmc, "gamemasters_error": e_g,
+        # ★ measured vs unknown, never conflated: quorums==[] means measured-and-none;
+        # quorums==null with an error means we could not ask.
+        "active_quorums": (qh or {}).get("quorums") if qh is not None else None,
+        "active_quorums_measured": qh is not None,
+        "active_quorums_error": e_q,
+        "lottery": lot, "lottery_error": e_l,
+        "lottery_notes": {
+            "total_rolls": "counts COMMITMENTS (every roll that paid its fee), not completed "
+                           "draws. Compare against observe/rolls counts.settled.",
+            "settlement_history": "a 20-entry ring buffer, not an all-time list",
+            "eligible_nodes_empty": "empty means every gamemaster holds 0 tickets; tickets are "
+                                    "credited only when a roll's settle CONFIRMS, and reset to 0 "
+                                    "at every settlement. Empty is not zero-forever.",
+        },
+    }
+    return body
+
+
 def quorums_page():
     """★ QUORUM HISTORY, AND THE COLUMN THAT DOES NOT EXIST (KDD-118).
 
@@ -1471,6 +1650,22 @@ class Handler(BaseHTTPRequestHandler):
         # downstream changes.
         qs_raw = self.path.split("?", 1)[1] if "?" in self.path else ""
         get_q = (parse_qs(qs_raw).get("q") or [""])[0][:8192]
+        for _pfx in OBSERVE_PREFIXES:
+            if path.startswith(_pfx):
+                _what = path[len(_pfx):].strip("/")
+                _fn = {"rolls": observe_rolls, "quorums": observe_quorums,
+                       "health": observe_health}.get(_what)
+                if _fn is None:
+                    return self._send_json(
+                        {"error": "not_found", "message": "unknown observation endpoint",
+                         "available": ["health", "rolls", "quorums"]}, 404)
+                try:
+                    return self._send_json(_fn(), 200)
+                except Exception as _e:                       # noqa: BLE001
+                    return self._send_json(
+                        {"error": "observation_failed", "message": str(_e),
+                         "note": "this is a failure of the observation service, not a statement "
+                                 "about the chain"}, 503)
         r = api_route("GET", path, None)
         if r is not None:
             return self._send_json(r[0], r[1])
