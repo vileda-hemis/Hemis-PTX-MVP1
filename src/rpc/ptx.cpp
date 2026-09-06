@@ -1114,6 +1114,14 @@ static UniValue QuorumRecordToJson(const CPTXQuorumRecord& rec)
     // v1 records deserialize with both sentinels, so this is safe for every record.
     ret.pushKV("superseded_height", rec.superseded_height);
     ret.pushKV("disbanded_height",  rec.disbanded_height);
+    // ★ ODC-116: reformed_height was WRITTEN and never EMITTED. MarkReformed
+    // stamps it pindex-derived (ptx_quorum_store.cpp:553) and the as-of
+    // predicate reads it (:96), but no RPC surfaced it -- so a record showing
+    // state "reformed" carried three -1 sentinels and no timestamp, and
+    // "when was this reformed?" had no answer despite the node knowing.
+    // Declaration order puts it after disbanded_height (ptx_quorum_store.h:182),
+    // and the same one convention applies: show the sentinel, never omit.
+    ret.pushKV("reformed_height",   rec.reformed_height);
     UniValue members(UniValue::VARR);
     for (const PTXQuorumMemberRecord& m : rec.members) {
         UniValue mv(UniValue::VOBJ);
