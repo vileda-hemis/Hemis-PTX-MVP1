@@ -91,7 +91,7 @@ td.val{word-break:break-all}
 .meta{color:var(--mut);font-size:12.5px;margin:4px 0}
 .cmp{font:11.5px/1.5 ui-monospace,Menlo,monospace;word-break:break-all;margin:3px 0}
 .note{background:rgba(224,179,65,.11);border-left:3px solid var(--na);padding:9px 12px;
-margin:8px 0;font-size:12.5px;border-radius:0 6px 6px 0}
+margin:8px 0;font-size:12.5px;border-radius:0 6px 6px 0}.stats{display:flex;flex-wrap:wrap;gap:14px;margin:10px 0}.stat{min-width:150px;flex:1 1 150px}.stat .k{font-size:11px;text-transform:uppercase;letter-spacing:.06em;opacity:.6}.stat .v{font-size:19px;font-weight:600;margin:2px 0}.why{font-size:12px;opacity:.72;line-height:1.45;margin-top:3px}.empty{border-left:3px solid #b58900;padding:8px 12px;margin:8px 0;font-size:13px;line-height:1.5}.empty ul{margin:6px 0 0 18px;padding:0}.na{opacity:.55;font-style:italic}table{border-collapse:collapse;width:100%;margin:8px 0;font-size:13px}th,td{text-align:left;padding:5px 9px;border-bottom:1px solid rgba(128,128,128,.25);vertical-align:top}th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;opacity:.6}
 .err{color:var(--no)}
 details{margin-top:6px}summary{cursor:pointer;color:var(--mut);font-size:12.5px}
 footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);color:var(--mut);font-size:12.5px}
@@ -950,6 +950,217 @@ def register_page():
     return REGISTER_HTML
 
 
+def health_page():
+    """★ NETWORK HEALTH, WITH THE REASON FOR EVERY STATE (KDD-118).
+
+    The rule this page is built to: a surface that reports a state must report
+    the predicate that produced it, or name what it could not determine.
+    `eligible_nodes: []` sent three different wrong hypotheses chasing an empty
+    array; the fix is not a prettier empty table, it is saying WHY it is empty.
+
+    ★★ "Empty" is not "zero". Zero implies the thing was measured and came out
+    nought; empty says nothing has been recorded. They demand different actions
+    from the reader, so they are rendered differently here.
+    """
+    def _rpc(m, p=None):
+        try:
+            return rpc(m, p or []), None
+        except Exception as e:                                # noqa: BLE001
+            return None, str(e)
+
+    up, _ = node_status()
+    if up is False:
+        return page('<div class="card err">The node this page reads is <b>not answering</b>, so '
+                    'nothing below can be measured. This is NOT a statement about the network — '
+                    'it is a statement about this page\'s node.</div>')
+
+    height, e_h   = _rpc("getblockcount")
+    gmc,   e_gmc  = _rpc("getgamemastercount")
+    qh,    e_qh   = _rpc("ptx_quorum_health")
+    lot,   e_lot  = _rpc("ptx_lottery_status")
+    roster,e_ros  = _rpc("protx_list", [True, False, True])
+    peers, e_pi   = _rpc("getpeerinfo")
+
+    def nd(label, value, why=""):
+        w = ('<div class=why>%s</div>' % esc(why)) if why else ""
+        return '<div class=stat><div class=k>%s</div><div class=v>%s</div>%s</div>' % (
+            esc(label), value, w)
+
+    out = []
+
+    # ── chain ────────────────────────────────────────────────────────────────
+    out.append("<div class=card><h2>Chain</h2><div class=stats>")
+    out.append(nd("height", esc(height) if height is not None else
+                  '<span class=na>unavailable</span>', e_h or ""))
+    if gmc:
+        out.append(nd("gamemasters", "%d enabled of %d" % (gmc.get("enabled", 0), gmc.get("total", 0))))
+    out.append("</div></div>")
+
+    # ── quorum ───────────────────────────────────────────────────────────────
+    out.append("<div class=card><h2>Quorum</h2>")
+    quorums = (qh or {}).get("quorums") or []
+    if qh is None:
+        # ★ KDD-118 applied to this page's OWN failure: could-not-measure is not
+        # the same claim as none-exist, and rendering the first as the second is
+        # the defect this page was written to avoid.
+        out.append('<div class=empty><b>Could not determine.</b> The quorum RPC did not answer '
+                   '(%s), so this says nothing about whether a quorum exists — only that this '
+                   'page could not ask.</div>' % esc(e_qh or "no reason given"))
+    elif not quorums:
+        out.append('<div class=empty><b>No ACTIVE quorum.</b> This is not the same as '
+                   '"no gamemasters". A quorum forms at a boundary and is retired after '
+                   '<b>200 blocks with no settle confirming</b> — that is a deliberate health '
+                   'check, not a fault. With only one quorum alive at a time, its retirement '
+                   'leaves a gap of roughly one ceremony (~27 blocks) during which '
+                   '<code>ptx_roll</code> returns "no ACTIVE quorum for height N". '
+                   'The gap disappears once the network supports two quorums.</div>')
+    else:
+        for q in quorums:
+            qhash = q.get("quorum_hash", "")
+            info, e_qi = _rpc("ptx_quorum_info", [qhash])
+            out.append("<div class=stats>")
+            out.append(nd("quorum", "<code>%s…</code>" % esc(qhash[:24])))
+            if info:
+                fs, cs = info.get("formed_size", 0), info.get("completed_size", 0)
+                thr = fs // 2 + 1
+                out.append(nd("members", "%d formed, %d qualified" % (fs, cs),
+                              "qualified = completed the ceremony and holds a share; "
+                              "a member may be formed but not qualified if it was still "
+                              "verifying when the contribution phase closed"))
+                out.append(nd("threshold", "%d of %d" % (thr, cs),
+                              "signatures needed to reconstruct the group signature"))
+                out.append(nd("mined at", esc(info.get("mined_height"))))
+            elif e_qi:
+                out.append(nd("detail", '<span class=na>unavailable</span>', e_qi))
+            out.append("</div>")
+            if info:
+                mem = info.get("members") or []
+                nq = [m for m in mem if not m.get("in_qual")]
+                if nq:
+                    out.append('<div class=note><b>Not qualified:</b> %s. Named rather than '
+                               'counted — a bare "qualified 10 of 11" cannot be acted on.</div>'
+                               % esc(", ".join(m.get("node_id", "?") for m in nq)))
+    out.append("</div>")
+
+    # ── lottery ──────────────────────────────────────────────────────────────
+    out.append("<div class=card><h2>Lottery</h2>")
+    if lot is None:
+        out.append('<div class=empty><b>Could not determine.</b> The lottery RPC did not answer '
+                   '(%s). Nothing below is a claim about the pool.</div>'
+                   % esc(e_lot or "no reason given"))
+    else:
+        pool = lot.get("pool_balance_sat", 0)
+        hist = lot.get("settlement_history") or []
+        ls   = lot.get("last_settle") or {}
+        out.append("<div class=stats>")
+        out.append(nd("pool", "%.8f tHMS" % (pool / 1e8),
+                      "accumulates the service fee from every commitment; paid out whole to one "
+                      "gamemaster at a settlement"))
+        out.append(nd("paid rolls", esc(lot.get("total_rolls", 0)),
+                      "counts COMMITMENTS — every roll that paid its fee, including rolls that "
+                      "never settled. It is not the number of completed draws."))
+        out.append(nd("settlements recorded", esc(len(hist)) if hist else
+                      '<span class=na>none yet</span>',
+                      "kept as a 20-entry ring buffer, so this is recent history and not an "
+                      "all-time count"))
+        out.append(nd("next settlement", esc(lot.get("next_settlement_at")),
+                      "every %s blocks" % esc(lot.get("settlement_window"))))
+        out.append("</div>")
+        if ls and ls.get("height"):
+            out.append('<div class=note><b>Last settlement:</b> %s tHMS at height %s to '
+                       '<code>%s…</code></div>' % (esc(ls.get("amount")), esc(ls.get("height")),
+                                                   esc(str(ls.get("winner_protx", ""))[:20])))
+        else:
+            out.append('<div class=empty><b>No settlement recorded yet.</b> Not "zero won" — '
+                       'nothing has been written. A settlement needs at least one gamemaster '
+                       'holding a ticket, and tickets are credited only when a roll\'s settle '
+                       'transaction confirms.</div>')
+
+        # eligibility, WITH REASONS
+        elig = lot.get("eligible_nodes")
+        out.append("<h3>Eligibility</h3>")
+        if elig:
+            rows = "".join(
+                "<tr><td><code>%s</code></td><td>%s</td><td>%s</td></tr>" % (
+                    esc(n.get("node_id")), esc(n.get("tickets", 0)),
+                    "eligible" if n.get("eligible") else "not eligible")
+                for n in elig)
+            out.append("<table><tr><th>gamemaster</th><th>tickets</th><th>state</th></tr>%s</table>"
+                       % rows)
+            out.append('<div class=why>Tickets are <b>per settlement window</b> — they reset to 0 '
+                       'at every settlement. A row showing 0 immediately after a settlement is '
+                       'correct and expected, not a failure. Eleven gamemasters with tickets and '
+                       'no wins is also correct: one winner is drawn per settlement.</div>')
+        else:
+            reasons = []
+            if roster:
+                no_id  = sum(1 for d in roster if not (d.get("dgmstate") or {}).get("ptxNodeId"))
+                no_pay = sum(1 for d in roster
+                             if not (d.get("dgmstate") or {}).get("ptxPaymentAddress"))
+                if no_id:
+                    reasons.append("%d gamemaster(s) have no ptxNodeId, which makes them "
+                                   "permanently ineligible" % no_id)
+                if no_pay:
+                    reasons.append("%d have no ptxPaymentAddress" % no_pay)
+            reasons.append("every remaining gamemaster holds 0 tickets, and tickets are credited "
+                           "only when a roll's settle transaction confirms")
+            out.append('<div class=empty><b>No eligible gamemasters.</b> Empty, not zero — the '
+                       'list is built by filtering, and here is what filtered it: <ul>%s</ul>'
+                       'This is the normal state immediately after a settlement.</div>'
+                       % "".join("<li>%s</li>" % esc(r) for r in reasons))
+    out.append("</div>")
+
+    # ── reachability ─────────────────────────────────────────────────────────
+    out.append("<div class=card><h2>Member reachability</h2>")
+    out.append('<div class=why>Measured <b>from this page\'s node</b>, which is not the node that '
+               'calls <code>ptx_roll</code>. A caller\'s own view can differ, and its view is the '
+               'one that decides whether a roll reaches threshold. Shown because a member that '
+               'nothing can connect to cannot sign, and because "unreachable" in a caller\'s log '
+               'does not distinguish "down" from "never dialled".</div>')
+    if not peers or not quorums:
+        out.append('<div class=empty>Not measurable: %s</div>'
+                   % esc(e_pi or "no active quorum to measure against"))
+    else:
+        byip = {}
+        for p in peers:
+            a = p.get("addr", "")
+            ip = a.rsplit(":", 1)[0].strip("[]") if a else ""
+            byip.setdefault(ip, []).append(a)
+        info, _ = _rpc("ptx_quorum_info", [quorums[0].get("quorum_hash", "")])
+        members = (info or {}).get("members") or []
+        addr_of = {}
+        if roster:
+            for d in roster:
+                st = d.get("dgmstate") or {}
+                if st.get("ptxNodeId"):
+                    svc = st.get("service", "")
+                    addr_of[st["ptxNodeId"]] = svc.rsplit(":", 1)[0].strip("[]") if svc else ""
+        rows, reach = [], 0
+        for m in members:
+            nid = m.get("node_id", "?")
+            ip = addr_of.get(nid, "")
+            conns = byip.get(ip, [])
+            if not conns:
+                state, why = "no connection", "this node holds no connection to it"
+            elif any(c.endswith(":29994") for c in conns):
+                state, why = "connected", "outbound to its advertised port"; reach += 1
+            else:
+                state, why = "inbound only", ("it connected to us on an ephemeral port; "
+                                              "reachable, but a caller must look it up by "
+                                              "address rather than address+port"); reach += 1
+            rows.append("<tr><td><code>%s</code></td><td>%s</td><td class=why>%s</td></tr>"
+                        % (esc(nid), esc(state), esc(why)))
+        thr = (info or {}).get("formed_size", 0) // 2 + 1
+        out.append("<div class=stats>%s</div>" % nd(
+            "reachable", "%d of %d" % (reach, len(members)),
+            "threshold is %d — a roll needs that many members to answer" % thr))
+        out.append("<table><tr><th>member</th><th>state</th><th>meaning</th></tr>%s</table>"
+                   % "".join(rows))
+    out.append("</div>")
+
+    return page("".join(out))
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ptx-verifier"
 
@@ -1019,6 +1230,15 @@ class Handler(BaseHTTPRequestHandler):
         # names, so the SAME href is correct in both places.
         if path.rstrip("/") in ("/api", "/v2/api"):
             b = api_docs_page().encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(b)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self._body(b)
+            return
+        if path.rstrip("/") in ("/health", "/v2/health"):
+            b = health_page().encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(b)))
