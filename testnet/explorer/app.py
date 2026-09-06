@@ -999,6 +999,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?")[0]
+        # ★ ?q= ON GET. The page was built as a POST paste-box and do_GET threw
+        # the query string away, ending at handle("") -- while the explorer's PTX
+        # panel has always linked to /v2?q=<txid>. The link was right and the
+        # handler was missing, so every such link presented an empty form and the
+        # operator had to copy the txid off the page they had just left.
+        # This is what makes a roll and its proof ONE url: the proof travels with
+        # the claim instead of being something you have to be told to do.
+        # handle() already resolves a 64-hex txid via the node, so nothing
+        # downstream changes.
+        qs_raw = self.path.split("?", 1)[1] if "?" in self.path else ""
+        get_q = (parse_qs(qs_raw).get("q") or [""])[0][:8192]
         r = api_route("GET", path, None)
         if r is not None:
             return self._send_json(r[0], r[1])
@@ -1027,7 +1038,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self._body(b)
             return
-        self._send(handle(""))
+        self._send(handle(get_q))
 
     def do_POST(self):
         try:
