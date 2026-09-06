@@ -71,7 +71,7 @@ CSS = """
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
 font:15px/1.55 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 .wrap{max-width:980px;margin:0 auto;padding:28px 20px 80px}
-.topbar{display:flex;align-items:center;gap:9px;padding:11px 20px;background:var(--card);border-bottom:1px solid var(--line);font-size:14px}.topbar .brand{color:var(--fg);text-decoration:none;font-weight:600;display:inline-flex;align-items:center;gap:8px}.topbar .mark{border-radius:5px;vertical-align:middle}.topbar .crumb{color:var(--mut)}.topbar .here{color:var(--mut)}.topbar .nav{margin-left:auto;color:var(--acc);text-decoration:none}.topbar .nav:hover{text-decoration:underline}.topbar .back{margin-left:14px;color:var(--acc);text-decoration:none}.topbar .back:hover{text-decoration:underline}h1{font-size:21px;margin:0 0 4px}.sub{color:var(--mut);font-size:13.5px;margin:0 0 22px}
+.topbar{display:flex;align-items:center;gap:9px;padding:11px 20px;background:var(--card);border-bottom:1px solid var(--line);font-size:14px}.topbar .brand{color:var(--fg);text-decoration:none;font-weight:600;display:inline-flex;align-items:center;gap:8px}.topbar .mark{border-radius:5px;vertical-align:middle}.topbar .crumb{color:var(--mut)}.topbar .here{color:var(--mut)}.topbar .nav{margin-left:auto;color:var(--acc);text-decoration:none}.topbar .nav:hover{text-decoration:underline}.topbar .back{margin-left:14px;color:var(--acc);text-decoration:none}.navset{margin-left:18px;display:flex;gap:2px;flex-wrap:wrap}.navlink,.navhere{padding:3px 9px;border-radius:5px;text-decoration:none;font-size:13px}.navlink{color:var(--acc)}.navlink:hover{background:rgba(128,128,128,.15);text-decoration:none}.navhere{color:var(--fg);background:rgba(128,128,128,.18);font-weight:600}.topbar .back:hover{text-decoration:underline}h1{font-size:21px;margin:0 0 4px}.sub{color:var(--mut);font-size:13.5px;margin:0 0 22px}
 textarea{width:100%;min-height:96px;padding:11px;border:1px solid var(--line);border-radius:8px;
 background:var(--card);color:var(--fg);font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;resize:vertical}
 button{margin-top:10px;padding:8px 18px;border:0;border-radius:7px;background:var(--acc);
@@ -200,22 +200,42 @@ def render_check(c):
 # visual language, its own URL, its own stylesheet, no shared runtime.
 # ★ The mark is served from the explorer at /img/page-title-img.png -- ONE
 # asset, same origin through nginx, so the two pages cannot drift apart.
-HEADER = ("<div class=topbar><a class=brand href='/'>"
-          "<img class=mark src='/img/page-title-img.png' alt='' width=26 height=26>"
-          "<span>Hemis PTX testnet</span></a>"
-          "<span class=crumb>&rsaquo;</span><span class=here>Roll verifier</span>"
-          "<a class=nav href='/v2/register'>Register a gamemaster</a>"
-          "<a class=back href='/'>&larr; Block explorer</a></div>")
+# ★ EVERY PAGE IS AN ORPHAN WITHOUT THIS. /v2/health, /v2/feed, /v2/quorums and
+# /v2/api were all live and reachable ONLY by typing the URL -- the front page
+# linked to /v2/register and nothing else. That is a sharper form of KDD-118:
+# the information exists and cannot be reached, which is worth the same as not
+# having it. One nav, defined once, rendered on every page.
+NAV = (("/v2",          "Verify"),
+       ("/v2/health",   "Health"),
+       ("/v2/feed",     "Rolls"),
+       ("/v2/quorums",  "Quorums"),
+       ("/v2/api",      "API"),
+       ("/v2/register", "Register"))
 
 
-def page(body, q=""):
+def header(here="Verify"):
+    links = "".join(
+        ("<span class=navhere>%s</span>" % lbl) if lbl == here
+        else ("<a class=navlink href='%s'>%s</a>" % (href, lbl))
+        for href, lbl in NAV)
+    return ("<div class=topbar><a class=brand href='/'>"
+            "<img class=mark src='/img/page-title-img.png' alt='' width=26 height=26>"
+            "<span>Hemis PTX testnet</span></a>"
+            "<nav class=navset>%s</nav>"
+            "<a class=back href='/'>&larr; Block explorer</a></div>" % links)
+
+
+HEADER = header()
+
+
+def page(body, q="", here="Verify"):
     return ("<!doctype html><meta charset=utf-8><meta name=viewport "
             "content='width=device-width,initial-scale=1'>"
             "<title>Roll verifier - Hemis PTX testnet</title>"
             "<style>%s</style>%s<div class=wrap><h1>PTX roll verifier</h1>"
             "<p class=sub>Re-derives a roll from the transaction bytes. Checks P, A and B and C "
             "need no node, no index and no chain — paste hex and they run.</p>%s%s%s</div>"
-            % (CSS, HEADER, FORM.format(q=esc(q)), body, footer()))
+            % (CSS, header(here), FORM.format(q=esc(q)), body, footer()))
 
 
 # ★★ REACHABILITY, NOT CONFIGURATION.  This footer used to say "Txid lookup is
@@ -584,7 +604,7 @@ padding:9px 12px;border-radius:5px;font-size:13px;margin:10px 0}
 .note{color:var(--mut);font-size:12.5px;margin:6px 0 0}
 footer{margin-top:26px;color:var(--mut);font-size:12.5px;border-top:1px solid var(--line);padding-top:14px}
 </style>
-<div class=topbar><a class=brand href='/'><img class=mark src='/img/page-title-img.png' alt='' width=26 height=26><span>Hemis PTX testnet</span></a><span class=crumb>&rsaquo;</span><span class=here>Register a gamemaster</span><a class=back href='/v2'>&larr; Roll verifier</a></div>
+<!--NAV-->
 <div class=wrap>
 <h1>Register a gamemaster</h1>
 <p class=sub>Walks the <code>protx_register</code> sequence in the order the chain requires, and composes
@@ -944,11 +964,13 @@ def api_docs_page():
             "minute per IP</b>, burst 10, returning <code>429</code>. They make this node do I/O "
             "for a stranger, which is the reason for the difference.</p></div>"
 
-            "%s</div>" % (CSS, HEADER, footer()))
+            "%s</div>" % (CSS, header("API"), footer()))
 
 
 def register_page():
-    return REGISTER_HTML
+    # ★ .replace() not %-formatting: REGISTER_HTML carries literal % signs in its
+    # CSS (color-mix ... 9%), which %-formatting would read as conversions.
+    return REGISTER_HTML.replace("<!--NAV-->", header("Register"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1102,9 +1124,10 @@ def feed_page():
     if not rows:
         head += ('<div class=empty><b>No rolls found in the scanned range.</b> Empty, not zero: '
                  'this is what the scan saw, not a statement that none exist outside it.</div>')
-        return page(head + "</div>")
+        return page(head + "</div>", here="Rolls")
     return page(head + "<table><tr><th>height</th><th>commitment</th><th>game_id</th>"
-                "<th>draw</th><th>state</th><th></th></tr>" + "".join(rows) + "</table></div>")
+                "<th>draw</th><th>state</th><th></th></tr>" + "".join(rows) + "</table></div>",
+                here="Rolls")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1264,9 +1287,54 @@ def observe_health():
     gmc, e_g = q("getgamemastercount")
     qh, e_q = q("ptx_quorum_health")
     lot, e_l = q("ptx_lottery_status")
+    # ★ Member reachability, because it is the number that predicts whether the
+    # NEXT roll works: three failed rolls were 6-of-10 unreachable, and nothing
+    # surfaced it until after the fee was paid. Measured from THIS node, which is
+    # not the caller -- stated in the payload so a consumer cannot mistake it for
+    # the caller's view.
+    reach = {"measured_from": "the explorer's node, NOT the roll caller",
+             "caveat": "a caller's own view can differ, and the caller's view is the one that "
+                       "decides whether a roll reaches threshold",
+             "measured": False, "reachable": None, "total": None,
+             "threshold": None, "inbound_only": [], "no_connection": [], "error": None}
+    peers, e_p = q("getpeerinfo")
+    qs = (qh or {}).get("quorums") or []
+    if peers is None or not qs:
+        reach["error"] = e_p or "no active quorum to measure against"
+    else:
+        info, e_i = q("ptx_quorum_info", [qs[0].get("quorum_hash")])
+        roster, e_r = q("protx_list", [True, False, True])
+        if info is None or roster is None:
+            reach["error"] = e_i or e_r
+        else:
+            byip = {}
+            for pr in peers:
+                a = pr.get("addr", "")
+                ip = a.rsplit(":", 1)[0].strip("[]") if a else ""
+                byip.setdefault(ip, []).append(a)
+            addr_of = {}
+            for dd in roster:
+                stt = dd.get("dgmstate") or {}
+                if stt.get("ptxNodeId"):
+                    svc = stt.get("service", "")
+                    addr_of[stt["ptxNodeId"]] = svc.rsplit(":", 1)[0].strip("[]") if svc else ""
+            mem = info.get("members") or []
+            n_ok = 0
+            for m in mem:
+                nid = m.get("node_id", "?")
+                conns = byip.get(addr_of.get(nid, ""), [])
+                if not conns:
+                    reach["no_connection"].append(nid)
+                elif any(c.endswith(":29994") for c in conns):
+                    n_ok += 1
+                else:
+                    reach["inbound_only"].append(nid); n_ok += 1
+            reach.update(measured=True, reachable=n_ok, total=len(mem),
+                         threshold=(info.get("formed_size", 0) // 2 + 1))
     body = {
         "kind": "observation",
         "height": h, "height_error": e_h,
+        "member_reachability": reach,
         "gamemasters": gmc, "gamemasters_error": e_g,
         # ★ measured vs unknown, never conflated: quorums==[] means measured-and-none;
         # quorums==null with an error means we could not ask.
@@ -1327,7 +1395,7 @@ def quorums_page():
         out.append('<div class=empty><b>No quorum records found.</b> Empty, not zero — this is '
                    'what the scan of blocks %s–%s found, not a statement that none have ever '
                    'existed.</div>' % (esc(st.get("from")), esc(st.get("to"))))
-        return page("".join(out) + "</div>")
+        return page("".join(out) + "</div>", here="Quorums")
 
     out.append('<div class=why>Recovered by scanning for PTXDKG transactions (type 11), because '
                '<code>ptx_quorum_list</code> answers "what was active at height H" rather than '
@@ -1376,7 +1444,7 @@ def quorums_page():
                'which would make this page depend on their log retention — a worse property than '
                'a missing column. If that progression matters, it is a case for a new RPC field.'
                '</div>')
-    return page("".join(out) + "</div>")
+    return page("".join(out) + "</div>", here="Quorums")
 
 
 def health_page():
@@ -1401,7 +1469,7 @@ def health_page():
     if up is False:
         return page('<div class="card err">The node this page reads is <b>not answering</b>, so '
                     'nothing below can be measured. This is NOT a statement about the network — '
-                    'it is a statement about this page\'s node.</div>')
+                    'it is a statement about this page\'s node.</div>', here="Health")
 
     height, e_h   = _rpc("getblockcount")
     gmc,   e_gmc  = _rpc("getgamemastercount")
@@ -1587,7 +1655,7 @@ def health_page():
                    % "".join(rows))
     out.append("</div>")
 
-    return page("".join(out))
+    return page("".join(out), here="Health")
 
 
 class Handler(BaseHTTPRequestHandler):

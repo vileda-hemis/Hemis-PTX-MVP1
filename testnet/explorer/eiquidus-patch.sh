@@ -90,3 +90,50 @@ open(p, "w", encoding="utf-8").write("\n".join(lines))
 PY2
 fi
 echo "  verify: $(grep -c '"enabled": false' "$S") disabled flags now present"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# (3) A ROUTE FROM THE BLOCK EXPLORER TO /v2.
+#
+# ★ Every PTX page -- the verifier, health, the roll feed, quorum history, the
+#   API docs -- was reachable ONLY by typing its URL. eIquidus linked to none of
+#   them, so an operator arriving at ptx-explorer.lnky.uk had no route to any of
+#   the surface built to make this chain legible.
+#
+# ★★ It is a FOOTER SOCIAL LINK and that is a real limitation, stated rather
+#   than hidden: settings.json offers no way to add a primary nav item, and the
+#   alternative -- editing views/*.pug -- is exactly what the header of this
+#   file rejects, because a template patch is silently reverted by the next
+#   upgrade while a settings change survives it. A weak route that persists
+#   beats a strong one that disappears.
+#
+# ★★★ It APPENDS an entry rather than repurposing one of the stock disabled
+#   links (Github, Twitter, Coingecko...), so enabling any of those later is
+#   unaffected and nothing stock is misrepresented.
+python3 - "$S" <<'PY3'
+import sys
+p = sys.argv[1]
+lines = open(p, encoding="utf-8").read().split("\n")
+if any("PTX roll verifier" in l for l in lines):
+    print("  (3) explorer -> /v2 footer link: already present")
+    sys.exit(0)
+# find the close of the social_links array
+start = next(i for i, l in enumerate(lines) if '"social_links"' in l)
+close = next(i for i in range(start, len(lines)) if lines[i].strip() == "],")
+# the last entry's closing brace, so we can comma it and append after
+last = next(i for i in range(close - 1, start, -1) if lines[i].strip() == "}")
+lines[last] = lines[last].rstrip() + ","
+entry = [
+    "        {",
+    "          // ADDED BY eiquidus-patch.sh -- the only settings-only route from",
+    "          // this explorer to the PTX pages. See section (3) of that script.",
+    '          "enabled": true,',
+    '          "tooltip_text": "PTX roll verifier",',
+    '          "url": "/v2",',
+    '          "fontawesome_class": "fa-solid fa-dice",',
+    '          "image_path": ""',
+    "        }",
+]
+lines[last + 1:last + 1] = entry
+open(p, "w", encoding="utf-8").write("\n".join(lines))
+print("  (3) explorer -> /v2 footer link: ADDED")
+PY3
