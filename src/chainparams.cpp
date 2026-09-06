@@ -925,53 +925,31 @@ public:
         pchMessageStart[1] = 0x54; // 'T'
         pchMessageStart[2] = 0x58; // 'X'
         pchMessageStart[3] = 0x54; // 'T'  -- "PTXT"
-        // ★★★ 29993 -> 29994 (2026-09-06, BUG-071). THE TWIN OF THE 29902->29995 FIX
-        // ALREADY RECORDED IN chainparamsbase.cpp:49. That note says this class of
-        // mismatch "used to be load-bearing for CONSENSUS-ADJACENT behaviour"; the RPC
-        // half was corrected on 2026-08-21 and the P2P half was not, because nothing
-        // was visibly broken. It was not broken. It was throttled.
+        // ★★ 29993 -> 29994 (2026-09-06, BUG-071). 29993 WAS deliberate -- for a
+        // different chain than the one now running. e60e116 (2026-05-18) created
+        // CPTXTestNetParams as an "isolated closed testnet" and 29993 kept it clear
+        // of ptxbea's 29994; when that chain became the public testnet nobody
+        // revisited it. install.sh writes port=29994, every node runs 29994, eleven
+        // ProRegTxs record :29994 on chain, and both genesis specs already specify
+        // 29994 (PTX_TESTNET_GENESIS_CONFIG.md:120, TESTNET_GENESIS_PARAMS.md:50).
         //
-        // ★ 29993 WAS deliberate -- for a different chain than the one now running.
-        // e60e116 (2026-05-18) created CPTXTestNetParams as an "isolated closed
-        // testnet", and 29993 kept it clear of ptxbea's 29994. When this network
-        // became the public testnet nobody revisited it: install.sh writes
-        // port=29994, every node runs 29994, and eleven ProRegTxs record :29994 on
-        // chain. Both genesis specs say so too -- PTX_TESTNET_GENESIS_CONFIG.md:120
-        // and TESTNET_GENESIS_PARAMS.md:50 both give nDefaultPort 29994 "as
-        // specified". Nothing anywhere recorded a decision to keep 29993 after the
-        // operators moved.
+        // ★★ WHY IT MATTERS: A FOOT-GUN THAT REACHES THE CHAIN. rpcevo.cpp:416
+        // resolves a portless protx_register address against this value, so such a
+        // registration recorded :29993 -- a port nothing here listens on. See
+        // weirdness.md: the registration succeeds, the node syncs, getgamemasterstatus
+        // says Ready, and nothing goes wrong until arming. Same shape at net.cpp:1882
+        // (portless addnode) and net.cpp:107 (no port= at all). It is NOT a discovery
+        // or performance fix -- an earlier draft of this comment claimed it was, and
+        // ODC-122 records the misreading and the baseline that disproved it.
         //
-        // ★★ WHAT IT COSTS -- and NOT what I first claimed (ODC-122). The first
-        // version of this comment said net.cpp:1832's non-default-port skip
-        // de-prioritised every live address and throttled discovery. That was a
-        // MISREADING: `nTries` counts addresses DRAWN FROM addrman in one selection
-        // pass, not connection attempts -- the comment above it says so -- so passing
-        // 50 costs microseconds and then non-default ports are accepted. A
-        // pre-deployment baseline across 11 hosts measured 47 outbound connections to
-        // addresses in no seed list, ptxwallet01 reaching 8 of them ~50s after its 3
-        // seeds. Discovery is fast. There is no throttle to fix here.
+        // ★ NOT CONSENSUS: the only validation-side reader of a default port is
+        // specialtx_validation.cpp:45, which reads MAIN's explicitly, never the
+        // active chain's. Partial rollout degrades rather than breaks.
         //
-        // ★★ THE REAL COST IS A FOOT-GUN, AND IT REACHES THE CHAIN. rpcevo.cpp:416
-        // resolves a portless protx_register address against this value, so a
-        // registration written without a port recorded :29993 -- a port nothing on
-        // this network listens on. weirdness.md documents the result: the
-        // registration succeeds, the node syncs, getgamemasterstatus says Ready, and
-        // nothing goes wrong until arming. Same shape at net.cpp:1882 (a portless
-        // addnode) and net.cpp:107 (a node with no port= binds it and is invisible).
-        //
-        // ★★ NOT CONSENSUS. The only validation-side reader of a default port is
-        // specialtx_validation.cpp:45, and it reads MAIN's default explicitly, never
-        // the active chain's. A partial rollout therefore DEGRADES, it does not
-        // break: an un-upgraded node merely prefers different addresses, and no
-        // handshake, wire format or validity rule involves this number.
-        //
-        // ★ KNOWN COLLISION, stated rather than discovered later: ptxbea's default is
-        // also 29994 (see CPTXBeaTestNetParams below), which TESTNET_GENESIS_PARAMS.md:50
-        // flagged -- "the two must never share a host. Pick 29996 if they ever might".
-        // They are separated by magic and datadir, so this is a port-binding hazard on
-        // a host running BOTH chains with neither given an explicit -port, not a
-        // network-safety one. Accepted knowingly: matching what is deployed and what
-        // both genesis specs say beats keeping a number no node has ever listened on.
+        // ★ KNOWN COLLISION, accepted: ptxbea also defaults to 29994, which
+        // TESTNET_GENESIS_PARAMS.md:50 flagged ("never share a host; pick 29996").
+        // Separated by magic and datadir, so it is a port-binding hazard only on a
+        // host running both chains with neither given an explicit -port.
         nDefaultPort = 29994;
 
         vSeeds.clear();
