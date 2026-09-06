@@ -139,7 +139,8 @@ UniValue ptx_roll(const JSONRPCRequest& request)
             "2. low         (int)  Minimum value, inclusive\n"
             "3. high        (int)  Maximum value, inclusive\n"
             "4. unique      (bool) Whether draws must be distinct\n"
-            "5. exclude     (arr)  Integers or 64-char tx_id strings to skip\n"
+            "5. exclude     (arr)  Integers to skip. tx_id exclusions are NOT implemented\n"
+            "                     and are rejected.\n"
             "6. game_id     (str)  Caller-defined game identifier\n"
             "7. caller_salt (str)  Caller entropy as hex\n"
             "\nResult:\n"
@@ -183,11 +184,27 @@ UniValue ptx_roll(const JSONRPCRequest& request)
     size_t exc_txid_count = 0;
     for (size_t i = 0; i < exc_arr.size(); i++) {
         const UniValue& v = exc_arr[i];
-        if (!v.isNum() && !v.isStr())
-            throw JSONRPCError(RPC_INVALID_PARAMS, "exclude elements must be integers or 64-char hex tx_id strings");
-        if (v.isStr() && v.get_str().size() != 64)
-            throw JSONRPCError(RPC_INVALID_PARAMS, "exclude string elements must be 64-char hex tx_id");
-        if (v.isStr()) ++exc_txid_count; else ++exc_int_count;
+        // ★ REJECT tx_id exclusions rather than accepting and dropping them.
+        // PTX_ResolveExclude (this file, above) resolves integers and logs
+        // "deferred to Phase 2" for tx_ids, discarding them -- but by then
+        // PTX_BuildExcludeLists has already put them in BOTH payloads and
+        // PTX_HashParams has folded them into params_hash and thus the seed.
+        // The quorum then signs a seed that COMMITS to an exclusion the results
+        // do not honour: a false attestation, not a no-op. Measured 2026-09-06:
+        // excluding a prior roll whose results were [6,3,1,7,8,4] from a 1..8
+        // draw left a forced pool of {2,5}; the roll returned [7,1] -- both
+        // inside the excluded set -- while the payload recorded the exclusion
+        // and the seed matched a prediction derived from it.
+        // Refusing here is free: front validation runs before the commitment is
+        // built, so nothing is broadcast and no fee is paid. It also keeps
+        // exclude_txids EMPTY in every payload, so the seed cannot commit to
+        // something that was ignored.
+        if (v.isStr())
+            throw JSONRPCError(RPC_INVALID_PARAMS,
+                "tx_id exclusions are not implemented — use integer exclusions");
+        if (!v.isNum())
+            throw JSONRPCError(RPC_INVALID_PARAMS, "exclude elements must be integers");
+        ++exc_int_count;
     }
     if (game_id.size() > 128)
         throw JSONRPCError(RPC_INVALID_PARAMS, "game_id too long (max 128 bytes)");
