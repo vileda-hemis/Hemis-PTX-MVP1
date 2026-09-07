@@ -70,7 +70,10 @@ every frame" — you do not roll per action, you roll a batch and consume it.
 for the same 1 HMS any other roll costs.
 
 * The hard cap is **`count` ≤ 1000** (`count N exceeds maximum 1000`).
-* A second cap can bind first: `game_id + 8×(int excludes) + 65×(txid excludes) + 8×count ≤ 9000`.
+* A second cap can bind first: `game_id + 8×(int excludes) + 8×count ≤ 9000`.
+  ★ The payload reserves a `exclude_txids` field and the on-wire budget still accounts 65
+  bytes per entry, but it is **always empty** — `ptx_roll` refuses tx_id input (§5), so the
+  term cannot be non-zero and is omitted here rather than carried as a trap.
   At `count=1000` that is 8000 bytes of the budget, leaving ~1000 for everything else.
 
 **The two latencies are very different, and the second is the one you design around:**
@@ -109,7 +112,7 @@ Six distinct numbers from 1 to 49, never 13.
 | `count` | how many values to draw (1–1000) |
 | `low` / `high` | inclusive range |
 | `unique` | `true` = all distinct; `false` = repeats allowed |
-| `exclude` | JSON array — see §5, it accepts two different things |
+| `exclude` | JSON array of **integers only** — values never to draw; `[]` for none. tx_id strings are rejected, see §5 |
 | `game_id` | your label, free-form — see §4 |
 | `caller_salt` | hex, or `""` — your entropy contribution |
 
@@ -122,7 +125,9 @@ distributions.
 ## 3. What it costs, and what can fail
 
 **Every roll costs 1 HMS.** The fee is paid at the *commitment*, before any result exists — that is
-deliberate, and it is what stops a caller previewing a result and discarding it.
+deliberate, and it is what makes previewing a result and discarding it **cost the fee**. It
+does not prevent it: a caller who dislikes a draw can decline to settle and pay 1 HMS for the
+privilege. Selective settlement is priced, not blocked — budget for that if it matters to you.
 
 A roll is **two transactions**: a commitment that pays the fee, and a settle that publishes the
 result. `tx_id` in the response is the **settle**.
@@ -158,7 +163,8 @@ unique draw requires:  eligible >= count
 ## 4. `game_id`
 
 * **Cap 128 bytes.** It also shares a 9000-byte budget with your exclusions and results:
-  `game_id + 8×(integer excludes) + 65×(txid excludes) + 8×count ≤ 9000`.
+  `game_id + 8×(integer excludes) + 8×count ≤ 9000`.
+  (The `exclude_txids` term is structurally present but always zero — see §5.)
 * **It is stored byte-identical and permanently.** Measured: 112 bytes sent, 112 bytes on chain,
   unchanged.
 * **It is hashed into the round seed**, so it is bound to the signed value rather than being a
