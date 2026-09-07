@@ -1,0 +1,39 @@
+height: 7824   time: 2026-09-07T11:31:29Z
+
+--- last 10 coinstakes: recipients and reward ---
+  h7815   recipients=1  reward=5.34999999  yEUWaQnwPByNâ¦
+  h7816   recipients=1  reward=5.34999999  yJbK8A7gAK7Xâ¦
+  h7817   recipients=1  reward=5.34999999  yEUWaQnwPByNâ¦
+  h7818   recipients=1  reward=5.34999999  yJbK8A7gAK7Xâ¦
+  h7819   recipients=1  reward=5.34999999  yEUWaQnwPByNâ¦
+  h7820   recipients=1  reward=5.34999999  yAEpYa13pYsLâ¦
+  h7821   recipients=1  reward=5.34999999  y8ZWCUjCui2Kâ¦
+  h7822   recipients=1  reward=5.34999999  y42mDw6G8m7Xâ¦
+  h7823   recipients=1  reward=5.34999999  y42mDw6G8m7Xâ¦
+  h7824   recipients=1  reward=5.34999999  y4tJP6WrWDahâ¦
+
+--- SPORK_7 / SPORK_13 now ---
+  SPORK_7_GAMEMASTER_PAYMENT_ENABLE          4070908800
+  SPORK_13_ENABLE_SUPERBLOCKS                4070908800
+
+--- every gamemaster: lastPaidHeight and payout address ---
+  (none)                   lastPaid=7808   payout=yKGSWenHoXtDj4EpCojoPWczJHE81ymzi5
+  N24-1cadc39c:32e5cc46    lastPaid=7822   payout=y4NpHUm7qsDmdHk1Xy9S6gZtXLAaRPcr3F
+  N24-2:2e239263           lastPaid=7812   payout=xzhHh3ZCFjwVmVv6mm2C2K1RRHeEXpspfD
+  ptx004:cb43a659          lastPaid=7811   payout=yBPLENgFh2X6zgamJjL7BESUzue542h1A2
+  ptx005:e51930bf          lastPaid=7815   payout=y1pLjMKprkuYwfkaBG6TZfwdgbs8W2o4VM
+  ptx007:b9a80b70          lastPaid=7810   payout=xx4N7N6PBdgJQrrAyAQ6dUkpGCSDaWGqQq
+  ptx014:6633f647          lastPaid=7819   payout=xxdCmyZMKszRyKJR8pZ2VDAEDByKhbhpb2
+  ptx015:4bd65ad9          lastPaid=7820   payout=yGg8YMNnJU9AQdLm6MCHsD2rjM4cstKyM6
+  ptx016:1e2414a5          lastPaid=7825   payout=yHVAQhEgTMKfQgfTyv9FgU8yXsynEJm9RX
+  ptx017:87424a07          lastPaid=7824   payout=yBaTHw8r8L8bSRvQGuGPQmHnBajpeFMbkw
+  ptx018:d6814d85          lastPaid=7823   payout=xwEGRjjzzcMjTRpXC1DNMT4mGFfrLLYGa6
+  ptx08:905414aa           lastPaid=7817   payout=yCjgvMcgndA8urHF1J6D59shQPAcEdFuUA
+  ptx09:37103181           lastPaid=7818   payout=yKCzJA6f1cJuNcs491MLHNm8W6ahVzkzAt
+  ptx11:1399f7f0           lastPaid=7821   payout=xzYCdWKuWvbvP5EvdYUXJ3PvU5zvJk6dY7
+  ptx12:fa89447a           lastPaid=7814   payout=y8iNjah8VsmvDrW6QUMSDSXUn4aQq1ui8M
+  ptxpjh01:7ad56f38        lastPaid=7816   payout=xyggPDQ8kjF58nscB3Zf3SXH6tgtnovs6d
+  ptxpjh02:e2eda9e6        lastPaid=7813   payout=yGB5UitVMaEFsQdhSTaPbjQvzSTXs5qq9M
+  ptxpjh03:d9f215f8        lastPaid=7809   payout=y34SfYswfort1wgLftt4ps3thiTKY2Ye7J
+  TOTAL registrations: 18
+
