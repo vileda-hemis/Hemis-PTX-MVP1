@@ -208,8 +208,20 @@ void CGamemasterSync::Process()
             // Check if we lost all gamemasters (except the local one in case the node is a GM)
             // from sleep/wake or failure to sync originally (after spork 21, check if we lost
             // all proposals instead). If we did, resync from scratch.
+            // ** BUG-075: "lost all proposals" is only meaningful on a chain that
+            // HAS proposals. With SPORK_13 (superblocks) off, an empty budget is
+            // the correct steady state, and this branch fired Reset() every tick,
+            // forever: an 80-cycle/hour sync loop on every node that held
+            // IsSynced() false ~90% of the time -- which silently disables
+            // IsBlockPayeeValid's checks (gamemaster-payments.cpp:202) and would
+            // have made a future SPORK_8 enforce on a random ~10% of nodes: a
+            // divergent-validation partition by another door. Found from an
+            // external operator's logs (register BUG-075). The proposal check now
+            // runs only when superblocks are enabled, i.e. when proposals are
+            // expected to exist and losing them all really does mean stale data.
            if ((!legacy_obsolete && gamemasterman.CountEnabled(true /* only_legacy */) <= 1) ||
-                (legacy_obsolete && g_budgetman.CountProposals() == 0)) {
+                (legacy_obsolete && sporkManager.IsSporkActive(SPORK_13_ENABLE_SUPERBLOCKS) &&
+                 g_budgetman.CountProposals() == 0)) {
                 Reset();
             } else {
                 return;

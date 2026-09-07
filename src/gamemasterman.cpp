@@ -455,14 +455,21 @@ bool CGamemasterMan::RequestGmList(CNode* pnode)
     }
 
     LOCK(cs);
-    if (Params().NetworkIDString() == CBaseChainParams::MAIN) {
-        if (!(pnode->addr.IsRFC1918() || pnode->addr.IsLocal())) {
-            std::map<CNetAddr, int64_t>::iterator it = mWeAskedForGamemasterList.find(pnode->addr);
-            if (it != mWeAskedForGamemasterList.end()) {
-                if (GetTime() < (*it).second) {
-                    LogPrint(BCLog::GAMEMASTER, "dseg - we already asked peer %i for the list; skipping...\n", pnode->GetId());
-                    return false;
-                }
+    // ** BUG-074: this rate limit was wrapped in `if (NetworkIDString() == MAIN)`
+    // while the RECEIVER's repeat penalty (ProcessMessage dseg, +20 misbehaviour)
+    // applies on every network. On ptxtestnet the asymmetry let SPORK_7 wake an
+    // endless dseg loop in which every node re-asked relentlessly and every node
+    // penalised the repeats -- mutual bans, a three-way partition, producers at
+    // 0 peers (2026-09-07, register BUG-074). Mainnet could never spiral, which
+    // is exactly why the guard existed there and the bug hid here. The limit now
+    // matches the penalty on ALL networks; the RFC1918/local exemption is kept,
+    // mirroring the receiver's own exemption.
+    if (!(pnode->addr.IsRFC1918() || pnode->addr.IsLocal())) {
+        std::map<CNetAddr, int64_t>::iterator it = mWeAskedForGamemasterList.find(pnode->addr);
+        if (it != mWeAskedForGamemasterList.end()) {
+            if (GetTime() < (*it).second) {
+                LogPrint(BCLog::GAMEMASTER, "dseg - we already asked peer %i for the list; skipping...\n", pnode->GetId());
+                return false;
             }
         }
     }
