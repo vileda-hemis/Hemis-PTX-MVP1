@@ -79,10 +79,9 @@ ptx_roll count low high unique exclude game_id caller_salt
 
 **`exclude` note:** integer elements are resolved and excluded correctly. **tx_id string elements
 are REJECTED** with `-32602 tx_id exclusions are not implemented — use integer exclusions`, thrown
-in front validation before any fee is paid — **on `d0effa0` and later only. The refusal is not in
-`v0.4.2-testnet` or any earlier release**, so on every binary published to date the tx_id form is
-still accepted and silently dropped, and the call succeeds with no signal. Treat the tx_id form as
-unavailable on both sides of that line. They were previously accepted and silently
+in front validation before any fee is paid — **from `v0.4.3-testnet` onward. On `v0.4.2-testnet`
+and earlier** the tx_id form is accepted and silently dropped, and the call succeeds with no
+signal. Treat the tx_id form as unavailable on both sides of that line. They were previously accepted and silently
 dropped — which meant the payload recorded them and the round seed committed to them while the
 draw ignored them, a false attestation rather than a no-op (BUG-065, measured 2026-09-06). See
 `ptxbea-known-limitations.md` §10 for why the feature stays deferred: resolving a tx_id needs a
