@@ -1374,8 +1374,24 @@ UNITEOF
     # reboot that does not bring it back. Observed twice on ptx004 (2026-09-02 at
     # install, 2026-09-05 during maintenance) and it is the state self-check.sh
     # section 1b now reports.
-    _hs_pid=$(pgrep -x Hemisd 2>/dev/null | head -1)
-    _hs_main=$($SUDO systemctl show hemis-ptx.service -p MainPID --value 2>/dev/null)
+    # ★★ `|| true` IS LOAD-BEARING HERE TOO (BUG-072). `pgrep` exits 1 when it
+    # matches nothing, `pipefail` promotes that to the pipeline's status, and a
+    # bare assignment adopts it -- so under `set -euo pipefail` this line ABORTS
+    # THE SCRIPT on any host where no Hemisd is already running. That is every
+    # genuinely fresh install: the unit is written, `daemon-reload` never runs,
+    # `enable --now` never runs, and the operator sees the script stop after
+    # "6. systemd unit" with no error at all, because `set -e` exits silently.
+    # ★ It stayed hidden because the whole existing fleet was installed onto
+    # hosts that ALREADY had hand-started daemons running -- the very state the
+    # block below exists to clean up, and which the comment above documents. The
+    # guard was tested only in the case where the thing it guards against was
+    # present. Reproduced on a clean VM 2026-09-07 with a control leg: no match
+    # => rc=1 and the script dies; `|| true` => survives; the same construct
+    # against a process that DOES exist => survives.
+    _hs_pid=$(pgrep -x Hemisd 2>/dev/null | head -1 || true)
+    # Same class, guarded on principle rather than on evidence: the script never
+    # reached this line, so its behaviour on an unknown unit is untested here.
+    _hs_main=$($SUDO systemctl show hemis-ptx.service -p MainPID --value 2>/dev/null || true)
     if [ -n "$_hs_pid" ] && [ "$_hs_pid" != "${_hs_main:-0}" ]; then
         warn "a Hemisd systemd does not own is running (pid $_hs_pid) and holds the datadir"
         "$BINDIR/Hemis-cli" -datadir="$DATADIR" stop >/dev/null 2>&1 || true
