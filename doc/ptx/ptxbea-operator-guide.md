@@ -162,8 +162,14 @@ To enable GM payment after fleet bootstrap:
 
 ```bash
 # From any node with sporkkey= in hemis.conf:
-hemis-cli -ptxbea spork SPORK_21 0    # enable GM payment
-hemis-cli -ptxbea spork SPORK_7 0     # enable GM enforcement
+# ★★ ORDER MATTERS — SPORK_21 FIRST, then SPORK_7. Reversing them, or enabling
+# SPORK_7 without SPORK_21 set, wakes the inherited legacy gamemaster sync on a
+# chain with no legacy GMs: endless dseg re-requests, mutual peer bans, network
+# partition (BUG-074, testnet 2026-09-07). SPORK_21's value is a HEIGHT past
+# which legacy GMs are obsolete, so any already-passed height (e.g. the current
+# tip, or a small constant on a fresh chain) works.
+hemis-cli -ptxbea spork SPORK_21 <a-passed-height>   # retire the legacy GM path FIRST
+hemis-cli -ptxbea spork SPORK_7 0                     # then enable GM payments
 ```
 
 Confirm activation:
@@ -195,7 +201,7 @@ lands in bootstrap.py — reconcile against the harness before use):
 5. Wait 1 confirmation per registration; verify DGM list
 6. Fund the caller wallet via `sendmany` — use 2 HMS × N UTXOs for UTXO-split funding (each
    roll consumes one UTXO; pre-splitting avoids contention under sequential calls)
-7. Enable SPORK_21 and SPORK_7 via the spork keypair
+7. Enable SPORK_21 (a passed height) FIRST, then SPORK_7, via the spork keypair (order is load-bearing, BUG-074)
 8. Issue a test `ptx_roll` — confirm `tx_id` is a 64-char hex (not an error code)
 
 **Critical:** step 4 must complete before step 8. A GM that is not registered, or is registered

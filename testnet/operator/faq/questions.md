@@ -1,5 +1,5 @@
 <!-- CORPUS-AUTHORED: question index -->
-<!-- CORPUS-TAG: v0.4.3-testnet -->
+<!-- CORPUS-TAG: v0.4.4-testnet -->
 
 # How operators actually phrase things
 
@@ -166,7 +166,7 @@ then enable again.
 **v0.3.6 fixes both:** the daemon start is in step 8, and `Hemis-cli stop` sits between it and
 `enable --now`.
 
-★★ **That was true up to `v0.3.6-testnet` and is NOT true of `v0.4.3-testnet`.** `src/` is byte-identical from `v0.3.2-testnet` through `v0.3.6-testnet`, so
+★★ **That was true up to `v0.3.6-testnet` and is NOT true of `v0.4.4-testnet`.** `src/` is byte-identical from `v0.3.2-testnet` through `v0.3.6-testnet`, so
 the daemon differed only in its build-id and version string across that run.
 
 **Upgrading is NOT optional if you run a gamemaster.** `v0.4.1-testnet` is the first release
@@ -179,5 +179,5 @@ delivered. `v0.3.6-testnet` and `v0.4.0-testnet` both predate the fix.
 `v0.3.6..v0.4.2` is 583 insertions across 9 source files, so the "only the version string differs"
 reasoning no longer applies at all.
 
-Anyone **mid-install should use `v0.4.3-testnet`** — the current pin, and the tag every other
+Anyone **mid-install should use `v0.4.4-testnet`** — the current pin, and the tag every other
 instruction in this corpus refers to.
