@@ -21,6 +21,7 @@
 #include "rpc/server.h"
 #include "script/sign.h"
 #include "tiertwo/gamemaster_meta_manager.h"
+#include "ptx/ptx_pose.h" // g_ptx_pose_tracker, for the derived PTX status
 #include "util/validation.h"
 #include "utilmoneystr.h"
 #include "crypto/sha256.h"
@@ -273,6 +274,27 @@ static UniValue DgmToJson(const CDeterministicGMCPtr dgm)
         return ret;
     }
     ret.pushKV("collateralAddress", EncodeDestination(dest));
+
+    // ★★ KDD-126: ONE honest status, the MOST LIMITING of two orthogonal axes.
+    // Reward axis (IsPoSeBanned) and PTX-signing axis (the four PTX_SelectWinner
+    // gates, ptx_winner_selection.cpp:47) disagree -- FALSE_NODE is ENABLED as a
+    // gamemaster and permanently unable to sign. A bare ENABLED/POSE_BANNED would
+    // report only the reward axis and call FALSE_NODE enabled, which is a lie.
+    // Ordered by severity so the values are mutually exclusive: banned, else
+    // can't-sign, else fully working.
+    std::string status;
+    if (dgm->IsPoSeBanned()) {
+        status = "POSE_BANNED";
+    } else {
+        const auto& st = *dgm->pdgmState;
+        bool ptx_ok = !st.node_id.empty() && !st.scriptPTXPayment.empty();
+        if (ptx_ok) {
+            PTXNodeRecord rec = g_ptx_pose_tracker.GetRecord(st.node_id);
+            ptx_ok = rec.quorum_eligible && rec.lottery_tickets > 0;
+        }
+        status = ptx_ok ? "ENABLED" : "NO_PTX";
+    }
+    ret.pushKV("status", status);
     return ret;
 }
 
