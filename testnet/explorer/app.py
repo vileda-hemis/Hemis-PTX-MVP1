@@ -217,6 +217,7 @@ CALLER_GUIDE_URL = ("https://github.com/vileda-hemis/Hemis-PTX-MVP1/blob/"
 NAV = (("/v2",              "Verify"),
        ("/v2/health",       "Health"),
        ("/v2/feed",         "Rolls"),
+       ("/v2/lottery",      "Lottery"),
        ("/v2/quorums",      "Quorums"),
        ("/v2/api",          "API"),
        (CALLER_GUIDE_URL,   "Caller guide"),
@@ -1321,6 +1322,152 @@ def feed_page():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# LOTTERY  —  /v2/lottery
+#
+# ★ ONE RPC, TWO HALVES, HONEST BOUNDS. ptx_lottery_status is the surface the
+# node exposes "for explorer and monitoring consumption": it carries the live
+# ticket table (eligible_nodes) and the chain-side settlement ring
+# (settlement_history, newest-first, hard cap 20). The ring is NOT an all-time
+# ledger -- older settlements have aged out of it -- and this page says so
+# rather than letting a full-looking table imply completeness (the KDD-118
+# shape: a page that reads authoritative must state what it does not cover).
+# winner_protx is mapped to a node_id through protx_list so a winner reads as a
+# name; a winner that has since been spent/retired falls back to its short hash.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _ticket_bar(tk, maxtk, width=16):
+    """A dependency-free proportional bar. Text, not CSS: it renders the same in
+    any theme and needs no stylesheet class the rest of the page does not have."""
+    if maxtk <= 0:
+        return ""
+    filled = int(round(width * tk / maxtk))
+    return "█" * filled + "░" * (width - filled)
+
+
+def lottery_page():
+    if not NODE_RPC:
+        return page('<div class=card><h2>Lottery</h2><div class=empty>No node is configured, '
+                    'so live lottery state cannot be read. This page reports chain state; with '
+                    'no node it has nothing to report rather than a guess.</div></div>',
+                    here="Lottery")
+    try:
+        st = rpc("ptx_lottery_status", [])
+    except Exception as e:                                    # noqa: BLE001
+        return page('<div class=card><h2>Lottery</h2><div class=empty><b>Lottery status '
+                    'unavailable:</b> %s — a failure to read the node, not a statement about '
+                    'the chain.</div></div>' % esc(e), here="Lottery")
+
+    # proTxHash -> node_id, so a winner reads as a name rather than a hash.
+    protx_name = {}
+    try:
+        for d in rpc("protx_list", [True, False, False]):
+            h = d.get("proTxHash")
+            nid = (d.get("dgmstate") or d.get("dgmState") or {}).get("ptxNodeId")
+            if h:
+                protx_name[h] = nid
+    except Exception:                                         # noqa: BLE001
+        pass
+
+    def hms(sat):
+        try:
+            return "%.8f" % (int(sat) / 1e8)
+        except Exception:                                     # noqa: BLE001
+            return "?"
+
+    def who(ph):
+        nid = protx_name.get(ph)
+        return ('<code>%s</code>' % esc(nid)) if nid else ('<code>%s…</code>' % esc((ph or "")[:16]))
+
+    pool = hms(st.get("pool_balance_sat", 0))
+    head = ('<div class=card><h2>PTX lottery</h2><div class=stats>'
+            '<div class=stat><div class=k>rolls all-time</div><div class=v>%s</div>'
+            '<div class=why>PTX sessions since genesis</div></div>'
+            '<div class=stat><div class=k>pool balance</div><div class=v>%s</div>'
+            '<div class=why>accumulating toward the next settle</div></div>'
+            '<div class=stat><div class=k>settlement window</div><div class=v>%s blk</div>'
+            '<div class=why>next settle at height %s</div></div>'
+            '<div class=stat><div class=k>chain tip</div><div class=v>%s</div></div>'
+            '</div>'
+            '<div class=why>Live from <code>ptx_lottery_status</code>. A settlement draws one '
+            'winning gamemaster — weighted by tickets — and pays the accumulated pool to its '
+            'PTX payment address.</div></div>'
+            % (esc(st.get("total_rolls")), esc(pool), esc(st.get("settlement_window")),
+               esc(st.get("next_settlement_at")), esc(st.get("current_height"))))
+
+    # ── recent winners (chain-side ring, cap 20) ──────────────────────────────
+    sh = st.get("settlement_history", []) or []
+    wrows, tally = [], {}
+    for s in sh:
+        ph = s.get("winner_protx", "")
+        gm = s.get("gm")
+        gm_html = ('<div class=why>%s</div>' % esc(gm)) if gm else ''
+        txid = s.get("txid", "")
+        link = ('<a href="/tx/%s">tx &rarr;</a>' % esc(txid)) if txid else ''
+        wrows.append('<tr><td>%s</td><td>%s%s</td><td><b>%s</b></td><td>%s</td></tr>'
+                     % (esc(s.get("height")), who(ph), gm_html, esc(s.get("amount")), link))
+        if ph:
+            # ★ ptx_lottery_status's settlement_history carries `amount` (string
+            # HMS) but NOT `amount_sat` — unlike ptx_lottery_history. Sum the
+            # string, or the total reads 0.0 for every winner.
+            t = tally.setdefault(ph, {"n": 0, "hms": 0.0})
+            t["n"] += 1
+            try:
+                t["hms"] += float(s.get("amount") or 0)
+            except (TypeError, ValueError):
+                pass
+
+    if wrows:
+        wins = ('<div class=card><h2>Recent winners</h2>'
+                '<div class=why>The chain-side settlement ring — the %d newest settlements, '
+                'hard-capped at 20. This is the ring, <b>not</b> an all-time ledger: older '
+                'settlements have aged out of it. Each row links to the payout transaction in '
+                'the block explorer.</div>'
+                '<table><tr><th>height</th><th>winner</th><th>amount (HMS)</th><th></th></tr>'
+                '%s</table></div>' % (len(sh), "".join(wrows)))
+        trs = sorted(tally.items(), key=lambda kv: (-kv[1]["n"], -kv[1]["hms"]))
+        tally_rows = "".join(
+            '<tr><td>%s</td><td>%d</td><td>%s</td></tr>' % (who(ph), v["n"], "%.8f" % v["hms"])
+            for ph, v in trs)
+        wins += ('<div class=card><h2>Wins in the recent ring</h2>'
+                 '<div class=why>Counted over the %d settlements above only — not all-time, '
+                 'because the ring is capped. For a complete history, scan the chain for '
+                 'PTXPAYOUT receipts.</div>'
+                 '<table><tr><th>gamemaster</th><th>wins</th><th>total (HMS)</th></tr>'
+                 '%s</table></div>' % (len(sh), tally_rows))
+    else:
+        wins = ('<div class=card><h2>Recent winners</h2><div class=empty>No settlements in the '
+                'chain-side ring. Empty, not zero — this is what the node currently holds.'
+                '</div></div>')
+
+    # ── ticket standings (all pose-tracked nodes) ─────────────────────────────
+    nodes = st.get("eligible_nodes", []) or []
+    total_tk = sum(int(n.get("tickets", 0) or 0) for n in nodes)
+    maxtk = max((int(n.get("tickets", 0) or 0) for n in nodes), default=0)
+    trows = []
+    for n in sorted(nodes, key=lambda x: -int(x.get("tickets", 0) or 0)):
+        tk = int(n.get("tickets", 0) or 0)
+        share = ("%.1f%%" % (100.0 * tk / total_tk)) if total_tk else "—"
+        bar = '<span class=off>%s</span>' % _ticket_bar(tk, maxtk)
+        elig = '<span class=good>yes</span>' if n.get("eligible") else '<span class=warn>no</span>'
+        pen = ' <span class=warn>penalised</span>' if n.get("penalized_this_window") else ''
+        trows.append('<tr><td><code>%s</code></td><td>%d</td><td>%s</td><td>%s</td>'
+                     '<td>%s%s</td></tr>'
+                     % (esc(n.get("node_id")), tk, bar, share, elig, pen))
+    tickets = ('<div class=card><h2>Ticket standings</h2>'
+               '<div class=why>A gamemaster\'s tickets are its weight in the next draw: its '
+               'chance of winning a settlement is its share of the total (%d tickets across %d '
+               'nodes). Tickets accrue with participation. A newly-registered gamemaster is '
+               'eligible to <i>form</i> quorums immediately, but appears in this table only once '
+               'the pose tracker has recorded it — which lags registration by design, so a GM '
+               'that just joined a quorum may not be listed yet.</div>'
+               '<table><tr><th>gamemaster</th><th>tickets</th><th></th><th>draw share</th>'
+               '<th>eligible</th></tr>%s</table></div>'
+               % (total_tk, len(nodes), "".join(trows)))
+
+    return page(head + wins + tickets, here="Lottery")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # OBSERVATION API  —  /v2/api/v1/observe/*
 #
 # ★ A DIFFERENT API FROM /verify, /tx, /commitment, AND IT SAYS SO. Those are
@@ -1982,6 +2129,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path.rstrip("/") in ("/feed", "/v2/feed", "/rolls", "/v2/rolls"):
             b = feed_page().encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(b)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self._body(b)
+            return
+        if path.rstrip("/") in ("/lottery", "/v2/lottery"):
+            b = lottery_page().encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(b)))
