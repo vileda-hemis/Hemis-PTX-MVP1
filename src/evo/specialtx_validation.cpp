@@ -1769,6 +1769,21 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
     // captures the block's own credits, and before commit(), so a later failure
     // still unwinds through the sentry rather than leaving a snapshot for a block
     // that never connected.
+    // BUG-078 / KDD-128: reset the lottery-ticket ledger at settlement boundaries so the
+    // draw is the designed per-window lottery, not cumulative-participation-weighted.
+    // GATED OFF (activation TBD, KDD-128): PTX_LotteryWindowResetEnabled() is false in
+    // production, so this is inert until activation. Placement is load-bearing: the winner
+    // for this block was already selected from the closing window's standings (payout check
+    // above), and this runs AFTER the RecordHonestParticipation accrual loop and BEFORE
+    // WritePoseSnapshotForBlock below, so the per-block snapshot captures the post-reset
+    // standings and DisconnectBlock restores the pre-reset ones from the pprev snapshot
+    // (BUG-027 mechanism; the whole record incl. lottery_tickets is serialised — no new undo state).
+    if (!fJustCheck && PTX_LotteryWindowResetEnabled() &&
+        Params().PTXSettlementWindow() > 0 &&
+        pindex->nHeight % Params().PTXSettlementWindow() == 0) {
+        g_ptx_pose_tracker.AdvanceLotteryWindow();
+    }
+
     if (!fJustCheck) {
         WritePoseSnapshotForBlock(pindex->GetBlockHash(), pindex->nHeight,
                                   g_ptx_pose_tracker.GetAllRecords());

@@ -74,6 +74,14 @@ bool ReadPoseSnapshotForBlock(const uint256& blockHash,
 // genesis-only chain) — the caller owns that policy; the tracker is untouched.
 bool LoadPoseFromDB(const uint256& tipHash);
 
+// BUG-078 / KDD-128: gate for the settlement-boundary lottery-ticket reset.
+// The reset call site in ProcessSpecialTxsInBlock is INERT until this returns true.
+// Ships OFF: default false, set only by tests. Activation (height gate vs spork —
+// undecided, KDD-128 2b.5) will later replace this with the chosen consensus gate.
+// Neutral on/off by design so the shipped build does not pre-decide the mechanism.
+bool PTX_LotteryWindowResetEnabled();
+void PTX_SetLotteryWindowResetEnabled(bool enabled);  // test-only
+
 class PTXPoSeTracker {
 public:
     // Committed but no valid reveal. pose_score += 5.
