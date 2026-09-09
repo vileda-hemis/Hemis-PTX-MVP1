@@ -27,8 +27,10 @@ settlement boundary.
 
 ## 2. Settlement mechanics
 
-Settlement fires at every block height where `height % nPTXSettlementWindow == 0` (every 60 blocks,
-~60 minutes on ptxbea), provided:
+Settlement fires at every block height where `height % window(height) == 0` (every 60 blocks,
+~60 minutes on ptxbea). ★ KDD-129: the window is HEIGHT-DEPENDENT — `Params().PTXSettlementWindow(height)`;
+on ptxtestnet it is 5 below h15840 and 1440 (mainnet's value, ~25 h) from h15840, and `ptx_lottery_status`
+reports the window in force at the current height. Settlement fires provided:
 
 1. An accumulator UTXO exists (at least one `ptx_roll` was made in this or a prior window)
 2. At least one GM is eligible: `quorum_eligible == true`, `lottery_tickets > 0`, and
@@ -207,9 +209,11 @@ Chain-wide lottery state for explorer and monitoring consumption. Reads from `Lo
 ```json
 {
   "pool_balance_sat"  : int,
-  "settlement_window" : int,
+  "settlement_window" : int,        // window IN FORCE at current_height (KDD-129: height-dependent)
   "current_height"    : int,
-  "next_settlement_at": int,
+  "next_settlement_at": int,        // computed across the cadence activation (ptxtestnet: 15839 -> 15840, 15840 -> 17280)
+  "cadence_activation_height": int, // v0.5.0: KDD-128/129 activation height; -1 = never on this network
+  "cadence_active"    : bool,       // v0.5.0: current_height >= cadence_activation_height
   "total_rolls"       : int,
   "eligible_nodes"    : [
     {
