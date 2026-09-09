@@ -3295,6 +3295,8 @@ The 5 `MSG_PTX_QUORUM_*` inventory types were absent from `IsTierTwoInventoryTyp
 
 ★ **PATTERN — invisible to unit tests; THIRD instance of the class.** Unreachable dead code is indistinguishable from working code without a **live peer**: the serve arms compiled, linked, and passed every unit test precisely because nothing exercised the transfer path. This is the third instance of the "unit-green because the gap is only reachable live" class — (1) the **ODC-036** threshold defect (invisible to 271/271 because the tests passed threshold in EXPLICITLY; caught only at the first fleet signing), (2) the **.py scenario assertions** (several asserted on paths never runtime-validated — syntax-verified only), (3) this. Lesson recorded: transport / serve-arm code needs a live-peer test to distinguish dead from working; unit-green is not coverage for it.
 
+> **★ 2026-09-09 — THIS TABLE IS INCOMPLETE.** It stops at ~BUG-054. For BUG-055 and later (through BUG-077) the running prose log above is authoritative. Rebuilding the table to current is tracked as separate work (verification pass, 2026-09-09).
+
 | BUG | Date | Summary | Commit | Status |
 |---|---|---|---|---|
 | BUG-001–005 | — | *(numbering gap — no such bug)* no commit exists; PTX bug numbering as recorded begins at 006. Recorded so the range has no silent hole. | — | Pointer added 2026-07-24 |
