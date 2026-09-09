@@ -393,3 +393,45 @@ shares (see above — permanently).
 
 The proper mainnet answer (a proactive re-share protocol or Dash-QDATA-shaped P2P share recovery)
 is design work tracked as ODC-071.
+
+
+## 14. Open consensus and gate items surfaced by the 2026-09-09 verification pass
+
+The following register items were confirmed against source on 2026-09-09 as open in the shipped
+tree. They are listed by **class and status only**; reproduction detail is deliberately withheld,
+because third parties operate nodes on this network. (Items found *fixed* in v0.4.4-testnet during
+the same pass — the dseg-partition pair BUG-074/075 and the tx_id-exclusion leak BUG-035 — are not
+limitations and are not listed here.)
+
+**BUG-052 — denial of service (consensus validation ordering). OPEN, fix scoped, not built.**
+A malformed transaction can force an expensive signature verification before the cheaper checks that
+would reject it, from an unauthenticated peer at no cost, and the rejection is not currently
+penalised. The fix is scoped (defer the expensive step to after the cheap checks, then score the
+rejection) but not yet implemented. Trigger detail withheld. Register: BUG-052 / KDD-103.
+
+**BUG-062 — chain-halt condition (registration-collateral check asymmetry). OPEN; consequence mitigated.**
+A registration transaction's collateral is validated only at block-connect time, not at mempool
+acceptance, so such a transaction can be accepted into the mempool yet rejected from every block.
+The chain-halt consequence is mitigated (the block assembler now evicts the offending transaction
+rather than discarding the block), but the underlying accept-versus-connect asymmetry remains.
+Trigger detail withheld. Register: BUG-062.
+
+**BUG-051 — verifiability: the written seed formula does not match the implementation. OPEN.**
+This matters to integrators and costs nothing to disclose. On-chain verification is unaffected —
+every settlement verifies and the chain is internally consistent. But the published seed formula
+(KDD-002) names a `caller_pubkey` input that the implementation does not use on a commitment: the
+field carries the caller *salt*, which reaches the seed only via the nonce. A verifier built from
+the written specification will therefore derive the wrong seed on every roll commitment and cannot
+distinguish a naming defect from a forged payload. **Until the specification and code are reconciled,
+build verifiers from the implementation (`src/rpc/ptx.cpp`, `src/ptx/ptx_seed.cpp`), not from the
+KDD-002 formula as written.** Register: BUG-051.
+
+**BUG-031 — mainnet activation gate (does not affect this testnet). OPEN, undetermined.**
+A structural gate owed to the mainnet PTX-activation path: a fork binary may refuse to start on a
+pre-activation mainnet datadir. It does not affect ptxbea / ptxtestnet, where PTX is always active.
+The source state was not isolated during the pass; it stays open and undetermined. Register: BUG-031.
+
+**ODC-041 — mainnet activation gate: PTX interacting with an active payment/governance regime. OPEN investigation.**
+An untested interaction reserved for mainnet, where PTX would run alongside an active budget and
+governance regime. Not a defect and not resolved; its testnet manifestations (the dseg-partition
+pair) are fixed. Register: ODC-041.
