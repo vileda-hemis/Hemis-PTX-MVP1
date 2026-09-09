@@ -275,12 +275,14 @@ quorum forms (h60 rather than h30 — one hour on a network with no throughput p
 |---|---|---|
 | `strPTXLotteryPoolAddress` | `""` | accumulation via `LOTTERY_ACCUM_SCRIPT` (ODC-022), same as ptxbea — no pool address exists |
 | `nPTXServiceFee` | **1 × COIN** | 1 HMS per roll, KDD-043; spork-adjustable |
-| `nPTXSettlementWindow` | **60** | ~60 blocks ≈ 1 hour at 60s spacing |
+| `nPTXSettlementWindow` | **5** | 5-block window (~5 min at 60s spacing), KDD-030 — matches shipped `ptxtestnet` source. ★ 2026-09-09 CORRECTED from 60 (that was the ptxbea value); see note below |
 | `nPTXSeedHeightWindow` | **60** | ODC-073 Step 1. Bracketed by two real quantities: **floor** = commit-to-mine lag (~12 blocks incl. congestion and retry), **ceiling** = `nRetireWindow` 200. 60 sits strictly inside and equals the settlement horizon |
 | `nPTXPayoutMinerFee` | **10000** (0.0001 HMS) | miner incentive inside PTXPAYOUT |
 | `nTimeSlotLength` | ★ **15** or **60 — decide** | ptxbea uses 15 deliberately. This interacts with §4's M floor. **Set together with B** |
 | `nLLMQConnectionRetryTimeout` | **10** | as ptxbea |
 | `consensus.llmqs[LLMQ_TEST]`, `llmqChainLocks` | `llmq_test` | small-network LLMQ shape |
+
+> **★ 2026-09-09 verification note (documentation fix, chainparams NOT touched).** `nPTXSettlementWindow` was verified against source: shipped `ptxtestnet` sets it to **5** (`src/chainparams.cpp:1025`, KDD-030), not 60. The 60 in the table above was the ptxbea value (`chainparams.cpp:1211`) and has been corrected in place. The running chain is unchanged; only this document was wrong.
 
 ---
 
