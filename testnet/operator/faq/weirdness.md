@@ -1,5 +1,5 @@
 <!-- CORPUS-AUTHORED: expected weirdness -->
-<!-- CORPUS-TAG: v0.4.4-testnet -->
+<!-- CORPUS-TAG: v0.5.0-testnet -->
 
 # Things that look broken and are not
 
@@ -83,7 +83,22 @@ with different magic bytes — and gives you a perfectly healthy daemon on the w
 
 ---
 
-## Symptom: peers report `Hemis Core:1.3.1` but I installed v0.4.4-testnet
+## Symptom: lottery payouts (PTXPAYOUT) stopped arriving every few minutes after h15840
+
+**This is the v0.5.0-testnet cadence change, not a fault.** From block **15840** the settlement
+window on ptxtestnet is **1440 blocks** (mainnet's value) instead of 5: settlements move from
+roughly every five minutes to roughly **once every 25 hours** (15840, 17280, 18720, ...), and each
+one pays the whole window's pool in a single PTXPAYOUT, so payouts are far rarer and far larger.
+`ptx_lottery_status` shows the window in force (`settlement_window`), the next boundary
+(`next_settlement_at`) and `cadence_active: true` once past h15840. The lottery-ticket ledger
+also resets at every settlement from h15840 (BUG-078/KDD-128) — standings starting from zero
+after a payout is the designed per-window draw, not lost credit.
+
+**Do you need to act?** Only if you are still on a build older than `v0.5.0-testnet`: such a
+node expects a payout at h15845 that the network rejects and it **forks at h15845**. Upgrade
+before h15840.
+
+## Symptom: peers report `Hemis Core:1.3.1` but I installed v0.5.0-testnet
 
 **Applies to:** all versions.
 
@@ -91,8 +106,8 @@ with different magic bytes — and gives you a perfectly healthy daemon on the w
 install did not take".
 
 **What is actually happening.** `1.3.1` is the inherited Hemis Core lineage version carried in the
-P2P subversion string. It is not the PTX release number. A node built from `v0.4.4-testnet`
-advertises the lineage version to peers while `Hemisd -version` reports `v0.4.4-testnet`.
+P2P subversion string. It is not the PTX release number. A node built from `v0.5.0-testnet`
+advertises the lineage version to peers while `Hemisd -version` reports `v0.5.0-testnet`.
 
 **Do you need to act?** No. To check what a node is really running, use `Hemisd -version` on that
 machine — not the peer list.

@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # without changing the value it reports. ★★ And it is emitted into the page
 # FOOTER rather than a log: anyone can read it in a browser without a shell,
 # which is the same property the register page's offline verification rests on.
-DEPLOY_TAG = "v0.4.4-testnet"
+DEPLOY_TAG = "v0.5.0-testnet"
 try:
     import hashlib as _hl
     with open(os.path.abspath(__file__), "rb") as _f:
@@ -212,7 +212,7 @@ def render_check(c):
 # like every other pin -- a guard rather than a comment someone has to read at
 # the right moment (ODC-118).
 CALLER_GUIDE_URL = ("https://github.com/vileda-hemis/Hemis-PTX-MVP1/blob/"
-                    "v0.4.4-testnet/testnet/operator/CALLER_GUIDE.md")
+                    "v0.5.0-testnet/testnet/operator/CALLER_GUIDE.md")
 
 NAV = (("/v2",              "Verify"),
        ("/v2/health",       "Health"),
@@ -813,7 +813,7 @@ not a validated registration. Nothing you type here leaves your browser.</div>
   anything and cannot get you funded.</p>
   <ul class=note style="margin:6px 0 0 18px">
     <li><b>Not installed yet?</b> Follow
-      <a href="https://github.com/vileda-hemis/Hemis-PTX-MVP1/blob/v0.4.4-testnet/testnet/operator/OPERATOR_ONEPAGER.md">OPERATOR_ONEPAGER.md</a>
+      <a href="https://github.com/vileda-hemis/Hemis-PTX-MVP1/blob/v0.5.0-testnet/testnet/operator/OPERATOR_ONEPAGER.md">OPERATOR_ONEPAGER.md</a>
       first. It is the authority on prerequisites; this page deliberately does not restate them.</li>
     <li><b>No coins yet?</b> Ask the coordinator in <b>#testnet</b> for
       <b>(N&nbsp;&times;&nbsp;100)&nbsp;+&nbsp;500&nbsp;HMS</b> and post your funding address. Wait for
