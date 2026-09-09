@@ -744,6 +744,12 @@ bool InitSanityCheck(void)
             UIError(strprintf(_("PTX formation parameter sanity check failed: %s"), ptx_err));
             return false;
         }
+        // KDD-129: an activation height that is not a boundary under both windows would
+        // change the cadence mid-window. Refuse to start rather than fork.
+        if (!Params().PTXCheckCadenceParams(ptx_err)) {
+            UIError(strprintf(_("PTX cadence parameter sanity check failed: %s"), ptx_err));
+            return false;
+        }
     }
 
     if (!Random_SanityCheck()) {

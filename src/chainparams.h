@@ -108,8 +108,26 @@ public:
     /** PTX service fee amount in satoshis (sent to lottery pool per PTXSESS tx) */
     CAmount PTXServiceFee() const { return nPTXServiceFee; }
 
-    /** PTX lottery settlement window in blocks (KDD-030: 5 for testnet, 1440 for mainnet) */
-    int PTXSettlementWindow() const { return nPTXSettlementWindow; }
+    /** PTX lottery settlement window in blocks IN FORCE AT nHeight.
+     *  KDD-030: 5 on ptxtestnet, 1440 on mainnet (in-class default), 60 on ptxbea.
+     *  ★ KDD-129: HEIGHT-DEPENDENT. Below consensus.nPTXCadenceActivationHeight
+     *  it is nPTXSettlementWindow; at/after it is nPTXSettlementWindowV2. There
+     *  is deliberately NO height-less overload: a bare constant has no activation
+     *  point, so two builds would disagree about which heights are boundaries
+     *  the moment they differ, not at H. Every caller states the height. */
+    int PTXSettlementWindow(int nHeight) const;
+    /** KDD-128/129: is the PTX cadence upgrade active at nHeight? (false when
+     *  the network sets NO_ACTIVATION_HEIGHT). Gates the lottery-ticket reset. */
+    bool PTXCadenceActive(int nHeight) const;
+    /** THE settlement-boundary predicate (P9/P11/assembler/reset all read this
+     *  one implementation): window(nHeight) > 0 && nHeight % window(nHeight) == 0. */
+    bool PTXIsSettlementBoundary(int nHeight) const;
+    /** First settlement boundary strictly after nHeight, under whichever window
+     *  is in force at each candidate height (correct across the activation). */
+    int PTXNextSettlementHeight(int nHeight) const;
+    /** Startup sanity (init.cpp): when an activation height is set it must be a
+     *  boundary under BOTH windows, or the cadence would change mid-window. */
+    bool PTXCheckCadenceParams(std::string& err_out) const;
 
     /** ODC-073 Step 1: max blocks a PTXROLLCOMMIT's nSeedHeight may lag the tip
      *  it is mined on. 0 = DISABLED (the PTX-param idiom), set per-net on the
@@ -144,6 +162,7 @@ protected:
     std::string strPTXLotteryPoolAddress;
     CAmount nPTXServiceFee{0};
     int nPTXSettlementWindow{1440};
+    int nPTXSettlementWindowV2{0};  // KDD-129: window at/after consensus.nPTXCadenceActivationHeight (0 = unset; only read when an activation height is set)
     int nPTXSeedHeightWindow{0};   // ODC-073 Step 1: 0 = disabled (past-anchor bound off)
     CAmount nPTXPayoutMinerFee{0};
 };

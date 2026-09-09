@@ -231,6 +231,7 @@ PTX_TESTS = \
   test/ptx_opt_in_tests.cpp \
   test/ptx_payout_tests.cpp \
   test/ptx_payout_gen_tests.cpp \
+  test/ptx_cadence_tests.cpp \
   test/ptx_explorer_rpc_tests.cpp \
   test/ptx_wallet_tests.cpp \
   test/ptx_pose_rpc_tests.cpp

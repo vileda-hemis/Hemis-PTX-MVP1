@@ -1307,9 +1307,12 @@ bool CheckPTXPayoutBlockRules(const CBlock& block, const CBlockIndex* pindex, CV
                          REJECT_INVALID, "ptxpayout-duplicate");
     }
     // P9: PTXPAYOUT only at settlement boundary heights.
+    // KDD-129: the window is height-dependent — PTXIsSettlementBoundary is the ONE
+    // predicate (also the assembler's, P11's and the reset's), so upgraded nodes agree
+    // at every height and a non-upgraded node diverges only from H onward.
     if (payoutCount > 0 && pindex != nullptr) {
-        const int window = Params().PTXSettlementWindow();
-        if (window > 0 && pindex->nHeight % window != 0) {
+        const int window = Params().PTXSettlementWindow(pindex->nHeight);
+        if (window > 0 && !Params().PTXIsSettlementBoundary(pindex->nHeight)) {
             return state.DoS(100, error("%s: PTXPAYOUT at non-boundary height %d (window=%d)",
                                         __func__, pindex->nHeight, window),
                              REJECT_INVALID, "ptxpayout-wrong-height");
@@ -1505,7 +1508,7 @@ bool CheckAndApplyPTXPayout(const CBlock& block,
         // P11: at settlement boundaries, reject if accumulator exists and eligible winner found.
         // §5.4 rollover (no eligible GMs) is the only legitimate reason to omit PTXPAYOUT.
         if (pindex != nullptr && pindex->pprev != nullptr &&
-            pindex->nHeight % Params().PTXSettlementWindow() == 0) {
+            Params().PTXIsSettlementBoundary(pindex->nHeight)) {
             // BUG-024: P11 judges the EFFECTIVE accumulator, not the raw global —
             // a boundary block that coalesces first still owes a payout.
             if (!effAccumOutpoint.IsNull() &&
@@ -1771,16 +1774,19 @@ bool ProcessSpecialTxsInBlock(const CBlock& block, const CBlockIndex* pindex, co
     // that never connected.
     // BUG-078 / KDD-128: reset the lottery-ticket ledger at settlement boundaries so the
     // draw is the designed per-window lottery, not cumulative-participation-weighted.
-    // GATED OFF (activation TBD, KDD-128): PTX_LotteryWindowResetEnabled() is false in
-    // production, so this is inert until activation. Placement is load-bearing: the winner
-    // for this block was already selected from the closing window's standings (payout check
-    // above), and this runs AFTER the RecordHonestParticipation accrual loop and BEFORE
-    // WritePoseSnapshotForBlock below, so the per-block snapshot captures the post-reset
-    // standings and DisconnectBlock restores the pre-reset ones from the pprev snapshot
-    // (BUG-027 mechanism; the whole record incl. lottery_tickets is serialised — no new undo state).
-    if (!fJustCheck && PTX_LotteryWindowResetEnabled() &&
-        Params().PTXSettlementWindow() > 0 &&
-        pindex->nHeight % Params().PTXSettlementWindow() == 0) {
+    // ★ HEIGHT-GATED (v0.5.0-testnet, KDD-128 activation decided): live from
+    // consensus.nPTXCadenceActivationHeight — the same H at which the window becomes 1440
+    // (KDD-129) — so the first reset fires at the first boundary >= H under the NEW window,
+    // which is H itself (H is a multiple of both windows, PTXCheckCadenceParams). Networks
+    // with NO_ACTIVATION_HEIGHT (main/test/regtest/ptxbea) never reach here. Placement is
+    // load-bearing: the winner for this block was already selected from the closing
+    // window's standings (payout check above), and this runs AFTER the
+    // RecordHonestParticipation accrual loop and BEFORE WritePoseSnapshotForBlock below, so
+    // the per-block snapshot captures the post-reset standings and DisconnectBlock restores
+    // the pre-reset ones from the pprev snapshot (BUG-027 mechanism; the whole record incl.
+    // lottery_tickets is serialised — no new undo state).
+    if (!fJustCheck && Params().PTXCadenceActive(pindex->nHeight) &&
+        Params().PTXIsSettlementBoundary(pindex->nHeight)) {
         g_ptx_pose_tracker.AdvanceLotteryWindow();
     }
 

@@ -405,6 +405,17 @@ struct Params {
 
     // PTX formation schedule (W2.2 SG-1b)
     PTXFormationParams ptxFormation;
+
+    // ★ KDD-128 + KDD-129 (v0.5.0-testnet): the PTX cadence activation height.
+    // From this height (inclusive) TWO things change together, on the same
+    // boundary: (1) the settlement window switches from nPTXSettlementWindow to
+    // nPTXSettlementWindowV2 (both on CChainParams — see chainparams.h), and
+    // (2) the settlement-boundary lottery-ticket reset (BUG-078) is live.
+    // NO_ACTIVATION_HEIGHT (-1) = never: main/test/regtest/ptxbea keep their
+    // single window and the reset stays inert. The height is a consensus value
+    // because a node that disagrees about it disagrees about which blocks must
+    // carry a PTXPAYOUT. Set in ONE place per network (chainparams.cpp).
+    int nPTXCadenceActivationHeight{NetworkUpgrade::NO_ACTIVATION_HEIGHT};
 };
 } // namespace Consensus
 

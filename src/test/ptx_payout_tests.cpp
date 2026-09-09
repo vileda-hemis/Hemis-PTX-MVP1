@@ -283,7 +283,7 @@ BOOST_AUTO_TEST_CASE(PTXPayout_RejectedAtNonBoundaryHeight)
 {
     COutPoint op(uint256S("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 0);
     auto payout = MakeTransactionRef(MakePTXPayout(op, MakeWinnerScript(0xAA), 9000));
-    const int window = Params().PTXSettlementWindow();  // 5 on ptx-bea
+    const int window = Params().PTXNextSettlementHeight(0);  // first boundary = the window (60 on ptx-bea; KDD-129 per-height)
     BOOST_CHECK_EQUAL(RunPayoutBlockRules({payout}, 1), "ptxpayout-wrong-height");
     BOOST_CHECK_EQUAL(RunPayoutBlockRules({payout}, window - 1), "ptxpayout-wrong-height");
     // Boundary height passes P8/P9

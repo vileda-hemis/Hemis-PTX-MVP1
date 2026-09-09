@@ -529,7 +529,7 @@ BOOST_AUTO_TEST_CASE(Bug026_PayoutBuiltPreBlock_RejectedAgainstPostBlockPose)
     std::vector<std::string> members;
     SetupBug026Pose("b0260002", gmList, members);
 
-    const int height = Params().PTXSettlementWindow();
+    const int height = Params().PTXNextSettlementHeight(0);  // first boundary (KDD-129: window is per-height)
     const uint256 prevHash = uint256S(
         "2222222222222222222222222222222222222222222222222222222222222222");
 
@@ -579,7 +579,7 @@ BOOST_AUTO_TEST_CASE(Bug026_PayoutBuiltPreBlock_AcceptsAgainstPreBlockPose)
     std::vector<std::string> members;
     SetupBug026Pose("b0260003", gmList, members);
 
-    const int height = Params().PTXSettlementWindow();
+    const int height = Params().PTXNextSettlementHeight(0);  // first boundary (KDD-129: window is per-height)
     const uint256 prevHash = uint256S(
         "2222222222222222222222222222222222222222222222222222222222222222");
 
@@ -748,7 +748,7 @@ BOOST_AUTO_TEST_CASE(Bug024_CoalescePlusPayout_AcceptsUnderJustCheck)
     COutPoint accumOp(uint256S("a024a024a024a024a024a024a024a024a024a024a024a024a024a024a024a024"), 0);
     CDeterministicGMList gmList;
     CTransactionRef coalesceTx, payoutTx;
-    const int height = Params().PTXSettlementWindow();
+    const int height = Params().PTXNextSettlementHeight(0);  // first boundary (KDD-129: window is per-height)
     SetupBug024State(accumOp, accumValue, "b0240001", gmList, coalesceTx, payoutTx, height);
 
     BOOST_CHECK_EQUAL(RunCoalescePlusPayout({coalesceTx, payoutTx}, gmList, height,
@@ -763,7 +763,7 @@ BOOST_AUTO_TEST_CASE(Bug024_CoalescePlusPayout_ConnectParity)
     COutPoint accumOp(uint256S("a024a024a024a024a024a024a024a024a024a024a024a024a024a024a024a024"), 0);
     CDeterministicGMList gmList;
     CTransactionRef coalesceTx, payoutTx;
-    const int height = Params().PTXSettlementWindow();
+    const int height = Params().PTXNextSettlementHeight(0);  // first boundary (KDD-129: window is per-height)
     SetupBug024State(accumOp, accumValue, "b0240002", gmList, coalesceTx, payoutTx, height);
 
     BOOST_CHECK_EQUAL(RunCoalescePlusPayout({coalesceTx, payoutTx}, gmList, height,
@@ -783,7 +783,7 @@ BOOST_AUTO_TEST_CASE(Bug024_RawGlobalRead_IsTheBug)
     COutPoint accumOp(uint256S("a024a024a024a024a024a024a024a024a024a024a024a024a024a024a024a024"), 0);
     CDeterministicGMList gmList;
     CTransactionRef coalesceTx, payoutTx;
-    const int height = Params().PTXSettlementWindow();
+    const int height = Params().PTXNextSettlementHeight(0);  // first boundary (KDD-129: window is per-height)
     SetupBug024State(accumOp, accumValue, "b0240003", gmList, coalesceTx, payoutTx, height);
 
     LOCK(cs_main);
@@ -816,7 +816,7 @@ BOOST_AUTO_TEST_CASE(Bug024_StalePayoutStillRejects)
     COutPoint accumOp(uint256S("a024a024a024a024a024a024a024a024a024a024a024a024a024a024a024a024"), 0);
     CDeterministicGMList gmList;
     CTransactionRef coalesceTx, payoutTx;
-    const int height = Params().PTXSettlementWindow();
+    const int height = Params().PTXNextSettlementHeight(0);  // first boundary (KDD-129: window is per-height)
     SetupBug024State(accumOp, accumValue, "b0240004", gmList, coalesceTx, payoutTx, height);
 
     // Stale payout: built against the PRE-coalesce accumulator.
@@ -844,7 +844,7 @@ BOOST_AUTO_TEST_CASE(Bug024_CoalesceWithoutPayout_StillOwesPayout)
     COutPoint accumOp(uint256S("a024a024a024a024a024a024a024a024a024a024a024a024a024a024a024a024"), 0);
     CDeterministicGMList gmList;
     CTransactionRef coalesceTx, payoutTx;
-    const int height = Params().PTXSettlementWindow();
+    const int height = Params().PTXNextSettlementHeight(0);  // first boundary (KDD-129: window is per-height)
     SetupBug024State(accumOp, accumValue, "b0240005", gmList, coalesceTx, payoutTx, height);
 
     BOOST_CHECK_EQUAL(RunCoalescePlusPayout({coalesceTx}, gmList, height,
@@ -902,7 +902,7 @@ BOOST_AUTO_TEST_CASE(Bug023x024_ClobberedGlobalRejectsAtCoalesceNotPayout)
 
     CDeterministicGMList gmList;
     CTransactionRef coalesceTx, payoutTx;
-    const int height = Params().PTXSettlementWindow();
+    const int height = Params().PTXNextSettlementHeight(0);  // first boundary (KDD-129: window is per-height)
 
     // Build the healthy producer's block against B.
     SetupBug024State(opB, valueB, "b0230001", gmList, coalesceTx, payoutTx, height);

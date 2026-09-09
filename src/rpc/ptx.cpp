@@ -1481,9 +1481,11 @@ UniValue ptx_lottery_status(const JSONRPCRequest& request)
             "\nResult:\n"
             "{\n"
             "  \"pool_balance_sat\"   : n,        (numeric) accumulator UTXO value in satoshis\n"
-            "  \"settlement_window\"  : n,        (numeric) blocks per settlement window\n"
+            "  \"settlement_window\"  : n,        (numeric) blocks per settlement window IN FORCE AT current_height (KDD-129: height-dependent)\n"
             "  \"current_height\"     : n,        (numeric) current chain tip height\n"
-            "  \"next_settlement_at\" : n,        (numeric) height of next settlement boundary\n"
+            "  \"next_settlement_at\" : n,        (numeric) height of next settlement boundary (computed across the cadence activation)\n"
+            "  \"cadence_activation_height\" : n, (numeric) KDD-128/129 activation height; -1 = never on this network\n"
+            "  \"cadence_active\"     : bool,     (boolean) true once current_height >= cadence_activation_height\n"
             "  \"total_rolls\"        : n,        (numeric) cumulative PTX sessions since genesis\n"
             "  \"eligible_nodes\"     : [         (array) all pose-tracker nodes\n"
             "    {\n"
@@ -1518,9 +1520,13 @@ UniValue ptx_lottery_status(const JSONRPCRequest& request)
         );
     }
 
-    const int window  = Params().PTXSettlementWindow();
     const int height  = chainActive.Height();
-    const int next_at = height + (window - (height % window));
+    // KDD-129: the window in force at the CURRENT height, and the next boundary computed
+    // across the activation (5 -> 1440 at H on ptxtestnet), by the same chainparams
+    // predicate consensus uses.
+    const int window  = Params().PTXSettlementWindow(height);
+    const int next_at = Params().PTXNextSettlementHeight(height);
+    const int cadence_h = Params().GetConsensus().nPTXCadenceActivationHeight;
 
     // Snapshot the full LotteryState under a single cs_main acquisition so all
     // fields are consistent with each other.
@@ -1535,6 +1541,8 @@ UniValue ptx_lottery_status(const JSONRPCRequest& request)
     ret.pushKV("settlement_window",  window);
     ret.pushKV("current_height",     (int64_t)height);
     ret.pushKV("next_settlement_at", (int64_t)next_at);
+    ret.pushKV("cadence_activation_height", (int64_t)cadence_h);
+    ret.pushKV("cadence_active",     Params().PTXCadenceActive(height));
     ret.pushKV("total_rolls",        (int64_t)snapshot.total_rolls);
 
     UniValue nodes_arr(UniValue::VARR);

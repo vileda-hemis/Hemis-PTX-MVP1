@@ -18,12 +18,6 @@
 
 PTXPoSeTracker g_ptx_pose_tracker;
 
-// BUG-078 / KDD-128: see header. Inert (false) in production — no production code
-// sets it; only tests do. Activation will later replace the read with a height/spork gate.
-static std::atomic<bool> g_ptx_lottery_window_reset_enabled{false};
-bool PTX_LotteryWindowResetEnabled() { return g_ptx_lottery_window_reset_enabled.load(std::memory_order_relaxed); }
-void PTX_SetLotteryWindowResetEnabled(bool enabled) { g_ptx_lottery_window_reset_enabled.store(enabled, std::memory_order_relaxed); }
-
 PTXNodeRecord& PTXPoSeTracker::GetOrCreate(const std::string& nid)
 {
     auto it = records_.find(nid);

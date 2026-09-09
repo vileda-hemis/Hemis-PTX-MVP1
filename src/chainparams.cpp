@@ -52,6 +52,61 @@ void CChainParams::UpdateNetworkUpgradeParameters(Consensus::UpgradeIndex idx, i
     consensus.vUpgrades[idx].nActivationHeight = nActivationHeight;
 }
 
+// ★ KDD-128/129 (v0.5.0-testnet): the height-dependent settlement cadence.
+// ONE implementation; every consensus site (P9, P11, the block assembler, the
+// lottery-ticket reset) and the RPC read these, never the raw member.
+bool CChainParams::PTXCadenceActive(int nHeight) const
+{
+    const int H = consensus.nPTXCadenceActivationHeight;
+    return H != Consensus::NetworkUpgrade::NO_ACTIVATION_HEIGHT && nHeight >= H;
+}
+
+int CChainParams::PTXSettlementWindow(int nHeight) const
+{
+    return PTXCadenceActive(nHeight) ? nPTXSettlementWindowV2 : nPTXSettlementWindow;
+}
+
+bool CChainParams::PTXIsSettlementBoundary(int nHeight) const
+{
+    const int window = PTXSettlementWindow(nHeight);
+    return window > 0 && nHeight % window == 0;
+}
+
+int CChainParams::PTXNextSettlementHeight(int nHeight) const
+{
+    // Under the window in force at the next height, take the next multiple; if
+    // the activation height sits inside that span the boundary AT H (a multiple
+    // of both windows by the sanity check below) is the earlier answer.
+    const int next = nHeight + 1;
+    const int window = PTXSettlementWindow(next);
+    if (window <= 0) return next;
+    int candidate = ((next + window - 1) / window) * window;
+    const int H = consensus.nPTXCadenceActivationHeight;
+    if (!PTXCadenceActive(next) && H != Consensus::NetworkUpgrade::NO_ACTIVATION_HEIGHT &&
+        H >= next && H < candidate) {
+        candidate = H;
+    }
+    return candidate;
+}
+
+bool CChainParams::PTXCheckCadenceParams(std::string& err_out) const
+{
+    const int H = consensus.nPTXCadenceActivationHeight;
+    if (H == Consensus::NetworkUpgrade::NO_ACTIVATION_HEIGHT) return true;
+    if (H <= 0 || nPTXSettlementWindowV2 <= 0 || nPTXSettlementWindow <= 0) {
+        err_out = strprintf("PTX cadence activation height %d needs positive windows (v1=%d, v2=%d)",
+                            H, nPTXSettlementWindow, nPTXSettlementWindowV2);
+        return false;
+    }
+    if (H % nPTXSettlementWindow != 0 || H % nPTXSettlementWindowV2 != 0) {
+        err_out = strprintf("PTX cadence activation height %d is not a settlement boundary under both "
+                            "windows (v1=%d, v2=%d) -- the cadence would change mid-window",
+                            H, nPTXSettlementWindow, nPTXSettlementWindowV2);
+        return false;
+    }
+    return true;
+}
+
 /**
  * Build the genesis block. Note that the output of the genesis coinbase cannot
  * be spent as it did not originally exist in the database.
@@ -1023,6 +1078,18 @@ public:
         nPTXServiceFee = 1 * COIN;
         // KDD-030: 5-block window for testnet (~5 min at 1 block/min); mainnet default 1440.
         nPTXSettlementWindow = 5;
+        // ★★ KDD-128 + KDD-129 (v0.5.0-testnet) — H, IN ONE PLACE. At h15840 (inclusive)
+        // the settlement window becomes 1440 (= mainnet, ~25 h at the measured 62 s/blk)
+        // AND the BUG-078 lottery-ticket reset goes live. 15840 = 11 x 1440 = 3168 x 5,
+        // so it is a boundary under both windows; PTXCheckCadenceParams refuses to start
+        // otherwise. Chosen 2026-09-09 so that at the FASTEST cadence ever observed on this
+        // chain (38 s/blk, a post-outage catch-up window) it cannot arrive before
+        // 00:00Z 12 Sep 2026; median cadence puts it ~13 Sep 09:00Z. A node that does not
+        // run this at H diverges at H+5 (its next old-window boundary owes a PTXPAYOUT
+        // that upgraded nodes reject). ptxtestnet ONLY: every other network leaves
+        // nPTXCadenceActivationHeight at NO_ACTIVATION_HEIGHT.
+        consensus.nPTXCadenceActivationHeight = 15840;
+        nPTXSettlementWindowV2 = 1440;
         // ★ These two live on CChainParams, not Consensus::Params, so a
         // Consensus::Params audit misses them -- and their in-class DEFAULTS are
         // consensus-live. ptxtestnet was taking both defaults.

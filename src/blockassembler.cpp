@@ -340,7 +340,9 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
         }
 
         // PTXPAYOUT: generated at settlement boundaries when eligible winner exists.
-        if (nHeight % Params().PTXSettlementWindow() == 0 &&
+        // KDD-129: boundary-ness is height-dependent (window 5 -> 1440 at H on
+        // ptxtestnet); producer and validator read the same predicate.
+        if (Params().PTXIsSettlementBoundary(nHeight) &&
             !currentAccumOutpoint.IsNull()) {
             LotteryState tempLs = GetLotteryState();
             tempLs.accumulator_outpoint = currentAccumOutpoint;

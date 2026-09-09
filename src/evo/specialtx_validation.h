@@ -103,7 +103,8 @@ bool CheckAndApplyPTXCoalesce(const CBlock& block,
                               CAmount* pEffAccumValue) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
 // ODC-022 Step 8: block-level PTXPAYOUT count rule P8 (≤1 per block) and
-// settlement-boundary rule P9 (height % nPTXSettlementWindow == 0).
+// settlement-boundary rule P9 (Params().PTXIsSettlementBoundary(height); the window is
+// height-dependent from KDD-129's activation height).
 // No DGM list access — safe to call with a dummy pindex (unit tests).
 // Called from ProcessSpecialTxsInBlock after CheckAndApplyPTXCoalesce.
 bool CheckPTXPayoutBlockRules(const CBlock& block,
