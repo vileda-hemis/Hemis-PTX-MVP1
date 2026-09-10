@@ -1,6 +1,6 @@
 <!-- CORPUS-SOURCE: testnet/operator/OPERATOR_GUIDE.md -->
 <!-- CORPUS-TAG: v0.5.0-testnet -->
-<!-- CORPUS-SHA256: ec6112d333ef3f114efdcdc730cfa8a38f833e6c85f2acb575b71d04aff577a5 -->
+<!-- CORPUS-SHA256: 4a7e165efc21e06477b5b90e1321ab14b679a897b145ff3287184f7bb9662ef4 -->
 
 > **This document is a verbatim copy of `testnet/operator/OPERATOR_GUIDE.md` at `v0.5.0-testnet`.** It is not
 > edited for the FAQ bot. If it disagrees with anything else in this corpus, it wins.
@@ -802,7 +802,11 @@ git clone -b <TAG> https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 cd Hemis-PTX-MVP1/testnet/operator
 PTX_BIN_SHA256=<SHA256 of Hemis-Linux.tar.gz, as posted with the tag> \
   PTX_ROLE=gamemaster ./install.sh        # or PTX_ROLE=wallet on the wallet machine
-sudo systemctl restart hemis-ptx
+# install.sh ends by enabling AND starting the unit itself -- there is no restart to run.
+# 2. wait ~60 s: the daemon verifies its Sapling parameters before RPC answers. Checks run
+#    before that fail with "couldn't connect to server", which looks like a broken upgrade
+#    and is not one.
+sleep 60
 ```
 
 ★★ **Both added lines are permanent parts of the procedure, not this release's extras.** The backup
@@ -834,7 +838,9 @@ kept the old config, exactly as designed, and the new setting never appeared.
 
 ### The post-upgrade checklist
 
-★ **Do this every time. It is short, and the failure it catches is silent.**
+★ **Do this every time. It is short, and the failure it catches is silent.** Run it after the
+~60 s the daemon needs before RPC answers; a `couldn't connect to server` from `Hemis-cli` in that
+minute is the daemon still starting, not the upgrade failing.
 
 ```bash
 Hemisd -version                                   # 1. is this the tag you installed?

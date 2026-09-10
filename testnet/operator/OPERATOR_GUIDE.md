@@ -795,7 +795,11 @@ git clone -b <TAG> https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 cd Hemis-PTX-MVP1/testnet/operator
 PTX_BIN_SHA256=<SHA256 of Hemis-Linux.tar.gz, as posted with the tag> \
   PTX_ROLE=gamemaster ./install.sh        # or PTX_ROLE=wallet on the wallet machine
-sudo systemctl restart hemis-ptx
+# install.sh ends by enabling AND starting the unit itself -- there is no restart to run.
+# 2. wait ~60 s: the daemon verifies its Sapling parameters before RPC answers. Checks run
+#    before that fail with "couldn't connect to server", which looks like a broken upgrade
+#    and is not one.
+sleep 60
 ```
 
 ★★ **Both added lines are permanent parts of the procedure, not this release's extras.** The backup
@@ -827,7 +831,9 @@ kept the old config, exactly as designed, and the new setting never appeared.
 
 ### The post-upgrade checklist
 
-★ **Do this every time. It is short, and the failure it catches is silent.**
+★ **Do this every time. It is short, and the failure it catches is silent.** Run it after the
+~60 s the daemon needs before RPC answers; a `couldn't connect to server` from `Hemis-cli` in that
+minute is the daemon still starting, not the upgrade failing.
 
 ```bash
 Hemisd -version                                   # 1. is this the tag you installed?
