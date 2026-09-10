@@ -1384,7 +1384,7 @@ def lottery_page():
             '<div class=why>PTX sessions since genesis</div></div>'
             '<div class=stat><div class=k>pool balance</div><div class=v>%s</div>'
             '<div class=why>accumulating toward the next settle</div></div>'
-            '<div class=stat><div class=k>settlement window</div><div class=v>%s blk</div>'
+            '<div class=stat><div class=k>settlement window (in force now)</div><div class=v>%s blk</div>'
             '<div class=why>next settle at height %s</div></div>'
             '<div class=stat><div class=k>chain tip</div><div class=v>%s</div></div>'
             '</div>'
@@ -1393,6 +1393,27 @@ def lottery_page():
             'PTX payment address.</div></div>'
             % (esc(st.get("total_rolls")), esc(pool), esc(st.get("settlement_window")),
                esc(st.get("next_settlement_at")), esc(st.get("current_height"))))
+    # ★ KDD-129 cadence context. Without this, block 15840 looks like a fault: the
+    # window jumps 5 -> 1440 and every ticket count drops to 0 with no explanation.
+    # Keyed on the node's own field so the text follows the chain, not a deploy date.
+    cad_h = st.get("cadence_activation_height")
+    if cad_h is not None and cad_h >= 0:
+        cur_h = st.get("current_height") or 0
+        tickets_now = sum((n.get("tickets") or 0) for n in (st.get("eligible_nodes") or []))
+        if st.get("cadence_active"):
+            head += ('<div class="card note"><b>Settlement cadence changed at block %s (v0.5.0-testnet).</b> '
+                     'The window is now <b>1440 blocks (~25 h)</b>, one payout per settlement, and the ticket '
+                     'ledger <b>resets to 0 at every settlement</b>. Small ticket counts right after a settlement '
+                     'and payouts arriving roughly once a day are the change working, not a fault.</div>'
+                     % esc(cad_h))
+        else:
+            head += ('<div class="card note"><b>Heads-up: at block %s the settlement window changes from %s to '
+                     '1440 blocks (~25 h)</b> (v0.5.0-testnet, KDD-129; %s blocks from now). At that block the '
+                     'ticket ledger resets and the <b>%s tickets shown below will all read 0</b>; from then on '
+                     'tickets reset at every settlement and payouts arrive about once a day instead of every few '
+                     'minutes. That is the designed per-window draw arriving, not a failure. Until then tickets '
+                     'still accumulate (BUG-078).</div>'
+                     % (esc(cad_h), esc(st.get("settlement_window")), esc(max(cad_h - cur_h, 0)), esc(tickets_now)))
 
     # ── recent winners (chain-side ring, cap 20) ──────────────────────────────
     sh = st.get("settlement_history", []) or []
@@ -1707,8 +1728,12 @@ def observe_health():
                            "draws. Compare against observe/rolls counts.settled.",
             "settlement_history": "a 20-entry ring buffer, not an all-time list",
             "eligible_nodes_empty": "empty means every gamemaster holds 0 tickets; tickets are "
-                                    "credited only when a roll's settle CONFIRMS, and reset to 0 "
-                                    "at every settlement. Empty is not zero-forever.",
+                                    "credited only when a roll's settle CONFIRMS. They reset to 0 at "
+                                    "every settlement only from cadence_activation_height (v0.5.0); "
+                                    "before it they accumulate (BUG-078). Empty is not zero-forever.",
+            "cadence": "settlement_window is the window IN FORCE at current_height. On ptxtestnet it is 5 "
+                       "below cadence_activation_height (15840) and 1440 from it; cadence_active says which "
+                       "side of the switch the node is on. next_settlement_at is computed across the switch.",
         },
     }
     return body
@@ -1944,10 +1969,18 @@ def health_page():
                 for n in elig)
             out.append("<table><tr><th>gamemaster</th><th>tickets</th><th>state</th></tr>%s</table>"
                        % rows)
-            out.append('<div class=why>Tickets are <b>per settlement window</b> — they reset to 0 '
-                       'at every settlement. A row showing 0 immediately after a settlement is '
-                       'correct and expected, not a failure. Eleven gamemasters with tickets and '
-                       'no wins is also correct: one winner is drawn per settlement.</div>')
+            if lot.get("cadence_active"):
+                out.append('<div class=why>Tickets are <b>per settlement window</b> — they reset to 0 '
+                           'at every settlement. A row showing 0 immediately after a settlement is '
+                           'correct and expected, not a failure. Eleven gamemasters with tickets and '
+                           'no wins is also correct: one winner is drawn per settlement.</div>')
+            else:
+                out.append('<div class=why>Tickets shown here <b>accumulate across settlements</b> on this '
+                           'chain today (BUG-078: the designed per-window reset is not yet active). From block '
+                           '%s (v0.5.0-testnet) they reset to 0 at every settlement, so a row showing 0 right '
+                           'after a settlement will then be correct. Eleven gamemasters with tickets and no '
+                           'wins is also correct: one winner is drawn per settlement.</div>'
+                           % esc(lot.get("cadence_activation_height", "the activation height")))
         else:
             reasons = []
             if roster:
