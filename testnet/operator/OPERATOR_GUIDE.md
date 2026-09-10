@@ -783,13 +783,24 @@ one sentence: **`install.sh` never overwrites an existing `Hemis.conf`.**
 
 ```bash
 # ON THE HOST BEING UPGRADED
+# 0. back up first. The config always; the wallet too on a WALLET host (a gamemaster has none).
+cp ~/.Hemis/Hemis.conf ~/Hemis.conf.pre-upgrade
+cp ~/.Hemis/ptxtestnet/wallets/wallet.dat ~/wallet.dat.pre-upgrade 2>/dev/null || true
+# 1. stop, fetch the tag, install with the PUBLISHED hash pinned, restart.
 sudo systemctl stop hemis-ptx
 mv ~/Hemis-PTX-MVP1 ~/Hemis-PTX-MVP1.old
 git clone -b v0.5.0-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 cd Hemis-PTX-MVP1/testnet/operator
-PTX_ROLE=gamemaster ./install.sh          # or PTX_ROLE=wallet on the wallet machine
+PTX_BIN_SHA256=986475a6a150b3f05dea6557981b56563b5def0a394f7961fb2a5f63e560efac \
+  PTX_ROLE=gamemaster ./install.sh        # or PTX_ROLE=wallet on the wallet machine
 sudo systemctl restart hemis-ptx
 ```
+
+★★ **`PTX_BIN_SHA256` is the hash the coordinator published with the tag, and it is the step that
+makes this an upgrade rather than a download.** Without it `install.sh` checks the archive against the
+`SHA256SUMS` file served from the **same** GitHub release — that proves the download was not corrupted,
+not that it is the artefact the coordinator meant. With it, a mismatch refuses to install. The value above
+is `v0.5.0-testnet`'s `Hemis-Linux.tar.gz`; every tag has its own, posted alongside the tag.
 
 ### ★★ What `install.sh` will and will not do
 
@@ -819,7 +830,18 @@ diff -u ~/.Hemis/Hemis.conf.template ~/.Hemis/Hemis.conf   # 2. what did this ta
 grep -nE '^(gamemaster|gmoperatorprivatekey|externalip|ptxnodeid)=' ~/.Hemis/Hemis.conf
 Hemis-cli getgamemasterstatus                     # 4. status: Ready
 ./self-check.sh                                   # 5. exit 0, no [????]
+Hemis-cli ptx_lottery_status | grep -E '"(current_height|settlement_window|cadence_activation_height)"'   # 6. activation height
 ```
+
+6. ★★ **`cadence_activation_height` must print `15840`** (allow ~60 s after the restart for RPC to
+   come up). That is the consensus change `v0.5.0-testnet` carries — the settlement window and the
+   lottery-ticket reset both switch at that block — and a node that prints **no such line** is still
+   running v0.4.x binaries whatever `-version` said a moment ago. This one line, with the version line,
+   is what the coordinator will ask you to paste back:
+
+   ```bash
+   Hemisd -version | head -1; Hemis-cli ptx_lottery_status | grep -E '"(current_height|settlement_window|cadence_activation_height)"'
+   ```
 
 1. **`Hemisd -version` must print the tag you just installed.** If it prints the old one, the
    binaries did not replace — check that `install.sh` completed rather than aborting.
