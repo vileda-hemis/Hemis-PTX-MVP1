@@ -1,6 +1,6 @@
 <!-- CORPUS-SOURCE: testnet/operator/OPERATOR_GUIDE.md -->
 <!-- CORPUS-TAG: v0.5.0-testnet -->
-<!-- CORPUS-SHA256: f733ab1cfa6bb7ff6ce1999f71b2ccd61c1c2d09f31ec72e33ed4d4fe9a1373e -->
+<!-- CORPUS-SHA256: ec6112d333ef3f114efdcdc730cfa8a38f833e6c85f2acb575b71d04aff577a5 -->
 
 > **This document is a verbatim copy of `testnet/operator/OPERATOR_GUIDE.md` at `v0.5.0-testnet`.** It is not
 > edited for the FAQ bot. If it disagrees with anything else in this corpus, it wins.
@@ -790,24 +790,29 @@ one sentence: **`install.sh` never overwrites an existing `Hemis.conf`.**
 
 ```bash
 # ON THE HOST BEING UPGRADED
-# 0. back up first. The config always; the wallet too on a WALLET host (a gamemaster has none).
+# 0. BACK UP FIRST -- every upgrade, not just this one. The config always; the wallet
+#    too on a WALLET host (a gamemaster has none; the copy is a harmless no-op there).
 cp ~/.Hemis/Hemis.conf ~/Hemis.conf.pre-upgrade
 cp ~/.Hemis/ptxtestnet/wallets/wallet.dat ~/wallet.dat.pre-upgrade 2>/dev/null || true
 # 1. stop, fetch the tag, install with the PUBLISHED hash pinned, restart.
+#    <TAG> and <SHA256> come from the coordinator's announcement of that tag.
 sudo systemctl stop hemis-ptx
 mv ~/Hemis-PTX-MVP1 ~/Hemis-PTX-MVP1.old
-git clone -b v0.5.0-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
+git clone -b <TAG> https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 cd Hemis-PTX-MVP1/testnet/operator
-PTX_BIN_SHA256=986475a6a150b3f05dea6557981b56563b5def0a394f7961fb2a5f63e560efac \
+PTX_BIN_SHA256=<SHA256 of Hemis-Linux.tar.gz, as posted with the tag> \
   PTX_ROLE=gamemaster ./install.sh        # or PTX_ROLE=wallet on the wallet machine
 sudo systemctl restart hemis-ptx
 ```
 
-★★ **`PTX_BIN_SHA256` is the hash the coordinator published with the tag, and it is the step that
-makes this an upgrade rather than a download.** Without it `install.sh` checks the archive against the
+★★ **Both added lines are permanent parts of the procedure, not this release's extras.** The backup
+costs nothing and is the only thing between you and a lost wallet if the install goes wrong on a wallet
+host. `PTX_BIN_SHA256` is the hash the coordinator published with the tag, and it is the step that makes
+this an upgrade rather than a download: without it `install.sh` checks the archive against the
 `SHA256SUMS` file served from the **same** GitHub release — that proves the download was not corrupted,
-not that it is the artefact the coordinator meant. With it, a mismatch refuses to install. The value above
-is `v0.5.0-testnet`'s `Hemis-Linux.tar.gz`; every tag has its own, posted alongside the tag.
+not that it is the artefact the coordinator meant. With it, a mismatch refuses to install. Every tag has
+its own value, posted alongside the tag; for `v0.5.0-testnet` it is
+`986475a6a150b3f05dea6557981b56563b5def0a394f7961fb2a5f63e560efac`.
 
 ### ★★ What `install.sh` will and will not do
 
@@ -840,11 +845,12 @@ Hemis-cli getgamemasterstatus                     # 4. status: Ready
 Hemis-cli ptx_lottery_status | grep -E '"(current_height|settlement_window|cadence_activation_height)"'   # 6. activation height
 ```
 
-6. ★★ **`cadence_activation_height` must print `15840`** (allow ~60 s after the restart for RPC to
-   come up). That is the consensus change `v0.5.0-testnet` carries — the settlement window and the
-   lottery-ticket reset both switch at that block — and a node that prints **no such line** is still
-   running v0.4.x binaries whatever `-version` said a moment ago. This one line, with the version line,
-   is what the coordinator will ask you to paste back:
+6. ★★ **Confirm whatever the tag's announcement says to confirm** (allow ~60 s after the restart for
+   RPC to come up). For `v0.5.0-testnet` that is `cadence_activation_height` printing `15840` — the
+   consensus change it carries, the settlement window and the lottery-ticket reset both switching at
+   that block — and a node that prints **no such line** is still running v0.4.x binaries whatever
+   `-version` said a moment ago. A later tag may name a different field; the shape of the check is the
+   same. This one line, with the version line, is what the coordinator will ask you to paste back:
 
    ```bash
    Hemisd -version | head -1; Hemis-cli ptx_lottery_status | grep -E '"(current_height|settlement_window|cadence_activation_height)"'
