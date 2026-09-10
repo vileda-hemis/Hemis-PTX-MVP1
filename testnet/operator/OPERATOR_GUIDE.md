@@ -691,6 +691,16 @@ They are easy to leave off because they are in the optional group. Do not.
   participate in the lottery."** Omit it and your GM runs perfectly, signs correctly, and wins
   nothing. **It cannot be changed later — re-registering is the only fix.** Setting it to the same
   value as your payout address is fine, and is what most operators should do.
+
+  ★★ **How often the lottery pays, from `v0.5.0-testnet`:** the settlement window is **height-dependent**.
+  Below block **15840** it is 5 blocks (a payout every ~5 minutes); **from 15840 it is 1440 blocks** —
+  one payout roughly every **25 hours** (15840, 17280, 18720, …), each paying the whole window's pool
+  in a single PTXPAYOUT, so payouts arrive far less often and are far larger. The lottery-ticket
+  ledger **resets to zero at every settlement** from 15840 (it did not before — BUG-078); standings
+  starting from 0 after a payout are the designed per-window draw. `Hemis-cli ptx_lottery_status`
+  shows `settlement_window` (the value in force now), `next_settlement_at`,
+  `cadence_activation_height` (15840) and `cadence_active`. A node still on v0.4.x **forks at 15845**
+  — see `faq/weirdness.md` and upgrade before 15840.
 * **`ptxNodeId`** — a human-readable label for the PTX pose-tracker, e.g. `gm01`. Supply the **label
   only**; the chain appends the collateral-derived `:suffix` itself. Rules: 3–24 chars,
   `[a-zA-Z0-9_-]`, no leading/trailing `-`/`_`, not all-numeric, not a reserved word. The full

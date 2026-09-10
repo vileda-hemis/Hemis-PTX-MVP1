@@ -275,7 +275,7 @@ quorum forms (h60 rather than h30 — one hour on a network with no throughput p
 |---|---|---|
 | `strPTXLotteryPoolAddress` | `""` | accumulation via `LOTTERY_ACCUM_SCRIPT` (ODC-022), same as ptxbea — no pool address exists |
 | `nPTXServiceFee` | **1 × COIN** | 1 HMS per roll, KDD-043; spork-adjustable |
-| `nPTXSettlementWindow` | **5** | 5-block window (~5 min at 60s spacing), KDD-030 — matches shipped `ptxtestnet` source. ★ 2026-09-09 CORRECTED from 60 (that was the ptxbea value); see note below |
+| `nPTXSettlementWindow` | **5 below h15840, 1440 from h15840** (height-dependent) | KDD-030 set 5 (~5 min); ★ **KDD-129 (v0.5.0-testnet)**: `consensus.nPTXCadenceActivationHeight = 15840` switches the window to `nPTXSettlementWindowV2 = 1440` (= mainnet, ~25 h) and activates the BUG-078 lottery-ticket reset at the same height. Read via `Params().PTXSettlementWindow(height)` only — there is no height-less accessor. See the 2026-09-10 note below |
 | `nPTXSeedHeightWindow` | **60** | ODC-073 Step 1. Bracketed by two real quantities: **floor** = commit-to-mine lag (~12 blocks incl. congestion and retry), **ceiling** = `nRetireWindow` 200. 60 sits strictly inside and equals the settlement horizon |
 | `nPTXPayoutMinerFee` | **10000** (0.0001 HMS) | miner incentive inside PTXPAYOUT |
 | `nTimeSlotLength` | ★ **15** or **60 — decide** | ptxbea uses 15 deliberately. This interacts with §4's M floor. **Set together with B** |
@@ -283,6 +283,8 @@ quorum forms (h60 rather than h30 — one hour on a network with no throughput p
 | `consensus.llmqs[LLMQ_TEST]`, `llmqChainLocks` | `llmq_test` | small-network LLMQ shape |
 
 > **★ 2026-09-09 verification note (documentation fix, chainparams NOT touched).** `nPTXSettlementWindow` was verified against source: shipped `ptxtestnet` sets it to **5** (`src/chainparams.cpp:1025`, KDD-030), not 60. The 60 in the table above was the ptxbea value (`chainparams.cpp:1211`) and has been corrected in place. The running chain is unchanged; only this document was wrong.
+
+> **★★ 2026-09-10 cadence note (consensus change shipped in `v0.5.0-testnet`, KDD-128/KDD-129).** The window is no longer one value. On `ptxtestnet`: `nPTXSettlementWindow` = **5** applies to heights **below 15840**; `nPTXSettlementWindowV2` = **1440** applies **at and after 15840**; `consensus.nPTXCadenceActivationHeight` = **15840** (11 × 1440 = 3168 × 5, a boundary under both, enforced at startup by `PTXCheckCadenceParams`). The BUG-078 lottery-ticket reset is gated by the same height. Every other network keeps `NO_ACTIVATION_HEIGHT`: mainnet stays at its 1440 default with no switch, ptxbea at 60. A node still on `v0.4.x` diverges at **15845**, its next old-window boundary. `ptx_lottery_status` reports `settlement_window` as the value in force at the current height plus `cadence_activation_height` / `cadence_active`.
 
 ---
 

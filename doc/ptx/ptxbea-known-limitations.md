@@ -194,6 +194,8 @@ nPTXSettlementWindow{1440}  — correct for mainnet
 explicitly in `CMainParams` as part of the mainnet activation gate. `nPTXSettlementWindow` defaults
 to 1440, which is the intended mainnet value.
 
+> **★ 2026-09-10 (KDD-129, `v0.5.0-testnet`).** The window is now read per height: `PTXSettlementWindow(nHeight)` returns `nPTXSettlementWindow` below `consensus.nPTXCadenceActivationHeight` and `nPTXSettlementWindowV2` from it. Mainnet is unaffected — `CMainParams` leaves the activation height at `NO_ACTIVATION_HEIGHT`, so the 1440 default is the only value it ever uses — but a future mainnet activation gate now has a second consensus field to set deliberately. `ptxtestnet` is the only network with a switch (5 → 1440 at h15840); `ptxbea` stays at 60.
+
 ---
 
 ## 8. Q2 — Destination of the 10% coinstake deduction unverified

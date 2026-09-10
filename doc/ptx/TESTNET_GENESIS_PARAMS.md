@@ -269,6 +269,8 @@ consensus-live** — a network that omits them silently gets fee 0, miner-fee 0,
 | `strPTXLotteryPoolAddress` | **`""`** | as `ptxbea` (`:1028`). The accumulator uses the derived burn script, not a named address; `ptxtestnet`'s populated address is legacy |
 | `nPTXServiceFee` | **`1 * COIN`** | enforced at `specialtx_validation.cpp:945`, `:1074`. Non-zero is what makes a roll cost something; `0` reopens the free-preview class |
 | `nPTXSettlementWindow` | **`60`** | payout every 60 blocks ≈ 1 hour. `ptxbea`'s proven value; enforced at `:1294`, `:1491` and `src/blockassembler.cpp:343` |
+
+> **★ 2026-09-10 note (spec row above retained as written).** What shipped was **5** (KDD-030), and from `v0.5.0-testnet` the value is **height-dependent** (KDD-129): 5 below h15840, **1440** at/after, with `consensus.nPTXCadenceActivationHeight = 15840` also gating the BUG-078 ticket reset. The enforcement sites named in the row now read the one predicate `Params().PTXIsSettlementBoundary(height)`; the height-less accessor no longer exists. Current values live in `PTX_TESTNET_GENESIS_CONFIG.md` §5.
 | `nPTXSeedHeightWindow` | **`60`** | max staleness of a commitment's seed height before `ptxcommit-seedheight-stale` (`:984-987`). **`0` disables the check entirely** — do not inherit the default |
 | `nPTXPayoutMinerFee` | **`10000`** (0.0001 HMS) | enforced at `:1495`, `:1528`, `ptx_payout.cpp:23` |
 
