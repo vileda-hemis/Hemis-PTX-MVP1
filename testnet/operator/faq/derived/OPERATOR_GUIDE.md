@@ -1,6 +1,6 @@
 <!-- CORPUS-SOURCE: testnet/operator/OPERATOR_GUIDE.md -->
 <!-- CORPUS-TAG: v0.5.0-testnet -->
-<!-- CORPUS-SHA256: 4a7e165efc21e06477b5b90e1321ab14b679a897b145ff3287184f7bb9662ef4 -->
+<!-- CORPUS-SHA256: 37fea18630cd6b3f0fd8641fee3d7ef0613d9205098f99679610dfaca5c51fa8 -->
 
 > **This document is a verbatim copy of `testnet/operator/OPERATOR_GUIDE.md` at `v0.5.0-testnet`.** It is not
 > edited for the FAQ bot. If it disagrees with anything else in this corpus, it wins.
@@ -851,12 +851,13 @@ Hemis-cli getgamemasterstatus                     # 4. status: Ready
 Hemis-cli ptx_lottery_status | grep -E '"(current_height|settlement_window|cadence_activation_height)"'   # 6. activation height
 ```
 
-6. ★★ **Confirm whatever the tag's announcement says to confirm** (allow ~60 s after the restart for
-   RPC to come up). For `v0.5.0-testnet` that is `cadence_activation_height` printing `15840` — the
-   consensus change it carries, the settlement window and the lottery-ticket reset both switching at
-   that block — and a node that prints **no such line** is still running v0.4.x binaries whatever
-   `-version` said a moment ago. A later tag may name a different field; the shape of the check is the
-   same. This one line, with the version line, is what the coordinator will ask you to paste back:
+6. ★★ **`cadence_activation_height` must print `15840` — and if the line is simply ABSENT, you are
+   still running v0.4.x binaries, whatever `-version` said a moment ago. The missing line is the tell.**
+   That field is the consensus change `v0.5.0-testnet` carries (the settlement window and the
+   lottery-ticket reset both switch at that block); an older build does not know the field and prints
+   nothing for it. Allow ~60 s after the start for RPC to come up. A later tag may name a different
+   field to confirm; the shape of the check is the same. This one line, with the version line, is
+   what the coordinator will ask you to paste back:
 
    ```bash
    Hemisd -version | head -1; Hemis-cli ptx_lottery_status | grep -E '"(current_height|settlement_window|cadence_activation_height)"'
