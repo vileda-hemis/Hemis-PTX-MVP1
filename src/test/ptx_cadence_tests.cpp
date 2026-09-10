@@ -19,18 +19,23 @@
 #include "chainparams.h"
 #include "chainparamsbase.h"
 #include "consensus/params.h"
+#include "evo/specialtx_validation.h"
+#include "primitives/block.h"
+#include "primitives/transaction.h"
+#include "script/script.h"
+#include "validation.h"
 
 #include <boost/test/unit_test.hpp>
 #include <memory>
 #include <string>
-
-BOOST_FIXTURE_TEST_SUITE(ptx_cadence_tests, BasicTestingSetup)
 
 namespace {
 const int H = 15840;   // the ONE literal in chainparams.cpp; asserted here, not derived
 
 std::unique_ptr<CChainParams> Net(const std::string& chain) { return CreateChainParams(chain); }
 }
+
+BOOST_FIXTURE_TEST_SUITE(ptx_cadence_tests, BasicTestingSetup)
 
 BOOST_AUTO_TEST_CASE(Cadence_H_is_set_on_ptxtestnet_only)
 {
@@ -142,6 +147,108 @@ BOOST_AUTO_TEST_CASE(Sanity_refuses_H_that_is_not_a_boundary_under_both_windows)
     BOOST_CHECK(!CadenceParamsProbe(0, 5, 1440).PTXCheckCadenceParams(err));       // H must be > 0
     // NO_ACTIVATION_HEIGHT is always fine, whatever the windows (the inert posture).
     BOOST_CHECK(CadenceParamsProbe(Consensus::NetworkUpgrade::NO_ACTIVATION_HEIGHT, 5, 0).PTXCheckCadenceParams(err));
+}
+
+// ---------------------------------------------------------------------------
+// THE SAFETY PROPERTY: "upgrade as early as you like" rests on v0.5.0 and v0.4.4
+// computing IDENTICAL results at every height below H. v0.4.4 had no activation
+// concept: the window was the bare constant 5 and every site computed
+//     boundary  =  nHeight % 5 == 0                 (blockassembler.cpp:343, P9, P11)
+//     next_at   =  height + (5 - height % 5)        (rpc/ptx.cpp:1523)
+// Those two formulas are written out LITERALLY below — not derived from the new
+// accessors — and the new accessors are required to agree with them at EVERY
+// height in [0, H). Exhaustive, not sampled: a gated site that leaked below H by
+// even one block fails this. The control leg proves the comparison discriminates:
+// the same formulas must DISAGREE with v0.5.0 somewhere at/after H.
+BOOST_AUTO_TEST_CASE(Agreement_below_H_is_exhaustive_against_the_v044_formulas)
+{
+    auto p = Net(CBaseChainParams::PTXTESTNET);
+    const int W044 = 5;   // v0.4.4's nPTXSettlementWindow on ptxtestnet, KDD-030, as a literal
+    int checked = 0, window_diff = 0, active_below = 0, boundary_diff = 0, next_diff = 0;
+    for (int h = 0; h < H; ++h) {
+        ++checked;
+        if (p->PTXSettlementWindow(h) != W044) ++window_diff;
+        if (p->PTXCadenceActive(h)) ++active_below;
+        const bool old_boundary = (h % W044 == 0);
+        if (p->PTXIsSettlementBoundary(h) != old_boundary) ++boundary_diff;
+        const int old_next = h + (W044 - h % W044);
+        if (p->PTXNextSettlementHeight(h) != old_next) ++next_diff;
+    }
+    BOOST_CHECK_EQUAL(checked, H);
+    BOOST_CHECK_MESSAGE(window_diff == 0,   "window differs from v0.4.4 at " << window_diff << " heights below H");
+    BOOST_CHECK_MESSAGE(active_below == 0,  "cadence reports ACTIVE at " << active_below << " heights below H");
+    BOOST_CHECK_MESSAGE(boundary_diff == 0, "boundary predicate differs from v0.4.4 at " << boundary_diff << " heights below H");
+    BOOST_CHECK_MESSAGE(next_diff == 0,     "next-settlement differs from v0.4.4 at " << next_diff << " heights below H");
+    // Control: at/after H the v0.4.4 formulas must stop agreeing, or the loop above proves nothing.
+    int post_boundary_diff = 0, post_next_diff = 0;
+    for (int h = H; h < H + 2 * 1440; ++h) {
+        if (p->PTXIsSettlementBoundary(h) != (h % W044 == 0)) ++post_boundary_diff;
+        if (p->PTXNextSettlementHeight(h) != h + (W044 - h % W044)) ++post_next_diff;
+    }
+    BOOST_CHECK_MESSAGE(post_boundary_diff > 0, "control: v0.4.4 boundary formula still agrees after H -- comparison is vacuous");
+    BOOST_CHECK_MESSAGE(post_next_diff > 0,     "control: v0.4.4 next-at formula still agrees after H -- comparison is vacuous");
+    BOOST_CHECK(p->PTXIsSettlementBoundary(H + 5) != ((H + 5) % W044 == 0));   // the 15845 divergence, by name
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ---------------------------------------------------------------------------
+// The same property through the CONSENSUS PATH, on ptxtestnet params selected as
+// the global chain (the way the daemon runs): rule P9 (CheckPTXPayoutBlockRules)
+// must answer at every height below H exactly what v0.4.4's `nHeight % 5 == 0`
+// answered — accept a PTXPAYOUT at a multiple of 5, reject it otherwise — and
+// must first disagree with that rule at H+5 = 15845. Standings (the ticket reset)
+// cannot be driven here: that call site lives in ProcessSpecialTxsInBlock, which
+// needs the chain fixture BUG-079 records as hanging in this build; its guard is
+// the same PTXCadenceActive(h) predicate this suite proves false below H.
+// ---------------------------------------------------------------------------
+namespace {
+struct PTXTestNetSetup : public BasicTestingSetup {
+    PTXTestNetSetup() : BasicTestingSetup(CBaseChainParams::PTXTESTNET) {}
+};
+CMutableTransaction MinimalPayout()
+{
+    CMutableTransaction mtx;
+    mtx.nVersion = CTransaction::TxVersion::SAPLING;
+    mtx.nType    = CTransaction::TxType::PTXPAYOUT;
+    mtx.vin.push_back(CTxIn(COutPoint(uint256S("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 0)));
+    CScript winner; winner << OP_DUP << OP_HASH160 << std::vector<unsigned char>(20, 0xAA) << OP_EQUALVERIFY << OP_CHECKSIG;
+    mtx.vout.push_back(CTxOut(9000, winner));
+    mtx.extraPayload.emplace();
+    return mtx;
+}
+std::string P9At(int height)
+{
+    LOCK(cs_main);
+    CBlock block;
+    block.vtx.push_back(MakeTransactionRef(MinimalPayout()));
+    CValidationState state;
+    CBlockIndex idx; idx.nHeight = height;
+    if (CheckPTXPayoutBlockRules(block, &idx, state)) return "";
+    return state.GetRejectReason();
+}
+}
+
+BOOST_FIXTURE_TEST_SUITE(ptx_cadence_consensus_tests, PTXTestNetSetup)
+
+BOOST_AUTO_TEST_CASE(P9_agrees_with_v044_below_H_and_diverges_at_H_plus_5)
+{
+    BOOST_REQUIRE_EQUAL(Params().NetworkIDString(), CBaseChainParams::PTXTESTNET);
+    BOOST_REQUIRE_EQUAL(Params().GetConsensus().nPTXCadenceActivationHeight, H);
+    // The block containing a payout is REJECTED at a boundary by nothing in P8/P9 — so an
+    // empty reason means "P9 accepts this height", exactly v0.4.4's answer at h % 5 == 0.
+    int mismatches = 0;
+    for (int h = 1; h < H; ++h) {
+        const std::string want = (h % 5 == 0) ? "" : "ptxpayout-wrong-height";
+        if (P9At(h) != want) ++mismatches;
+    }
+    BOOST_CHECK_MESSAGE(mismatches == 0, "P9 differs from v0.4.4 at " << mismatches << " heights below H");
+    BOOST_CHECK_EQUAL(P9At(H - 5), "");                         // last old-window boundary: accepted by both
+    BOOST_CHECK_EQUAL(P9At(H),     "");                         // H: accepted by both (a boundary under both windows)
+    BOOST_CHECK_EQUAL(P9At(H + 5), "ptxpayout-wrong-height");   // v0.4.4 would accept: THE divergence
+    BOOST_CHECK_EQUAL(P9At(H + 1440), "");                      // 17280: the new cadence
+    // Control leg: a genuinely wrong height below H is still rejected (P9 is live, not bypassed).
+    BOOST_CHECK_EQUAL(P9At(H - 4), "ptxpayout-wrong-height");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
