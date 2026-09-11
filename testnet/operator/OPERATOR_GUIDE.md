@@ -753,7 +753,7 @@ The other states you may legitimately see:
 
 | status | meaning |
 |---|---|
-| `Waiting for ProTx to appear on-chain` | normal for the first minutes after registering |
+| `Waiting for ProTx to appear on-chain` | normal for the first minutes after registering **only if the daemon was started after the ProTx confirmed**. If the node was already running (or was restarted while behind the chain) when the ProTx landed, it stays here until you restart it: the gamemaster state is evaluated once at startup and never re-checked (BUG-082). `sudo systemctl restart hemis-ptx` once the node is synced. |
 | `Error. Can't detect valid external address…` | `externalip=` missing or wrong — A3 |
 | `Error. Local address … does not match the address from ProTx` | you registered a different address than the node advertises |
 | `Gamemaster was PoSe banned` | see the PoSe section below — this one does **not** clear by itself |
@@ -906,8 +906,10 @@ then your node is not selected, not paid, and not part of any quorum.
 ### Fix the cause first
 
 A revival with the fault still present is banned again in another forty minutes. Work section 5 of
-`self-check.sh`, check `externalip=`, check the firewall **and** the NAT rule, and confirm
-`getgamemasterstatus` can reach `Ready`.
+`self-check.sh`, check `externalip=`, check the firewall **and** the NAT rule. Do not wait for
+`getgamemasterstatus` to read `Ready` at this stage: while the ban stands it reports
+`Gamemaster was PoSe banned` whatever you fix, and it will not change until the revival below has
+confirmed **and** you have restarted the daemon (BUG-082).
 
 ### Then recover — and read this before you copy anything
 
@@ -938,7 +940,21 @@ this gamemaster"* (`src/rpc/rpcevo.cpp:921`), which reads as though you must cha
 `ProUpServTx` once all keys are set and never compares the address; passing `""` keeps your
 existing one (`src/rpc/rpcevo.cpp:955-957`). The help text is more restrictive than the code.
 
-Confirm:
+★★ **Then restart the gamemaster — the chain is fixed, the node is not.** Wait for the `ProUpServTx`
+to confirm (it appears in `protx_list` with `PoSeBanHeight: -1`), then on the gamemaster host:
+
+```bash
+sudo systemctl restart hemis-ptx
+```
+
+Why: the daemon reads its own gamemaster state once, at startup, and never again (BUG-082 —
+`CActiveDeterministicGamemasterManager` is not registered for block updates on the config path). A
+node that started while banned holds `Gamemaster was PoSe banned` after the revival lands, and in
+that state it sends no GMAUTH, joins no ceremony and answers no sign request. The restart runs the
+startup check against the revived record. Restart only once the node is synced; a restart while it
+is behind the chain re-reads the old, still-banned record and you are back where you started.
+
+Confirm, after the restart:
 
 ```bash
 ./self-check.sh          # section 3 must read: status: Ready
