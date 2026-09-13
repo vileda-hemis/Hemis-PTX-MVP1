@@ -149,6 +149,7 @@ UniValue ptx_roll(const JSONRPCRequest& request)
             "  \"round_seed\"     : \"hex\"\n"
             "  \"quorum_sig\"     : \"hex\"\n"
             "  \"quorum_members\" : [\"id\", ...]\n"
+            "  \"signing_threshold\" : n           (t: partials needed of quorum_members)\n"
             "  \"block_height\"   : n\n"
             "  \"tx_id\"          : \"hex\"\n"
             "}\n"
@@ -495,6 +496,13 @@ UniValue ptx_roll(const JSONRPCRequest& request)
     // is always "dkg" (retained for client/response-schema stability).
     ret.pushKV("signing_source", "dkg");
     ret.pushKV("quorum_hash",    dkg_ctx.quorum_hash.ToString());
+    // t for this round: the SAME value the sign round and the recovery above
+    // used (`signing_threshold`, a const taken from the const `dkg_ctx` this
+    // handler loaded once) — not re-derived, so it cannot differ from what
+    // signed. Additive key on the same footing as quorum_hash/signing_source;
+    // a property of the quorum, stable for the round. Lets a caller render
+    // "t-of-n" from the response alone (n = quorum_members.size()).
+    ret.pushKV("signing_threshold", signing_threshold);
     ret.pushKV("block_height",   (int64_t)block_height);
     ret.pushKV("tx_id",          txid);
     return ret;
