@@ -392,8 +392,11 @@ UniValue ptx_roll(const JSONRPCRequest& request)
         }
     }
 
+    // ★ Own code, not RPC_MISC_ERROR: the commitment is already broadcast (fee
+    // forfeit) and a caller must be able to tell this from a pre-fee refusal
+    // without matching message text.
     if ((int)bls_sigs.size() < signing_threshold)
-        throw JSONRPCError(RPC_MISC_ERROR,
+        throw JSONRPCError(RPC_PTX_THRESHOLD_NOT_MET,
             strprintf("PTX: BLS threshold not met: got %d/%d",
                       (int)bls_sigs.size(), signing_threshold));
 

@@ -194,17 +194,21 @@ std::string PTX_BuildRollCommitment(const CPTXRollCommitPayload& payload,
 #endif
 }
 
+// ★ Every throw in this function is RPC_PTX_SETTLE_TX_FAILED (-32052), never -32050:
+// it runs AFTER the quorum signed, so the commitment (and the fee) is already on the
+// network. -32050 stays with PTX_BuildRollCommitment above, where nothing has been
+// broadcast yet. A caller decides fee-forfeit by code, not by message text.
 std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
                             const CProbabilisticTxPayload& payload,
                             const COutPoint& chain_input)
 {
 #ifndef ENABLE_WALLET
     LogPrintf("PTX: wallet not compiled in, cannot fund PTXSESS transaction\n");
-    throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED, "wallet not compiled in");
+    throw JSONRPCError(RPC_PTX_SETTLE_TX_FAILED, "wallet not compiled in");
 #else
     if (vpwallets.empty()) {
         LogPrintf("PTX: no wallet available, cannot fund PTXSESS transaction\n");
-        throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED, "no wallet available");
+        throw JSONRPCError(RPC_PTX_SETTLE_TX_FAILED, "no wallet available");
     }
     CWallet* pwallet = vpwallets[0];
 
@@ -236,7 +240,7 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
         std::string strFailReason;
         if (!pwallet->FundTransaction(mtx, nFee, false, CFeeRate(0), nChangePos, strFailReason, false, true, {})) {
             LogPrintf("PTX: FundTransaction failed: %s\n", strFailReason);
-            throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED, strFailReason);
+            throw JSONRPCError(RPC_PTX_SETTLE_TX_FAILED, strFailReason);
         }
     }
 
@@ -276,7 +280,7 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
             if (coin.IsSpent()) {
                 LogPrintf("PTX: input %d already spent\n", i);
                 unlockFundedInputs();
-                throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED,
+                throw JSONRPCError(RPC_PTX_SETTLE_TX_FAILED,
                                    "input " + std::to_string(i) + " already spent");
             }
             const SigVersion sv = mtx.GetRequiredSigVersion();
@@ -286,7 +290,7 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
                                   coin.out.scriptPubKey, sigdata, sv, false)) {
                 LogPrintf("PTX: signing input %d failed\n", i);
                 unlockFundedInputs();
-                throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED,
+                throw JSONRPCError(RPC_PTX_SETTLE_TX_FAILED,
                                    "signing input " + std::to_string(i) + " failed");
             }
             UpdateTransaction(mtx, i, sigdata);
@@ -302,12 +306,12 @@ std::string PTX_AutoCommit(const PTXCommitRevealRound& round,
     } catch (const UniValue& objError) {
         LogPrintf("PTX: mempool rejected: %s\n", objError["message"].getValStr());
         unlockFundedInputs();
-        throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED,
+        throw JSONRPCError(RPC_PTX_SETTLE_TX_FAILED,
                            "mempool rejected: " + objError["message"].getValStr());
     } catch (const std::exception& e) {
         LogPrintf("PTX: error: %s\n", e.what());
         unlockFundedInputs();
-        throw JSONRPCError(RPC_PTX_SETTLEMENT_FAILED, e.what());
+        throw JSONRPCError(RPC_PTX_SETTLE_TX_FAILED, e.what());
     }
 #endif
 }

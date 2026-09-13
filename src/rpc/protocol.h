@@ -55,6 +55,13 @@ enum RPCErrorCode {
     //! PTX errors
     RPC_PTX_SETTLEMENT_FAILED           = -32050, //! PTX_AutoCommit could not build/fund/sign/submit the PTXSESS tx
     RPC_PTX_COMMITMENT_NOT_SEEN         = -32051, //! BUG-032: no roll commitment seen yet for this round_seed — RETRYABLE (propagation delay), not terminal
+    //! ★ Fee-forfeit status is decided by CODE, never by message text (2026-09-13):
+    //!   -32050 = the COMMITMENT could not be built/funded/submitted — nothing was broadcast, the fee was NOT spent
+    //!            (name kept for compatibility; every throw site is in PTX_BuildRollCommitment)
+    //!   -32052 = the SETTLE (PTXSESS) failed AFTER the quorum signed — the commitment is on the network, the fee IS spent
+    //!   -32053 = the sign round ended below threshold — the commitment is on the network, the fee IS spent
+    RPC_PTX_SETTLE_TX_FAILED            = -32052, //! PTX_AutoCommit could not build/fund/sign/submit the PTXSESS tx (post-signing, fee forfeit)
+    RPC_PTX_THRESHOLD_NOT_MET           = -32053, //! fewer than t partial signatures collected (post-commitment, fee forfeit)
 
     //! Aliases for backward compatibility
     RPC_TRANSACTION_ERROR               = RPC_VERIFY_ERROR,
