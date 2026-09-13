@@ -138,7 +138,10 @@ These stop before the commitment is broadcast:
 
 * Bad arguments — range, count, exclude format, payload budget.
 * `-32050 commitment input N not in the confirmed UTXO set (not yet confirmed, or spent)` —
-  see §6. This is the common one and it is free.
+  see §6. This is the common one and it is free: `-32050` always means the commitment was never
+  broadcast. The two codes that DO cost the fee are `-32053` (the quorum did not reach threshold)
+  and `-32052` (the quorum signed but the settle transaction failed); both come after the
+  commitment is on the network. Decide fee-forfeit by the code, never by the message text.
 
 ### ★ The failure that costs 1 HMS
 
@@ -239,7 +242,7 @@ roll 1 · 4 confirmed coins · succeeded
 roll 2 · 3 confirmed coins · succeeded
 roll 3 · 2 confirmed coins · succeeded
 roll 4 · 1 confirmed coin  · succeeded
-roll 5 · 0 confirmed coins · -32050, free, no commitment broadcast
+roll 5 · 0 confirmed coins · -32050, free, no commitment broadcast (a -32052 or -32053 here would have cost the fee)
 ```
 
 Four fees across five attempts. The boundary is cheap to probe deliberately.

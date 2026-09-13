@@ -140,13 +140,20 @@ are accepted. Prefixes such as `"0x"` or any non-hex character will be rejected 
 
 | Code | Name | Condition |
 |---|---|---|
-| `-32050` | `RPC_PTX_SETTLEMENT_FAILED` | `PTX_AutoCommit` could not build, fund, sign, or submit the PTXSESS transaction. No `tx_id` is returned — the field is absent on error, not populated with a sentinel. Common causes: insufficient caller wallet balance, wallet unavailable. |
-| `-1` | `RPC_MISC_ERROR` | PTX not enabled (`ptxnodeid=` not set), no registered nodes, BLS threshold not met, BLS recovery or verification failed. |
-| `-32602` | `RPC_INVALID_PARAMS` | Parameter validation failure: `count < 1`, `low > high`, `exclude` not an array, `caller_salt` not hex, exclude string not 64 chars. |
+| `-32050` | `RPC_PTX_SETTLEMENT_FAILED` | The **commitment** could not be built, funded, signed or accepted by the mempool (`PTX_BuildRollCommitment`, `ptx_mempool.cpp`). **Nothing was broadcast and the fee was not spent.** The usual cause is no confirmed coin to fund it (`commitment input N not in the confirmed UTXO set`), see the caller guide §6. The name is historical; the code has always been thrown from this pre-fee path as well. |
+| `-32052` | `RPC_PTX_SETTLE_TX_FAILED` | The quorum signed, but the **settle** (PTXSESS) could not be built, funded, signed or accepted (`PTX_AutoCommit`). **The commitment is on the network and the fee is spent.** No `tx_id` is returned. Added 2026-09-13; earlier binaries threw `-32050` for this case too. |
+| `-32053` | `RPC_PTX_THRESHOLD_NOT_MET` | Fewer than `signing_threshold` partial signatures were collected before the round ended (`PTX: BLS threshold not met: got k/t`). **The commitment is on the network and the fee is spent.** Added 2026-09-13; earlier binaries threw `-1` for this case. |
+| `-1` | `RPC_MISC_ERROR` | Everything else the handler refuses: PTX not enabled (`ptxnodeid=` not set), no registered nodes, no active quorum or an active quorum with unusable signing material (all before the fee); BLS recovery or verification failed, `exclude` set covers the entire range, pool too small for a unique draw (all after the fee, since they follow signing). |
+| `-32602` | `RPC_INVALID_PARAMS` | Argument validation, before anything is funded: `count < 1` or `> 1000`, `low > high`, range too large, `exclude` not an array or holding non-integers (tx_id strings are rejected outright), more than 512 exclusions, `game_id` over 128 bytes, the 9000-byte payload budget exceeded, `caller_salt` not hex. |
+| `-3` | `RPC_TYPE_ERROR` | A parameter of the wrong JSON type (rejected by the RPC server before the handler runs). |
+| `-28` | `RPC_IN_WARMUP` | The daemon is still starting. Retry. |
 
-On `RPC_PTX_SETTLEMENT_FAILED`, the BLS signing and result derivation may have succeeded — the
-failure is in the on-chain submission step. The round is internally resolved but has no on-chain
-record. See `ptxbea-known-limitations.md` §6 (ODC-023) for the beacon-advance implication.
+**Fee-forfeit status is decided by the code, never by message text.** `-32602`, `-3`, `-28`,
+`-32050` and the pre-signing `-1` cases cost nothing. `-32052`, `-32053` and the post-signing `-1`
+cases have a commitment on the network and the fee is spent. On `-32052` the BLS signing and
+result derivation succeeded — the failure is in the on-chain submission step; the round is
+internally resolved but has no on-chain record. See `ptxbea-known-limitations.md` §6 (ODC-023)
+for the beacon-advance implication.
 
 ### Example
 
@@ -347,6 +354,10 @@ daemon flag exactly.
 
 | Code | Name | Defined in |
 |---|---|---|
-| `-32050` | `RPC_PTX_SETTLEMENT_FAILED` | `src/rpc/protocol.h:56` |
+| `-32050` | `RPC_PTX_SETTLEMENT_FAILED` | `src/rpc/protocol.h` (PTX block); commitment path, fee not spent |
+| `-32052` | `RPC_PTX_SETTLE_TX_FAILED` | `src/rpc/protocol.h` (PTX block); settle path, fee spent |
+| `-32053` | `RPC_PTX_THRESHOLD_NOT_MET` | `src/rpc/protocol.h` (PTX block); sign round, fee spent |
+| `-3` | `RPC_TYPE_ERROR` | standard JSON-RPC |
+| `-28` | `RPC_IN_WARMUP` | standard JSON-RPC |
 | `-32602` | `RPC_INVALID_PARAMS` | standard JSON-RPC (`src/rpc/protocol.h:36`; `-8` is `RPC_INVALID_PARAMETER`, a different code) |
 | `-1` | `RPC_MISC_ERROR` | standard JSON-RPC |

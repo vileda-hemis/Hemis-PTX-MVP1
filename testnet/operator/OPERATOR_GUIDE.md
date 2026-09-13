@@ -1084,7 +1084,8 @@ use a glibc-based distro.
   coins are momentarily used up — every roll spends one and returns its change UNCONFIRMED, so
   until a block confirms that change the coin is not spendable again. It is not a quorum failure,
   not a peer failure, and nothing was charged: the roll stops **before** the commitment is
-  broadcast, so no service fee is paid.
+  broadcast, so no service fee is paid. (The codes that DO mean the fee was paid are `-32053`,
+  threshold not met, and `-32052`, settle failed after signing — both post-commitment.)
 
   **The sustainable rate is exactly "confirmed non-dust coins you hold" — one coin per roll,
   measured 1:1.** Roll faster than your coins replenish and you will see this; it clears in a block
