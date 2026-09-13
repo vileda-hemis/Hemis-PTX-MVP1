@@ -102,6 +102,9 @@ are accepted. Prefixes such as `"0x"` or any non-hex character will be rejected 
   "quorum_sig"      : "hex (96 bytes = 192 hex chars)",
   "quorum_sig_hash" : "hex (SHA256 of quorum_sig = beacon value)",
   "quorum_members"  : ["node_id_string", ...],
+  "signing_threshold" : int,
+  "signing_source"  : "dkg",
+  "quorum_hash"     : "hex (64 chars)",
   "block_height"    : int,
   "tx_id"           : "hex (64 chars)"
 }
@@ -120,6 +123,15 @@ are accepted. Prefixes such as `"0x"` or any non-hex character will be rejected 
   current implementation returns the compound node_id strings registered via ProRegPL. A third
   party cannot reconstruct the quorum BLS public key from these strings alone — see
   `ptxbea-known-limitations.md` §1 (trust model).
+- `signing_threshold` — `t`: the number of partial signatures needed to recover `quorum_sig`,
+  the same value the sign round used for this call (`rpc/ptx.cpp`, `signing_threshold`). With
+  `n = len(quorum_members)` this renders the round as "t-of-n" from the response alone. Derived
+  per quorum as the majority of the formed size (`ptx_quorum_store.cpp`, `ctx.threshold`); 6 for
+  an 11-member quorum. Added 2026-09-13; absent on earlier binaries.
+- `signing_source` — always `"dkg"` since KDD-069 retired the trusted dealer. Retained for
+  response-schema stability; callers may ignore it.
+- `quorum_hash` — the hash identifying the quorum that signed (the anchor block hash of its
+  formation). Argument to `ptx_quorum_info` for the quorum record. Present since SG-3.
 - `block_height` — chain height at the time of the call; anchors the round against the block.
 - `tx_id` — the on-chain PTXSESS transaction id. Use this to look up the round in a block
   explorer or as the argument to `ptx_getroundstatus`.
@@ -130,7 +142,7 @@ are accepted. Prefixes such as `"0x"` or any non-hex character will be rejected 
 |---|---|---|
 | `-32050` | `RPC_PTX_SETTLEMENT_FAILED` | `PTX_AutoCommit` could not build, fund, sign, or submit the PTXSESS transaction. No `tx_id` is returned — the field is absent on error, not populated with a sentinel. Common causes: insufficient caller wallet balance, wallet unavailable. |
 | `-1` | `RPC_MISC_ERROR` | PTX not enabled (`ptxnodeid=` not set), no registered nodes, BLS threshold not met, BLS recovery or verification failed. |
-| `-8` | `RPC_INVALID_PARAMS` | Parameter validation failure: `count < 1`, `low > high`, `exclude` not an array, `caller_salt` not hex, exclude string not 64 chars. |
+| `-32602` | `RPC_INVALID_PARAMS` | Parameter validation failure: `count < 1`, `low > high`, `exclude` not an array, `caller_salt` not hex, exclude string not 64 chars. |
 
 On `RPC_PTX_SETTLEMENT_FAILED`, the BLS signing and result derivation may have succeeded — the
 failure is in the on-chain submission step. The round is internally resolved but has no on-chain
@@ -336,5 +348,5 @@ daemon flag exactly.
 | Code | Name | Defined in |
 |---|---|---|
 | `-32050` | `RPC_PTX_SETTLEMENT_FAILED` | `src/rpc/protocol.h:56` |
-| `-8` | `RPC_INVALID_PARAMS` | standard JSON-RPC |
+| `-32602` | `RPC_INVALID_PARAMS` | standard JSON-RPC (`src/rpc/protocol.h:36`; `-8` is `RPC_INVALID_PARAMETER`, a different code) |
 | `-1` | `RPC_MISC_ERROR` | standard JSON-RPC |
