@@ -9,22 +9,29 @@ No item here blocks testnet operation unless explicitly stated.
 
 ---
 
-## 1. Trust model — v1 trusted-dealer DKG
+## 1. Trust model — distributed key generation (the v1 trusted-dealer scheme is retired)
 
-**Register reference:** Design doc v3.5 §6.3 staging table; Phase 2/3 dev plan Phase 2 limitations
-list.  
-**Status:** Accepted for testnet. Phase 3 closure required before production claims of full
-independent verification.
+**Register reference:** KDD-069 (trusted dealer retired, commit 8a2200e, 2026-07-24); W1.2 ceremony
+phases (PTXDKG transaction, commit bae1dcf, 2026-06-12); KDD-072 rotation. The design doc v3.5 §6.3
+staging table row "v1 Testnet — Threshold BLS, trusted-dealer DKG" describes the historical scheme
+below.  
+**Status:** current for ptxtestnet as of `v0.5.0-testnet`. Section rescoped 2026-09-13; the
+verifiability statements were verified against the tag on that date.
 
-The v1 testnet uses a **trusted-dealer key generation** scheme, as explicitly labelled in the design
-doc staging table (§6.3: "v1 Testnet — Threshold BLS, trusted-dealer DKG"). This is the documented
-starting point.
+**Current scheme.** Quorums of eleven gamemasters form at boundary heights through a multi-phase
+distributed key generation among the selected members, threshold six. The ceremony ends in a mined
+`PTXDKG` transaction whose payload carries the group public key (`group_pk_bytes`), the hash of the
+verification vector (`vvec_hash`), the member list, and at least `t` member-signed commitments. A
+node builds its quorum record from that transaction (`ptx_quorum_store.cpp`), and consensus verifies
+every settlement's `quorum_sig` against the record's key (`specialtx_validation.cpp`,
+`ptx-bad-quorum-sig`). No party holds a master key; each member holds only its own share.
 
-**What trusted-dealer means operationally.** At the first `ptx_roll` call each daemon session, the
-coordinator node generates a fresh random master polynomial, derives the group public key
-(`group_pk`), and distributes per-GM scalar shares. `group_pk` is stable for the entire daemon
-session. The coordinator is the single party that holds `master_sk`. No per-GM public key shares are
-published; no Feldman VSS commitment vector exists.
+**Historical (ptxbea v1, 2026-06-02 to 2026-07-24).** The first testnet used a trusted-dealer scheme:
+at the first `ptx_roll` of a daemon session the coordinator generated a random master polynomial,
+derived `group_pk`, and distributed per-GM scalar shares. The coordinator alone held `master_sk`, no
+verification vector existed, and `group_pk` was not published on chain. That path was removed with
+KDD-069 and no longer exists in the source; the paragraph that used to stand here described it as
+current.
 
 **Verifiability split.** Every PTXSESS transaction stores the full 96-byte threshold signature
 (`quorum_sig`) and all roll parameters on-chain. From that data, any third party **can** verify:
@@ -32,11 +39,17 @@ published; no Feldman VSS commitment vector exists.
 - `beacon == SHA256(quorum_sig)` — the beacon is the SHA256 of the published signature
 - `results == PTX_MapBeacon(beacon, count, low, high, unique, exclude_integers)` — results follow
   deterministically from the beacon using the documented mapping algorithm
+- `quorum_sig` verifies under the quorum's group public key. That key is published on chain in the
+  `PTXDKG` transaction that created the quorum (`group_pk_bytes` in the payload, keyed by
+  `quorum_hash`), and consensus verifies every settlement against it. A verifier needs the chain and
+  a BLS12-381 library, not a node; the public `/v2` page does not perform this check only because it
+  runs without a node.
 
-What a third party **cannot** currently verify from on-chain data: that `quorum_sig` is a legitimate
-threshold BLS signature produced by at least `t` of the `n` registered GMs, rather than a signature
-produced by the coordinator alone using `master_sk`. This check requires `group_pk`, which is not
-published on-chain.
+What a third party **cannot** verify from chain data: that the group key corresponds to shares
+genuinely held by at least `t` of the `n` members. The `PTXDKG` transaction carries the hash of the
+verification vector and member-signed commitment hashes, not the vectors themselves, so the ceremony
+is attested on chain rather than re-verifiable from it. Nor can a verifier without a node establish
+which quorum the selection rule named for the seed height; that rule is advisory (section 12).
 
 **Single-host fleet.** All 11 GM containers run on a single Proxmox host controlled by the
 operator. The hypergeometric quorum-capture security numbers in the design doc (§6.1) apply to a
