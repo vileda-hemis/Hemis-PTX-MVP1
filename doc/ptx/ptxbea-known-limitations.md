@@ -412,11 +412,15 @@ penalised. The fix is scoped (defer the expensive step to after the cheap checks
 rejection) but not yet implemented. Trigger detail withheld. Register: BUG-052 / KDD-103.
 
 **BUG-062 — chain-halt condition (registration-collateral check asymmetry). OPEN; consequence mitigated.**
-A registration transaction's collateral is validated only at block-connect time, not at mempool
-acceptance, so such a transaction can be accepted into the mempool yet rejected from every block.
-The chain-halt consequence is mitigated (the block assembler now evicts the offending transaction
-rather than discarding the block), but the underlying accept-versus-connect asymmetry remains.
-Trigger detail withheld. Register: BUG-062.
+A registration transaction's collateral is checked both at mempool acceptance and at block connect,
+but against different views of the coin set: at mempool acceptance the transaction's own inputs have
+not yet been applied, so a collateral the transaction itself spends still reads as unspent and the
+check passes; at block connect the inputs are applied before the check runs, the collateral reads as
+spent, and the block is rejected. A transaction shaped that way is therefore accepted into the
+mempool yet rejected from every block. The chain-halt consequence is mitigated (the block assembler
+now evicts the offending transaction rather than discarding the block), but the underlying
+accept-versus-connect asymmetry remains. Trigger detail withheld. Register: BUG-062 (mechanism
+corrected 2026-09-13; the earlier wording "validated only at block-connect time" was inaccurate).
 
 **BUG-051 — verifiability: the written seed formula does not match the implementation. OPEN.**
 This matters to integrators and costs nothing to disclose. On-chain verification is unaffected —
