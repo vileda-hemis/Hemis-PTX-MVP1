@@ -361,6 +361,19 @@ PTXSignRoundResult PTX_SignRound_Run(const uint256& round_seed,
     req.quorum_hash = quorum_hash;
     req.commit_raw  = commit_raw;   // MANDATORY on this arm (§9.2) — never empty
 
+    // sign_round_ms: stamped here, at round creation, and reported in the round
+    // summary line below. Coordinator-local, log-only, NOT a response key: the
+    // additive-stability policy (rpc/ptx.cpp) makes response keys permanent, and
+    // this figure's meaning changes once BUG-086 is fixed.
+    // ★★ THIS IS NOT A LATENCY BASELINE AND MUST NOT BE CITED AS ONE. Until
+    // BUG-086 lands, TrySendSignReq dials unconnected members synchronously
+    // inside the dispatch loop, so this number is signing time PLUS the
+    // coordinator's own stalls on unreachable members — it substantially
+    // measures the DEAD-MEMBER POPULATION of the quorum, not signing cost.
+    // Read it only beside the `unreachable` count in the same line, and only as
+    // a before/after for the BUG-086 fix. steady_clock, like the wall deadline
+    // below: a duration, immune to wall-clock steps.
+    const auto round_started = std::chrono::steady_clock::now();
     auto round = std::make_shared<PTXSignRound>(round_seed, quorum_hash, threshold);
     round->m_member_protx = member_protx;
     for (const auto& id : member_ids) round->m_state[id] = PTXMemberSignState::UNSENT;
@@ -537,10 +550,15 @@ PTXSignRoundResult PTX_SignRound_Run(const uint256& round_seed,
     // ★ The failure SHAPE, logged, because "the roll failed" and "six members
     // refused finally" are different operator problems and only one of them is
     // worth retrying the whole round for.
+    // sign_round_ms = creation -> this outcome (threshold met, unwinnable, or
+    // the wall). Interpretable ONLY together with `unreachable` (see the stamp).
+    const int64_t sign_round_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - round_started).count();
     LogPrintf("PTX sign round: %s — %zu partial(s), %zu terminal, %zu retryable, "
-              "%zu unreachable, %zu TOO-OLD, %zu protx-mismatch (threshold %zu)\n",
+              "%zu unreachable, %zu TOO-OLD, %zu protx-mismatch (threshold %zu) "
+              "sign_round_ms=%lld\n",
               PTXSignRoundOutcomeString(out.outcome), out.partials.size(),
               out.terminal, out.retryable, out.unreachable, out.too_old,
-              out.protx_mismatch, threshold);
+              out.protx_mismatch, threshold, (long long)sign_round_ms);
     return out;
 }
