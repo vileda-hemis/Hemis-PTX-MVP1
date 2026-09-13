@@ -53,7 +53,10 @@ enum RPCErrorCode {
     RPC_METHOD_DEPRECATED               = -32, //! RPC method is deprecated
 
     //! PTX errors
-    RPC_PTX_SETTLEMENT_FAILED           = -32050, //! PTX_AutoCommit could not build/fund/sign/submit the PTXSESS tx
+    //! ★ MISNOMER, kept on purpose: since 2026-09-13 this code covers the PRE-FEE PTX_BuildRollCommitment
+    //! path ONLY (the settle path is RPC_PTX_SETTLE_TX_FAILED below). Renaming it would churn the unit pin
+    //! (src/test/ptx_sess_tests.cpp) and every guide for no behavioural gain, so the name stays.
+    RPC_PTX_SETTLEMENT_FAILED           = -32050, //! the roll COMMITMENT could not be built/funded/signed/accepted — nothing broadcast, fee NOT spent
     RPC_PTX_COMMITMENT_NOT_SEEN         = -32051, //! BUG-032: no roll commitment seen yet for this round_seed — RETRYABLE (propagation delay), not terminal
     //! ★ Fee-forfeit status is decided by CODE, never by message text (2026-09-13):
     //!   -32050 = the COMMITMENT could not be built/funded/submitted — nothing was broadcast, the fee was NOT spent

@@ -37,6 +37,13 @@ extern void RelayTx(const uint256& hashTx);
 static const CAmount PTX_CHAIN_OUTPUT_VALUE = 100000;   // 0.001 HMS
 #endif
 
+// ★★ CONTRACT (user-facing, 2026-09-13): EVERY throw in this function happens BEFORE
+// anything is broadcast, so RPC_PTX_SETTLEMENT_FAILED (-32050) from here ALWAYS means
+// "the fee was not spent". The caller guide, the operator guide and the API reference
+// tell integrators exactly that, and the Kingmaker bot decides its "fee not spent"
+// line by this code alone. If a throw is ever added AFTER TryATMP/RelayTx below (the
+// commitment is on the network from that point), it must NOT use -32050 — use
+// RPC_PTX_SETTLE_TX_FAILED or a new code — or the message becomes a lie.
 std::string PTX_BuildRollCommitment(const CPTXRollCommitPayload& payload,
                                     COutPoint& out_chain,
                                     std::string* out_raw_hex)
