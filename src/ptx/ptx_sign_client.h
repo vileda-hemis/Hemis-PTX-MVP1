@@ -196,6 +196,16 @@ bool PTX_SignRound_StillWinnable(size_t collected, size_t inflight,
                                  size_t retryable, size_t unsent,
                                  size_t threshold);
 
+// ★★ BUG-086, THE DIAL GATE. The same arithmetic applied to a SMALLER set: the
+// members already asked (sent to, answering, or re-sendable) -- UNSENT is left
+// out because UNSENT is exactly what a dial would change. Two predicates, not
+// one overloaded one: StillWinnable answers "can this round succeed at all",
+// this answers "can it succeed WITHOUT opening a connection". While it holds,
+// the wait loop dials nobody; a partial that lands or a member that retires
+// moves the answer on its own -- no timer.
+bool PTX_SignRound_ReachableWithoutDial(size_t collected, size_t inflight,
+                                        size_t retryable, size_t threshold);
+
 // ---------------------------------------------------------------------------
 // The round
 // ---------------------------------------------------------------------------

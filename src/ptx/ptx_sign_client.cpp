@@ -83,6 +83,16 @@ bool PTX_SignRound_StillWinnable(size_t collected, size_t inflight,
     return collected + inflight + retryable + unsent >= threshold;
 }
 
+bool PTX_SignRound_ReachableWithoutDial(size_t collected, size_t inflight,
+                                        size_t retryable, size_t threshold)
+{
+    // Outstanding replies are the INFLIGHT count itself: states are exclusive
+    // per member, so a reply moves a member OUT of INFLIGHT (to COLLECTED,
+    // RETRYABLE or TERMINAL) and the budget moves a silent one to UNREACHABLE.
+    // RETRYABLE is connected and re-sent every tick, so it can still deliver.
+    return PTX_SignRound_StillWinnable(collected, inflight, retryable, /*unsent=*/0, threshold);
+}
+
 // ---------------------------------------------------------------------------
 // The round
 // ---------------------------------------------------------------------------
@@ -274,8 +284,13 @@ bool PTX_ResolveMemberP2PAddr(const uint256& proTxHash, CService& addr_out)
 // time rather than consulting a table some other path was supposed to have
 // filled in. Returns the NodeId sent to, or -1 if not connected yet (in which
 // case a connection is opened and the next tick tries again).
+// ★ `dial`: false = SEND ONLY, never open a connection (passes 1 and 2 are the
+// connected check, and they touch no socket). true = fall through to the dial,
+// which BLOCKS up to nConnectTimeout (5 s) inside OpenNetworkConnection. The
+// caller decides, and the rule is: dial=true is NEVER called with round->m_cs
+// held -- that is BUG-086, and it is asserted at the one dial site below.
 int64_t TrySendSignReq(CConnman& connman, const CService& addr,
-                       const PTXSignReq& req, bool& too_old_out)
+                       const PTXSignReq& req, bool& too_old_out, bool dial)
 {
     int64_t used = -1;
     too_old_out = false;
@@ -333,7 +348,7 @@ int64_t TrySendSignReq(CConnman& connman, const CService& addr,
         });
     }
 
-    if (used < 0 && !too_old_out) {
+    if (dial && used < 0 && !too_old_out) {
         // Not connected. Open one; the next tick re-resolves and finds it.
         // ★ Nothing is recorded here that a later read depends on -- that
         // asymmetry was the defect.
@@ -420,11 +435,27 @@ PTXSignRoundResult PTX_SignRound_Run(const uint256& round_seed,
 
         {
             LOCK(round->m_cs);
-            round->m_member_addr[node_id]      = addr;
-            round->m_first_attempt_ms[node_id] = GetTimeMillis();
+            round->m_member_addr[node_id] = addr;
+            // ★ m_first_attempt_ms is stamped at the first ATTEMPT -- the first
+            // send (below, and in the wait loop's send pass) or the first dial
+            // (the dial loop) -- NOT here. A member the gate has not let us dial
+            // yet has no running connect window; stamping it here would retire
+            // it as UNREACHABLE at 10 s before the 15 s member budget ever
+            // opened the gate, so the never-answers case could never fall back
+            // to dialling. Absent stamp => elapsed 0 => no expiry (see the
+            // send pass).
         }
+        // ★★ BUG-086, PASS ONE: SEND ONLY. Every member we already hold a
+        // connection to gets its request NOW -- a PushMessage, no socket work.
+        // Members we are not connected to stay UNSENT (unstamped: their connect
+        // window starts at their first dial) and are dialled by the wait loop
+        // below, one at a time, outside the lock, and only while the members
+        // already asked cannot reach threshold on their own (the dial gate). Before this split the sorted
+        // walk dialled each unconnected member inline, blocking 5 s per dead
+        // one BEFORE reaching the reachable ones -- and the dead Nodes24
+        // members sort first (rpc/ptx.cpp, std::sort on member_ids).
         bool too_old = false;
-        const int64_t peer = TrySendSignReq(connman, addr, req, too_old);
+        const int64_t peer = TrySendSignReq(connman, addr, req, too_old, /*dial=*/false);
         LOCK(round->m_cs);
         if (too_old) {
             round->m_state[node_id] = PTXMemberSignState::TOO_OLD;
@@ -432,13 +463,25 @@ PTXSignRoundResult PTX_SignRound_Run(const uint256& round_seed,
                       "OPERATOR ACTION: upgrade that gamemaster's binary (this is NOT a "
                       "network-reachability problem)\n", node_id, PTX_SIGNREQ_MIN_PROTO_VERSION);
         } else if (peer < 0) {
-            // Connection opening. UNSENT is a WAITING state now, not a dead end:
-            // the tick re-resolves and it has a bounded exit (below).
+            // Not connected. UNSENT is a WAITING state: the wait loop below
+            // sends on the tick once a connection exists, and dials only if the
+            // round is still short of threshold.
             round->m_state[node_id] = PTXMemberSignState::UNSENT;
         } else {
-            round->m_peer_to_member[peer] = node_id;
-            round->m_state[node_id]       = PTXMemberSignState::INFLIGHT;
+            round->m_peer_to_member[peer]      = node_id;
+            round->m_state[node_id]            = PTXMemberSignState::INFLIGHT;
+            round->m_first_attempt_ms[node_id] = GetTimeMillis();   // budget runs from the send
         }
+    }
+    {
+        LOCK(round->m_cs);
+        LogPrintf("PTX sign round: first pass -- %zu sent (already connected), %zu unsent "
+                  "(not connected, dialled only if needed), %zu unreachable, %zu too-old, "
+                  "threshold %zu\n",
+                  round->CountIn(PTXMemberSignState::INFLIGHT),
+                  round->CountIn(PTXMemberSignState::UNSENT),
+                  round->CountIn(PTXMemberSignState::UNREACHABLE),
+                  round->CountIn(PTXMemberSignState::TOO_OLD), threshold);
     }
 
     // ── Wait ────────────────────────────────────────────────────────────────
@@ -450,6 +493,10 @@ PTXSignRoundResult PTX_SignRound_Run(const uint256& round_seed,
     PTXSignRoundOutcome outcome = PTXSignRoundOutcome::DEADLINE;
 
     while (true) {
+        // Members that still need a CONNECTION, collected under the lock and
+        // dialled after it is released -- see the dial loop at the bottom.
+        std::vector<std::pair<std::string, CService>> to_dial;
+      {
         LOCK(round->m_cs);
         const size_t collected  = round->CountIn(PTXMemberSignState::COLLECTED);
         const size_t inflight   = round->CountIn(PTXMemberSignState::INFLIGHT);
@@ -493,29 +540,11 @@ PTXSignRoundResult PTX_SignRound_Run(const uint256& round_seed,
             const int64_t first = round->m_first_attempt_ms.count(kv.first)
                                       ? round->m_first_attempt_ms[kv.first] : GetTimeMillis();
             const int64_t elapsed = GetTimeMillis() - first;
-            // Tighter, connect-specific bound: a member we could not even reach
-            // retires sooner than one that is answering but unhelpfully.
-            if (kv.second == PTXMemberSignState::UNSENT &&
-                PTX_SignReq_ConnectWindowExpired(elapsed)) {
-                kv.second = PTXMemberSignState::UNREACHABLE;
-                LogPrintf("PTX signreq: %s never connected within %dms -- UNREACHABLE\n",
-                          kv.first, PTX_SIGNREQ_CONNECT_MS);
-                continue;
-            }
-            // ★★ THE GENERAL BUDGET -- covers INFLIGHT (accepted the message,
-            // went silent: an old binary ignoring an unknown command) and
-            // RETRYABLE (answering "commitment not seen" forever). Both used to
-            // hold the round to the wall AND keep winnability from ever firing.
-            const PTXMemberSignState retired = PTX_SignReq_RetireExpired(kv.second, elapsed);
-            if (retired != kv.second) {
-                LogPrintf("PTX signreq: %s no partial within %dms (was %s) -- UNREACHABLE\n",
-                          kv.first, PTX_SIGNREQ_MEMBER_MS,
-                          kv.second == PTXMemberSignState::INFLIGHT ? "INFLIGHT" : "RETRYABLE");
-                kv.second = retired;
-                continue;
-            }
+            // ★ SEND FIRST, EXPIRE SECOND. A connection that landed at 9.5 s is
+            // used here; checking the window first retired it unused.
+            // dial=false: this runs under m_cs and must not touch a socket.
             bool too_old = false;
-            const int64_t peer = TrySendSignReq(connman, ait->second, req, too_old);
+            const int64_t peer = TrySendSignReq(connman, ait->second, req, too_old, /*dial=*/false);
             if (too_old) {
                 kv.second = PTXMemberSignState::TOO_OLD;
                 LogPrintf("PTX signreq: %s speaks protocol < %d -- cannot serve P2P signing; "
@@ -526,7 +555,74 @@ PTXSignRoundResult PTX_SignRound_Run(const uint256& round_seed,
             if (peer >= 0) {
                 round->m_peer_to_member[peer] = kv.first;
                 kv.second = PTXMemberSignState::INFLIGHT;
+                if (!round->m_first_attempt_ms.count(kv.first))
+                    round->m_first_attempt_ms[kv.first] = GetTimeMillis();
+                continue;
             }
+            if (kv.second == PTXMemberSignState::UNSENT &&
+                PTX_SignReq_ConnectWindowExpired(elapsed)) {
+                kv.second = PTXMemberSignState::UNREACHABLE;
+                LogPrintf("PTX signreq: %s never connected within %dms -- UNREACHABLE\n",
+                          kv.first, PTX_SIGNREQ_CONNECT_MS);
+                continue;
+            }
+            const PTXMemberSignState retired = PTX_SignReq_RetireExpired(kv.second, elapsed);
+            if (retired != kv.second) {
+                LogPrintf("PTX signreq: %s no partial within %dms (was %s) -- UNREACHABLE\n",
+                          kv.first, PTX_SIGNREQ_MEMBER_MS,
+                          kv.second == PTXMemberSignState::INFLIGHT ? "INFLIGHT" : "RETRYABLE");
+                kv.second = retired;
+                continue;
+            }
+            // Not connected and still inside its window: needs a dial. Not here.
+            to_dial.emplace_back(kv.first, ait->second);
+        }
+        // ★★ THE DIAL GATE, evaluated AFTER the sends (a send just above may
+        // have moved a member UNSENT -> INFLIGHT and raised the sum). While the
+        // members already asked can still reach threshold, dial nobody: the
+        // response handler wakes this loop on EVERY partial, so the first wake
+        // fires with one collected and the rest in flight, and an eager dial
+        // here burnt up to 5 s on a dead member when the other partials were
+        // milliseconds away. No timer: a partial that lands or a member the
+        // budget retires changes the answer by itself.
+        if (PTX_SignRound_ReachableWithoutDial(round->CountIn(PTXMemberSignState::COLLECTED),
+                                               round->CountIn(PTXMemberSignState::INFLIGHT),
+                                               round->CountIn(PTXMemberSignState::RETRYABLE),
+                                               threshold)) {
+            to_dial.clear();
+        }
+      } // ── m_cs released ──
+        // ★★ BUG-086, THE DIAL LOOP. The only place a connection is opened, and
+        // m_cs is NOT held: a partial arriving on msghand while a dead member's
+        // dial burns its 5 s is recorded (OnResponse takes m_cs) and the
+        // threshold check before the next dial sees it. Serial, one member per
+        // step, cheapest first is not attempted -- the sort order is the
+        // caller's -- but the loop stops the moment the round has enough.
+        for (const auto& d : to_dial) {
+            size_t g_collected = 0, g_inflight = 0, g_retryable = 0;
+            {
+                LOCK(round->m_cs);
+                g_collected = round->CountIn(PTXMemberSignState::COLLECTED);
+                g_inflight  = round->CountIn(PTXMemberSignState::INFLIGHT);
+                g_retryable = round->CountIn(PTXMemberSignState::RETRYABLE);
+                // The gate again, per dial: a partial recorded during the
+                // previous dial can close it.
+                if (PTX_SignRound_ReachableWithoutDial(g_collected, g_inflight, g_retryable, threshold)) break;
+                if (std::chrono::steady_clock::now() >= deadline) break;
+                if (round->m_state[d.first] != PTXMemberSignState::UNSENT &&
+                    round->m_state[d.first] != PTXMemberSignState::RETRYABLE) continue;
+                // First attempt for this member: its connect window starts NOW.
+                if (!round->m_first_attempt_ms.count(d.first))
+                    round->m_first_attempt_ms[d.first] = GetTimeMillis();
+            }
+            AssertLockNotHeld(round->m_cs);
+            LogPrintf("PTX signreq: dialling %s (%s) -- members already asked cannot reach "
+                      "threshold (%zu collected, %zu in flight, %zu retryable, threshold %zu)\n",
+                      d.first, d.second.ToString(), g_collected, g_inflight, g_retryable, threshold);
+            bool too_old = false;
+            (void)TrySendSignReq(connman, d.second, req, too_old, /*dial=*/true);
+            // Nothing recorded here: the next tick's send-only pass re-resolves
+            // address -> peer and finds the connection if it landed (BUG-068).
         }
     }
 

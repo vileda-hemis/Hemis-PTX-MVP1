@@ -6621,6 +6621,37 @@ BOOST_AUTO_TEST_CASE(Kdd085_Client_WinnabilityDistinguishesFailureShapes)
     BOOST_CHECK(!PTX_SignRound_StillWinnable(0, 0, 0, 0, t));
 }
 
+// BUG-086: the dial gate is winnability applied to the members ALREADY ASKED.
+// It must disagree with StillWinnable exactly when UNSENT members are what
+// keeps the round winnable -- that is the case where a dial is needed.
+BOOST_AUTO_TEST_CASE(Bug086_DialGate_FirstPassSetDecides)
+{
+    const size_t t = 6;   // majority(11)
+    // Sent to nine, one collected, eight outstanding: the first-pass set can
+    // still reach six on its own. Nothing to gain from dialling -- wait.
+    BOOST_CHECK_MESSAGE(PTX_SignRound_ReachableWithoutDial(1, 8, 0, t),
+        "BUG-086: gate opened while the members already asked could still reach "
+        "threshold -- an eager dial burns 5 s on a dead member for nothing");
+    // Sent to four, one collected, three outstanding: even if all answer the
+    // round is short. Dial now.
+    BOOST_CHECK_MESSAGE(!PTX_SignRound_ReachableWithoutDial(1, 3, 0, t),
+        "BUG-086: gate stayed shut when the first-pass set could not reach threshold");
+    // RETRYABLE is connected and re-sent every tick: it counts.
+    BOOST_CHECK(PTX_SignRound_ReachableWithoutDial(3, 1, 2, t));
+    BOOST_CHECK(!PTX_SignRound_ReachableWithoutDial(3, 1, 1, t));
+    // A silent member the budget retires leaves the sum and opens the gate:
+    // 4 collected + 2 in flight holds it shut; the two retire -> open.
+    BOOST_CHECK(PTX_SignRound_ReachableWithoutDial(4, 2, 0, t));
+    BOOST_CHECK(!PTX_SignRound_ReachableWithoutDial(4, 0, 0, t));
+    // ★ The two predicates part company exactly on UNSENT: 3 collected and 8
+    // UNSENT is still WINNABLE (a dial could get there) but NOT reachable
+    // without one. Both answers are right; they are different questions.
+    BOOST_CHECK(PTX_SignRound_StillWinnable(3, 0, 0, 8, t));
+    BOOST_CHECK(!PTX_SignRound_ReachableWithoutDial(3, 0, 0, t));
+    // Threshold in hand: trivially reachable, consistent with the caller's own check.
+    BOOST_CHECK(PTX_SignRound_ReachableWithoutDial(t, 0, 0, t));
+}
+
 // Every outcome must have a distinct voice: "the roll failed" and "six members
 // refused finally" are different operator problems, and only one is worth
 // retrying the whole round for.
