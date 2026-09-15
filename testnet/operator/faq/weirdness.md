@@ -1,5 +1,5 @@
 <!-- CORPUS-AUTHORED: expected weirdness -->
-<!-- CORPUS-TAG: v0.5.0-testnet -->
+<!-- CORPUS-TAG: v0.5.1-testnet -->
 
 # Things that look broken and are not
 

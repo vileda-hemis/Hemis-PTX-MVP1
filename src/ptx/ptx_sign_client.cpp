@@ -523,8 +523,12 @@ PTXSignRoundResult PTX_SignRound_Run(const uint256& round_seed,
         // initial pass used. TERMINAL and UNREACHABLE are never revisited --
         // that is what "absorbing" means.
         for (auto& kv : round->m_state) {
+            // ★ BUG-087: INFLIGHT is admitted so the member budget below can retire
+            // a member that accepted the request and went silent; it is NEVER
+            // re-sent to (the send is skipped for it) and never dialled.
             if (kv.second != PTXMemberSignState::RETRYABLE &&
-                kv.second != PTXMemberSignState::UNSENT) continue;
+                kv.second != PTXMemberSignState::UNSENT &&
+                kv.second != PTXMemberSignState::INFLIGHT) continue;
             auto ait = round->m_member_addr.find(kv.first);
             if (ait == round->m_member_addr.end()) {
                 // No address at all -- cannot ever be sent to. Absorbing.
@@ -544,7 +548,8 @@ PTXSignRoundResult PTX_SignRound_Run(const uint256& round_seed,
             // used here; checking the window first retired it unused.
             // dial=false: this runs under m_cs and must not touch a socket.
             bool too_old = false;
-            const int64_t peer = TrySendSignReq(connman, ait->second, req, too_old, /*dial=*/false);
+            const int64_t peer = (kv.second == PTXMemberSignState::INFLIGHT) ? -1   // BUG-087: already sent, budget only
+                               : TrySendSignReq(connman, ait->second, req, too_old, /*dial=*/false);
             if (too_old) {
                 kv.second = PTXMemberSignState::TOO_OLD;
                 LogPrintf("PTX signreq: %s speaks protocol < %d -- cannot serve P2P signing; "
@@ -574,6 +579,7 @@ PTXSignRoundResult PTX_SignRound_Run(const uint256& round_seed,
                 kv.second = retired;
                 continue;
             }
+            if (kv.second == PTXMemberSignState::INFLIGHT) continue;   // BUG-087: inside its budget, waiting
             // Not connected and still inside its window: needs a dial. Not here.
             to_dial.emplace_back(kv.first, ait->second);
         }

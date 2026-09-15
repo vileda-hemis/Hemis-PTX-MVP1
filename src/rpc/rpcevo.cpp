@@ -282,6 +282,12 @@ static UniValue DgmToJson(const CDeterministicGMCPtr dgm)
     // report only the reward axis and call FALSE_NODE enabled, which is a lie.
     // Ordered by severity so the values are mutually exclusive: banned, else
     // can't-sign, else fully working.
+    // ★ v0.5.1: `lottery_tickets > 0` is NOT part of the gate. Tickets are a
+    // per-window accrual that the KDD-128 reset zeroes at every settlement
+    // boundary, so with it every gamemaster read NO_PTX after each boundary
+    // until it next signed -- a statement about the window, not the node.
+    // (This single field is itself a partial implementation of KDD-126, whose
+    // registered design is two fields, `status` + `ptx_status` with a reason.)
     std::string status;
     if (dgm->IsPoSeBanned()) {
         status = "POSE_BANNED";
@@ -290,7 +296,7 @@ static UniValue DgmToJson(const CDeterministicGMCPtr dgm)
         bool ptx_ok = !st.node_id.empty() && !st.scriptPTXPayment.empty();
         if (ptx_ok) {
             PTXNodeRecord rec = g_ptx_pose_tracker.GetRecord(st.node_id);
-            ptx_ok = rec.quorum_eligible && rec.lottery_tickets > 0;
+            ptx_ok = rec.quorum_eligible;
         }
         status = ptx_ok ? "ENABLED" : "NO_PTX";
     }

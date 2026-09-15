@@ -1,8 +1,8 @@
 <!-- CORPUS-SOURCE: testnet/operator/OPERATOR_GUIDE.md -->
-<!-- CORPUS-TAG: v0.5.0-testnet -->
-<!-- CORPUS-SHA256: 37fea18630cd6b3f0fd8641fee3d7ef0613d9205098f99679610dfaca5c51fa8 -->
+<!-- CORPUS-TAG: v0.5.1-testnet -->
+<!-- CORPUS-SHA256: 5b07af4244e98320696fd5bf0761b7df19fa804788b2275e8f2931b7b2c4c24d -->
 
-> **This document is a verbatim copy of `testnet/operator/OPERATOR_GUIDE.md` at `v0.5.0-testnet`.** It is not
+> **This document is a verbatim copy of `testnet/operator/OPERATOR_GUIDE.md` at `v0.5.1-testnet`.** It is not
 > edited for the FAQ bot. If it disagrees with anything else in this corpus, it wins.
 
 # PTX testnet — operator guide
@@ -179,7 +179,7 @@ apt-get update && apt-get install -y --no-install-recommends git curl ca-certifi
 ```
 
 ```bash
-git clone -b v0.5.0-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
+git clone -b v0.5.1-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 cd Hemis-PTX-MVP1/testnet/operator
 ./install.sh
 ```
@@ -760,7 +760,7 @@ The other states you may legitimately see:
 
 | status | meaning |
 |---|---|
-| `Waiting for ProTx to appear on-chain` | normal for the first minutes after registering |
+| `Waiting for ProTx to appear on-chain` | normal for the first minutes after registering **only if the daemon was started after the ProTx confirmed**. If the node was already running (or was restarted while behind the chain) when the ProTx landed, it stays here until you restart it: the gamemaster state is evaluated once at startup and never re-checked (BUG-082). `sudo systemctl restart hemis-ptx` once the node is synced. |
 | `Error. Can't detect valid external address…` | `externalip=` missing or wrong — A3 |
 | `Error. Local address … does not match the address from ProTx` | you registered a different address than the node advertises |
 | `Gamemaster was PoSe banned` | see the PoSe section below — this one does **not** clear by itself |
@@ -815,8 +815,12 @@ host. `PTX_BIN_SHA256` is the hash the coordinator published with the tag, and i
 this an upgrade rather than a download: without it `install.sh` checks the archive against the
 `SHA256SUMS` file served from the **same** GitHub release — that proves the download was not corrupted,
 not that it is the artefact the coordinator meant. With it, a mismatch refuses to install. Every tag has
-its own value, posted alongside the tag; for `v0.5.0-testnet` it is
-`986475a6a150b3f05dea6557981b56563b5def0a394f7961fb2a5f63e560efac`.
+its own value, posted alongside the tag — take the one for the tag you are
+installing from the coordinator's announcement, never from this page. The worked
+example below is `v0.5.0-testnet`'s, whose published `Hemis-Linux.tar.gz` is
+`986475a6a150b3f05dea6557981b56563b5def0a394f7961fb2a5f63e560efac`; a release cannot
+carry its own artefact's hash, because the artefact is built from the tag after it
+exists.
 
 ### ★★ What `install.sh` will and will not do
 
@@ -913,8 +917,10 @@ then your node is not selected, not paid, and not part of any quorum.
 ### Fix the cause first
 
 A revival with the fault still present is banned again in another forty minutes. Work section 5 of
-`self-check.sh`, check `externalip=`, check the firewall **and** the NAT rule, and confirm
-`getgamemasterstatus` can reach `Ready`.
+`self-check.sh`, check `externalip=`, check the firewall **and** the NAT rule. Do not wait for
+`getgamemasterstatus` to read `Ready` at this stage: while the ban stands it reports
+`Gamemaster was PoSe banned` whatever you fix, and it will not change until the revival below has
+confirmed **and** you have restarted the daemon (BUG-082).
 
 ### Then recover — and read this before you copy anything
 
@@ -945,7 +951,21 @@ this gamemaster"* (`src/rpc/rpcevo.cpp:921`), which reads as though you must cha
 `ProUpServTx` once all keys are set and never compares the address; passing `""` keeps your
 existing one (`src/rpc/rpcevo.cpp:955-957`). The help text is more restrictive than the code.
 
-Confirm:
+★★ **Then restart the gamemaster — the chain is fixed, the node is not.** Wait for the `ProUpServTx`
+to confirm (it appears in `protx_list` with `PoSeBanHeight: -1`), then on the gamemaster host:
+
+```bash
+sudo systemctl restart hemis-ptx
+```
+
+Why: the daemon reads its own gamemaster state once, at startup, and never again (BUG-082 —
+`CActiveDeterministicGamemasterManager` is not registered for block updates on the config path). A
+node that started while banned holds `Gamemaster was PoSe banned` after the revival lands, and in
+that state it sends no GMAUTH, joins no ceremony and answers no sign request. The restart runs the
+startup check against the revived record. Restart only once the node is synced; a restart while it
+is behind the chain re-reads the old, still-banned record and you are back where you started.
+
+Confirm, after the restart:
 
 ```bash
 ./self-check.sh          # section 3 must read: status: Ready
@@ -975,6 +995,25 @@ shares are gone and expect to sit out until the next ceremony.
 ---
 
 ## Troubleshooting
+
+**A transaction your wallet host built keeps coming back after every restart (BUG-064)**
+
+★ If your **wallet** host once broadcast a transaction that every block template rejects (the case
+seen live was a `protx_register` that spent its own collateral, BUG-061, fixed in `v0.4.3`), the
+wallet re-adds it to the mempool at every start: `ReacceptWalletTransactions` runs at load, and
+`abandontransaction` refuses while the transaction is in the mempool. Nothing times it out, because
+it passes mempool acceptance — that is the whole problem. The escape is a procedure, not a flag,
+and you will not derive it under pressure, so it is written here:
+
+1. Stop **every** node that carries the transaction **at the same time** — a node restarted alone
+   re-learns it from a peer that was not cleaned.
+2. On each of them remove `<datadir>/ptxtestnet/mempool.dat`, then restart.
+3. On the wallet host that originated it, add `zapwallettxes=2` to `Hemis.conf` for **one** boot,
+   then remove the line.
+
+Faster, when it is available: a **conflicting** transaction that confirms evicts the stuck one from
+every mempool on the network. That is what cleared the hosts outside our reach on 2026-09-05, and
+it is the only mechanism that does. Gamemaster hosts have no wallet and cannot originate this.
 
 **`debug.log` appears empty, or `grep` finds nothing after a crash**
 
@@ -1075,7 +1114,8 @@ use a glibc-based distro.
   coins are momentarily used up — every roll spends one and returns its change UNCONFIRMED, so
   until a block confirms that change the coin is not spendable again. It is not a quorum failure,
   not a peer failure, and nothing was charged: the roll stops **before** the commitment is
-  broadcast, so no service fee is paid.
+  broadcast, so no service fee is paid. (The codes that DO mean the fee was paid are `-32053`,
+  threshold not met, and `-32052`, settle failed after signing — both post-commitment.)
 
   **The sustainable rate is exactly "confirmed non-dust coins you hold" — one coin per roll,
   measured 1:1.** Roll faster than your coins replenish and you will see this; it clears in a block

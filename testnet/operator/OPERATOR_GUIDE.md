@@ -172,7 +172,7 @@ apt-get update && apt-get install -y --no-install-recommends git curl ca-certifi
 ```
 
 ```bash
-git clone -b v0.5.0-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
+git clone -b v0.5.1-testnet https://github.com/vileda-hemis/Hemis-PTX-MVP1.git
 cd Hemis-PTX-MVP1/testnet/operator
 ./install.sh
 ```
@@ -808,8 +808,12 @@ host. `PTX_BIN_SHA256` is the hash the coordinator published with the tag, and i
 this an upgrade rather than a download: without it `install.sh` checks the archive against the
 `SHA256SUMS` file served from the **same** GitHub release — that proves the download was not corrupted,
 not that it is the artefact the coordinator meant. With it, a mismatch refuses to install. Every tag has
-its own value, posted alongside the tag; for `v0.5.0-testnet` it is
-`986475a6a150b3f05dea6557981b56563b5def0a394f7961fb2a5f63e560efac`.
+its own value, posted alongside the tag — take the one for the tag you are
+installing from the coordinator's announcement, never from this page. The worked
+example below is `v0.5.0-testnet`'s, whose published `Hemis-Linux.tar.gz` is
+`986475a6a150b3f05dea6557981b56563b5def0a394f7961fb2a5f63e560efac`; a release cannot
+carry its own artefact's hash, because the artefact is built from the tag after it
+exists.
 
 ### ★★ What `install.sh` will and will not do
 
@@ -984,6 +988,25 @@ shares are gone and expect to sit out until the next ceremony.
 ---
 
 ## Troubleshooting
+
+**A transaction your wallet host built keeps coming back after every restart (BUG-064)**
+
+★ If your **wallet** host once broadcast a transaction that every block template rejects (the case
+seen live was a `protx_register` that spent its own collateral, BUG-061, fixed in `v0.4.3`), the
+wallet re-adds it to the mempool at every start: `ReacceptWalletTransactions` runs at load, and
+`abandontransaction` refuses while the transaction is in the mempool. Nothing times it out, because
+it passes mempool acceptance — that is the whole problem. The escape is a procedure, not a flag,
+and you will not derive it under pressure, so it is written here:
+
+1. Stop **every** node that carries the transaction **at the same time** — a node restarted alone
+   re-learns it from a peer that was not cleaned.
+2. On each of them remove `<datadir>/ptxtestnet/mempool.dat`, then restart.
+3. On the wallet host that originated it, add `zapwallettxes=2` to `Hemis.conf` for **one** boot,
+   then remove the line.
+
+Faster, when it is available: a **conflicting** transaction that confirms evicts the stuck one from
+every mempool on the network. That is what cleared the hosts outside our reach on 2026-09-05, and
+it is the only mechanism that does. Gamemaster hosts have no wallet and cannot originate this.
 
 **`debug.log` appears empty, or `grep` finds nothing after a crash**
 

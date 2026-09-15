@@ -15,8 +15,10 @@ No item here blocks testnet operation unless explicitly stated.
 phases (PTXDKG transaction, commit bae1dcf, 2026-06-12); KDD-072 rotation. The design doc v3.5 §6.3
 staging table row "v1 Testnet — Threshold BLS, trusted-dealer DKG" describes the historical scheme
 below.  
-**Status:** current for ptxtestnet as of `v0.5.0-testnet`. Section rescoped 2026-09-13; the
-verifiability statements were verified against the tag on that date.
+**Status:** current for ptxtestnet as of `v0.5.1-testnet`. Section rescoped 2026-09-13 (the
+verifiability statements were verified against `v0.5.0-testnet` on that date) and its tail
+corrected 2026-09-15: the three paragraphs that followed still described the retired scheme's
+fleet and staged the DKG as a future fix.
 
 **Current scheme.** Quorums of eleven gamemasters form at boundary heights through a multi-phase
 distributed key generation among the selected members, threshold six. The ceremony ends in a mined
@@ -51,22 +53,21 @@ verification vector and member-signed commitment hashes, not the vectors themsel
 is attested on chain rather than re-verifiable from it. Nor can a verifier without a node establish
 which quorum the selection rule named for the seed height; that rule is advisory (section 12).
 
-**Single-host fleet.** All 11 GM containers run on a single Proxmox host controlled by the
-operator. The hypergeometric quorum-capture security numbers in the design doc (§6.1) apply to a
-geographically distributed deployment; they do not apply to this fleet. The phase 2/3 dev plan
-documents this explicitly: "Phase 3 moves PTX from a controlled single-host environment to 21+
-geographically distributed nodes run by independent operators."
+**Operator concentration (ptxtestnet, 2026-09).** The network is no longer single-host: the
+registered gamemasters are run by several independent operators on their own hardware (the
+launch fleet, PJH, and the Nodes24 group, roughly 24 / 3 / 31 at the last count), so the
+hypergeometric quorum-capture numbers in the design doc (§6.1) now describe the right shape of
+deployment. What remains true is that one operator still runs the largest share of the pool and
+all three coordinators, so a quorum drawn from the pool is more likely to be majority-one-operator
+than those numbers assume for a fully independent set. (The earlier text here — "all 11 GM
+containers run on a single Proxmox host" — described the retired ptxbea v1 fleet.)
 
-**`ptx_verify` Path A scope (planned, not yet shipped).** The planned `ptx_verify` RPC will
-assert that the published results follow deterministically from the published signature. It will
-**not** return `quorum_verified` — that field, specified in the design doc §11.1, requires
-`group_pk` on-chain and is a Phase 3 deliverable.
-
-**Phase 3 closure.** The design doc stages the fix as "Full Pedersen DKG with resharing" (§6.3
-table, Phase 3: "No single party holds the master secret at any point in the ceremony"). The
-implementation unit is VSS/Pedersen DKG plus publishing the stable per-session `group_pk` as a
-unit — the VSS commitment vector is what ties per-GM shares to the published key, making them
-inseparable. Per-session-stable keying means publication costs 48 bytes at session-init.
+**Verification tooling.** A node-free verifier can check `beacon`, `results` and `quorum_sig`
+against the on-chain `group_pk` today (the split above); there is no `ptx_verify` RPC and no
+`quorum_verified` field — the earlier paragraph that staged `group_pk` publication as a "Phase 3
+deliverable" predated KDD-069 and W1.2, both of which have shipped. The one thing no tool can
+establish from chain data is share possession by `t` of `n`; that is a property of the ceremony,
+attested by the member-signed commitments in the `PTXDKG` transaction, not re-verifiable from it.
 
 ---
 
@@ -132,15 +133,14 @@ happy-path scenarios have all 11 GMs participating; no withholding occurs.
 
 **Register ID:** None — parked item in `PTX_LE_STANDUP.md` §Task 4 (Step 16.7). Register entry
 pending.  
-**Status:** Parked for 16.9 go-live gate. Not a correctness concern; a liveness one.
+**Status:** Historical for ptxbea; reduced on ptxtestnet. Not a correctness concern; a liveness one.
 
-gm01 holds all staking coins on the current fleet. gm01 going down stalls chain extension entirely.
-Same family as ODC-021 (coordinator SPOF). Not a consensus or settlement correctness issue — if
-gm01 is down, the chain simply stops producing blocks; no invalid state is created. Correctness of
-the PTX pipeline is unaffected.
-
-**Before semi-public exposure:** distribute stake across 2–3 GMs so no single container failure
-stalls the chain.
+On the ptxbea v1 fleet gm01 held all staking coins, so gm01 going down stalled chain extension
+entirely (same family as ODC-021, the coordinator SPOF). On ptxtestnet stake is held on the three
+launch wallet hosts and by external operators, and blocks have continued through single-host
+outages and migrations. What remains is concentration rather than a single point: most stake is
+still one operator's. Not a consensus or settlement correctness issue in either case — a stalled
+chain creates no invalid state, and the PTX pipeline is unaffected.
 
 ---
 
@@ -337,45 +337,41 @@ making weak quorums cheap to finish off) proves material at real quorum counts.
 
 ---
 
-## 13. Operator port requirement — RPC must be reachable, or signing silently fails
+## 13. Operator port requirement — inbound P2P must be reachable, or your gamemaster is never asked to sign
 
-**Register ID:** ODC-073 / A (DGM-derived fan-out) / KDD-085 (the mainnet fix).
-**Status:** Interim convention; enforced by the self-check, removed by KDD-085.
+**Register ID:** KDD-085 (sign-over-P2P, shipped), KDD-110 (address family), BUG-086 (the coordinator's
+handling of unreachable members, fixed in `v0.5.1-testnet`).
+**Status:** Current. Corrected 2026-09-15 — this section previously required RPC port 29995 to be
+reachable "until KDD-085 lands"; KDD-085 landed in `v0.4.x`, and the requirement it removed had
+been stated here as current for a month.
 
-**ptxbea standard ports — open BOTH at the address you register:**
+**ptxtestnet ports — open ONE of them at the address you register:**
 
 | Purpose | Port | Must be reachable by |
 |---|---|---|
-| P2P | **29994** | the network (peers) — definitionally open on a public chain |
-| RPC (signing) | **29995** | the other gamemasters' fan-out, at your registered address |
+| P2P | **29994** | the network, inbound — this is the signing path |
+| RPC | **29995** | nobody. Loopback only. Do not open it, do not forward it |
 
-The ports sit **below** the kernel ephemeral range (32768–60999) deliberately: the Hemis 5147x
-family (mainnet/testnet/regtest) sits *inside* that range, and binding there invites a startup race
-where the kernel hands your listening port to an outbound connection first. RPC = P2P + 1 restores
-the PIVX-lineage adjacency (cf. testnet 51474/51475) without that exposure.
-
-**The load-bearing requirement — read this if you read nothing else:** the signing fan-out reaches
-each quorum member over **RPC at the host it advertises in its DGM registration, on port 29995**
-(override: `-ptxfanoutport`). The DGM record advertises only the P2P endpoint; the RPC port is a
-**convention**, not on-chain. So a gamemaster that registers successfully but has RPC **firewalled,
-bound to localhost, or on a non-standard port** looks **fully healthy on-chain** — registered,
-enabled, synced, Ready — and yet **silently fails every signing request**. This is exactly the
-failure the fleet has hit twice (the IPv6 incident: nodes healthy on-chain, unreachable for
-signing).
+**The load-bearing requirement:** a signing request reaches your gamemaster over the **P2P**
+connection between it and the coordinator, at the address in your DGM registration. If your host
+does not accept inbound TCP on 29994 at that address, the coordinator can only reach you while an
+outbound connection from your node to it happens to exist; otherwise it dials you, the dial times
+out, and your gamemaster is skipped for that round. It stays registered, enabled, synced and
+`Ready` on chain — and never signs. Measured 2026-09-12: five registered gamemasters on one
+provider did not accept inbound connections and were the reason every roll in their quorums took
+10–14 s on `v0.5.0-testnet` (BUG-086). `v0.5.1-testnet` makes the coordinator stop paying for
+them; it does not make them sign.
 
 **What an operator must do:**
-1. Bind RPC so it is reachable at your registered address, not just localhost: `rpcbind=<addr>`
-   (or `rpcbind=[::]` for dual-stack) plus `rpcallowip` for the fleet/peer range. `listen=1`.
-2. Open **29994 (P2P)** and **29995 (RPC)** in the firewall to the addresses that need them.
-3. Verify from **outside** the host that RPC answers at `your-registered-address:29995` — the
-   self-check does this; do not trust a local `hemis-cli` probe, which reaches localhost and hides
-   exactly this fault.
+1. `listen=1`, and open **29994** inbound in every firewall and cloud security group in front of
+   the address you registered. Nothing else. See the operator guide's ports section.
+2. Do **not** open 29995. It is a local admin interface; exposing it publishes your RPC.
+3. Verify from **outside** the host that 29994 answers at your registered address. `self-check.sh`
+   does this; a local probe reaches localhost and hides exactly this fault.
 
-**Why it's an interim convention:** the RPC-port assumption re-introduces an address-reachability
-requirement on a permissionless network (operators with non-standard ports/firewalls violate it).
-**KDD-085 (sign-over-P2P)** removes it entirely — the fan-out would reach the member at its
-on-chain-advertised address over the P2P protocol it already must expose, so no separate RPC
-exposure is needed. Until KDD-085 lands, the port convention above is the requirement.
+**Why the earlier text was wrong:** before KDD-085 the signing fan-out dialled each member's RPC
+port, so 29995 had to be open and this section said so. KDD-085 moved signing to P2P and the
+operator guide was corrected at the time; this section was not.
 
 ---
 

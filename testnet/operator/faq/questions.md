@@ -1,5 +1,5 @@
 <!-- CORPUS-AUTHORED: question index -->
-<!-- CORPUS-TAG: v0.5.0-testnet -->
+<!-- CORPUS-TAG: v0.5.1-testnet -->
 
 # How operators actually phrase things
 
@@ -179,5 +179,5 @@ delivered. `v0.3.6-testnet` and `v0.4.0-testnet` both predate the fix.
 `v0.3.6..v0.4.2` is 583 insertions across 9 source files, so the "only the version string differs"
 reasoning no longer applies at all.
 
-Anyone **mid-install should use `v0.5.0-testnet`** — the current pin, and the tag every other
+Anyone **mid-install should use `v0.5.1-testnet`** — the current pin, and the tag every other
 instruction in this corpus refers to.

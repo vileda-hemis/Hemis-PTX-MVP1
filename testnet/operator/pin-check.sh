@@ -68,6 +68,17 @@ testnet/operator/OPERATOR_GUIDE.md	made gamemasters ship
 testnet/operator/faq/questions.md	byte-identical from
 testnet/operator/faq/questions.md	is the first release
 testnet/operator/faq/questions.md	both predate the fix
+testnet/operator/OPERATOR_GUIDE.md	How often the lottery pays, from
+testnet/operator/OPERATOR_GUIDE.md	That field is the consensus change
+testnet/operator/OPERATOR_GUIDE.md	example below is
+testnet/operator/faq/weirdness.md	cadence change, not a fault
+testnet/operator/faq/weirdness.md	Only if you are still on a build older than
+testnet/operator/faq/weirdness.md	Symptom: peers report
+testnet/operator/faq/weirdness.md	A node built from
+testnet/operator/faq/weirdness.md	advertises the lineage version to peers
+testnet/explorer/app.py	Settlement cadence changed at block
+testnet/explorer/app.py	1440 blocks (~25 h)</b> (
+testnet/explorer/app.py	they reset to 0 at every settlement
 EOF
 )"
 

@@ -6624,6 +6624,30 @@ BOOST_AUTO_TEST_CASE(Kdd085_Client_WinnabilityDistinguishesFailureShapes)
 // BUG-086: the dial gate is winnability applied to the members ALREADY ASKED.
 // It must disagree with StillWinnable exactly when UNSENT members are what
 // keeps the round winnable -- that is the case where a dial is needed.
+// BUG-087: the 15 s member budget must be able to REACH an INFLIGHT member.
+// PTX_SignReq_RetireExpired already retires INFLIGHT (pinned below); the defect
+// was that the wait loop's re-send pass never admitted INFLIGHT, so the budget
+// was never applied to the one state its comment named. The loop needs a live
+// CConnman, so the admission is pinned structurally, the way W4f pins the
+// reform gate: the filter must admit INFLIGHT, and the send must be skipped for
+// it (an INFLIGHT member is re-timed, never re-sent, never dialled).
+BOOST_AUTO_TEST_CASE(Bug087_BudgetReachesInflight_Structural)
+{
+    BOOST_CHECK(PTX_SignReq_RetireExpired(PTXMemberSignState::INFLIGHT, PTX_SIGNREQ_MEMBER_MS)
+                == PTXMemberSignState::UNREACHABLE);
+    BOOST_CHECK(PTX_SignReq_RetireExpired(PTXMemberSignState::INFLIGHT, PTX_SIGNREQ_MEMBER_MS - 1)
+                == PTXMemberSignState::INFLIGHT);
+    const std::string src = PTX_SRCDIR;
+    BOOST_REQUIRE_MESSAGE(!src.empty(), "BUG-087: PTX_SRCDIR not injected");
+    const std::string cl = P5_slurp(src + "/src/ptx/ptx_sign_client.cpp");
+    BOOST_REQUIRE(!cl.empty());
+    BOOST_CHECK_MESSAGE(cl.find("kv.second != PTXMemberSignState::INFLIGHT) continue;") != std::string::npos,
+        "BUG-087: the re-send pass no longer admits INFLIGHT -- a silent member is never "
+        "retired by the budget, holds the round to the wall AND keeps the dial gate shut");
+    BOOST_CHECK_MESSAGE(cl.find("(kv.second == PTXMemberSignState::INFLIGHT) ? -1") != std::string::npos,
+        "BUG-087: an admitted INFLIGHT member must not be re-sent to every tick");
+}
+
 BOOST_AUTO_TEST_CASE(Bug086_DialGate_FirstPassSetDecides)
 {
     const size_t t = 6;   // majority(11)

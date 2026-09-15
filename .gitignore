@@ -186,6 +186,17 @@ build*
 src/blst/build/*.o
 src/blst/build/.deps/
 src/blst/build/.dirstamp
+# ★ SECOND INSTANCE OF THE SAME RULE, 2026-09-15 (BUG-088). `build*` also
+# swallowed testnet/operator/faq/build-corpus.sh -- an AUTHORED script, named
+# in faq/README.md as the way to regenerate the corpus, which therefore could
+# never be committed by the recipe the README gives (`git add <dir>` skips
+# ignored files in silence). The corpus's byte-copy invariant is enforced by
+# install-test.sh, so the tool that maintains it has to be in the tree.
+# ★ The general rule is KDD-097: an over-broad ignore pattern protects authored
+# files only while nobody authors a file that matches it, and git says nothing
+# when one does. `build*` is a build-ARTEFACT pattern; every authored file it
+# catches needs a line like this one.
+!testnet/operator/faq/build-corpus.sh
 Hemisd.*
 Hemisd-new-gui.*
 /cov-int/

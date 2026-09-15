@@ -84,6 +84,27 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ★ BUG-081: the daemon's default ports, read from the tree so they cannot go
+# stale. ptxtestnet P2P from CPTXTestNetParams, ptxtestnet RPC from
+# chainparamsbase.cpp, then mainnet P2P/RPC. Falls back to the last known
+# values only if the tree is not beside this script.
+src_default_ports() {
+    local cp="$HERE/../../src/chainparams.cpp" cb="$HERE/../../src/chainparamsbase.cpp" p r mp mr
+    p="$(awk '/class CPTXTestNetParams/{f=1} f && /nDefaultPort = /{gsub(/[^0-9]/,"",$3); print $3; exit}' "$cp" 2>/dev/null)"
+    r="$(grep -oE 'CBaseChainParams\("ptxtestnet", [0-9]+' "$cb" 2>/dev/null | grep -oE '[0-9]+$')"
+    mp="$(awk '/class CMainParams/{f=1} f && /nDefaultPort = /{gsub(/[^0-9]/,"",$3); print $3; exit}' "$cp" 2>/dev/null)"
+    mr="$(grep -oE 'CBaseChainParams\("", [0-9]+' "$cb" 2>/dev/null | grep -oE '[0-9]+$')"
+    echo "${p:-29994} ${r:-29995} ${mp:-49165} ${mr:-51473}"
+}
+DEFAULT_PORTS="$(src_default_ports)"
+# ★ BUG-081: the RED 2 leg's configured ports. They must differ from every
+# default AND from the six green ports (29994-29999), or the leg is vacuous.
+RED2_P2P=29984; RED2_RPC=29985
+for _p in $DEFAULT_PORTS 29994 29995 29996 29997 29998 29999; do
+    [ "$_p" = "$RED2_P2P" ] || [ "$_p" = "$RED2_RPC" ] && { echo "install-test: RED 2 port $_p collides with a default or green port" >&2; exit 2; }
+done
+
 REPO_ROOT="$(git -C "$HERE" rev-parse --show-toplevel 2>/dev/null || echo "$HERE/../..")"
 
 TEST_REPO="${PTX_TEST_REPO:-$REPO_ROOT}"
@@ -514,6 +535,13 @@ check_no_live_backticks() {
 
 preflight() {
     say "Pre-flight — this host"
+    # ★ BUG-080: the collateral scan matches a multibyte '×'; print the locale so a
+    # C/POSIX run is legible as such (the scan itself is now byte-agnostic).
+    ok "locale: LANG=${LANG:-unset} LC_ALL=${LC_ALL:-unset}"
+    # ★ BUG-081: the daemon's DEFAULT ports are read from the tree at run time.
+    # They were a literal list (29993/29902) that went stale when nDefaultPort
+    # moved to 29994, and a stale default list blinds every check built on it.
+    ok "default ports from source: $DEFAULT_PORTS (ptxtestnet P2P/RPC, mainnet P2P/RPC)"
     check_no_live_backticks || true
     local p busy=""
     for p in 29994 29995 29996 29997 29998 29999; do
@@ -525,8 +553,12 @@ preflight() {
   collision it did not create. Free them, or run this test in a container."
     fi
     ok "the six configured ports (29994-29999) are free"
+    if port_held "$RED2_P2P" || port_held "$RED2_RPC"; then
+        bad "RED 2's ports $RED2_P2P/$RED2_RPC are held on this host; free them or run in a container"; return 1
+    fi
+    ok "RED 2's ports ($RED2_P2P/$RED2_RPC, distinct from every default) are free"
 
-    for p in 29993 29902 49165 51473; do
+    for p in $DEFAULT_PORTS; do
         if port_held "$p"; then
             DEFAULTS_HELD="$DEFAULTS_HELD $p"
         fi
@@ -537,7 +569,7 @@ preflight() {
         note "EXIT rather than bind it. The RED legs below detect this and report"
         note "which of the two happened -- do not read them as interchangeable."
     else
-        ok "no default port (29993/29902/49165/51473) held right now -- RED legs re-check at leg time"
+        ok "no default port ($DEFAULT_PORTS) held right now -- RED legs re-check at leg time"
     fi
     printf '  \033[33m[note]\033[0m this reading is a snapshot. The RED legs re-measure; do not\n'
     note "treat the line above as true for the rest of the run."
@@ -578,11 +610,10 @@ check_network() {   # $1 = datadir
 #
 # ★ THE DEFAULTS ARE NAMED EXPLICITLY AND EXCLUDED, which is the half that
 # catches defect 2. "Is 29994 bound?" passes on a node that also bound 29993;
-# "is 29993 bound?" is the question that fails. The four defaults, from source:
-#   ptxtestnet P2P 29993   src/chainparams.cpp:815
-#   ptxtestnet RPC  29902  src/chainparamsbase.cpp:49
-#   mainnet    P2P 49165   src/chainparams.cpp:336
-#   mainnet    RPC  51473  src/chainparamsbase.cpp:42
+# "is 29994 bound?" is the question that fails. The four defaults are READ
+# FROM THE TREE at run time by src_default_ports() (BUG-081): this comment
+# used to list them as literals (29993 / 29902), the literals went stale when
+# nDefaultPort moved, and the check could no longer see the real defaults.
 # A configured port that happens to equal a default is not excluded -- the
 # exclusion set is built per call, minus whatever this GM legitimately wants.
 check_ports() {   # $1 = pid, $2 = datadir label, $3 = p2p, $4 = rpc
@@ -597,7 +628,7 @@ check_ports() {   # $1 = pid, $2 = datadir label, $3 = p2p, $4 = rpc
         || { bad "C3 $label: configured P2P $want_p2p is NOT bound (bound: $(echo $got))"; rc=1; }
     contains "$want_rpc" $got \
         || { bad "C3 $label: configured RPC $want_rpc is NOT bound (bound: $(echo $got))"; rc=1; }
-    for d in 29993 29902 49165 51473; do
+    for d in $DEFAULT_PORTS; do
         [ "$d" = "$want_p2p" ] || [ "$d" = "$want_rpc" ] && continue
         if contains "$d" $got; then
             bad "C3 $label: bound DEFAULT port $d -- the config's ports were ignored."
@@ -949,13 +980,19 @@ red_run() {
     # ---- RED 2: defect 2, settings above the section header (e414e77) ------
     say "RED 2 — port/rpcport outside [ptxtestnet] (the e414e77 port defect)"
     dd="$BASE/red2-dd"; seed_from_green "$dd" || { bad "RED 2 could not seed"; return 1; }
+    # ★ BUG-081: the seed is GM1's config, whose ports (29994/29995) became the
+    # daemon's DEFAULTS when nDefaultPort moved 29993->29994, so a daemon that
+    # dropped the unsectioned lines and bound the defaults looked identical to
+    # one that honoured them and this leg could not fail. The leg now asks for
+    # ports that differ from every default, so "bound the defaults" is visible.
+    sed -i -E "s/^port=.*/port=$RED2_P2P/; s/^rpcport=.*/rpcport=$RED2_RPC/" "$dd/Hemis.conf"
     # Delete the section header. Every network-specific line then sits in the
     # global section, where the daemon warns once and uses the DEFAULTS.
     sed -i '/^\[ptxtestnet\]$/d' "$dd/Hemis.conf"
     pid="$(start_daemon "$dd")"
     wait_settled "$pid"
     if alive "$pid"; then
-        red_expect_fail "C3 (ports) vs unsectioned config" check_ports "$pid" "red2" 29994 29995
+        red_expect_fail "C3 (ports) vs unsectioned config" check_ports "$pid" "red2" "$RED2_P2P" "$RED2_RPC"
         # C2 is expected to still PASS here: ptxtestnet=1 is global and is read.
         # Saying so is the point -- it is what makes C2 and C3 independent checks
         # rather than two names for the same one.
@@ -1384,7 +1421,11 @@ role_run() {
                 # scan below. "(N x 100) + 500 HMS -- the collaterals, plus 500 to
                 # stake" reads to this loop as a 500 HMS collateral, which it is
                 # not. A formula states a TOTAL.
-                printf '%s' "$txt" | grep -qE '[Nn] *[×x] *[0-9]+' && continue
+                # ★ BUG-080: '×' is two UTF-8 bytes and `[×x]` cannot match it under a
+                # C/POSIX locale (every container without LANG), so the exemption never
+                # fired and "+ 500 HMS" was read as a 500 HMS collateral. Normalise the
+                # sign to ASCII by its bytes before the test, whatever the locale.
+                printf '%s' "$txt" | sed 's/\xc3\x97/x/g' | grep -qE '[Nn] *x *[0-9]+' && continue
                 cv="$(printf '%s' "$txt" | grep -oE '[0-9]+ HMS' | head -1)"
                 [ -z "$cv" ] || [ "$cv" = "$a_coll HMS" ] || {
                     bad "$ff:$ln states $cv beside the word collateral; chainparams says $a_coll HMS"; badfact=1; }
