@@ -1,4 +1,21 @@
-.gitignore
+# ★ `.gitignore` WAS THE FIRST LINE HERE, inherited from 18d042c (2024-01-13),
+# and it is removed 2026-09-16. It did NOT make per-directory ignore files inert --
+# git reads every .gitignore from the WORKING TREE whether or not it is tracked, and
+# all 13 below this one were applying normally (proven: `git check-ignore -v
+# doc/Doxyfile` answers `doc/.gitignore:1`, and an untracked probe ignored its target).
+# What it did was stop a NEW one from ever being COMMITTED: `git add` refuses it, so a
+# rule written today works on the machine that wrote it and exists in no clone. That is
+# not an inert rule, it is a machine-local one, and nothing in `git status` says so.
+# ★ Blast radius of removing it: NIL for what is ignored. Nothing was dormant, so
+# nothing comes alive; all 13 are tracked and a fresh clone already had them, and there
+# were zero untracked .gitignore files on disk. Tracked files were never subject to
+# ignore rules. The only change is that a .gitignore is now visible in `git status`
+# and can be committed like any other file.
+# ★ Third instance of the over-broad-ignore class in one day, and the first two were a
+# different rule: `build*` swallowed the vendored blst assembly (2026-08-17, see the
+# re-include below) and then testnet/operator/faq/build-corpus.sh (BUG-088). KDD-097 is
+# the general statement; what this line adds is that such a rule can make a rule
+# UNSHAREABLE rather than merely absent, which is harder to notice.
 *.sublime-project
 *.sublime-workspace
 todo.txt
