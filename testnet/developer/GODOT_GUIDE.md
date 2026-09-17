@@ -21,17 +21,26 @@ is an entitlement to play — *"8 raids remaining"*, never *"8 HMS"*. There is n
 endpoint, no refund path and no money balance anywhere in the rail. Entitlements are
 non-refundable. Plan your economy around a count that goes down.
 
-Speed: a roll is a network call at block-scale timing, and **no percentile is published.**
-Every figure that exists is daemon-side, reconstructed from logs, and describes a system
-that has since changed twice — the sign-round stalls were fixed on 2026-09-15 and a wallet
-call per availability request was removed on 2026-09-16. Nothing in the rail records a
-completion time, so latency *as a caller experiences it* has never been measured at all.
-Quoting a p95 from that would be worse than quoting nothing.
+Speed: **the median is published, the tail is not**, and the two have different evidence
+behind them.
 
-What you can rely on is the **ceiling**. The signing round's own wall is 30 s server-side,
-so a roll may legitimately take that long; the client waits 45 s before giving up, and
-reads (balance, availability) time out at 15 s because they wait on no signing round.
-Design for about a second, tolerate 45.
+**Median: about 1 second.** Measured daemon-side over 731 rolls — 623 of them finished
+inside a second. It is the statistic the recent fixes did *not* move: BUG-086 removed the
+stalls, and stalls are the tail; the fast path was never what was slow. So ~1 s described
+this system before those fixes and describes it after, which is exactly the claim a
+percentile cannot make right now. Corroborated caller-side by three verification rolls
+through the full HTTP path: **0.84 s, 0.86 s, 1.41 s**. Three is not a distribution, but it
+is the only caller-side data that exists and it does not contradict the median.
+
+**No p95 and no worst case.** A percentile is a promise about the tail, and the tail is
+precisely what changed twice this month and has not been re-measured at a useful sample
+size since. The rail records no completion time, so nothing samples caller-side latency
+systematically either. The old p95 of 12 s described a system that no longer exists, and
+republishing it would be worse than publishing nothing.
+
+**Design your timeout against the ceiling, not the median.** The signing round's wall is
+30 s server-side, so a roll may legitimately take that long. The client waits 45 s; reads
+(entitlement, availability) time out at 15 s because they wait on no signing round.
 
 ## 2. Topology — decide before you write code
 
@@ -146,8 +155,14 @@ be shipped inside a `.pck`.
 - **Public testnet.** tHMS has no monetary value and the chain may be reset.
 - **One host, one wallet, no failover.** The rail runs on a single VM with its own node and
   its own spend-only pool. If that VM is down, every developer is down. No SLA.
-- **Rolls are serialised globally**, one at a time across every customer, about 1 s each.
-  You share roughly 60 rolls a minute with everyone else.
+- **Rolls are serialised globally — one at a time, across every customer.** ★ That part is
+  structural and certain: a single process-wide lock in the rail, not a quota and not a
+  tuning choice. The *rate* attached to it is arithmetic on the median above — about a
+  second a roll puts the whole system's ceiling on the order of 60 a minute — and it is a
+  **ceiling under no contention, shared by everyone**, not an allocation you can plan
+  against. Treat the serialisation as the fact and the number as its consequence. If you
+  need guaranteed throughput, the thing to ask for is not a larger number; it is a second
+  rail.
 - **Calling availability in a loop is pointless — and that is now the only reason.** The
   defect that made it actively harmful is fixed (BUG-089, 2026-09-16): the count is cached
   server-side, so requests inside the window share one wallet call between them instead of
