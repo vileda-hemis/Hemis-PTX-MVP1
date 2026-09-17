@@ -24,13 +24,27 @@ non-refundable. Plan your economy around a count that goes down.
 Speed: **the median is published, the tail is not**, and the two have different evidence
 behind them.
 
-**Median: about 1 second.** Measured daemon-side over 731 rolls — 623 of them finished
-inside a second. It is the statistic the recent fixes did *not* move: BUG-086 removed the
-stalls, and stalls are the tail; the fast path was never what was slow. So ~1 s described
-this system before those fixes and describes it after, which is exactly the claim a
-percentile cannot make right now. Corroborated caller-side by three verification rolls
-through the full HTTP path: **0.84 s, 0.86 s, 1.41 s**. Three is not a distribution, but it
-is the only caller-side data that exists and it does not contradict the median.
+**Median: about 1 second — and here is exactly what that rests on.** Daemon-side, 731 rolls
+across the rail's whole life, of which 623 finished inside a second. ★ That population is
+**705 rolls before the 2026-09-15 fixes and 26 after**, and the median is 1 s measured
+*separately in each half* — so the figure is not an average taken across a change.
+
+★ **The 26 are a thin sample and they are doing real work in that sentence, so the
+asymmetry is worth stating plainly.** Twenty-six samples cannot support a p95, which would
+rest on one or two points at the top of the sorted set. They can support a median, which is
+the middle of that set and moves only if much of the sample moves. That is the actual
+reason the median survives the withdrawal and the tail does not — not that one number is
+friendlier, but that a small sample estimates the two with very different confidence.
+
+★ **The stability was also predicted before it was measured**, which is what stops the 26
+from carrying the claim alone. BUG-086's fix changed only what happens when a member is
+*not* already connected; it cannot make the already-connected path faster or slower, and
+that path is what produces the median. So ~1 s was expected to survive the fix, and the 26
+rolls are consistent with that rather than the sole evidence for it.
+
+Corroborated caller-side by three verification rolls through the full HTTP path: **0.84 s,
+0.86 s, 1.41 s**. Three is not a distribution, it is the only caller-side data that exists,
+and it does not contradict the median.
 
 **No p95 and no worst case.** A percentile is a promise about the tail, and the tail is
 precisely what changed twice this month and has not been re-measured at a useful sample
