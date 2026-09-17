@@ -12,8 +12,13 @@
 # backend. A Godot export is decompilable: extracting a .pck and recovering GDScript is
 # routine, so a key shipped in a client is a public credential attached to a roll
 # entitlement someone else paid for. Direct-from-client would need per-install scoped
-# tokens with caps and revocation, which do not exist. This client refuses to run in a
-# release export with a key embedded.
+# tokens with caps and revocation, which do not exist.
+# ★★ THERE IS DELIBERATELY NO KEY FIELD ON THIS CLIENT AT ALL, and that is a stronger
+# guarantee than a check: you cannot embed what the class cannot hold. An earlier version
+# of this header claimed the client "refuses to run in a release export with a key
+# embedded" -- it did not, there was no such check and no key field to check, and a stated
+# protection with no line producing it is exactly the failure KDD-132 names. The absence
+# IS the mechanism; the comment now describes it rather than a check that was never there.
 #
 # ★ TWO PROPERTIES OF THE RAIL THAT CHANGE HOW YOU WRITE GAME CODE:
 #
@@ -37,12 +42,30 @@ signal roll_failed(code: String, charged: bool, message: String)
 @export var base_url: String = "https://your-backend.example/ptx"
 ## Offline development: no network, no entitlement spent.
 @export var dev_mode: bool = false
+## ★ REQUIRED in dev_mode, and there is no sane default. The whole model is that the RANGE
+## IS FIXED PER APP -- yours might be 1..20 -- so a stub inventing 1..10000 gives values
+## your mapping never sees in production, or worse, values it silently mishandles only in
+## dev. Set this to your app's range. Left at 0, every dev roll fails loudly rather than
+## returning a plausible number from the wrong interval.
+@export var dev_range_high: int = 0
+## ★ Settable so you can rehearse EXHAUSTION. Running out is a production outage for your
+## game (see the guide's checklist) and it was previously the one path a developer could
+## not test locally, because this always answered 999. Set it to 0 and handle it.
+@export var dev_rolls_remaining: int = 999
+## Rail capacity in dev_mode. Distinct from the above: this is whether the RAIL can serve
+## anyone, not whether YOU have plays left. Both can refuse a roll, for different reasons.
+@export var dev_available: int = 999
+## Non-zero makes dev rolls REPRODUCIBLE; see _dev_roll for why 0 (varying) is the default.
 @export var dev_seed: int = 0
 
 # ★ 45 s, not a guessed 5. The sign round's own wall is 30 s and a roll may legitimately
 # take it; the rail adds its pre-flight on top. A shorter timeout does not make the roll
 # faster, it makes the client lie about a roll that is still running.
 const ROLL_TIMEOUT_S: float = 45.0
+# ★ Reads are not rolls and do not wait on a signing round: no quorum, no chain, just the
+# rail's own SQLite. 15 s is generous for that. The guide publishes both numbers so a
+# developer seeing a read time out in 15 s does not read it as the 45 s contract failing.
+const READ_TIMEOUT_S: float = 15.0
 
 var _inflight: Dictionary = {}
 var _rng := RandomNumberGenerator.new()
@@ -97,13 +120,13 @@ func roll(identity: String, tag: String = "") -> Dictionary:
 
 ## How many plays this identity has left. A COUNT, not money.
 func rolls_remaining(identity: String) -> int:
-	if dev_mode: return 999
+	if dev_mode: return dev_rolls_remaining
 	var out := await _get("/v1/rolls/" + identity.uri_encode())
 	return int(out.get("rolls", 0))
 
 ## Whether the rail can serve a roll at all right now.
 func available() -> int:
-	if dev_mode: return 999
+	if dev_mode: return dev_available
 	var out := await _get("/v1/availability")
 	return int(out.get("rolls_available", 0))
 
@@ -112,7 +135,7 @@ func available() -> int:
 func _get(path: String) -> Dictionary:
 	var http := HTTPRequest.new()
 	add_child(http)
-	http.timeout = 15.0
+	http.timeout = READ_TIMEOUT_S
 	var err := http.request(base_url + path, PackedStringArray([]), HTTPClient.METHOD_GET)
 	if err != OK:
 		http.queue_free()
@@ -160,11 +183,25 @@ func _request_id() -> String:
 	return "gd-%d-%d" % [Time.get_unix_time_from_system(), _rng.randi()]
 
 func _dev_roll(identity: String, tag: String) -> Dictionary:
-	# Local stub, deterministic per (dev_seed, identity, tag). Not regtest dev_seed --
-	# that path is not live. Range matches the rail's default app range, 1..10000.
+	# Local stub. Not regtest dev_seed -- that path is not live.
+	# ★ FAILS LOUDLY rather than guessing a range. A stub that quietly draws 1..10000 for an
+	# app whose range is 1..20 produces a mapping that works in dev and breaks in production,
+	# which is the worst failure a dev mode can have.
+	if dev_range_high < 1:
+		return _fail("DEV_RANGE_UNSET", false,
+			"dev_mode is on but dev_range_high is 0. Set it to your app's range "
+			+ "(the rail fixes the range per app) -- a guessed range hides mapping bugs.")
 	var r := RandomNumberGenerator.new()
-	r.seed = hash(identity + tag) + dev_seed
-	var obj := {"results": [r.randi_range(1, 10000)], "roll_txid": "", "seq": 0,
+	# ★ VARIES BY DEFAULT, and that is a decision rather than an oversight. The common dev
+	# task is exercising an OUTCOME TABLE -- a loot tier, a hit/miss split -- and a value
+	# fixed per (identity, tag) shows exactly one branch of it forever while looking like
+	# working code. So at dev_seed 0 each call draws fresh. Set dev_seed non-zero when you
+	# want a REPRODUCIBLE run -- a regression test, a bug report -- and it repeats exactly.
+	if dev_seed != 0:
+		r.seed = hash(identity + tag) + dev_seed
+	else:
+		r.randomize()
+	var obj := {"results": [r.randi_range(1, dev_range_high)], "roll_txid": "", "seq": 0,
 		"game_id": "dev:%s:p=%s" % [tag, identity], "dev_mode": true}
 	roll_complete.emit(obj)
 	return obj

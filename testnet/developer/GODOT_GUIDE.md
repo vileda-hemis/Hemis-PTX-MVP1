@@ -21,10 +21,17 @@ is an entitlement to play — *"8 raids remaining"*, never *"8 HMS"*. There is n
 endpoint, no refund path and no money balance anywhere in the rail. Entitlements are
 non-refundable. Plan your economy around a count that goes down.
 
-Speed: a roll is a network call at block-scale timing. Measured over 705 rolls on the live
-rail, median **1 s**, p95 **12 s**, worst **27 s**; a fix shipped 2026-09-15 and the sample
-since is too small to promise anything, so no better figure is published. The server's hard
-ceiling is 30 s. The client waits 45.
+Speed: a roll is a network call at block-scale timing, and **no percentile is published.**
+Every figure that exists is daemon-side, reconstructed from logs, and describes a system
+that has since changed twice — the sign-round stalls were fixed on 2026-09-15 and a wallet
+call per availability request was removed on 2026-09-16. Nothing in the rail records a
+completion time, so latency *as a caller experiences it* has never been measured at all.
+Quoting a p95 from that would be worse than quoting nothing.
+
+What you can rely on is the **ceiling**. The signing round's own wall is 30 s server-side,
+so a roll may legitimately take that long; the client waits 45 s before giving up, and
+reads (balance, availability) time out at 15 s because they wait on no signing round.
+Design for about a second, tolerate 45.
 
 ## 2. Topology — decide before you write code
 
@@ -98,6 +105,30 @@ nothing — that is their ledger, and it is why the field means one thing only.
 Put the roll's transaction in front of the player on anything that matters, one link beside
 the result. It is what separates this from a number you could have made up.
 
+## 6b. Local development, and the two knobs that matter
+
+`dev_mode` runs everything locally: no network, no entitlement spent. Two settings are not
+optional if the rehearsal is to mean anything.
+
+**`dev_range_high` — set it to your app's range.** The rail fixes the range per app, so
+there is no correct default and the client does not invent one: left at 0, every dev roll
+fails loudly. That is deliberate. A stub quietly drawing 1..10000 for an app whose range is
+1..20 gives you a mapping that passes in development and breaks in production, which is the
+worst failure a dev mode can have.
+
+**`dev_rolls_remaining` — set it to 0 sometimes.** Running out is a production outage for
+your game, it is on the checklist below, and it was previously the one path you could not
+rehearse locally because the client always answered 999. Now you can exercise it.
+
+Dev rolls **vary by default**, because the usual dev task is exercising an outcome table
+and a value fixed per event shows one branch of it forever while looking like working code.
+Set `dev_seed` to any non-zero value when you want a run to repeat exactly — a regression
+test, or a bug report someone else has to reproduce.
+
+★ `dev_mode` refuses to start in a release export. There is deliberately **no API key field
+on the client at all**: your backend holds the key, and a field that does not exist cannot
+be shipped inside a `.pck`.
+
 ## 7. Going live
 
 - [ ] Key on your backend only; no key in any export.
@@ -117,15 +148,28 @@ the result. It is what separates this from a number you could have made up.
   its own spend-only pool. If that VM is down, every developer is down. No SLA.
 - **Rolls are serialised globally**, one at a time across every customer, about 1 s each.
   You share roughly 60 rolls a minute with everyone else.
-- **Do not poll availability.** The rail forks a process per call and that route is
-  unthrottled; polling it degrades the shared node before a single roll is spent. A fix is
-  in progress; the advice stands regardless.
-- **About 1.1 % of rolls have failed after the operator's fee was spent** (8 of 730,
-  2026-09-11 to 09-13). Registered as BUG-084. Your entitlement is returned; theirs is not.
-- Open defects you inherit: **BUG-084** (a commitment mined mid-round is refused and the
-  round fails after the fee is paid), **BUG-085** (the rail's refusal message is wrong in
-  both halves — it says pre-broadcast and nothing deducted when neither is true),
-  **BUG-051** (the published seed formula names an input the code does not use, so a
-  verifier built from the written spec derives the wrong seed), **ODC-090** (a bad partial
-  fails a round with no attribution), **ODC-117** (the public verifier is behind Cloudflare
-  and 403s a bare `python-urllib` — send a User-Agent).
+- **Calling availability in a loop is pointless — and that is now the only reason.** The
+  defect that made it actively harmful is fixed (BUG-089, 2026-09-16): the count is cached
+  server-side, so requests inside the window share one wallet call between them instead of
+  each costing one. What remains is that polling faster than the cache window returns you
+  the same number, and that a roll performs its own authoritative check regardless — so a
+  "yes" here is a pre-flight hint, never a guarantee. Call it to show a player the rail is
+  up. Do not call it before every roll.
+- **About 1.1 % of rolls have failed after the operator's fee was spent** — 8 of 730 real
+  rolls, 2026-09-11 to 09-13. ★ **Two defect numbers, because they are two different
+  things:** the *cause* is **BUG-084**, which is open; the *count*, and the rail's
+  mis-reporting of those failures, is **BUG-085**, whose message was fixed on 2026-09-16.
+  Your entitlement is returned either way. The operator's fee is not.
+- **Open defects you inherit:** **BUG-084** (a commitment mined mid-round is refused as
+  terminal and the round fails after the fee is paid — the live one, above); **BUG-051**
+  (the published seed formula names an input the code does not use, so a verifier built
+  from the written specification derives the wrong seed — build from the implementation);
+  **ODC-090** (a bad partial signature fails a round with no attribution); **ODC-117** (the
+  public verifier sits behind Cloudflare and 403s a bare `python-urllib` — send a
+  User-Agent).
+- **Fixed since this guide was first written**, listed so you do not act on advice that was
+  true last week: **BUG-085** — the refusal now distinguishes a free refusal from one where
+  the fee was spent, and carries `charged`, so you can tell them apart instead of reading a
+  message that claimed "pre-broadcast, nothing deducted" for both. **BUG-089** —
+  availability, above. **BUG-086/087** — the sign-round stalls behind the old latency
+  figures.
